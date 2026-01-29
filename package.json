@@ -1,0 +1,4 @@
+{
+  "name": "cdk-monitoring",
+  "packageManager": "yarn@4.12.0"
+}
