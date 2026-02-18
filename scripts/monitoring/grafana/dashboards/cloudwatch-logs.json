@@ -1,0 +1,229 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "CloudWatch Logs aggregated view — ECS containers, Lambda functions, and API Gateway",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "ECS Next.js Application Logs",
+      "type": "logs",
+      "id": 1,
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 200",
+          "id": "",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/nextjs-app-development:*",
+              "name": "/ecs/nextjs/nextjs-app-development"
+            }
+          ],
+          "namespace": "",
+          "queryMode": "Logs",
+          "refId": "A",
+          "region": "default",
+          "statsGroups": []
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none",
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true
+      }
+    },
+    {
+      "title": "ECS Promtail Sidecar Logs",
+      "type": "logs",
+      "id": 2,
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "expression": "fields @timestamp, @message\n| sort @timestamp desc\n| limit 100",
+          "id": "",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/promtail-development:*",
+              "name": "/ecs/nextjs/promtail-development"
+            }
+          ],
+          "namespace": "",
+          "queryMode": "Logs",
+          "refId": "A",
+          "region": "default",
+          "statsGroups": []
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none",
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true
+      }
+    },
+    {
+      "title": "ECS Node Exporter Logs",
+      "type": "logs",
+      "id": 3,
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "expression": "fields @timestamp, @message\n| sort @timestamp desc\n| limit 100",
+          "id": "",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/node-exporter-development:*",
+              "name": "/ecs/nextjs/node-exporter-development"
+            }
+          ],
+          "namespace": "",
+          "queryMode": "Logs",
+          "refId": "A",
+          "region": "default",
+          "statsGroups": []
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none",
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true
+      }
+    },
+    {
+      "title": "Error Count Over Time (All ECS Containers)",
+      "type": "timeseries",
+      "id": 4,
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "expression": "filter @message like /ERROR|error|Exception/\n| stats count(*) as errorCount by bin(5m)",
+          "id": "",
+          "logGroups": [
+            { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/nextjs-app-development:*", "name": "/ecs/nextjs/nextjs-app-development" },
+            { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/promtail-development:*", "name": "/ecs/nextjs/promtail-development" },
+            { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/node-exporter-development:*", "name": "/ecs/nextjs/node-exporter-development" }
+          ],
+          "namespace": "",
+          "queryMode": "Logs",
+          "refId": "A",
+          "region": "default",
+          "statsGroups": []
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "red", "mode": "fixed" },
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "drawStyle": "bars"
+          },
+          "unit": "short",
+          "displayName": "Errors"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Log Volume by Container",
+      "type": "timeseries",
+      "id": 5,
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "expression": "stats count(*) as logCount by bin(5m)",
+          "id": "",
+          "logGroups": [
+            { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/nextjs-app-development:*", "name": "/ecs/nextjs/nextjs-app-development" },
+            { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/promtail-development:*", "name": "/ecs/nextjs/promtail-development" },
+            { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/node-exporter-development:*", "name": "/ecs/nextjs/node-exporter-development" }
+          ],
+          "namespace": "",
+          "queryMode": "Logs",
+          "refId": "A",
+          "region": "default",
+          "statsGroups": []
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "pointSize": 5
+          }
+        },
+        "overrides": []
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["cloudwatch", "logs", "ecs"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "CloudWatch Logs",
+  "uid": "cloudwatch-logs",
+  "version": 1
+}

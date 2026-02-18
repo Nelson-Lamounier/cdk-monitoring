@@ -1,0 +1,137 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.9.1
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - ./prometheus/file_sd:/etc/prometheus/file_sd:ro
+      - ./prometheus/secrets:/etc/prometheus/secrets:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+      - "--storage.tsdb.retention.time=15d"
+    networks:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    networks:
+      - monitoring
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - /opt/monitoring/node-exporter/textfile:/etc/node-exporter/textfile:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+      - "--collector.textfile.directory=/etc/node-exporter/textfile"
+    networks:
+      - monitoring
+
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: loki
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ./loki/config.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/config.yml
+    networks:
+      - monitoring
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: promtail
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9080:9080"
+    volumes:
+      - ./promtail/config.yml:/etc/promtail/config.yml:ro
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    networks:
+      - monitoring
+
+  # Grafana Tempo — distributed tracing backend
+  # Receives OTLP traces from Grafana Alloy sidecar in ECS tasks
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: tempo
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3200:3200" # Tempo HTTP API (Grafana queries this)
+      - "0.0.0.0:4317:4317" # OTLP gRPC receiver (ECS tasks send traces here)
+      - "0.0.0.0:4318:4318" # OTLP HTTP receiver (fallback)
+    volumes:
+      - ./tempo/config.yml:/etc/tempo/config.yml:ro
+      - tempo_data:/var/tempo
+    command: -config.file=/etc/tempo/config.yml
+    networks:
+      - monitoring
+
+  # GitHub Actions Exporter — polls GitHub API for workflow run metrics
+  # Exposes Prometheus metrics: github_workflow_run_status, github_workflow_run_duration_ms
+  github-actions-exporter:
+    image: ghcr.io/labbs/github-actions-exporter:latest
+    container_name: github-actions-exporter
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9101:9101"
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_REPOS=${GITHUB_REPOS:-Nelson-Lamounier/cdk-monitoring}
+      - GITHUB_REFRESH=30
+      - PORT=9101
+      - EXPORT_FIELDS=repo,id,node_id,head_branch,head_sha,run_number,workflow_id,workflow,event,status
+    networks:
+      - monitoring
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  tempo_data:
+
+networks:
+  monitoring:
+    driver: bridge

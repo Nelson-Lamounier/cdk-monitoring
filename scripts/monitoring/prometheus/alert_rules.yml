@@ -1,0 +1,73 @@
+groups:
+  - name: ec2_host_alerts
+    rules:
+      - alert: HighCpuUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+
+      - alert: InstanceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Instance {{ $labels.instance }} is down"
+
+      - alert: EcsNodeExporterDown
+        expr: up{job="ecs-nextjs-node-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ECS target {{ $labels.instance_name }} is down"
+
+  # ================================================================
+  # Next.js Application Alerts (prom-client metrics from /metrics)
+  # ================================================================
+  - name: nextjs_app_alerts
+    rules:
+      - alert: NextJsAppMetricsDown
+        expr: up{job="nextjs-app-metrics"} == 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Next.js /metrics endpoint down on {{ $labels.instance_name }}"
+          description: "Cannot scrape application metrics from {{ $labels.instance_name }} ({{ $labels.instance_id }}) for 3 minutes."
+
+      - alert: NextJsHighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="nextjs-app-metrics", status_code=~"5.."}[5m])) by (instance_name)
+            /
+            sum(rate(http_requests_total{job="nextjs-app-metrics"}[5m])) by (instance_name)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High 5xx error rate on {{ $labels.instance_name }}"
+          description: "More than 5% of requests returning 5xx on {{ $labels.instance_name }}."
+
+      - alert: NextJsHighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="nextjs-app-metrics"}[5m])) by (le, instance_name))
+          > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High p95 latency on {{ $labels.instance_name }}"
+          description: "95th percentile request latency exceeds 2 seconds on {{ $labels.instance_name }}."
