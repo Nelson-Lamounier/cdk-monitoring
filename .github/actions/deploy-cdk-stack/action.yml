@@ -270,24 +270,6 @@ runs:
         AWS_ACCOUNT_ID: ${{ inputs.aws-account-id }}
         AWS_REGION: ${{ inputs.aws-region }}
 
-    - name: Create Outputs Directory (Always)
-      if: always() && inputs.outputs-directory != ''
-      shell: bash
-      run: |
-        echo "=== Creating outputs directory (unconditional) ==="
-        OUTPUTS_DIR="${GITHUB_WORKSPACE}/${{ inputs.outputs-directory }}"
-        echo "Target directory: $OUTPUTS_DIR"
-
-        mkdir -p "$OUTPUTS_DIR"
-
-        if [ -d "$OUTPUTS_DIR" ]; then
-          echo "✓ Directory exists: $OUTPUTS_DIR"
-          ls -la "$OUTPUTS_DIR" || echo "Empty directory"
-        else
-          echo "✗ ERROR: Failed to create directory!"
-          exit 1
-        fi
-
     - name: Retrieve Stack Outputs
       id: outputs
       if: steps.deploy.outputs.status == 'success'
@@ -335,48 +317,19 @@ runs:
         AWS_ACCOUNT_ID: ${{ inputs.aws-account-id }}
         AWS_REGION: ${{ inputs.aws-region }}
 
-    - name: Debug Outputs Directory Input
-      if: always()
-      shell: bash
-      run: |
-        echo "=== Checking outputs-directory input ==="
-        echo "Input value: '${{ inputs.outputs-directory }}'"
-        echo "Is empty: $([ -z '${{ inputs.outputs-directory }}' ] && echo 'YES' || echo 'NO')"
-        echo "Condition will evaluate to: $([ -n '${{ inputs.outputs-directory }}' ] && echo 'TRUE - step will run' || echo 'FALSE - step will skip')"
-
     - name: Save Outputs to File
       id: save-outputs
       if: always() && inputs.outputs-directory != ''
       shell: bash
       run: |
-        echo "Saving stack outputs to file..."
-
-        # Use GITHUB_WORKSPACE to ensure absolute path
         OUTPUTS_DIR="${GITHUB_WORKSPACE}/${{ inputs.outputs-directory }}"
-        echo "Creating directory: $OUTPUTS_DIR"
         mkdir -p "$OUTPUTS_DIR"
 
-        # Verify directory was created
-        if [ -d "$OUTPUTS_DIR" ]; then
-          echo "✓ Directory created successfully"
-        else
-          echo "✗ ERROR: Directory creation failed!"
-          exit 1
-        fi
-
-        echo "Output directory: $OUTPUTS_DIR"
-
-        # Sanitise stack name for filename
         STACK_NAME_SAFE=$(echo "${{ inputs.stack-name }}" | tr '/' '-' | tr ':' '-')
         OUTPUT_FILE="$OUTPUTS_DIR/${STACK_NAME_SAFE}-outputs.json"
 
-        echo "Target output file: $OUTPUT_FILE"
-
-        # Only save if deployment was successful
+        # Skip save if deployment was not successful
         if [ "${{ steps.deploy.outputs.status }}" != "success" ]; then
-          echo "⚠ Deployment did not succeed, skipping output save"
-          echo "Directory created for artifact upload consistency"
-          echo "Status was: ${{ steps.deploy.outputs.status }}"
           exit 0
         fi
 
@@ -384,47 +337,9 @@ runs:
         if [ -f "/tmp/cdk-outputs/stack-outputs.json" ]; then
           cp "/tmp/cdk-outputs/stack-outputs.json" "$OUTPUT_FILE"
           echo "file_path=$OUTPUT_FILE" >> $GITHUB_OUTPUT
-          echo "✓ Outputs saved to: $OUTPUT_FILE"
-          
-          # Verify file was created
-          if [ -f "$OUTPUT_FILE" ]; then
-            echo "✓ File verified at: $OUTPUT_FILE"
-            ls -lh "$OUTPUT_FILE"
-          else
-            echo "⚠ Warning: File not found after copy"
-          fi
-        else
-          # Fallback: save from GitHub output
-          if [ -n "${{ steps.outputs.outputs.stack_outputs }}" ] && [ "${{ steps.outputs.outputs.stack_outputs }}" != "[]" ]; then
-            echo '${{ steps.outputs.outputs.stack_outputs }}' | jq '.' > "$OUTPUT_FILE"
-            echo "file_path=$OUTPUT_FILE" >> $GITHUB_OUTPUT
-            echo "✓ Outputs saved to: $OUTPUT_FILE"
-          else
-            echo "⚠ No outputs to save"
-          fi
-        fi
-
-    - name: Verify Outputs Directory for Artifact Upload
-      if: always() && inputs.outputs-directory != ''
-      shell: bash
-      run: |
-        echo "=== Verifying Outputs Directory (from composite action) ==="
-        OUTPUTS_DIR="${GITHUB_WORKSPACE}/${{ inputs.outputs-directory }}"
-        echo "Expected directory: $OUTPUTS_DIR"
-
-        if [ -d "$OUTPUTS_DIR" ]; then
-          echo "✓ Directory exists"
-          echo "Contents:"
-          ls -la "$OUTPUTS_DIR"
-          
-          FILE_COUNT=$(find "$OUTPUTS_DIR" -type f | wc -l)
-          echo "Total files: $FILE_COUNT"
-        else
-          echo "✗ Directory does not exist!"
-          echo "This will cause artifact upload to fail"
-          echo ""
-          echo "Checking workspace..."
-          ls -la "${GITHUB_WORKSPACE}"
+        elif [ -n "${{ steps.outputs.outputs.stack_outputs }}" ] && [ "${{ steps.outputs.outputs.stack_outputs }}" != "[]" ]; then
+          echo '${{ steps.outputs.outputs.stack_outputs }}' | jq '.' > "$OUTPUT_FILE"
+          echo "file_path=$OUTPUT_FILE" >> $GITHUB_OUTPUT
         fi
 
     - name: Generate Deployment Summary

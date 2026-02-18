@@ -174,33 +174,6 @@ jobs:
           verify-bootstrap: ${{ inputs.verify-bootstrap }}
           outputs-directory: ${{ inputs.outputs-directory }}
 
-      - name: Debug Outputs Before Upload
-        if: always() && inputs.outputs-directory != ''
-        shell: bash
-        run: |
-          echo "=== Debugging Outputs Directory Before Upload ==="
-          echo "Workspace: ${{ github.workspace }}"
-          echo "Outputs directory input: ${{ inputs.outputs-directory }}"
-          echo "Full path: ${{ github.workspace }}/${{ inputs.outputs-directory }}"
-          echo ""
-          echo "Checking if directory exists..."
-          if [ -d "${{ github.workspace }}/${{ inputs.outputs-directory }}" ]; then
-            echo "✓ Directory exists"
-            echo "Contents:"
-            ls -laR "${{ github.workspace }}/${{ inputs.outputs-directory }}"
-          else
-            echo "✗ Directory does not exist"
-            echo ""
-            echo "Workspace root contents:"
-            ls -la "${{ github.workspace }}"
-            echo ""
-            echo "Looking for .deployment-outputs anywhere..."
-            find "${{ github.workspace }}" -type d -name ".deployment-outputs" 2>/dev/null || echo "Not found"
-            echo ""
-            echo "Looking for *-outputs.json files..."
-            find "${{ github.workspace }}" -name "*-outputs.json" 2>/dev/null || echo "Not found"
-          fi
-
       - name: Upload Stack Outputs
         if: always() && inputs.outputs-directory != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -209,20 +182,3 @@ jobs:
           path: ${{ github.workspace }}/${{ inputs.outputs-directory }}
           retention-days: 30
           if-no-files-found: warn
-
-      - name: Debug Outputs Directory
-        if: failure() && inputs.outputs-directory != ''
-        shell: bash
-        run: |
-          echo "Debugging outputs directory issue..."
-          echo "Expected path: ${{ github.workspace }}/${{ inputs.outputs-directory }}"
-          echo ""
-          if [ -d "${{ github.workspace }}/${{ inputs.outputs-directory }}" ]; then
-            echo "Directory exists. Contents:"
-            ls -la "${{ github.workspace }}/${{ inputs.outputs-directory }}"
-          else
-            echo "Directory does not exist"
-          fi
-          echo ""
-          echo "Workspace contents:"
-          ls -la "${{ github.workspace }}"
