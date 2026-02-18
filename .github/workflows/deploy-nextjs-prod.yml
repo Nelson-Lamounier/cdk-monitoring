@@ -14,6 +14,7 @@ on:
       - "lib/common/**"
       - "bin/app.ts"
       - ".github/workflows/_deploy-nextjs.yml"
+      - ".github/workflows/deploy-nextjs-prod.yml"
   workflow_dispatch:
     inputs:
       confirm-deployment:
