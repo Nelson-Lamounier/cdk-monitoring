@@ -338,14 +338,15 @@ describe('Monitoring Factory — Integration', () => {
             const prodResult = createMonitoringStacks(Environment.PRODUCTION);
             const prodTemplate = Template.fromStack(prodResult.stackMap.storage);
 
-            // Production creates a KMS key for EBS encryption
-            prodTemplate.resourceCountIs('AWS::KMS::Key', 1);
+            // Production creates KMS keys: EBS encryption + Lambda log group encryption
+            prodTemplate.resourceCountIs('AWS::KMS::Key', 2);
 
             const devResult = createMonitoringStacks(Environment.DEVELOPMENT);
             const devTemplate = Template.fromStack(devResult.stackMap.storage);
 
-            // Development uses default AWS-managed encryption (no explicit KMS key)
-            devTemplate.resourceCountIs('AWS::KMS::Key', 0);
+            // Development uses AWS-managed encryption for EBS (no EBS KMS key)
+            // but still creates a Lambda log group encryption key (1 key only)
+            devTemplate.resourceCountIs('AWS::KMS::Key', 1);
         });
 
         it('should set RETAIN removal policy for production EBS volume', () => {

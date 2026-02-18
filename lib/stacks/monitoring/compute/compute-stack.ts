@@ -76,6 +76,13 @@ export interface MonitoringComputeStackProps extends cdk.StackProps {
     /** Availability zone where EBS volume is located (ASG/EC2 will be constrained to this AZ) */
     readonly volumeAz: string;
 
+    /**
+     * KMS encryption key for the EBS volume (from StorageStack).
+     * Required when volume uses a customer-managed KMS key.
+     * The instance role needs kms:CreateGrant to attach encrypted volumes.
+     */
+    readonly ebsEncryptionKey?: kms.IKey;
+
     // =================================================================
     // Compute Configuration
     // =================================================================
@@ -358,6 +365,21 @@ export class MonitoringComputeStack extends cdk.Stack {
             ],
             resources: ['*'],
         }));
+
+        // Grant KMS permissions for encrypted EBS volume attachment.
+        // Without these, AttachVolume fails with CustomerKeyHasBeenRevoked
+        // when the volume uses a customer-managed KMS key.
+        if (props.ebsEncryptionKey) {
+            props.ebsEncryptionKey.grant(
+                this.instanceRole,
+                'kms:CreateGrant',
+                'kms:Decrypt',
+                'kms:DescribeKey',
+                'kms:GenerateDataKeyWithoutPlaintext',
+                'kms:ReEncryptFrom',
+                'kms:ReEncryptTo',
+            );
+        }
 
         // =================================================================
         // SSM Execution Policy (from SSM Stack)

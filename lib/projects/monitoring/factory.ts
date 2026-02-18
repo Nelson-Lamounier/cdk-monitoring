@@ -176,6 +176,7 @@ export class MonitoringProjectFactory implements IProjectFactory<MonitoringFacto
                 ssmOnlyAccess: true,  // SSM port forwarding for all environments
                 volumeId: storageStack.volumeId,
                 volumeAz: storageStack.availabilityZone,
+                ebsEncryptionKey: storageStack.encryptionKey,
                 namePrefix,
                 env,
             }
