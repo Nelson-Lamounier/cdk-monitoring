@@ -32,6 +32,6 @@ jobs:
       environment: production
       aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-      require-approval: broadening
+      require-approval: never
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}

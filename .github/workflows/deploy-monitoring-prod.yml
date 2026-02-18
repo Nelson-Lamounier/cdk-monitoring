@@ -111,7 +111,7 @@ jobs:
     with:
       environment: production
       cdk-environment: production
-      require-approval: broadening
+      require-approval: never
       enable-security-scan: true
       security-scan-blocking: true
       skip-verification: false
