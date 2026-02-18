@@ -1,0 +1,50 @@
+# Compiled output
+dist/
+*.js
+!jest.config.js
+*.d.ts
+!lib/**/*.d.ts
+
+# Dependencies
+node_modules/
+
+# CDK
+.cdk.staging
+cdk.out/
+cdk-outputs/
+
+# Yarn 4+
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# Testing
+coverage/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+docs/
+*.txt
+
+.gemini/
+.agent/
+
+portfolio-articles.md
+
+.env.bootstrap
+
