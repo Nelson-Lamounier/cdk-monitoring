@@ -305,6 +305,13 @@ export class MonitoringComputeStack extends cdk.Stack {
         // so CDK Tokens (props.volumeId, this.stackName, ssmDocumentName)
         // resolve correctly via Fn::Join at synth time.
         //
+        // ORDERING: cfn-signal is sent after critical infrastructure
+        // (system update, AWS CLI, EBS attach) but BEFORE Docker install.
+        // This prevents Docker/dnf failures from blocking the cfn-signal,
+        // which would cause CREATE_FAILED with 0 SUCCESS signals.
+        // Docker install happens after signaling — the SSM Association
+        // has a Docker readiness wait loop to handle this timing.
+        //
         // skipPreamble: true because CDK's UserData.forLinux() already adds
         // the shebang line. We add the logging preamble here.
         userData.addCommands(
@@ -316,7 +323,6 @@ export class MonitoringComputeStack extends cdk.Stack {
 
         new UserDataBuilder(userData, { skipPreamble: true })
             .updateSystem()
-            .installDocker()
             .installAwsCli()
             .attachEbsVolume({
                 volumeId: props.volumeId,
@@ -327,6 +333,7 @@ export class MonitoringComputeStack extends cdk.Stack {
                 asgLogicalId,
                 region: this.region,
             })
+            .installDocker()
             .addCompletionMarker();
 
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
