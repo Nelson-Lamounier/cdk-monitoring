@@ -1,0 +1,59 @@
+# cfn-lint configuration for CDK-synthesized CloudFormation templates
+# Docs: https://github.com/aws-cloudformation/cfn-lint
+
+templates:
+  - cdk.out/**/*.template.json
+
+# =============================================================================
+# Ignored Rules
+# =============================================================================
+# CDK synthesizes templates with intrinsic tokens, metadata, and patterns
+# that cfn-lint flags as errors but are valid CDK constructs.
+ignore_checks:
+  # CDK uses { "Ref": "AWS::URLSuffix" } and token-based values that
+  # cfn-lint can't resolve statically
+  - E3012  # Property value type mismatch (CDK token refs)
+
+  # CDK-generated Lambda custom resources use dynamic Allowed Values
+  - E3030  # Allowed value validation (CDK refs to parameters)
+
+  # CDK auto-generates asset parameters with hash-based names
+  - E3002  # Template format — CDK metadata and asset keys
+
+  # CDK custom resources use arbitrary service tokens
+  - E3003  # Property not allowed (CDK custom resource props)
+
+  # CDK uses Fn::Join and Fn::Sub with runtime values cfn-lint can't evaluate
+  - W2001  # Parameter not used (CDK asset parameters)
+
+  # CDK auto-generates redundant DependsOn when GetAtt already enforces ordering
+  - W3005  # Dependency already enforced by GetAtt
+
+  # CDK cross-stack references re-export imported values (expected pattern)
+  - W6001  # Output value is an import from another output
+
+  # CDK token placeholders in SSM parameter names aren't resolved at synth time
+  - E3031  # Regex pattern mismatch (unresolved CDK account/region tokens)
+
+# =============================================================================
+# Region Configuration
+# =============================================================================
+# Stack naming convention determines region:
+#   - Edge stacks (*-Edge-*): us-east-1 (CloudFront/ACM requirement)
+#     These stacks read SSM parameters cross-region from eu-west-1
+#   - All other stacks: eu-west-1 (primary region)
+#
+# cfn-lint does not natively validate cross-region SSM references.
+# This is enforced at the CDK construct level via:
+#   - lib/config/environments.ts (hardcoded primary region)
+#   - lib/stacks/nextjs/edge/edge-stack.ts (SSM readers with explicit region)
+
+regions:
+  - eu-west-1
+  - us-east-1
+
+# =============================================================================
+# Additional Settings
+# =============================================================================
+# Override spec is useful for custom resource types
+configure_rules: {}
