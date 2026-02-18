@@ -1,0 +1,414 @@
+# @format
+# @description Reusable Monitoring Deployment Workflow
+# 3-Stack Architecture: Storage + SSM → Compute
+# Uses Shared VPC + ECR from deploy-shared workflow
+#
+# Inline logic extracted to TypeScript scripts in scripts/deployment/
+
+name: Deploy Monitoring (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+      cdk-environment:
+        description: "CDK context environment value (dev, staging, prod)"
+        required: true
+        type: string
+      require-approval:
+        description: "CDK approval level"
+        required: false
+        type: string
+        default: "never"
+      enable-security-scan:
+        description: "Run IaC security scan before deployment"
+        required: false
+        type: boolean
+        default: false
+      security-scan-blocking:
+        description: "Block deployment on security scan failure"
+        required: false
+        type: boolean
+        default: false
+      skip-verification:
+        description: "Skip post-deployment verification"
+        required: false
+        type: boolean
+        default: false
+      create-production-artifact:
+        description: "Create immutable artifact for production"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      AWS_OIDC_ROLE:
+        description: "AWS OIDC role ARN (resolved from environment context)"
+        required: false
+      GRAFANA_ADMIN_PASSWORD:
+        description: "Grafana admin password for monitoring stack synthesis"
+        required: false
+
+env:
+  NODE_VERSION: "22"
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+
+jobs:
+  # ===========================================================================
+  # Setup, Build & Synthesize
+  # ===========================================================================
+  setup:
+    name: Setup & Synthesize
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    outputs:
+      aws-account-id: ${{ steps.account-id.outputs.account_id }}
+      commit-sha: ${{ github.sha }}
+      commit-short-sha: ${{ steps.commit-info.outputs.short_sha }}
+      node-version: ${{ steps.setup-tools.outputs.node-version }}
+      # Stack names from synthesize-ci.ts (3-stack architecture)
+      storage-stack: ${{ steps.synth.outputs.storage }}
+      ssm-stack: ${{ steps.synth.outputs.ssm }}
+      compute-stack: ${{ steps.synth.outputs.compute }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Record Commit Information
+        id: commit-info
+        run: echo "short_sha=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js and Yarn
+        id: setup-tools
+        uses: ./.github/actions/setup-node-yarn
+
+      - name: Validate AWS Account ID
+        id: account-id
+        run: |
+          ACCOUNT_ID="${{ vars.AWS_ACCOUNT_ID }}"
+          if [ -z "$ACCOUNT_ID" ]; then
+            echo "ERROR: AWS_ACCOUNT_ID variable not configured"
+            exit 1
+          fi
+          if ! [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "ERROR: Invalid AWS account ID format"
+            exit 1
+          fi
+          echo "::add-mask::$ACCOUNT_ID"
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+
+      - name: Build TypeScript
+        run: yarn build
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Synthesize & Determine Stack Names
+        id: synth
+        env:
+          # Synth-time secrets — app.ts reads these and bridges them
+          # into factory context overrides
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          ALLOWED_IP_RANGE: ${{ vars.ALLOWED_IP_RANGE }}
+        run: npx tsx scripts/deployment/synthesize-ci.ts monitoring ${{ inputs.cdk-environment }}
+
+      - name: Upload Synthesized Templates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cdk-out-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
+          path: cdk.out/
+          retention-days: ${{ inputs.create-production-artifact && 90 || 30 }}
+
+      - name: Upload for Security Scan
+        if: inputs.enable-security-scan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cdk-synthesis
+          path: cdk.out/
+          retention-days: 7
+
+  # ===========================================================================
+  # IaC Security Scan (Conditional)
+  # ===========================================================================
+  security-scan:
+    name: Security Scan
+    needs: setup
+    if: inputs.enable-security-scan
+    uses: ./.github/workflows/_iac-security-scan.yml
+    with:
+      environment: ${{ inputs.environment }}
+      enforce-blocking: ${{ inputs.security-scan-blocking }}
+      cdk-output-path: "cdk.out"
+      skip-checks: ""
+      soft-fail-on: ${{ inputs.security-scan-blocking && '' || 'LOW' }}
+
+  # ===========================================================================
+  # Drift Detection (staging/production only — informational)
+  #
+  # Runs `cdk diff` for all stacks and surfaces the output in the step
+  # summary. Gives reviewers visibility into what's actually changing
+  # and catches unexpected infrastructure drift before deployment.
+  # ===========================================================================
+  drift-detection:
+    name: Drift Detection
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    if: needs.setup.result == 'success' && inputs.cdk-environment != 'development'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Run Drift Detection
+        id: diff
+        run: npx tsx scripts/deployment/drift-detection.ts monitoring ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+
+  # ===========================================================================
+  # Deploy Storage Stack (Layer 1: EBS + Lifecycle)
+  # ===========================================================================
+  deploy-storage:
+    name: Deploy Storage
+    needs: [setup, security-scan, drift-detection]
+    if: always() && needs.setup.result == 'success' && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped') && (needs.drift-detection.result == 'success' || needs.drift-detection.result == 'skipped')
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.storage-stack }}
+      project: monitoring
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      verify-bootstrap: false
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy SSM Stack (Layer 1b: SSM Document + S3 Scripts — parallel with Storage)
+  # ===========================================================================
+  deploy-ssm:
+    name: Deploy SSM
+    needs: [setup, security-scan, drift-detection]
+    if: always() && needs.setup.result == 'success' && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped') && (needs.drift-detection.result == 'success' || needs.drift-detection.result == 'skipped')
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.ssm-stack }}
+      project: monitoring
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy Compute Stack (Layer 2: SG + EC2/ASG — depends on Storage + SSM)
+  # ===========================================================================
+  deploy-compute:
+    name: Deploy Compute
+    needs: [setup, deploy-storage, deploy-ssm]
+    if: always() && needs.deploy-storage.result == 'success' && needs.deploy-ssm.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.compute-stack }}
+      project: monitoring
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Verify Deployment (TypeScript + AWS SDK)
+  # ===========================================================================
+  verify:
+    name: Verify Deployment
+    needs: [setup, deploy-compute]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    if: always() && needs.deploy-compute.result == 'success' && inputs.skip-verification != true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Verify Stacks
+        run: npx tsx scripts/deployment/verify-deployment.ts monitoring ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+
+  # ===========================================================================
+  # Smoke Tests (Service Health Verification)
+  # ===========================================================================
+  smoke-tests:
+    name: Smoke Tests
+    needs: [setup, deploy-compute, verify]
+    if: >-
+      always()
+      && needs.deploy-compute.result == 'success'
+      && (needs.verify.result == 'success' || needs.verify.result == 'skipped')
+      && inputs.skip-verification != true
+    uses: ./.github/workflows/_smoke-tests.yml
+    with:
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      name-prefix: monitoring-${{ inputs.cdk-environment }}
+      instance-tag-name: "Project"
+      instance-tag-value: "Monitoring"
+      timeout-minutes: 15
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Rollback (Conditional — staging/production only)
+  #
+  # Triggers when Compute deployed successfully but verification or smoke
+  # tests failed. Rolls back CloudFormation to the previous known-good
+  # template. Only targets the Compute stack — Storage and SSM are
+  # stateless config and left intact.
+  # ===========================================================================
+  rollback:
+    name: Rollback Compute
+    needs: [setup, deploy-compute, verify, smoke-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    if: |
+      always()
+      && needs.deploy-compute.result == 'success'
+      && (needs.verify.result == 'failure' || needs.smoke-tests.result == 'failure')
+      && inputs.cdk-environment != 'development'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Rollback Compute Stack
+        id: rollback
+        run: npx tsx scripts/deployment/rollback.ts "${{ needs.setup.outputs.compute-stack }}" --region ${{ env.AWS_REGION }}
+
+  # ===========================================================================
+  # Deployment Summary (TypeScript)
+  # ===========================================================================
+  summary:
+    name: Deployment Summary
+    needs:
+      [
+        setup,
+        security-scan,
+        deploy-storage,
+        deploy-ssm,
+        deploy-compute,
+        verify,
+        smoke-tests,
+        rollback,
+      ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+
+    steps:
+      # Guard: if setup was cancelled/failed, write minimal fallback and skip TS
+      - name: Check Prerequisites
+        id: prereqs
+        run: |
+          if [ "${{ needs.setup.result }}" != "success" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## ⚠️ Pipeline Aborted
+
+          **Reason**: Setup job did not complete successfully (`${{ needs.setup.result }}`)
+          **Commit**: `${{ github.sha }}`
+          **Environment**: ${{ inputs.environment }}
+
+          No stacks were deployed. Check the setup job logs for details.
+          EOF
+            echo "::warning::Setup did not succeed (${{ needs.setup.result }}), skipping full summary"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout
+        if: steps.prereqs.outputs.skip != 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        if: steps.prereqs.outputs.skip != 'true'
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        if: steps.prereqs.outputs.skip != 'true'
+        run: yarn install --frozen-lockfile
+
+      - name: Generate Summary
+        if: steps.prereqs.outputs.skip != 'true'
+        env:
+          DEPLOY_STORAGE_RESULT: ${{ needs.deploy-storage.result }}
+          DEPLOY_SSM_RESULT: ${{ needs.deploy-ssm.result }}
+          DEPLOY_COMPUTE_RESULT: ${{ needs.deploy-compute.result }}
+          SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
+          VERIFY_RESULT: ${{ needs.verify.result || 'skipped' }}
+          SMOKE_TESTS_RESULT: ${{ needs.smoke-tests.result || 'skipped' }}
+          ROLLBACK_RESULT: ${{ needs.rollback.result || 'skipped' }}
+          COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
+        run: yarn tsx scripts/deployment/deployment-summary.ts monitoring ${{ inputs.cdk-environment }}

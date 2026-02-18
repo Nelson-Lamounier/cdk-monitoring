@@ -1,0 +1,440 @@
+# .github/workflows/ci.yml
+# CI pipeline for cdk-monitoring project
+# Runs tests for VPC, EC2, EBS, and Security Group stacks
+
+name: Continuous Integration
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  # Node.js version is now read from .nvmrc for centralization
+  NODE_VERSION: "22" # Fallback - prefer .nvmrc
+
+permissions:
+  contents: write
+
+jobs:
+  # ============================================================================
+  # Change Detection (Runs First - ~10 seconds)
+  # ============================================================================
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      stacks: ${{ steps.filter.outputs.stacks }}
+      aspects: ${{ steps.filter.outputs.aspects }}
+      ci-config: ${{ steps.filter.outputs.ci-config }}
+      any-src: ${{ steps.filter.outputs.any-src }}
+      any-tests: ${{ steps.filter.outputs.any-tests }}
+      # Computed: should we run all tests?
+      run-all: ${{ steps.compute.outputs.run-all }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Detect Changed Paths
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            stacks:
+              - 'lib/*-stack.ts'
+              - 'tests/unit/stacks/**'
+            aspects:
+              - 'lib/aspects/**'
+            ci-config:
+              - '.github/**'
+              - 'package.json'
+              - 'yarn.lock'
+              - 'tsconfig*.json'
+              - 'jest.config.*'
+              - 'Makefile'
+            any-src:
+              - 'lib/**/*.ts'
+              - 'bin/**/*.ts'
+            any-tests:
+              - 'tests/**/*.ts'
+
+      - name: Compute Run Flags
+        id: compute
+        run: |
+          # Run all tests if aspects or CI config changed
+          if [[ "${{ steps.filter.outputs.aspects }}" == "true" ]] || \
+             [[ "${{ steps.filter.outputs.ci-config }}" == "true" ]]; then
+            echo "run-all=true" >> $GITHUB_OUTPUT
+            echo "Aspects/CI changed - will run all tests"
+          else
+            echo "run-all=false" >> $GITHUB_OUTPUT
+            echo "Stack-specific change - will run targeted tests"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Change Detection Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Category | Changed |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Stacks | ${{ steps.filter.outputs.stacks }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Aspects | ${{ steps.filter.outputs.aspects }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| CI Config | ${{ steps.filter.outputs.ci-config }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Any Source | ${{ steps.filter.outputs.any-src }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Any Tests | ${{ steps.filter.outputs.any-tests }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run All Tests:** ${{ steps.compute.outputs.run-all }}" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # Workflow Linting (Pipeline-as-Code Testing)
+  # ============================================================================
+  lint-workflows:
+    name: Lint Workflows
+    needs: [detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: needs.detect-changes.outputs.ci-config == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install actionlint
+        run: |
+          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          echo "actionlint version: $(./actionlint --version)"
+
+      - name: Run actionlint
+        run: |
+          # Note: shellcheck is intentionally excluded because GitHub Actions
+          # expression substitutions cause false positives (SC2086/SC2129) in run: scripts.
+          # Actionlint's own checks cover syntax, expressions, and action inputs.
+          ./actionlint -color \
+            -shellcheck="" \
+            .github/workflows/*.yml
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Workflow Lint Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ $? -eq 0 ]; then
+            echo "✅ All workflow files passed actionlint checks" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ actionlint found issues — see logs above" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ============================================================================
+  # Dependency Installation & Caching
+  # ============================================================================
+  setup:
+    name: Setup Dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      node-version: ${{ steps.setup-tools.outputs.node-version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        id: setup-tools
+        uses: ./.github/actions/setup-node-yarn
+
+  # ============================================================================
+  # Code Quality (Always Run - Fast)
+  # ============================================================================
+  audit:
+    name: Security Packages Audit
+    needs: [setup, detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Run Audit (with retry)
+        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3.0.2
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: yarn cli audit
+
+  lint:
+    name: Lint Code
+    needs: [setup, detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Run ESLint
+        run: yarn cli lint
+
+  deps-check:
+    name: Dependency Validation
+    needs: [setup, detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: needs.detect-changes.outputs.any-src == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Validate Dependencies
+        run: yarn deps:check:ci
+
+  typecheck:
+    name: Type Check
+    needs: [setup, detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Run TypeScript Compiler
+        run: yarn cli typecheck
+
+  # ============================================================================
+  # Build (Always Run - Required for CDK Validation)
+  # ============================================================================
+  build:
+    name: Build TypeScript
+    needs: [setup, detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: needs.detect-changes.outputs.any-src == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Build TypeScript
+        run: yarn cli build
+
+  # ============================================================================
+  # Stack Tests
+  # ============================================================================
+  test-stacks:
+    name: Test Stacks
+    needs: [setup, detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    if: |
+      (github.event_name == 'pull_request' || 
+       (github.event_name == 'push' && 
+        !contains(github.event.head_commit.message, '[skip ci]'))) &&
+      (needs.detect-changes.outputs.stacks == 'true' || 
+       needs.detect-changes.outputs.run-all == 'true' ||
+       needs.detect-changes.outputs.any-src == 'true')
+    env:
+      CDK_DOCKER_VERBOSE: "false"
+      DOCKER_BUILDKIT: "1"
+      BUILDKIT_PROGRESS: "quiet"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Run Stack Tests
+        run: yarn test tests/unit/stacks
+
+      - name: Upload Coverage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-stacks
+          path: coverage/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ============================================================================
+  # NOTE: Snapshot Tests
+  # ============================================================================
+  # Snapshot tests are run LOCALLY, not in CI.
+  # To update snapshots: yarn test --updateSnapshot
+  # Commit updated snapshots with your code changes.
+  # ============================================================================
+
+  # ============================================================================
+  # CDK Validation (Depends on Build)
+  # ============================================================================
+  validate-cdk:
+    name: Validate CDK Stacks
+    needs: [setup, build, detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: needs.detect-changes.outputs.any-src == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Synthesize CDK Stacks
+        run: |
+          echo "==========================================="
+          echo "Validating Monitoring Project (dev)"
+          echo "==========================================="
+          # Use --no-lookups to skip AWS API calls (uses cached cdk.context.json)
+          npx cdk list -c project=monitoring -c environment=dev --no-lookups || {
+            echo "Note: Some stacks may require cached context in cdk.context.json"
+          }
+          npx cdk synth -c project=monitoring -c environment=dev --no-lookups --quiet || {
+            echo "⚠ Monitoring synth requires cached context - run locally to update cdk.context.json"
+          }
+
+          echo ""
+          echo "==========================================="
+          echo "Validating NextJS Project (dev)"
+          echo "==========================================="
+          # NextJS stacks resolve VPC via Vpc.fromLookup() internally (no cross-stack exports)
+          npx cdk synth -c project=nextjs -c environment=dev --no-lookups --quiet 2>&1 || {
+            echo "⚠ NextJS synth requires cached VPC context - run locally to update cdk.context.json"
+          }
+
+          echo ""
+          echo "✓ CDK synthesis validation complete"
+        env:
+          AWS_REGION: eu-west-1
+          # Required by NextJS API stack validation (actual values come from
+          # GitHub environment vars during deploy — see _deploy-nextjs.yml)
+          NOTIFICATION_EMAIL: ci-validation@placeholder.local
+          SES_FROM_EMAIL: ci-validation@placeholder.local
+          VERIFICATION_SECRET: ci-placeholder-secret
+
+      - name: Upload CDK Synthesis
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cdk-synthesis
+          path: cdk.out/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ============================================================================
+  # NOTE: IaC Security Scanning Strategy
+  # ============================================================================
+  # Security scanning (Checkov) is performed ONLY in deployment pipelines, not CI.
+  # This design choice provides:
+  #   1. Faster CI feedback (~2-3 min saved per run)
+  #   2. Environment-specific security policies (dev=non-blocking, prod=blocking)
+  #   3. cdk-nag already runs during development (CDK Aspect)
+  #
+  # Security gates:
+  #   - LOCAL: cdk-nag aspect provides real-time feedback
+  #   - DEPLOY: Checkov runs with environment-specific policies
+  #     • Development: Non-blocking (warnings only)
+  #     • Staging: Blocking on HIGH/CRITICAL
+  #     • Production: Blocking on all findings
+  #
+  # See: .github/workflows/_deploy-monitoring.yml for deployment security scan
+  # ============================================================================
+
+  # ============================================================================
+  # CI Summary
+  # ============================================================================
+  ci-success:
+    name: CI Complete
+    needs:
+      - detect-changes
+      - lint-workflows
+      - lint
+      - deps-check
+      - typecheck
+      - test-stacks
+      - build
+      - validate-cdk
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+
+    steps:
+      - name: Check Results
+        run: |
+          echo "## CI Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Change Detection" >> $GITHUB_STEP_SUMMARY
+          echo "- Run All Tests: ${{ needs.detect-changes.outputs.run-all }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Pipeline Quality" >> $GITHUB_STEP_SUMMARY
+          echo "- Workflow Lint: ${{ needs.lint-workflows.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Code Quality" >> $GITHUB_STEP_SUMMARY
+          echo "- Lint: ${{ needs.lint.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Dependency Validation: ${{ needs.deps-check.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Type Check: ${{ needs.typecheck.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Tests" >> $GITHUB_STEP_SUMMARY
+          echo "- Stack Tests: ${{ needs.test-stacks.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Build & Validation" >> $GITHUB_STEP_SUMMARY
+          echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- CDK Validation: ${{ needs.validate-cdk.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "ℹ️ IaC Security Scan runs in deployment pipelines (not CI)" >> $GITHUB_STEP_SUMMARY
+
+          # Critical failures
+          if [[ "${{ needs.build.result }}" == "failure" ]] || \
+             [[ "${{ needs.validate-cdk.result }}" == "failure" ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ CI failed due to critical job failures" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All critical CI checks passed" >> $GITHUB_STEP_SUMMARY

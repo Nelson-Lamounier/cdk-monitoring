@@ -1,0 +1,39 @@
+{
+  "name": "cdk-infrastructure-cli",
+  "version": "1.0.0",
+  "description": "TypeScript CLI for managing multi-project CDK infrastructure",
+  "type": "module",
+  "scripts": {
+    "// CDK Commands": "=== Core CDK operations (Interactive) ===",
+    "cdk:synth": "tsx ./cli.ts synth",
+    "cdk:deploy": "tsx ./cli.ts deploy",
+    "cdk:diff": "tsx ./cli.ts diff",
+    "cdk:destroy": "tsx ./cli.ts destroy",
+    "cdk:list": "tsx ./cli.ts list",
+    "// Testing": "=== Test commands ===",
+    "test": "tsx ./cli.ts test",
+    "test:watch": "tsx ./cli.ts test --watch",
+    "test:coverage": "tsx ./cli.ts test --coverage",
+    "// Code Quality": "=== Linting & Building ===",
+    "lint": "tsx ./cli.ts lint",
+    "lint:fix": "tsx ./cli.ts lint --fix",
+    "build": "tsx ./cli.ts build",
+    "// Utilities": "=== Utility commands ===",
+    "clean": "tsx ./cli.ts clean",
+    "health": "tsx ./cli.ts health",
+    "// Direct CLI": "=== Run CLI directly ===",
+    "cli": "tsx ./cli.ts"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.7",
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.0.0",
+    "inquirer": "^9.2.12",
+    "yaml": "^2.8.2"
+  }
+}

@@ -1,0 +1,307 @@
+# @format
+# @description Reusable IaC Security Scan Workflow using Checkov
+
+name: IaC Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Environment name (development, staging, production)"
+        required: true
+        type: string
+      enforce-blocking:
+        description: "Whether security scan failures should block the workflow"
+        required: false
+        type: boolean
+        default: false
+      cdk-output-path:
+        description: "Path to CDK synthesis output"
+        required: false
+        type: string
+        default: "cdk.out"
+      skip-checks:
+        description: "Comma-separated list of check IDs to skip"
+        required: false
+        type: string
+        default: ""
+      framework:
+        description: "Checkov framework to use"
+        required: false
+        type: string
+        default: "cloudformation"
+      soft-fail-on:
+        description: "Severity levels to soft-fail on (LOW,MEDIUM,HIGH,CRITICAL)"
+        required: false
+        type: string
+        default: "LOW,MEDIUM"
+      output-format:
+        description: "Output formats for Checkov results (space-separated: cli sarif json)"
+        required: false
+        type: string
+        default: "cli sarif json"
+    outputs:
+      scan-passed:
+        description: "Whether the security scan passed"
+        value: ${{ jobs.checkov-scan.outputs.scan-passed }}
+      findings-count:
+        description: "Number of security findings"
+        value: ${{ jobs.checkov-scan.outputs.findings-count }}
+      critical-count:
+        description: "Number of critical findings"
+        value: ${{ jobs.checkov-scan.outputs.critical-count }}
+      high-count:
+        description: "Number of high severity findings"
+        value: ${{ jobs.checkov-scan.outputs.high-count }}
+
+jobs:
+  checkov-scan:
+    name: Checkov IaC Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      scan-passed: ${{ steps.checkov.outputs.scan-passed }}
+      findings-count: ${{ steps.checkov.outputs.findings-count }}
+      critical-count: ${{ steps.checkov.outputs.critical-count }}
+      high-count: ${{ steps.checkov.outputs.high-count }}
+
+    steps:
+      # IMPORTANT: Checkout MUST come first - it clears the working directory!
+      # Downloading artifacts before checkout would result in them being deleted.
+      - name: Checkout for Custom Config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: .checkov
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install Checkov
+        run: |
+          pip install --upgrade pip
+          pip install checkov
+
+      - name: Download CDK Synthesis Artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cdk-synthesis
+          path: ${{ inputs.cdk-output-path }}
+
+      - name: Verify CDK Output Exists
+        run: |
+          echo "Checking CDK output directory..."
+          if [ ! -d "${{ inputs.cdk-output-path }}" ]; then
+            echo "ERROR: CDK output directory not found at ${{ inputs.cdk-output-path }}"
+            exit 1
+          fi
+
+          echo "CloudFormation templates found:"
+          find ${{ inputs.cdk-output-path }} -name "*.template.json" | head -20
+
+          TEMPLATE_COUNT=$(find ${{ inputs.cdk-output-path }} -name "*.template.json" | wc -l)
+          echo "Total templates: $TEMPLATE_COUNT"
+
+          if [ "$TEMPLATE_COUNT" -eq 0 ]; then
+            echo "WARNING: No CloudFormation templates found"
+          fi
+
+      - name: Check for Custom Config
+        id: config-check
+        run: |
+          if [ -f ".checkov/config.yaml" ]; then
+            echo "Custom Checkov config found"
+            echo "config-file=.checkov/config.yaml" >> $GITHUB_OUTPUT
+          else
+            echo "No custom config, using defaults"
+            echo "config-file=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Checkov Security Scan
+        id: checkov
+        continue-on-error: ${{ inputs.enforce-blocking == false }}
+        run: |
+          echo "Running Checkov security scan..."
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Enforce blocking: ${{ inputs.enforce-blocking }}"
+          echo ""
+
+          # Build config file argument if custom config exists
+          CONFIG_ARG=""
+          if [ -n "${{ steps.config-check.outputs.config-file }}" ]; then
+            CONFIG_ARG="--config-file ${{ steps.config-check.outputs.config-file }}"
+            echo "Using custom config: ${{ steps.config-check.outputs.config-file }}"
+          fi
+
+          # Build skip checks argument
+          SKIP_CHECKS=""
+          if [ -n "${{ inputs.skip-checks }}" ]; then
+            SKIP_CHECKS="--skip-check ${{ inputs.skip-checks }}"
+            echo "Skipping checks: ${{ inputs.skip-checks }}"
+          fi
+
+          # Build soft-fail argument for non-blocking environments
+          SOFT_FAIL=""
+          if [ "${{ inputs.enforce-blocking }}" != "true" ]; then
+            SOFT_FAIL="--soft-fail-on ${{ inputs.soft-fail-on }}"
+            echo "Soft-fail on: ${{ inputs.soft-fail-on }}"
+          fi
+
+          # Create output directory
+          mkdir -p security-reports
+
+          # Build output arguments (multiple -o flags)
+          OUTPUT_ARGS=""
+          for format in ${{ inputs.output-format }}; do
+            OUTPUT_ARGS="$OUTPUT_ARGS -o $format"
+          done
+
+          # Run Checkov
+          set +e
+          checkov \
+            --directory ${{ inputs.cdk-output-path }} \
+            --framework ${{ inputs.framework }} \
+            $CONFIG_ARG \
+            $OUTPUT_ARGS \
+            --output-file-path security-reports \
+            $SKIP_CHECKS \
+            $SOFT_FAIL \
+            --compact \
+            --quiet 2>&1 | tee security-reports/checkov-output.txt
+
+          CHECKOV_EXIT_CODE=$?
+          set -e
+
+          echo ""
+          echo "Checkov exit code: $CHECKOV_EXIT_CODE"
+
+          # Parse results from JSON output
+          if [ -f "security-reports/results_json.json" ]; then
+            # Parse from summary section (Checkov JSON structure)
+            PASSED_COUNT=$(jq -r '.summary.passed // 0' security-reports/results_json.json 2>/dev/null || echo "0")
+            FINDINGS_COUNT=$(jq -r '.summary.failed // 0' security-reports/results_json.json 2>/dev/null || echo "0")
+            
+            # Count by severity from failed_checks array
+            CRITICAL_COUNT=$(jq -r '[.results.failed_checks[]? | select(.severity == "CRITICAL")] | length' security-reports/results_json.json 2>/dev/null || echo "0")
+            HIGH_COUNT=$(jq -r '[.results.failed_checks[]? | select(.severity == "HIGH")] | length' security-reports/results_json.json 2>/dev/null || echo "0")
+            MEDIUM_COUNT=$(jq -r '[.results.failed_checks[]? | select(.severity == "MEDIUM")] | length' security-reports/results_json.json 2>/dev/null || echo "0")
+            LOW_COUNT=$(jq -r '[.results.failed_checks[]? | select(.severity == "LOW")] | length' security-reports/results_json.json 2>/dev/null || echo "0")
+          else
+            FINDINGS_COUNT=0
+            PASSED_COUNT=0
+            CRITICAL_COUNT=0
+            HIGH_COUNT=0
+            MEDIUM_COUNT=0
+            LOW_COUNT=0
+          fi
+
+          echo ""
+          echo "======================================"
+          echo "Security Scan Summary"
+          echo "======================================"
+          echo "Passed checks:   $PASSED_COUNT"
+          echo "Failed checks:   $FINDINGS_COUNT"
+          echo "  - Critical:    $CRITICAL_COUNT"
+          echo "  - High:        $HIGH_COUNT"
+          echo "  - Medium:      $MEDIUM_COUNT"
+          echo "  - Low:         $LOW_COUNT"
+          echo "======================================"
+
+          # Set outputs
+          echo "findings-count=$FINDINGS_COUNT" >> $GITHUB_OUTPUT
+          echo "critical-count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+          echo "high-count=$HIGH_COUNT" >> $GITHUB_OUTPUT
+
+          # Determine if scan passed based on environment policy
+          if [ "${{ inputs.enforce-blocking }}" == "true" ]; then
+            # For staging/production: fail on any CRITICAL or HIGH
+            if [ "$CRITICAL_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
+              echo "scan-passed=false" >> $GITHUB_OUTPUT
+              echo ""
+              echo "BLOCKING: Critical or high severity findings detected in ${{ inputs.environment }}"
+              exit 1
+            else
+              echo "scan-passed=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            # For development: always pass, just report
+            echo "scan-passed=true" >> $GITHUB_OUTPUT
+            if [ "$FINDINGS_COUNT" -gt 0 ]; then
+              echo ""
+              echo "NON-BLOCKING: $FINDINGS_COUNT findings detected (development mode)"
+            fi
+          fi
+
+      - name: Upload Security Report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-scan-${{ inputs.environment }}
+          path: security-reports/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload SARIF to GitHub Security
+        if: always() && hashFiles('security-reports/results_sarif.sarif') != ''
+        uses: github/codeql-action/upload-sarif@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
+        with:
+          sarif_file: security-reports/results_sarif.sarif
+          category: checkov-${{ inputs.environment }}
+        continue-on-error: true
+
+      - name: Generate Security Summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## IaC Security Scan Results - ${{ inputs.environment }}
+
+          ### Scan Configuration
+
+          | Setting | Value |
+          |---------|-------|
+          | Environment | ${{ inputs.environment }} |
+          | Blocking Mode | ${{ inputs.enforce-blocking }} |
+          | Framework | ${{ inputs.framework }} |
+          | Skipped Checks | ${{ inputs.skip-checks || 'None' }} |
+
+          ### Findings Summary
+
+          | Severity | Count | Action |
+          |----------|-------|--------|
+          | Critical | ${{ steps.checkov.outputs.critical-count }} | ${{ inputs.enforce-blocking == true && 'Blocking' || 'Warning' }} |
+          | High | ${{ steps.checkov.outputs.high-count }} | ${{ inputs.enforce-blocking == true && 'Blocking' || 'Warning' }} |
+          | Medium | - | ${{ inputs.enforce-blocking == true && 'Warning' || 'Info' }} |
+          | Low | - | Info |
+
+          **Total Failed Checks**: ${{ steps.checkov.outputs.findings-count }}
+
+          ### Next Steps
+
+          EOF
+
+          FINDINGS_COUNT="${{ steps.checkov.outputs.findings-count }}"
+          if [ "${FINDINGS_COUNT:-0}" -gt 0 ]; then
+            cat >> $GITHUB_STEP_SUMMARY << EOF
+          1. Download the \`security-scan-${{ inputs.environment }}\` artifact for detailed findings
+          2. Review the SARIF results in the Security tab (if available)
+          3. Address critical and high severity findings before production deployment
+
+          #### Common Fixes
+
+          - **CKV_AWS_111**: Enable VPC Flow Logs
+          - **CKV_AWS_18**: Enable S3 access logging
+          - **CKV_AWS_19**: Enable S3 server-side encryption
+          - **CKV_AWS_21**: Enable S3 versioning
+          - **CKV_AWS_145**: Enable KMS encryption for EBS
+
+          For full documentation, see: [Checkov Policies](https://www.checkov.io/5.Policy%20Index/cloudformation.html)
+
+          EOF
+          else
+            cat >> $GITHUB_STEP_SUMMARY << EOF
+          No security findings detected. Your IaC configuration follows security best practices.
+
+          EOF
+          fi
