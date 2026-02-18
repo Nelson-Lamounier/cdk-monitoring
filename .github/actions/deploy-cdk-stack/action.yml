@@ -211,11 +211,14 @@ runs:
         CONTEXT_ARGS=$(cat /tmp/cdk-context-args.txt)
 
         # Build deploy command
-        # Use --method=direct to avoid ChangeSetNotFoundException issues in CI/CD
-        # Direct method calls UpdateStack/CreateStack API directly instead of changesets
-        # Use --exclusively to prevent CDK from deploying dependent stacks (workflow handles ordering)
+        # --ci: CDK CI mode (non-interactive, reduces verbose output)
+        # --progress events: show only CloudFormation events, not full resource table
+        # --method=direct: calls UpdateStack/CreateStack directly (avoids ChangeSet issues)
+        # --exclusively: prevent CDK from deploying dependent stacks (workflow handles ordering)
         DEPLOY_CMD="npx cdk deploy ${{ inputs.stack-name }}"
         DEPLOY_CMD="$DEPLOY_CMD $CONTEXT_ARGS"
+        DEPLOY_CMD="$DEPLOY_CMD --ci"
+        DEPLOY_CMD="$DEPLOY_CMD --progress events"
         DEPLOY_CMD="$DEPLOY_CMD --require-approval ${{ inputs.require-approval }}"
         DEPLOY_CMD="$DEPLOY_CMD --method=direct"
         DEPLOY_CMD="$DEPLOY_CMD --exclusively"
