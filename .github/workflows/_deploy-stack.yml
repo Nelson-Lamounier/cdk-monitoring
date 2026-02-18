@@ -138,6 +138,29 @@ jobs:
           echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
           echo "✓ Resolved AWS Account ID"
 
+      - name: Set Scoped Config
+        shell: bash
+        run: |
+          # Only export env vars that the calling workflow actually provides.
+          # This keeps the environment clean for stacks that don't need them
+          # (e.g. Shared doesn't need DOMAIN_NAME, VERIFICATION_SECRET, etc.).
+          [[ -n "$DOMAIN_NAME"            ]] && echo "DOMAIN_NAME=$DOMAIN_NAME"                       >> $GITHUB_ENV
+          [[ -n "$HOSTED_ZONE_ID"         ]] && echo "HOSTED_ZONE_ID=$HOSTED_ZONE_ID"                 >> $GITHUB_ENV
+          [[ -n "$CROSS_ACCOUNT_ROLE_ARN" ]] && echo "CROSS_ACCOUNT_ROLE_ARN=$CROSS_ACCOUNT_ROLE_ARN" >> $GITHUB_ENV
+          [[ -n "$NOTIFICATION_EMAIL"     ]] && echo "NOTIFICATION_EMAIL=$NOTIFICATION_EMAIL"         >> $GITHUB_ENV
+          [[ -n "$SES_FROM_EMAIL"         ]] && echo "SES_FROM_EMAIL=$SES_FROM_EMAIL"                 >> $GITHUB_ENV
+          [[ -n "$VERIFICATION_SECRET"    ]] && echo "VERIFICATION_SECRET=$VERIFICATION_SECRET"       >> $GITHUB_ENV
+          [[ -n "$VERIFICATION_BASE_URL"  ]] && echo "VERIFICATION_BASE_URL=$VERIFICATION_BASE_URL"   >> $GITHUB_ENV
+          echo "✓ Scoped config applied"
+        env:
+          DOMAIN_NAME: ${{ inputs.domain-name }}
+          HOSTED_ZONE_ID: ${{ inputs.hosted-zone-id }}
+          CROSS_ACCOUNT_ROLE_ARN: ${{ inputs.cross-account-role-arn }}
+          NOTIFICATION_EMAIL: ${{ inputs.notification-email }}
+          SES_FROM_EMAIL: ${{ inputs.ses-from-email }}
+          VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
+          VERIFICATION_BASE_URL: ${{ inputs.verification-base-url }}
+
       - name: Deploy CDK Stack
         id: deploy-stack
         uses: ./.github/actions/deploy-cdk-stack
@@ -150,15 +173,6 @@ jobs:
           require-approval: ${{ inputs.require-approval }}
           verify-bootstrap: ${{ inputs.verify-bootstrap }}
           outputs-directory: ${{ inputs.outputs-directory }}
-        env:
-          # Scoped config — only set if the calling workflow provides them
-          DOMAIN_NAME: ${{ inputs.domain-name }}
-          HOSTED_ZONE_ID: ${{ inputs.hosted-zone-id }}
-          CROSS_ACCOUNT_ROLE_ARN: ${{ inputs.cross-account-role-arn }}
-          NOTIFICATION_EMAIL: ${{ inputs.notification-email }}
-          SES_FROM_EMAIL: ${{ inputs.ses-from-email }}
-          VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
-          VERIFICATION_BASE_URL: ${{ inputs.verification-base-url }}
 
       - name: Debug Outputs Before Upload
         if: always() && inputs.outputs-directory != ''
