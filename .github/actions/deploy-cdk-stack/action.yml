@@ -226,12 +226,13 @@ runs:
 
         # Deployment provenance tags (SLSA-inspired audit metadata)
         # These tags are applied to all CloudFormation resources in the stack
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployCommit=${GITHUB_SHA:-unknown}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployRunId=${GITHUB_RUN_ID:-0}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployActor=${GITHUB_ACTOR:-local}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployRepo=${GITHUB_REPOSITORY:-local}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployWorkflow=${GITHUB_WORKFLOW:-manual}"
+        # Values are quoted to handle spaces/special chars (e.g. workflow names with parentheses)
+        DEPLOY_CMD="$DEPLOY_CMD --tags DeployCommit=\"${GITHUB_SHA:-unknown}\""
+        DEPLOY_CMD="$DEPLOY_CMD --tags DeployRunId=\"${GITHUB_RUN_ID:-0}\""
+        DEPLOY_CMD="$DEPLOY_CMD --tags DeployActor=\"${GITHUB_ACTOR:-local}\""
+        DEPLOY_CMD="$DEPLOY_CMD --tags DeployRepo=\"${GITHUB_REPOSITORY:-local}\""
+        DEPLOY_CMD="$DEPLOY_CMD --tags DeployTimestamp=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+        DEPLOY_CMD="$DEPLOY_CMD --tags DeployWorkflow=\"${GITHUB_WORKFLOW:-manual}\""
 
         # Add additional args if provided
         if [ -n "${{ inputs.additional-args }}" ]; then
