@@ -1,0 +1,68 @@
+# Checkov configuration for cdk-monitoring
+# This file is automatically detected by the _iac-security-scan.yml workflow
+
+# Framework to scan
+framework: cloudformation
+
+# Custom checks directory (relative to .checkov/)
+external-checks-dir:
+  - custom_checks
+
+# Severity-based soft-fail for development
+# In dev, LOW and MEDIUM findings don't block - they're reported for awareness
+soft-fail-on:
+  - LOW
+  - MEDIUM
+
+# Project-specific skip rules (documented exceptions that are handled by CDK constructs)
+skip-check:
+  # VPC Flow Logs - handled by SharedVpcStack with encryption
+  - CKV_AWS_111
+  # CloudWatch Log retention - explicitly set to 30 days in dev for cost optimization
+  - CKV_AWS_338
+  # NAT Gateway per AZ - using single NAT for dev cost optimization
+  - CKV_AWS_178
+  # CDK-managed S3 auto-delete Lambda - not configurable
+  - CKV_AWS_117 # Lambda VPC - CDK custom resources don't need VPC access
+  - CKV_AWS_116 # Lambda DLQ - CDK custom resources handle retries internally
+  - CKV_AWS_115 # Lambda concurrency - CDK custom resources are deployment-only
+
+# Output settings
+compact: true
+
+# =============================================================================
+# CRITICAL SECURITY CHECKS (Documentation Only)
+# =============================================================================
+# The following checks are NOT skipped and will always run.
+# They represent critical security controls that should never fail:
+#
+# EBS Encryption:
+#   CKV_AWS_145 - Ensure EBS volumes are encrypted at rest
+#
+# S3 Security:
+#   CKV_AWS_18 - Enable S3 access logging
+#              → AccessLogsBucket suppressed via inline CFN Metadata (cannot log to itself)
+#   CKV_AWS_19 - Enable S3 server-side encryption
+#   CKV_AWS_21 - Enable S3 versioning
+#
+# EC2 User Data:
+#   CKV_AWS_46 - No hard-coded secrets in user data
+#              → MonitoringInstance suppressed via inline CFN Metadata
+#                (GrafanaPassword is a dev default 'admin', not a real secret)
+#
+# API Gateway:
+#   CKV_AWS_59 - API Gateway authorizer set
+#              → All methods suppressed via inline CFN Metadata
+#                (public portfolio API — WAF provides protection)
+#
+# Security Groups:
+#   CKV_AWS_23 - Ensure no unrestricted ingress from 0.0.0.0/0
+#
+# IAM:
+#   CKV_AWS_62 - Avoid IAM policies with wildcard actions
+#   CKV_AWS_63 - Avoid IAM policies with wildcard resources
+#
+# NOTE: The 'check:' directive in Checkov runs ONLY the specified checks,
+#       ignoring all others. It is NOT an "always include" list.
+#       To ensure critical checks run, do NOT add them to skip-check.
+# =============================================================================

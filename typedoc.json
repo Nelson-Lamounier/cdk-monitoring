@@ -1,0 +1,39 @@
+{
+    "$schema": "https://typedoc.org/schema.json",
+    "entryPoints": [
+        "./lib"
+    ],
+    "entryPointStrategy": "expand",
+    "out": "./docs/api",
+    "exclude": [
+        "**/node_modules/**",
+        "**/*.test.ts",
+        "**/tests/**"
+    ],
+    "excludePrivate": true,
+    "excludeProtected": false,
+    "excludeExternals": true,
+    "includeVersion": true,
+    "name": "CDK Monitoring Infrastructure",
+    "readme": "./README.md",
+    "plugin": [],
+    "theme": "default",
+    "tsconfig": "./tsconfig.json",
+    "categorizeByGroup": true,
+    "categoryOrder": [
+        "Stacks",
+        "Factories",
+        "Constructs",
+        "Configuration",
+        "Aspects",
+        "Utilities",
+        "*"
+    ],
+    "navigation": {
+        "includeCategories": true,
+        "includeGroups": true
+    },
+    "searchInComments": true,
+    "cleanOutputDir": true,
+    "blockTags": ["@format", "@internal"]
+}
