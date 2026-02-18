@@ -8,8 +8,7 @@ name: Deploy NextJS to Dev
 on:
   push:
     branches:
-      - main
-      - feature/nextjs-application
+      - develop
     paths:
       - "lib/stacks/nextjs/**"
       - "lib/projects/nextjs/**"

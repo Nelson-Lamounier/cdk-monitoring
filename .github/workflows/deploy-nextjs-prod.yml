@@ -5,6 +5,15 @@
 name: Deploy NextJS to Production
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "lib/stacks/nextjs/**"
+      - "lib/projects/nextjs/**"
+      - "lib/common/**"
+      - "bin/app.ts"
+      - ".github/workflows/_deploy-nextjs.yml"
   workflow_dispatch:
     inputs:
       confirm-deployment:

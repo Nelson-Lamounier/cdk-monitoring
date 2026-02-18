@@ -6,7 +6,6 @@ name: Deploy Monitoring to Development
 on:
   push:
     branches:
-      - main
       - develop
     paths:
       - "lib/**"
