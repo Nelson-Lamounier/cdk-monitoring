@@ -1,0 +1,79 @@
+# @format
+# @description Reusable workflow for verifying CloudFormation stack deployment status
+
+name: Verify Stack (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      stack-name:
+        description: "CloudFormation stack name to verify"
+        required: true
+        type: string
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+      aws-region:
+        description: "AWS region"
+        required: false
+        type: string
+        default: "eu-west-1"
+      timeout-minutes:
+        description: "Job timeout in minutes"
+        required: false
+        type: number
+        default: 10
+    secrets:
+      AWS_OIDC_ROLE:
+        description: "AWS OIDC role ARN for authentication"
+        required: true
+    outputs:
+      status:
+        description: "Stack status (e.g., CREATE_COMPLETE, UPDATE_COMPLETE)"
+        value: ${{ jobs.verify.outputs.status }}
+      verified:
+        description: "Whether verification passed (true/false)"
+        value: ${{ jobs.verify.outputs.verified }}
+
+jobs:
+  verify:
+    name: Verify ${{ inputs.stack-name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    environment: ${{ inputs.environment }}
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+      verified: ${{ steps.check.outputs.verified }}
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ inputs.aws-region }}
+          audience: sts.amazonaws.com
+
+      - name: Verify Stack Status
+        id: check
+        run: |
+          echo "Verifying stack: ${{ inputs.stack-name }}"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Region: ${{ inputs.aws-region }}"
+          echo ""
+          
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "${{ inputs.stack-name }}" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+          
+          echo "status=$STACK_STATUS" >> $GITHUB_OUTPUT
+          
+          if [[ "$STACK_STATUS" == *"COMPLETE"* ]] && [[ "$STACK_STATUS" != *"ROLLBACK"* ]]; then
+            echo "verified=true" >> $GITHUB_OUTPUT
+            echo "✓ ${{ inputs.stack-name }} verified: $STACK_STATUS"
+          else
+            echo "verified=false" >> $GITHUB_OUTPUT
+            echo "✗ ${{ inputs.stack-name }} verification failed: $STACK_STATUS"
+            exit 1
+          fi

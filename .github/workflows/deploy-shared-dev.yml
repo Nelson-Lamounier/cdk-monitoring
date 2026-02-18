@@ -1,0 +1,41 @@
+# @format
+# @description Deploy Shared Infrastructure to Development
+#
+# Deploys the shared VPC + ECR stack that other projects depend on.
+# Must be deployed BEFORE monitoring/nextjs stacks.
+
+name: Deploy Shared (Dev)
+
+on:
+  workflow_dispatch: # Manual trigger
+  push:
+    branches: [main]
+    paths:
+      - "lib/shared/**"
+      - "bin/app.ts"
+      - "scripts/deployment/stacks.ts"
+      - ".github/workflows/deploy-shared-*.yml"
+      - ".github/workflows/_deploy-stack.yml"
+      - ".github/actions/**"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-shared-development
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Shared Infra
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Shared-Infra-development
+      project: shared
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}

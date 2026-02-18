@@ -1,0 +1,248 @@
+# Deploy Organization Resources (Root Account)
+# MANUAL TRIGGER ONLY with confirmation
+# Uses root account OIDC credentials
+
+name: Deploy Organization (Root Account)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "DEPLOY-ORG" to confirm root account deployment'
+        required: true
+        type: string
+      stack:
+        description: "Stack to deploy"
+        required: true
+        default: "dns-role"
+        type: choice
+        options:
+          - dns-role
+          - all
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  # ===========================================================================
+  # Validation
+  # ===========================================================================
+  validate:
+    name: Validate Confirmation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+
+    steps:
+      - name: Validate Confirmation Input
+        id: check
+        run: |
+          if [ "${{ inputs.confirm }}" != "DEPLOY-ORG" ]; then
+            echo "❌ Deployment not confirmed."
+            echo "   You must type 'DEPLOY-ORG' to confirm."
+            exit 1
+          fi
+          echo "proceed=true" >> $GITHUB_OUTPUT
+          echo "✓ Root account deployment confirmed"
+
+  # ===========================================================================
+  # Setup & Synthesize
+  # ===========================================================================
+  setup:
+    name: Setup & Synthesize
+    needs: [validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: management # Separate GitHub environment for root account
+    outputs:
+      dns-role-stack: ${{ steps.stacks.outputs.dns_role }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build TypeScript
+        run: yarn build
+
+      - name: Configure AWS Credentials (Root Account)
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Verify Root Account Access
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACCOUNT_ID"
+
+          EXPECTED_ROOT="${{ vars.ROOT_ACCOUNT_ID }}"
+          if [ -n "$EXPECTED_ROOT" ] && [ "$ACCOUNT_ID" != "$EXPECTED_ROOT" ]; then
+            echo "⚠️ Warning: Connected to $ACCOUNT_ID (expected root: $EXPECTED_ROOT)"
+          fi
+
+          echo "✓ Connected to AWS account (masked)"
+
+      - name: Determine Stack Names
+        id: stacks
+        run: |
+          echo "dns_role=Org-DnsRoleStack-prod" >> $GITHUB_OUTPUT
+
+      - name: Synthesize Org Stacks
+        run: |
+          echo "Synthesizing Org project stacks..."
+          echo "  - Stack: ${{ steps.stacks.outputs.dns_role }}"
+
+          npx cdk synth \
+            --context project=org \
+            --context environment=prod \
+            --context hostedZoneIds='["${{ vars.HOSTED_ZONE_ID }}"]' \
+            --context trustedAccountIds='["${{ vars.DEV_ACCOUNT_ID }}","${{ vars.STAGING_ACCOUNT_ID }}","${{ vars.PROD_ACCOUNT_ID }}"]' \
+            --context account=${{ vars.ROOT_ACCOUNT_ID }} \
+            --context region=${{ env.AWS_REGION }} \
+            --output cdk.out \
+            --quiet
+
+      - name: Upload Synthesized Templates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cdk-out-org
+          path: cdk.out/
+          retention-days: 30
+
+  # ===========================================================================
+  # Deploy DNS Role Stack
+  # ===========================================================================
+  deploy-dns-role:
+    name: Deploy DNS Role
+    needs: [setup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: management
+    if: inputs.stack == 'dns-role' || inputs.stack == 'all'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download Synthesized Templates
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cdk-out-org
+          path: cdk.out
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials (Root Account)
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Deploy DNS Role Stack
+        run: |
+          STACK_NAME="${{ needs.setup.outputs.dns-role-stack }}"
+
+          echo "Deploying $STACK_NAME to root account..."
+          echo "  - Hosted Zone: ${{ vars.HOSTED_ZONE_ID }}"
+          echo "  - Trusted Accounts: dev, staging, prod"
+
+          npx cdk deploy "$STACK_NAME" \
+            --context project=org \
+            --context environment=prod \
+            --context hostedZoneIds='["${{ vars.HOSTED_ZONE_ID }}"]' \
+            --context trustedAccountIds='["${{ vars.DEV_ACCOUNT_ID }}","${{ vars.STAGING_ACCOUNT_ID }}","${{ vars.PROD_ACCOUNT_ID }}"]' \
+            --context account=${{ vars.ROOT_ACCOUNT_ID }} \
+            --context region=${{ env.AWS_REGION }} \
+            --require-approval never \
+            --outputs-file deployment-outputs.json
+
+          echo ""
+          echo "✓ DNS Role Stack deployed"
+
+          if [ -f deployment-outputs.json ]; then
+            echo ""
+            echo "Stack Outputs:"
+            cat deployment-outputs.json
+          fi
+
+      - name: Upload Deployment Outputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: org-deployment-outputs
+          path: deployment-outputs.json
+          retention-days: 90
+
+  # ===========================================================================
+  # Summary
+  # ===========================================================================
+  summary:
+    name: Deployment Summary
+    needs: [validate, setup, deploy-dns-role]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Generate Summary
+        run: |
+          TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## Organization (Root Account) Deployment
+
+          **Target**: AWS Root/Management Account
+          **Timestamp**: ${TIMESTAMP}
+          **Stack Requested**: ${{ inputs.stack }}
+
+          ### Deployment Status
+
+          | Stage | Status |
+          |-------|--------|
+          | Validation | ${{ needs.validate.result }} |
+          | Setup | ${{ needs.setup.result }} |
+          | DNS Role | ${{ needs.deploy-dns-role.result }} |
+
+          EOF
+
+          if [ "${{ needs.deploy-dns-role.result }}" == "success" ]; then
+            cat >> $GITHUB_STEP_SUMMARY << EOF
+
+          ### Next Steps
+
+          The cross-account DNS validation role is now deployed.
+          Target accounts (dev/staging/prod) can now assume this role for ACM certificate validation.
+
+          **Role ARN**: \`arn:aws:iam::${{ vars.ROOT_ACCOUNT_ID }}:role/Route53DnsValidationRole\`
+
+          EOF
+          fi
+
+      - name: Check Final Status
+        run: |
+          if [ "${{ needs.deploy-dns-role.result }}" != "success" ]; then
+            echo "❌ Deployment failed or was skipped"
+            exit 1
+          fi
+
+          echo "✓ Org deployment completed successfully"

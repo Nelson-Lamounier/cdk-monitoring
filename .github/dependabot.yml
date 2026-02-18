@@ -1,0 +1,83 @@
+# Dependabot configuration
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+
+version: 2
+updates:
+  # --- npm/Yarn dependencies ---
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/London"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "automated"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    # Group minor/patch updates to reduce PR noise
+    groups:
+      aws-cdk:
+        patterns:
+          - "aws-cdk-lib"
+          - "aws-cdk"
+          - "constructs"
+        update-types:
+          - "minor"
+          - "patch"
+      typescript-tooling:
+        patterns:
+          - "typescript"
+          - "ts-node"
+          - "ts-jest"
+          - "tsx"
+          - "@types/*"
+        update-types:
+          - "minor"
+          - "patch"
+      linting:
+        patterns:
+          - "eslint"
+          - "eslint-*"
+          - "@eslint/*"
+          - "prettier"
+        update-types:
+          - "minor"
+          - "patch"
+      testing:
+        patterns:
+          - "jest"
+          - "jest-*"
+          - "@jest/*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # --- GitHub Actions ---
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/London"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci-cd"
+      - "automated"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    # Group all actions together since they're SHA-pinned
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"

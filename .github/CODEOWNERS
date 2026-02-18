@@ -1,0 +1,18 @@
+# CODEOWNERS — Auto-assign reviewers based on file paths
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+* @Nelson-Lamounier
+
+# CI/CD Pipelines — require review for workflow changes
+.github/workflows/ @Nelson-Lamounier
+.github/actions/ @Nelson-Lamounier
+
+# Infrastructure code
+lib/ @Nelson-Lamounier
+
+# Deployment scripts
+scripts/deployment/ @Nelson-Lamounier
+
+# Security policies
+.checkov/ @Nelson-Lamounier

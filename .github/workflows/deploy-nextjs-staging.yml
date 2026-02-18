@@ -1,0 +1,35 @@
+# Deploy NextJS Application to Staging
+# Triggers after successful dev deployment
+# Uses shared VPC from Monitoring project
+
+name: Deploy NextJS to Staging
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy NextJS to Dev"]
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+
+jobs:
+  deploy:
+    name: Deploy to Staging
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/_deploy-nextjs.yml
+    with:
+      environment: staging
+      cdk-environment: staging
+      require-approval: never
+      enable-security-scan: true
+      security-scan-blocking: true
+      skip-verification: false
+      # domain-name, hosted-zone-id, cross-account-role-arn are resolved from
+      # environment-scoped variables inside the reusable workflow (not repository vars)
+    secrets: inherit

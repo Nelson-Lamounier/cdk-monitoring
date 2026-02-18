@@ -1,0 +1,304 @@
+# @format
+# Smoke Tests Workflow (Reusable)
+#
+# Runs production-readiness smoke tests on deployed monitoring infrastructure
+# via SSM Run Command. Stages the test script to S3, executes it on the
+# target instance, and renders results in the GitHub Step Summary.
+
+name: Smoke Tests (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: string
+      aws-account-id:
+        description: "AWS Account ID"
+        required: true
+        type: string
+      aws-region:
+        description: "AWS region"
+        required: false
+        type: string
+        default: "eu-west-1"
+      name-prefix:
+        description: "Stack name prefix (e.g. monitoring-development)"
+        required: true
+        type: string
+      instance-tag-name:
+        description: "Tag name to identify instance"
+        required: false
+        type: string
+        default: "Project"
+      instance-tag-value:
+        description: "Tag value to identify instance"
+        required: false
+        type: string
+        default: "Monitoring"
+      timeout-minutes:
+        description: "Timeout for smoke tests"
+        required: false
+        type: number
+        default: 15
+    secrets:
+      AWS_OIDC_ROLE:
+        required: true
+    outputs:
+      status:
+        description: "Smoke test result (success/failure)"
+        value: ${{ jobs.smoke-tests.outputs.status }}
+
+jobs:
+  smoke-tests:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    environment: ${{ inputs.environment }}
+    outputs:
+      status: ${{ steps.run-tests.outputs.status }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ inputs.aws-region }}
+          role-session-name: smoke-tests-${{ github.run_id }}
+
+      # ---------------------------------------------------------------
+      # Discover scripts bucket from SSM parameter
+      # ---------------------------------------------------------------
+      - name: Discover Scripts Bucket
+        id: discover
+        run: |
+          BUCKET=$(aws ssm get-parameter \
+            --name "/${{ inputs.name-prefix }}/ssm/scripts-bucket-name" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+
+          if [ -z "$BUCKET" ]; then
+            echo "::error::Could not discover scripts bucket from SSM parameter /${{ inputs.name-prefix }}/ssm/scripts-bucket-name"
+            exit 1
+          fi
+
+          echo "scripts_bucket=$BUCKET" >> $GITHUB_OUTPUT
+          echo "Discovered scripts bucket: $BUCKET"
+
+      # ---------------------------------------------------------------
+      # Find target instance
+      # ---------------------------------------------------------------
+      - name: Find Target Instance
+        id: find-instance
+        run: |
+          echo "Looking for instances with tag ${{ inputs.instance-tag-name }}=${{ inputs.instance-tag-value }}"
+
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:${{ inputs.instance-tag-name }},Values=${{ inputs.instance-tag-value }}" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)
+
+          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "::error::No running instance found with tag ${{ inputs.instance-tag-name }}=${{ inputs.instance-tag-value }}"
+            exit 1
+          fi
+
+          echo "Found instance: $INSTANCE_ID"
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+      # ---------------------------------------------------------------
+      # Wait for SSM Agent to register
+      # ---------------------------------------------------------------
+      - name: Wait for SSM Agent
+        run: |
+          echo "Waiting for SSM agent to be ready..."
+          INSTANCE_ID="${{ steps.find-instance.outputs.instance_id }}"
+          MAX_ATTEMPTS=20
+          ATTEMPT=1
+
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text 2>/dev/null || echo "NotFound")
+
+            if [ "$STATUS" == "Online" ]; then
+              echo "SSM agent is online"
+              break
+            fi
+
+            echo "SSM agent status: $STATUS, waiting 15s... (attempt $ATTEMPT/$MAX_ATTEMPTS)"
+            sleep 15
+            ((ATTEMPT++))
+          done
+
+          if [ "$STATUS" != "Online" ]; then
+            echo "::error::SSM agent not ready after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------
+      # Wait for SSM Association to complete (post-deployment config)
+      # ---------------------------------------------------------------
+      - name: Wait for SSM Association
+        run: |
+          echo "Checking SSM Association status..."
+          INSTANCE_ID="${{ steps.find-instance.outputs.instance_id }}"
+          NAME_PREFIX="${{ inputs.name-prefix }}"
+          ASSOCIATION_NAME="${NAME_PREFIX}-configure-stack"
+          TIMEOUT=300
+          POLL=15
+          ELAPSED=0
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            # Get association status for this instance
+            ASSOC_STATUS=$(aws ssm list-associations \
+              --association-filter-list "key=AssociationName,value=$ASSOCIATION_NAME" \
+              --query 'Associations[0].Overview.Status' \
+              --output text 2>/dev/null || echo "NotFound")
+
+            case "$ASSOC_STATUS" in
+              Success)
+                echo "SSM Association completed successfully"
+                break
+                ;;
+              Failed)
+                echo "::warning::SSM Association failed — smoke tests will proceed but may find services not configured"
+                break
+                ;;
+              NotFound)
+                echo "SSM Association not found (name: $ASSOCIATION_NAME), skipping wait"
+                break
+                ;;
+            esac
+
+            echo "Association status: $ASSOC_STATUS (${ELAPSED}s / ${TIMEOUT}s)"
+            sleep $POLL
+            ELAPSED=$((ELAPSED + POLL))
+          done
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "::warning::SSM Association did not complete within ${TIMEOUT}s — proceeding anyway"
+          fi
+
+      # ---------------------------------------------------------------
+      # Stage smoke test script to S3 and execute via SSM
+      # ---------------------------------------------------------------
+      - name: Run Smoke Tests via SSM
+        id: run-tests
+        run: |
+          INSTANCE_ID="${{ steps.find-instance.outputs.instance_id }}"
+          BUCKET="${{ steps.discover.outputs.scripts_bucket }}"
+          S3_KEY="smoke-test.sh"
+
+          echo "Staging smoke test script to s3://${BUCKET}/${S3_KEY}..."
+          aws s3 cp scripts/monitoring/smoke-test.sh "s3://${BUCKET}/${S3_KEY}" --quiet
+
+          echo "Executing smoke tests on ${INSTANCE_ID}..."
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Smoke tests from GitHub Actions run ${{ github.run_id }}" \
+            --parameters '{"commands":["aws s3 cp s3://'"${BUCKET}"'/'"${S3_KEY}"' /tmp/smoke-test.sh","chmod +x /tmp/smoke-test.sh","bash /tmp/smoke-test.sh"]}' \
+            --timeout-seconds 600 \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "Command ID: $COMMAND_ID"
+
+          # Poll for completion (600s budget, 15s interval)
+          TIMEOUT=600
+          POLL=15
+          ELAPSED=0
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' --output text 2>/dev/null || echo "Pending")
+
+            case "$STATUS" in
+              Success|Failed|TimedOut|Cancelled|DeliveryTimedOut)
+                echo "Command finished with status: $STATUS"
+                break
+                ;;
+            esac
+
+            echo "Status: $STATUS (${ELAPSED}s / ${TIMEOUT}s)"
+            sleep $POLL
+            ELAPSED=$((ELAPSED + POLL))
+          done
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "::error::Smoke tests timed out after ${TIMEOUT}s"
+            exit 1
+          fi
+
+          # Retrieve output
+          RESULT=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query '[Status, StandardOutputContent, StandardErrorContent]' \
+            --output json)
+
+          STATUS=$(echo "$RESULT" | jq -r '.[0]')
+          STDOUT=$(echo "$RESULT" | jq -r '.[1]')
+          STDERR=$(echo "$RESULT" | jq -r '.[2]')
+
+          echo "=== Smoke Test Output ==="
+          echo "$STDOUT"
+
+          if [ -n "$STDERR" ] && [ "$STDERR" != "null" ]; then
+            echo "=== Errors ==="
+            echo "$STDERR"
+          fi
+
+          if [ "$STATUS" == "Success" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ Smoke tests passed"
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "::error::Smoke tests failed with status: $STATUS"
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------
+      # Structured GitHub Summary
+      # ---------------------------------------------------------------
+      - name: Generate Summary
+        if: always()
+        run: |
+          STATUS="${{ steps.run-tests.outputs.status || 'unknown' }}"
+
+          if [ "$STATUS" == "success" ]; then
+            ICON="✅"
+          elif [ "$STATUS" == "failure" ]; then
+            ICON="❌"
+          else
+            ICON="⚠️"
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## ${ICON} Smoke Test Results
+
+          | Field | Value |
+          |---|---|
+          | **Instance** | \`${{ steps.find-instance.outputs.instance_id }}\` |
+          | **Environment** | ${{ inputs.environment }} |
+          | **Status** | ${STATUS} |
+
+          ### Checks Performed
+          - Container health (Grafana, Prometheus, Node Exporter, Loki, Tempo, Promtail)
+          - HTTP endpoint availability
+          - Grafana datasources and dashboards
+          - Prometheus targets and query API
+          - Loki/Tempo data pipeline
+          - EBS volume mount and disk space
+          - Docker daemon health
+          EOF

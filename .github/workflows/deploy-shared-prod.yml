@@ -1,0 +1,29 @@
+# @format
+# @description Deploy Shared Infrastructure to Production
+
+name: Deploy Shared (Prod)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-shared-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Shared Infra
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Shared-Infra-production
+      project: shared
+      environment: production
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: broadening
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
