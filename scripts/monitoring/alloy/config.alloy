@@ -1,0 +1,26 @@
+// Grafana Alloy config — OTLP receiver → Tempo exporter
+// Runs as ECS sidecar, receives traces from the Next.js app on localhost:4317
+// and forwards them to Tempo on the monitoring EC2 instance.
+//
+// The TEMPO_ENDPOINT environment variable is injected by the ECS task definition.
+// Example: http://10.0.0.197:4317
+
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = env("TEMPO_ENDPOINT")
+
+    tls {
+      insecure = true
+    }
+  }
+}
