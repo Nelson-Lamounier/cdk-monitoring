@@ -43,7 +43,6 @@ jobs:
     name: Pre-Flight Checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: production
     outputs:
       staging-artifact-found: ${{ steps.artifact.outputs.found }}
       staging-run-id: ${{ steps.artifact.outputs.run_id }}
