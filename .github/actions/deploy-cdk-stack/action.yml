@@ -226,13 +226,15 @@ runs:
 
         # Deployment provenance tags (SLSA-inspired audit metadata)
         # These tags are applied to all CloudFormation resources in the stack
-        # Values are quoted to handle spaces/special chars (e.g. workflow names with parentheses)
+        # AWS tag values allow: letters, digits, spaces, and _.:/=+-@
+        # Sanitize GITHUB_WORKFLOW to strip disallowed chars (e.g. parentheses)
+        SAFE_WORKFLOW=$(echo "${GITHUB_WORKFLOW:-manual}" | tr -cd '[:alnum:] _.:/=+\-@')
         DEPLOY_CMD="$DEPLOY_CMD --tags DeployCommit=\"${GITHUB_SHA:-unknown}\""
         DEPLOY_CMD="$DEPLOY_CMD --tags DeployRunId=\"${GITHUB_RUN_ID:-0}\""
         DEPLOY_CMD="$DEPLOY_CMD --tags DeployActor=\"${GITHUB_ACTOR:-local}\""
         DEPLOY_CMD="$DEPLOY_CMD --tags DeployRepo=\"${GITHUB_REPOSITORY:-local}\""
         DEPLOY_CMD="$DEPLOY_CMD --tags DeployTimestamp=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployWorkflow=\"${GITHUB_WORKFLOW:-manual}\""
+        DEPLOY_CMD="$DEPLOY_CMD --tags DeployWorkflow=\"${SAFE_WORKFLOW}\""
 
         # Add additional args if provided
         if [ -n "${{ inputs.additional-args }}" ]; then
