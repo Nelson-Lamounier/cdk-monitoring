@@ -82,6 +82,9 @@ on:
       VERIFICATION_SECRET:
         description: "Verification secret for NextJS API stack (scoped — only pass for API stack)"
         required: false
+      GRAFANA_ADMIN_PASSWORD:
+        description: "Grafana admin password for monitoring stack (scoped — only pass for monitoring stacks)"
+        required: false
     outputs:
       deployment-status:
         description: "Deployment status (success/failure)"
@@ -149,8 +152,9 @@ jobs:
           [[ -n "$CROSS_ACCOUNT_ROLE_ARN" ]] && echo "CROSS_ACCOUNT_ROLE_ARN=$CROSS_ACCOUNT_ROLE_ARN" >> $GITHUB_ENV
           [[ -n "$NOTIFICATION_EMAIL"     ]] && echo "NOTIFICATION_EMAIL=$NOTIFICATION_EMAIL"         >> $GITHUB_ENV
           [[ -n "$SES_FROM_EMAIL"         ]] && echo "SES_FROM_EMAIL=$SES_FROM_EMAIL"                 >> $GITHUB_ENV
-          [[ -n "$VERIFICATION_SECRET"    ]] && echo "VERIFICATION_SECRET=$VERIFICATION_SECRET"       >> $GITHUB_ENV
-          [[ -n "$VERIFICATION_BASE_URL"  ]] && echo "VERIFICATION_BASE_URL=$VERIFICATION_BASE_URL"   >> $GITHUB_ENV
+          [[ -n "$VERIFICATION_SECRET"      ]] && echo "VERIFICATION_SECRET=$VERIFICATION_SECRET"           >> $GITHUB_ENV
+          [[ -n "$VERIFICATION_BASE_URL"    ]] && echo "VERIFICATION_BASE_URL=$VERIFICATION_BASE_URL"       >> $GITHUB_ENV
+          [[ -n "$GRAFANA_ADMIN_PASSWORD"   ]] && echo "GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD"     >> $GITHUB_ENV
           echo "✓ Scoped config applied"
         env:
           DOMAIN_NAME: ${{ inputs.domain-name }}
@@ -160,6 +164,7 @@ jobs:
           SES_FROM_EMAIL: ${{ inputs.ses-from-email }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
           VERIFICATION_BASE_URL: ${{ inputs.verification-base-url }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
 
       - name: Deploy CDK Stack
         id: deploy-stack
