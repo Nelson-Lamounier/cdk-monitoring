@@ -1,0 +1,42 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "AssumeTargetAccountCDKRoles",
+        "Effect": "Allow",
+        "Action": "sts:AssumeRole",
+        "Resource": [
+          "arn:aws:iam::771826808455:role/cdk-hnb659fds-deploy-role-771826808455-eu-west-1",
+          "arn:aws:iam::771826808455:role/cdk-hnb659fds-file-publishing-role-771826808455-eu-west-1",
+          "arn:aws:iam::771826808455:role/cdk-hnb659fds-image-publishing-role-771826808455-eu-west-1",
+          "arn:aws:iam::771826808455:role/cdk-hnb659fds-lookup-role-771826808455-eu-west-1",
+          "arn:aws:iam::692738841103:role/cdk-hnb659fds-deploy-role-692738841103-eu-west-1",
+          "arn:aws:iam::692738841103:role/cdk-hnb659fds-file-publishing-role-692738841103-eu-west-1",
+          "arn:aws:iam::692738841103:role/cdk-hnb659fds-image-publishing-role-692738841103-eu-west-1",
+          "arn:aws:iam::692738841103:role/cdk-hnb659fds-lookup-role-692738841103-eu-west-1",
+          "arn:aws:iam::607700977986:role/cdk-hnb659fds-deploy-role-607700977986-eu-west-1",
+          "arn:aws:iam::607700977986:role/cdk-hnb659fds-file-publishing-role-607700977986-eu-west-1",
+          "arn:aws:iam::607700977986:role/cdk-hnb659fds-image-publishing-role-607700977986-eu-west-1",
+          "arn:aws:iam::607700977986:role/cdk-hnb659fds-lookup-role-607700977986-eu-west-1"
+        ]
+      },
+      {
+        "Sid": "ReadSSMParametersForConfig",
+        "Effect": "Allow",
+        "Action": [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath"
+        ],
+        "Resource": [
+          "arn:aws:ssm:eu-west-1:559780231478:parameter/github-actions/*"
+        ]
+      },
+      {
+        "Sid": "ECRAuthToken",
+        "Effect": "Allow",
+        "Action": "ecr:GetAuthorizationToken",
+        "Resource": "*"
+      }
+    ]
+  }
