@@ -110,28 +110,17 @@ runs:
     - name: Verify AWS Credentials
       shell: bash
       run: |
-        echo "Verifying AWS credentials..."
-
         CURRENT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text 2>&1)
 
         if [ $? -ne 0 ]; then
           echo "ERROR: Cannot retrieve AWS account information"
-          echo "AWS CLI output: $CURRENT_ACCOUNT"
-          echo ""
-          echo "Troubleshooting:"
-          echo "  1. Verify AWS credentials are configured"
-          echo "  2. Check IAM role trust policy allows GitHub OIDC"
-          echo "  3. Ensure role has sts:GetCallerIdentity permission"
           exit 1
         fi
 
         echo "✓ Authenticated to AWS account: ***${CURRENT_ACCOUNT: -4}"
 
         if [ "$CURRENT_ACCOUNT" != "${{ inputs.aws-account-id }}" ]; then
-          echo ""
-          ACCOUNT_LAST4="${{ inputs.aws-account-id }}"
-          echo "WARNING: Current account (***${CURRENT_ACCOUNT: -4}) differs from target (***${ACCOUNT_LAST4: -4})"
-          echo "This may be expected for cross-account deployments via AssumeRole"
+          echo "WARNING: Current account (***${CURRENT_ACCOUNT: -4}) differs from target"
         fi
 
     - name: Verify CDK Bootstrap
