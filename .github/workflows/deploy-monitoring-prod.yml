@@ -119,6 +119,7 @@ jobs:
       create-production-artifact: false
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+      GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
 
   # ===========================================================================
   # Audit Trail
