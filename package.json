@@ -141,7 +141,7 @@
     "@aws-sdk/client-ses": "^3.985.0",
     "@aws-sdk/client-sns": "^3.948.0",
     "@aws-sdk/client-ssm": "^3.985.0",
-    "@aws-sdk/lib-dynamodb": "^3.984.0",
+    "@aws-sdk/lib-dynamodb": "^3.992.0",
     "@aws-sdk/s3-request-presigner": "^3.948.0",
     "@aws-sdk/util-dynamodb": "^3.943.0",
     "@smithy/util-waiter": "^4.2.8",
