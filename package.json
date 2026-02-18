@@ -130,7 +130,7 @@
     "@aws-sdk/client-cloudwatch-logs": "^3.943.0",
     "@aws-sdk/client-dynamodb": "^3.943.0",
     "@aws-sdk/client-ec2": "^3.943.0",
-    "@aws-sdk/client-ecr": "^3.943.0",
+    "@aws-sdk/client-ecr": "^3.992.0",
     "@aws-sdk/client-ecs": "^3.985.0",
     "@aws-sdk/client-efs": "^3.943.0",
     "@aws-sdk/client-elastic-load-balancing-v2": "^3.943.0",
