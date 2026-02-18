@@ -6466,7 +6466,7 @@ __metadata:
     eslint: "npm:^9.32.0"
     eslint-import-resolver-typescript: "npm:^3.7.0"
     eslint-plugin-import: "npm:^2.28.0"
-    eslint-plugin-jest: "npm:^29.12.1"
+    eslint-plugin-jest: "npm:^29.15.0"
     eslint-plugin-jest-extended: "npm:^3.0.1"
     eslint-plugin-jsdoc: "npm:^46.8.0"
     husky: "npm:^9.1.7"
@@ -6475,7 +6475,7 @@ __metadata:
     jest-junit: "npm:^16.0.0"
     knip: "npm:^5.82.1"
     lint-staged: "npm:^16.2.7"
-    prettier: "npm:3.8.0"
+    prettier: "npm:3.8.1"
     source-map-support: "npm:^0.5.21"
     ts-jest: "npm:^29.1.1"
     ts-node: "npm:^10.9.2"
@@ -7331,9 +7331,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"eslint-plugin-jest@npm:^29.12.1":
-  version: 29.13.0
-  resolution: "eslint-plugin-jest@npm:29.13.0"
+"eslint-plugin-jest@npm:^29.15.0":
+  version: 29.15.0
+  resolution: "eslint-plugin-jest@npm:29.15.0"
   dependencies:
     "@typescript-eslint/utils": "npm:^8.0.0"
   peerDependencies:
@@ -7348,7 +7348,7 @@ __metadata:
       optional: true
     typescript:
       optional: true
-  checksum: 10c0/a1a6b1982ba6b17ef900a541555ee337f7aa39b305e3dcb6995309fcb5bb6bdd742f65e10a26a18c5db449b05772b7d1876ccd96f3a3c6aa43c7897a6e4f21d7
+  checksum: 10c0/e3d8f67708ba4a77a628f8d97a9ebbb20f62ad690d7cc155c0a1066d36b74a6ad8e943fda5c54264c4ad4186dd8d212075bce9f5c2debdd35708ed74ecdc81ef
   languageName: node
   linkType: hard
 
@@ -10287,12 +10287,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"prettier@npm:3.8.0":
-  version: 3.8.0
-  resolution: "prettier@npm:3.8.0"
+"prettier@npm:3.8.1":
+  version: 3.8.1
+  resolution: "prettier@npm:3.8.1"
   bin:
     prettier: bin/prettier.cjs
-  checksum: 10c0/8926e9c9941a293b76c2d799089d038e9f6d84fb37702fc370bedd03b3c70d7fcf507e2e3c4f151f222d81820a3b74cac5e692c955cfafe34dd0d02616ce8327
+  checksum: 10c0/33169b594009e48f570471271be7eac7cdcf88a209eed39ac3b8d6d78984039bfa9132f82b7e6ba3b06711f3bfe0222a62a1bfb87c43f50c25a83df1b78a2c42
   languageName: node
   linkType: hard
 
