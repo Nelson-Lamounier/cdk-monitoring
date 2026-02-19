@@ -9,7 +9,7 @@ on:
       - main
     paths:
       - "lib/**"
-      - "bin/**"
+      - "bin/stacks/monitoring/**"
       - ".github/workflows/deploy-monitoring-prod.yml"
       - ".github/workflows/_deploy-monitoring.yml"
       - ".github/workflows/_deploy-stack.yml"
