@@ -114,8 +114,9 @@ describe('NextJsApiStack', () => {
     describe('CloudWatch Logging', () => {
         it('should create CloudWatch log group for access logs', () => {
             const { template } = createApiStack();
+            // Log group exists with retention configured (no hardcoded name)
             template.hasResourceProperties('AWS::Logs::LogGroup', {
-                LogGroupName: Match.stringLikeRegexp('/aws/apigateway/'),
+                RetentionInDays: Match.anyValue(),
             });
         });
 
@@ -422,9 +423,9 @@ describe('NextJsApiStack', () => {
             // Request validator exists (APIG2)
             template.resourceCountIs('AWS::ApiGateway::RequestValidator', 1);
 
-            // CloudWatch logging enabled
+            // CloudWatch logging enabled (log group with retention)
             template.hasResourceProperties('AWS::Logs::LogGroup', {
-                LogGroupName: Match.stringLikeRegexp('/aws/apigateway/'),
+                RetentionInDays: Match.anyValue(),
             });
         });
     });

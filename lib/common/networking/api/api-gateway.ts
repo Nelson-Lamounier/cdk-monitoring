@@ -245,8 +245,10 @@ export class ApiGatewayConstruct extends Construct {
         // ACCESS LOG GROUP
         // =====================================================================
         if (enableLogging) {
+            // No hardcoded logGroupName — CloudFormation generates a unique name
+            // from the logical ID, preventing 'already exists' collisions on
+            // stack rollback/re-creation (especially with RemovalPolicy.RETAIN).
             this.accessLogGroup = new logs.LogGroup(this, 'AccessLogs', {
-                logGroupName: `/aws/apigateway/${namePrefix}-${props.apiName}-${props.environment}`,
                 retention: logRetention,
                 encryptionKey: this.logEncryptionKey,
                 removalPolicy,
