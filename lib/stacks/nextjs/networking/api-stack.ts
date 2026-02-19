@@ -14,6 +14,7 @@
  * - Lambda functions for email subscription operations (subscribe, verify)
  * - IAM permissions for Lambda to access DynamoDB, S3, and SES
  * - CloudWatch Log Groups with retention policies
+ * - CloudWatch Alarms on DLQs with SNS email notifications
  * - CORS configuration for frontend integration
  *
  * Configuration comes from centralized lib/config/nextjs/ - no hard-coded values.
@@ -22,8 +23,12 @@
 import { NagSuppressions } from 'cdk-nag';
 
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatch_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
@@ -200,6 +205,49 @@ export class NextJsApiStack extends cdk.Stack {
             subscribe: this.createLambdaDlq('SubscribeDlq', configs),
             verify: this.createLambdaDlq('VerifyDlq', configs),
         };
+
+        // =====================================================================
+        // DLQ CLOUDWATCH ALARMS
+        // One alarm per DLQ — triggers when any message lands in the queue.
+        // Uses 5-min period (cheapest standard resolution) with SNS email
+        // notification. Total cost: ~$0.40/month for 4 alarms.
+        // =====================================================================
+        const dlqAlarmTopic = new sns.Topic(this, 'DlqAlarmTopic', {
+            displayName: `${namePrefix} API DLQ Alerts (${envName})`,
+        });
+
+        if (props.notificationEmail) {
+            dlqAlarmTopic.addSubscription(
+                new sns_subscriptions.EmailSubscription(props.notificationEmail),
+            );
+        }
+
+        // Suppress cdk-nag: SNS topic uses default encryption (acceptable for
+        // alarm notifications which contain no sensitive data)
+        NagSuppressions.addResourceSuppressions(
+            dlqAlarmTopic,
+            [{ id: 'AwsSolutions-SNS2', reason: 'Alarm notification topic — no sensitive data, default encryption sufficient' }],
+        );
+        NagSuppressions.addResourceSuppressions(
+            dlqAlarmTopic,
+            [{ id: 'AwsSolutions-SNS3', reason: 'Alarm notification topic — enforceSSL not required for email-only delivery' }],
+        );
+
+        for (const [name, dlq] of Object.entries(this.lambdaDlqs)) {
+            const alarm = new cloudwatch.Alarm(this, `${name}DlqAlarm`, {
+                alarmDescription: `Messages in ${name} DLQ — Lambda failures need investigation`,
+                metric: dlq.metricApproximateNumberOfMessagesVisible({
+                    period: cdk.Duration.minutes(5),
+                    statistic: 'Maximum',
+                }),
+                threshold: 1,
+                evaluationPeriods: 1,
+                comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+                treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+            });
+            alarm.addAlarmAction(new cloudwatch_actions.SnsAction(dlqAlarmTopic));
+            alarm.addOkAction(new cloudwatch_actions.SnsAction(dlqAlarmTopic));
+        }
 
         // =====================================================================
         // API GATEWAY

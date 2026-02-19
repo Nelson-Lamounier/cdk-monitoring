@@ -212,6 +212,39 @@ describe('NextJsApiStack', () => {
         });
     });
 
+    describe('DLQ CloudWatch Alarms', () => {
+        it('should create 4 CloudWatch alarms (one per DLQ)', () => {
+            const { template } = createApiStack();
+            template.resourceCountIs('AWS::CloudWatch::Alarm', 4);
+        });
+
+        it('should create SNS topic for DLQ alarm notifications', () => {
+            const { template } = createApiStack();
+            template.resourceCountIs('AWS::SNS::Topic', 1);
+        });
+
+        it('should create email subscription when notificationEmail is provided', () => {
+            const { template } = createApiStack({
+                notificationEmail: 'test@example.com',
+            });
+            template.hasResourceProperties('AWS::SNS::Subscription', {
+                Protocol: 'email',
+                Endpoint: 'test@example.com',
+            });
+        });
+
+        it('should alarm on ApproximateNumberOfMessagesVisible >= 1', () => {
+            const { template } = createApiStack();
+            template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+                MetricName: 'ApproximateNumberOfMessagesVisible',
+                Threshold: 1,
+                EvaluationPeriods: 1,
+                ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+                TreatMissingData: 'notBreaching',
+            });
+        });
+    });
+
     describe('Lambda Functions - Articles', () => {
         it('should create list-articles Lambda function', () => {
             const { template } = createApiStack();
