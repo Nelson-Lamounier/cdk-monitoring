@@ -659,8 +659,10 @@ export class NextJsApplicationStack extends cdk.Stack {
         });
 
         // Promtail log group
+        // No hardcoded logGroupName — CloudFormation generates a unique name
+        // from the logical ID, preventing 'already exists' collisions on
+        // stack rollback/re-creation (especially with RemovalPolicy.RETAIN).
         const promtailLogGroup = new logs.LogGroup(this, 'PromtailLogGroup', {
-            logGroupName: `/ecs/${namePrefix}/promtail-${environment}`,
             retention: isProd ? LOG_RETENTION.prod : LOG_RETENTION.dev,
             removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
         });
@@ -743,8 +745,8 @@ export class NextJsApplicationStack extends cdk.Stack {
             ? ssm.StringParameter.valueForStringParameter(this, monitoring.tempoSsmPath)
             : monitoring.tempoEndpoint!;
 
+        // No hardcoded logGroupName — same pattern as PromtailLogGroup above.
         const alloyLogGroup = new logs.LogGroup(this, 'AlloyLogGroup', {
-            logGroupName: `/ecs/${namePrefix}/alloy-${environment}`,
             retention: isProd ? LOG_RETENTION.prod : LOG_RETENTION.dev,
             removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
         });
@@ -797,8 +799,8 @@ export class NextJsApplicationStack extends cdk.Stack {
         nodeExporterTaskDef.addVolume({ name: 'sys', host: { sourcePath: '/sys' } });
         nodeExporterTaskDef.addVolume({ name: 'rootfs', host: { sourcePath: '/' } });
 
+        // No hardcoded logGroupName — same pattern as PromtailLogGroup above.
         const nodeExporterLogGroup = new logs.LogGroup(this, 'NodeExporterLogGroup', {
-            logGroupName: `/ecs/${namePrefix}/node-exporter-${environment}`,
             retention: isProd ? LOG_RETENTION.prod : LOG_RETENTION.dev,
             removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
         });
