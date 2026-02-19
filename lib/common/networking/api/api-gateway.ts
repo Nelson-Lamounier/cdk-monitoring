@@ -318,21 +318,43 @@ export class ApiGatewayConstruct extends Construct {
         });
 
         // =====================================================================
-        // CLOUDWATCH LOGS ROLE — DEPENDENCY FIX
+        // CLOUDWATCH LOGS ROLE — EXPLICIT CREATION
         //
-        // CDK's RestApi auto-creates a CfnAccount + IAM role for CloudWatch
-        // Logs (cloudWatchRole defaults to true). However, CloudFormation may
-        // deploy the Stage before the CfnAccount is applied, causing:
-        //   "CloudWatch Logs role ARN must be set in account settings"
+        // API Gateway requires an account-level IAM role to write to
+        // CloudWatch Logs (AWS::ApiGateway::Account). CDK normally creates
+        // this automatically, but the feature flag
+        //   @aws-cdk/aws-apigateway:disableCloudWatchRole = true
+        // in cdk.json suppresses that behavior (to avoid conflicts when
+        // multiple stacks in the same account create competing CfnAccounts).
         //
-        // Fix: add an explicit dependency from the deployment stage to CDK's
-        // auto-created Account resource so the role is registered first.
+        // Fix: create the IAM role and CfnAccount explicitly, then add a
+        // DependsOn from the Stage so the role is registered before the
+        // Stage tries to enable logging. This works regardless of the flag.
         // =====================================================================
         if (enableLogging) {
-            const account = this.api.node.tryFindChild('Account');
-            if (account) {
-                this.api.deploymentStage.node.addDependency(account);
+            // Try CDK's auto-created Account first (if the flag is not set)
+            let account = this.api.node.tryFindChild('Account') as cdk.CfnResource | undefined;
+
+            if (!account) {
+                // Feature flag disableCloudWatchRole is true — create explicitly
+                const cloudWatchRole = new iam.Role(this, 'CloudWatchRole', {
+                    assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+                    managedPolicies: [
+                        iam.ManagedPolicy.fromAwsManagedPolicyName(
+                            'service-role/AmazonAPIGatewayPushToCloudWatchLogs',
+                        ),
+                    ],
+                });
+
+                account = new apigateway.CfnAccount(this, 'Account', {
+                    cloudWatchRoleArn: cloudWatchRole.roleArn,
+                });
+                account.addDependency(
+                    this.api.node.defaultChild as cdk.CfnResource,
+                );
             }
+
+            this.api.deploymentStage.node.addDependency(account);
         }
 
         // Store root resource
