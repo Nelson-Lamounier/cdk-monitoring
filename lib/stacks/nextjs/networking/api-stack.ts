@@ -195,10 +195,10 @@ export class NextJsApiStack extends cdk.Stack {
         // Retention is env-driven (7d dev / 14d prod).
         // =====================================================================
         this.lambdaDlqs = {
-            listArticles: this.createLambdaDlq('ListArticlesDlq', `${namePrefix}-list-articles-dlq-${envName}`, configs),
-            getArticle: this.createLambdaDlq('GetArticleDlq', `${namePrefix}-get-article-dlq-${envName}`, configs),
-            subscribe: this.createLambdaDlq('SubscribeDlq', `${namePrefix}-subscribe-dlq-${envName}`, configs),
-            verify: this.createLambdaDlq('VerifyDlq', `${namePrefix}-verify-dlq-${envName}`, configs),
+            listArticles: this.createLambdaDlq('ListArticlesDlq', configs),
+            getArticle: this.createLambdaDlq('GetArticleDlq', configs),
+            subscribe: this.createLambdaDlq('SubscribeDlq', configs),
+            verify: this.createLambdaDlq('VerifyDlq', configs),
         };
 
         // =====================================================================
@@ -566,14 +566,18 @@ export class NextJsApiStack extends cdk.Stack {
     // PRIVATE HELPERS
     // =========================================================================
 
-    /** Creates a per-function Dead Letter Queue. */
+    /**
+     * Creates a per-function Dead Letter Queue.
+     *
+     * No hardcoded queueName — CloudFormation generates a unique name from
+     * the logical ID, preventing 'already exists' collisions on stack
+     * rollback/re-creation (especially with RemovalPolicy.RETAIN).
+     */
     private createLambdaDlq(
         id: string,
-        queueName: string,
         configs: { dlq: { retentionPeriod: cdk.Duration }; removalPolicy: cdk.RemovalPolicy },
     ): sqs.Queue {
         return new sqs.Queue(this, id, {
-            queueName,
             encryption: sqs.QueueEncryption.KMS_MANAGED,
             enforceSSL: true,
             retentionPeriod: configs.dlq.retentionPeriod,

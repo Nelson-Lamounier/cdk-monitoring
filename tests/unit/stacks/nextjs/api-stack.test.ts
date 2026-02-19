@@ -195,18 +195,7 @@ describe('NextJsApiStack', () => {
             template.resourceCountIs('AWS::SQS::Queue', 4);
         });
 
-        it('should use correct naming for DLQs', () => {
-            const { template } = createApiStack({
-                targetEnvironment: Environment.PRODUCTION,
-                verificationSecret: 'test-production-secret',
-            });
-            template.hasResourceProperties('AWS::SQS::Queue', {
-                QueueName: Match.stringLikeRegexp('list-articles-dlq.*production'),
-            });
-            template.hasResourceProperties('AWS::SQS::Queue', {
-                QueueName: Match.stringLikeRegexp('subscribe-dlq.*production'),
-            });
-        });
+
 
         it('should enforce SSL on DLQ queues (AwsSolutions-SQS4)', () => {
             const { template } = createApiStack();
