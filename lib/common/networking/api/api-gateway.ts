@@ -315,6 +315,24 @@ export class ApiGatewayConstruct extends Construct {
             endpointTypes: [apigateway.EndpointType.REGIONAL],
         });
 
+        // =====================================================================
+        // CLOUDWATCH LOGS ROLE — DEPENDENCY FIX
+        //
+        // CDK's RestApi auto-creates a CfnAccount + IAM role for CloudWatch
+        // Logs (cloudWatchRole defaults to true). However, CloudFormation may
+        // deploy the Stage before the CfnAccount is applied, causing:
+        //   "CloudWatch Logs role ARN must be set in account settings"
+        //
+        // Fix: add an explicit dependency from the deployment stage to CDK's
+        // auto-created Account resource so the role is registered first.
+        // =====================================================================
+        if (enableLogging) {
+            const account = this.api.node.tryFindChild('Account');
+            if (account) {
+                this.api.deploymentStage.node.addDependency(account);
+            }
+        }
+
         // Store root resource
         this.resources.set('/', this.api.root);
 

@@ -145,6 +145,12 @@ describe('NextJsApiStack', () => {
                 }),
             });
         });
+
+        it('should have API Gateway account resource for CloudWatch Logs role', () => {
+            const { template } = createApiStack();
+            // CDK auto-creates CfnAccount + IAM role when cloudWatchRole=true (default)
+            template.resourceCountIs('AWS::ApiGateway::Account', 1);
+        });
     });
 
     describe('Throttling Configuration', () => {
