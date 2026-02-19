@@ -361,6 +361,17 @@ export class NextJsDataStack extends cdk.Stack {
             'AWS region for Next.js application',
             ssmPolicy,
         );
+
+        // Publish DynamoDB KMS key ARN so the API stack can grant decrypt
+        // permissions to Lambda roles (required for customer-managed encryption)
+        if (dynamoEncryptionKey) {
+            this.createSsmParameter(
+                'SsmDynamoDbKmsKeyArn', paths.dynamodbKmsKeyArn,
+                dynamoEncryptionKey.keyArn,
+                'KMS key ARN for DynamoDB encryption (cross-stack discovery)',
+                ssmPolicy,
+            );
+        }
         // =================================================================
         // CDK NAG SUPPRESSIONS & TAGS
         // =================================================================

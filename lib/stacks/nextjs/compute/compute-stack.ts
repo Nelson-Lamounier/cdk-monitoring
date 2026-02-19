@@ -115,6 +115,15 @@ export interface NextJsComputeStackProps extends cdk.StackProps {
     readonly dynamoTableArns?: string[];
 
     /**
+     * SSM parameter path for DynamoDB KMS key ARN (customer-managed).
+     * When provided, task role gets kms:Decrypt + kms:DescribeKey
+     * to read from the encrypted table during SSR.
+     * Resolved at deploy time via SSM, matching the monitoringSgSsmPath pattern.
+     * @example '/nextjs/production/dynamodb-kms-key-arn'
+     */
+    readonly dynamoKmsKeySsmPath?: string;
+
+    /**
      * Optional permissions boundary ARN for all roles
      */
     readonly permissionsBoundaryArn?: string;
@@ -334,6 +343,24 @@ export class NextJsComputeStack extends cdk.Stack {
                         // GSI access (e.g. gsi1-status-date for article listings)
                         ...props.dynamoTableArns.map((arn) => `${arn}/index/*`),
                     ],
+                })
+            );
+        }
+
+        // KMS Decrypt for DynamoDB customer-managed encryption key
+        // Without this, SSR queries fail with AccessDeniedException when
+        // the table uses a customer-managed KMS key (production).
+        // Resolved from SSM at deploy time (same pattern as monitoringSgSsmPath).
+        if (props.dynamoKmsKeySsmPath) {
+            const dynamoKmsKeyArn = ssm.StringParameter.valueForStringParameter(
+                this, props.dynamoKmsKeySsmPath,
+            );
+            this.taskRole.addToPolicy(
+                new iam.PolicyStatement({
+                    sid: 'KmsDecryptDynamoDb',
+                    effect: iam.Effect.ALLOW,
+                    actions: ['kms:Decrypt', 'kms:DescribeKey'],
+                    resources: [dynamoKmsKeyArn],
                 })
             );
         }

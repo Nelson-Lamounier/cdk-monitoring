@@ -79,6 +79,8 @@ export interface NextjsSsmPaths {
     // --- Data Stack resources ---
     /** DynamoDB table name parameter */
     readonly dynamodbTableName: string;
+    /** DynamoDB KMS key ARN (customer-managed, production only) */
+    readonly dynamodbKmsKeyArn: string;
     /** S3 assets bucket name parameter */
     readonly assetsBucketName: string;
     /** API Gateway URL parameter */
@@ -139,6 +141,7 @@ export function nextjsSsmPaths(
 
         // Data Stack resources
         dynamodbTableName: `${prefix}/dynamodb-table-name`,
+        dynamodbKmsKeyArn: `${prefix}/dynamodb-kms-key-arn`,
         assetsBucketName: `${prefix}/assets-bucket-name`,
         apiGatewayUrl: `${prefix}/api-gateway-url`,
         awsRegion: `${prefix}/aws-region`,

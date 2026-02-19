@@ -226,6 +226,9 @@ export class ConsolidatedNextJSFactory implements IProjectFactory<ConsolidatedFa
             dynamoTableArns: [
                 `arn:aws:dynamodb:${env.region}:${env.account}:table/${resourceNames.dynamoTableName}`,
             ],
+            // KMS key for DynamoDB encryption (customer-managed, published to SSM by data stack)
+            // Required for SSR queries — without this, kms:Decrypt fails on encrypted table reads
+            dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
             // Wire monitoring SG for Prometheus scraping (port 9100 + 3000)
             // Resolved inside Compute stack via SSM to avoid cross-stack exports
             monitoringSgSsmPath: monitoringSsm.securityGroupId,
