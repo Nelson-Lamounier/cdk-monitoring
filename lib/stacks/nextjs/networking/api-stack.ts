@@ -1,18 +1,23 @@
 /** @format */
 
 /**
- * NextJS API Stack
+ * NextJS API Stack — Email Subscriptions Only
  *
- * Serverless API Gateway with Lambda functions for portfolio webapp.
+ * Serverless API Gateway with Lambda functions for email subscriptions.
  *
  * Architecture:
- * Client -> CloudFront -> API Gateway -> Lambda -> DynamoDB/S3/SES
+ * Client -> API Gateway -> Lambda -> DynamoDB/SES
+ *
+ * NOTE: Article endpoints were removed — articles are served directly by
+ * the ECS container via SSR → DynamoDB (see compute-stack.ts + application-stack.ts).
  *
  * This stack creates:
  * - API Gateway REST API with CloudWatch logging
- * - Lambda functions for article operations (list, get)
- * - Lambda functions for email subscription operations (subscribe, verify)
- * - IAM permissions for Lambda to access DynamoDB, S3, and SES
+ * - Lambda functions for email subscriptions (subscribe + verify)
+ * - Per-function Dead Letter Queues
+ * - DLQ CloudWatch Alarms with SNS notification
+ * - Regional WAF protection
+ * - SSM parameter for API URL discovery Lambda to access DynamoDB, S3, and SES
  * - CloudWatch Log Groups with retention policies
  * - CloudWatch Alarms on DLQs with SNS email notifications
  * - CORS configuration for frontend integration
@@ -27,6 +32,7 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudwatch_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -40,7 +46,6 @@ import { Construct } from 'constructs';
 import { LambdaFunctionConstruct } from '../../../common/compute/constructs/lambda-function';
 import { ApiGatewayConstruct } from '../../../common/networking/api/api-gateway';
 import { buildWafRules } from '../../../common/security/waf-rules';
-import { PORTFOLIO_GSI1_NAME, PORTFOLIO_GSI2_NAME } from '../../../config/defaults';
 import {
     Environment,
 } from '../../../config/environments';
@@ -163,7 +168,7 @@ export class NextJsApiStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props: NextJsApiStackProps) {
         super(scope, id, {
             ...props,
-            description: `Serverless API for ${props.projectName ?? 'nextjs'} portfolio`,
+            description: `Subscriptions API for ${props.projectName ?? 'nextjs'} portfolio`,
         });
 
         this.targetEnvironment = props.targetEnvironment;
@@ -200,8 +205,6 @@ export class NextJsApiStack extends cdk.Stack {
         // Retention is env-driven (7d dev / 14d prod).
         // =====================================================================
         this.lambdaDlqs = {
-            listArticles: this.createLambdaDlq('ListArticlesDlq', configs),
-            getArticle: this.createLambdaDlq('GetArticleDlq', configs),
             subscribe: this.createLambdaDlq('SubscribeDlq', configs),
             verify: this.createLambdaDlq('VerifyDlq', configs),
         };
@@ -255,7 +258,7 @@ export class NextJsApiStack extends cdk.Stack {
         this.api = new ApiGatewayConstruct(this, 'ArticlesApi', {
             apiName: 'portfolio-api',
             environment: props.targetEnvironment,
-            description: `Portfolio API for ${projectName} (articles + subscriptions)`,
+            description: `Portfolio API for ${projectName} (subscriptions)`,
             namePrefix,
 
             // From centralized config
@@ -308,63 +311,18 @@ export class NextJsApiStack extends cdk.Stack {
             );
         }
 
-        // =====================================================================
-        // LAMBDA FUNCTIONS - ARTICLES
-        // =====================================================================
-
-        // Shared environment variables for article Lambda functions
-        const articleEnvVars = {
-            TABLE_NAME: tableName,
-            ASSETS_BUCKET_NAME: bucketName,
-            GSI1_NAME: PORTFOLIO_GSI1_NAME,
-            GSI2_NAME: PORTFOLIO_GSI2_NAME,
-            ENVIRONMENT: props.targetEnvironment,
-            LOG_LEVEL: configs.lambda.logLevel,
-        };
-
-        // List Articles Lambda
-        const listArticlesLambda = new LambdaFunctionConstruct(this, 'ListArticlesLambda', {
-            functionName: `${namePrefix}-list-articles-${props.targetEnvironment}`,
-            description: 'List published articles from DynamoDB',
-            entry: 'lambda/articles/list.ts',
-            handler: 'handler',
-            timeout: configs.lambda.timeout,
-            memorySize: allocations.lambda.memoryMiB,
-            reservedConcurrentExecutions: allocations.lambda.reservedConcurrency,
-            logRetention: configs.lambda.logRetention,
-            namePrefix,
-            environment: articleEnvVars,
-            deadLetterQueue: this.lambdaDlqs.listArticles,
-        });
-
-        // Get Article Lambda
-        const getArticleLambda = new LambdaFunctionConstruct(this, 'GetArticleLambda', {
-            functionName: `${namePrefix}-get-article-${props.targetEnvironment}`,
-            description: 'Get single article by slug from DynamoDB',
-            entry: 'lambda/articles/get.ts',
-            handler: 'handler',
-            timeout: configs.lambda.timeout,
-            memorySize: allocations.lambda.memoryMiB,
-            reservedConcurrentExecutions: allocations.lambda.reservedConcurrency,
-            logRetention: configs.lambda.logRetention,
-            namePrefix,
-            environment: articleEnvVars,
-            deadLetterQueue: this.lambdaDlqs.getArticle,
-        });
-
-        // Grant DynamoDB read access to article Lambda functions
-        table.grantReadData(listArticlesLambda.function);
-        table.grantReadData(getArticleLambda.function);
-
-        // IMPORTANT: Table.fromTableName() does not include GSI sub-resources
-        // in grantReadData(). We must explicitly grant Query access on all
-        // GSIs so the list-articles Lambda can query gsi1-status-date.
-        const gsiPolicy = new iam.PolicyStatement({
-            actions: ['dynamodb:Query'],
-            resources: [`${table.tableArn}/index/*`],
-        });
-        listArticlesLambda.function.addToRolePolicy(gsiPolicy);
-        getArticleLambda.function.addToRolePolicy(gsiPolicy);
+        // =================================================================
+        // KMS DECRYPT GRANT (customer-managed encryption)
+        //
+        // Table.fromTableName() creates an unencrypted reference — so
+        // grantReadWriteData() only grants DynamoDB actions, NOT kms:Decrypt.
+        // In production the table uses a customer-managed KMS key, so we
+        // must read the key ARN from SSM and grant encrypt/decrypt explicitly.
+        // =================================================================
+        const kmsKeyArnParam = ssm.StringParameter.valueForStringParameter(
+            this, ssmPaths.dynamodbKmsKeyArn,
+        );
+        const dynamoKmsKey = kms.Key.fromKeyArn(this, 'ImportedDynamoKmsKey', kmsKeyArnParam);
 
         // =====================================================================
         // LAMBDA FUNCTIONS - EMAIL SUBSCRIPTIONS
@@ -440,6 +398,11 @@ export class NextJsApiStack extends cdk.Stack {
         table.grantReadWriteData(subscribeLambda.function);
         table.grantReadWriteData(verifyLambda.function);
 
+        // KMS grants for subscription Lambdas (read-write needs encrypt + decrypt)
+        // Table.fromTableName() doesn't propagate encryption key, so explicit grant needed.
+        dynamoKmsKey.grantEncryptDecrypt(subscribeLambda.function);
+        dynamoKmsKey.grantEncryptDecrypt(verifyLambda.function);
+
         // Grant SES SendEmail permission — scoped to the verified sender identity
         subscribeLambda.function.addToRolePolicy(
             new iam.PolicyStatement({
@@ -471,12 +434,6 @@ export class NextJsApiStack extends cdk.Stack {
             },
         });
 
-        // --- Articles ---
-        // GET /articles - List published articles
-        const listArticlesMethod = this.api.addLambdaIntegration('GET', '/articles', listArticlesLambda.function);
-
-        // GET /articles/{slug} - Get article by slug
-        const getArticleMethod = this.api.addLambdaIntegration('GET', '/articles/{slug}', getArticleLambda.function);
 
         // --- Email Subscriptions ---
         // POST /subscriptions - Create email subscription (with request body validation)
@@ -490,26 +447,7 @@ export class NextJsApiStack extends cdk.Stack {
         // =====================================================================
         // CDK-NAG SUPPRESSIONS
         // =====================================================================
-        const publicApiReason = 'Public read-only API for portfolio articles - authentication not required';
         const subscriptionApiReason = 'Public subscription endpoint - email verification provides security via HMAC token';
-
-        NagSuppressions.addResourceSuppressions(
-            listArticlesMethod,
-            [
-                { id: 'AwsSolutions-APIG4', reason: publicApiReason },
-                { id: 'AwsSolutions-COG4', reason: publicApiReason },
-            ],
-            true
-        );
-
-        NagSuppressions.addResourceSuppressions(
-            getArticleMethod,
-            [
-                { id: 'AwsSolutions-APIG4', reason: publicApiReason },
-                { id: 'AwsSolutions-COG4', reason: publicApiReason },
-            ],
-            true
-        );
 
         NagSuppressions.addResourceSuppressions(
             subscribeMethod,
@@ -531,7 +469,7 @@ export class NextJsApiStack extends cdk.Stack {
 
         // Suppress CKV_AWS_59: Public portfolio API — no authorizer needed.
         // Same rationale as AwsSolutions-APIG4/COG4 suppressions above.
-        for (const method of [listArticlesMethod, getArticleMethod, subscribeMethod, verifyMethod]) {
+        for (const method of [subscribeMethod, verifyMethod]) {
             const cfnMethod = method.node.defaultChild as cdk.CfnResource;
             cfnMethod.addMetadata('checkov', {
                 skip: [{

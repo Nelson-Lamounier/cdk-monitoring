@@ -587,18 +587,6 @@ async function checkApiGateway(): Promise<CheckResult> {
     let passed = 0;
     let failed = 0;
 
-    // Test GET /articles (should return 200 with empty or populated list)
-    const articlesCode = await httpCheck(`${apiUrl}articles`, 15_000);
-    if ([200, 404].includes(articlesCode)) {
-      logger.success(`GET /articles: HTTP ${articlesCode}`);
-      passed++;
-    } else if (articlesCode === 500) {
-      logger.error(`GET /articles: HTTP ${articlesCode} (server error)`);
-      failed++;
-    } else {
-      logger.warn(`GET /articles: HTTP ${articlesCode}`);
-    }
-
     // Test OPTIONS /subscriptions (CORS preflight)
     try {
       const controller = new AbortController();
@@ -900,153 +888,6 @@ async function checkEcsSsrDataAccess(): Promise<CheckResult> {
   }
 }
 
-// ==========================================================================
-// CHECK 12: Article Source Validation (DynamoDB vs MDX Fallback)
-// Confirms articles are served from DynamoDB (directly for SSR, via API
-// Gateway for external access), not from file-based MDX fallback baked
-// into the Docker image.
-// ==========================================================================
-async function checkArticleSource(): Promise<CheckResult> {
-  logger.task('Validating article data source (DynamoDB vs MDX fallback)...');
-
-  try {
-    // Step 1: Get articles directly from API Gateway
-    const apiStackName = project!.stacks.find((s) => s.id === 'api')?.getStackName(environment);
-    if (!apiStackName) {
-      logger.warn('API stack not found in project config');
-      return { name: 'Article Source', status: 'skipped', critical: false };
-    }
-
-    const apiUrl = await getStackOutput(apiStackName, 'ApiUrl');
-    if (!apiUrl) {
-      logger.warn('Could not discover API Gateway URL');
-      return { name: 'Article Source', status: 'skipped', critical: false };
-    }
-
-    // Fetch articles from API Gateway directly
-    const apiController = new AbortController();
-    const apiTimeout = setTimeout(() => apiController.abort(), 15_000);
-    const apiResponse = await fetch(`${apiUrl}articles`, {
-      signal: apiController.signal,
-    });
-    clearTimeout(apiTimeout);
-
-    if (!apiResponse.ok) {
-      logger.warn(`API Gateway /articles returned HTTP ${apiResponse.status}`);
-      return {
-        name: 'Article Source',
-        status: 'degraded',
-        critical: false,
-        details: `API returned HTTP ${apiResponse.status}`,
-      };
-    }
-
-    const apiData = await apiResponse.json() as {
-      articles?: Array<{ slug?: string; title?: string; pk?: string; sk?: string }>;
-    };
-    const apiArticles = apiData.articles ?? [];
-
-    if (apiArticles.length === 0) {
-      logger.warn('DynamoDB has 0 articles — cannot validate source');
-      return {
-        name: 'Article Source',
-        status: 'degraded',
-        critical: false,
-        details: 'No articles in DynamoDB to validate against',
-      };
-    }
-
-    logger.success(`API Gateway returned ${apiArticles.length} article(s) from DynamoDB`);
-
-    // Step 2: Check that the articles have DynamoDB metadata (pk/sk or slug)
-    const hasDynamoFields = apiArticles.some(
-      (a) => a.pk || a.sk || a.slug,
-    );
-    if (!hasDynamoFields) {
-      logger.warn('Articles missing DynamoDB fields (pk, sk, slug)');
-      return {
-        name: 'Article Source',
-        status: 'degraded',
-        critical: false,
-        details: 'Articles lack expected DynamoDB schema fields',
-      };
-    }
-
-    // Step 3: If ALB is available, check the rendered page references these articles
-    if (albDns) {
-      const pageController = new AbortController();
-      const pageTimeout = setTimeout(() => pageController.abort(), 30_000);
-      const pageResponse = await fetch(`http://${albDns}/articles`, {
-        signal: pageController.signal,
-        redirect: 'follow',
-      });
-      clearTimeout(pageTimeout);
-
-      if (pageResponse.ok) {
-        const html = await pageResponse.text();
-
-        // Check if article slugs from DynamoDB appear in the rendered page
-        const slugsFound = apiArticles.filter(
-          (a) => a.slug && html.includes(a.slug),
-        );
-
-        if (slugsFound.length > 0) {
-          logger.success(
-            `${slugsFound.length}/${apiArticles.length} DynamoDB article slug(s) found in rendered page`,
-          );
-          return {
-            name: 'Article Source',
-            status: 'healthy',
-            critical: false,
-            details: `${slugsFound.length} DynamoDB articles confirmed on page`,
-          };
-        }
-
-        // Check for fallback indicators
-        const fallbackIndicators = [
-          'USE_FILE_FALLBACK',
-          'file-based',
-          'mdx',
-        ];
-        const hasFallback = fallbackIndicators.some((indicator) =>
-          html.toLowerCase().includes(indicator.toLowerCase()),
-        );
-
-        if (hasFallback) {
-          logger.error(
-            'Articles page appears to use MDX file fallback — DynamoDB integration not active',
-          );
-          return {
-            name: 'Article Source',
-            status: 'unhealthy',
-            critical: false,
-            details: 'Page using file-based fallback instead of DynamoDB',
-          };
-        }
-
-        logger.warn(
-          'Could not confirm DynamoDB slugs in rendered page (may be using client-side rendering)',
-        );
-      }
-    }
-
-    // API Gateway returned articles from DynamoDB — that's the primary signal
-    return {
-      name: 'Article Source',
-      status: 'healthy',
-      critical: false,
-      details: `${apiArticles.length} articles from DynamoDB (API Gateway external, direct SSR)`,
-    };
-  } catch (err) {
-    logger.warn(`Article source check failed: ${(err as Error).message}`);
-    return {
-      name: 'Article Source',
-      status: 'skipped',
-      critical: false,
-      details: (err as Error).message,
-    };
-  }
-}
 
 // ==========================================================================
 // Main
@@ -1078,7 +919,6 @@ async function main(): Promise<void> {
     await checkCloudFront(),
     await checkStaticAssets(),
     await checkEcsSsrDataAccess(),
-    await checkArticleSource(),
   ];
 
   // Determine overall status

@@ -9,7 +9,7 @@
  * - Request validation (AwsSolutions-APIG2)
  * - Throttling configuration
  * - Per-function dead letter queues (all environments, env-driven retention)
- * - Lambda functions (articles + subscriptions)
+ * - Lambda functions (subscriptions only — article Lambdas removed)
  * - SES permissions for subscription Lambda
  * - Stack outputs
  */
@@ -174,8 +174,8 @@ describe('NextJsApiStack', () => {
                 targetEnvironment: Environment.PRODUCTION,
                 verificationSecret: 'test-production-secret',
             });
-            // 4 per-function DLQs
-            template.resourceCountIs('AWS::SQS::Queue', 4);
+            // 2 per-function DLQs (subscribe + verify)
+            template.resourceCountIs('AWS::SQS::Queue', 2);
         });
 
         it('should use KMS encryption for DLQ', () => {
@@ -192,8 +192,8 @@ describe('NextJsApiStack', () => {
             const { template } = createApiStack({
                 targetEnvironment: Environment.DEVELOPMENT,
             });
-            // 4 per-function DLQs
-            template.resourceCountIs('AWS::SQS::Queue', 4);
+            // 2 per-function DLQs (subscribe + verify)
+            template.resourceCountIs('AWS::SQS::Queue', 2);
         });
 
 
@@ -214,9 +214,9 @@ describe('NextJsApiStack', () => {
     });
 
     describe('DLQ CloudWatch Alarms', () => {
-        it('should create 4 CloudWatch alarms (one per DLQ)', () => {
+        it('should create 2 CloudWatch alarms (one per DLQ)', () => {
             const { template } = createApiStack();
-            template.resourceCountIs('AWS::CloudWatch::Alarm', 4);
+            template.resourceCountIs('AWS::CloudWatch::Alarm', 2);
         });
 
         it('should create SNS topic for DLQ alarm notifications', () => {
@@ -246,21 +246,6 @@ describe('NextJsApiStack', () => {
         });
     });
 
-    describe('Lambda Functions - Articles', () => {
-        it('should create list-articles Lambda function', () => {
-            const { template } = createApiStack();
-            template.hasResourceProperties('AWS::Lambda::Function', {
-                FunctionName: Match.stringLikeRegexp('list-articles'),
-            });
-        });
-
-        it('should create get-article Lambda function', () => {
-            const { template } = createApiStack();
-            template.hasResourceProperties('AWS::Lambda::Function', {
-                FunctionName: Match.stringLikeRegexp('get-article'),
-            });
-        });
-    });
 
     describe('Lambda Functions - Email Subscriptions', () => {
         it('should create subscribe Lambda function', () => {
@@ -277,10 +262,10 @@ describe('NextJsApiStack', () => {
             });
         });
 
-        it('should create 4 Lambda functions + 1 custom resource provider', () => {
+        it('should create 2 Lambda functions + 1 custom resource provider', () => {
             const { template } = createApiStack();
-            // 4 business Lambdas + 1 AwsCustomResource provider for SSM parameter
-            template.resourceCountIs('AWS::Lambda::Function', 5);
+            // 2 business Lambdas (subscribe + verify) + 1 AwsCustomResource provider for SSM parameter
+            template.resourceCountIs('AWS::Lambda::Function', 3);
         });
 
         it('should grant SES SendEmail permission to subscribe Lambda', () => {
@@ -369,7 +354,7 @@ describe('NextJsApiStack', () => {
                 verificationSecret: 'test-production-secret',
             });
             expect(stack.lambdaDlqs).toBeDefined();
-            expect(Object.keys(stack.lambdaDlqs)).toHaveLength(4);
+            expect(Object.keys(stack.lambdaDlqs)).toHaveLength(2);
         });
 
         it('should throw if production has no verificationSecret', () => {
@@ -383,7 +368,7 @@ describe('NextJsApiStack', () => {
                 targetEnvironment: Environment.DEVELOPMENT,
             });
             expect(stack.lambdaDlqs).toBeDefined();
-            expect(Object.keys(stack.lambdaDlqs)).toHaveLength(4);
+            expect(Object.keys(stack.lambdaDlqs)).toHaveLength(2);
         });
     });
 
