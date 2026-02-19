@@ -142,7 +142,7 @@ describe('NextJS Factory — Integration', () => {
                 '/monitoring-development/security-group/id',
             );
             // Loki endpoint used by Application stack for Promtail
-            expect(monitoringPaths.lokiEndpoint).toBe('/monitoring/loki/endpoint');
+            expect(monitoringPaths.lokiEndpoint).toBe('/monitoring-development/loki/endpoint');
         });
     });
 

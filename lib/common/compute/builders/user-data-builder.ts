@@ -89,6 +89,12 @@ export interface MonitoringStackS3Config {
     grafanaPassword?: string;
     /** AWS region @default 'eu-west-1' */
     region?: string;
+    /**
+     * SSM parameter prefix for storing monitoring endpoints.
+     * Uses the monitoring prefix convention: /monitoring-{environment}
+     * @example '/monitoring-production'
+     */
+    ssmPrefix: string;
 }
 
 /**
@@ -549,17 +555,27 @@ fi
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+SSM_PREFIX="${config.ssmPrefix}"
 
-# Store Loki endpoint in SSM for cross-stack discovery
+# Store Loki and Tempo endpoints in SSM for cross-stack discovery
+# SSM path uses the monitoring prefix convention: /monitoring-{environment}
 LOKI_ENDPOINT="http://$PRIVATE_IP:3100/loki/api/v1/push"
-echo "=== Storing Loki endpoint in SSM ==="
+TEMPO_ENDPOINT="http://$PRIVATE_IP:4317"
+echo "=== Storing monitoring endpoints in SSM ==="
 echo "Loki endpoint: $LOKI_ENDPOINT"
+echo "Tempo endpoint: $TEMPO_ENDPOINT"
 aws ssm put-parameter \\
-  --name "/monitoring/loki/endpoint" \\
+  --name "$SSM_PREFIX/loki/endpoint" \\
   --value "$LOKI_ENDPOINT" \\
   --type "String" \\
   --overwrite \\
   --region "$REGION" || echo "WARNING: Failed to store Loki endpoint in SSM"
+aws ssm put-parameter \\
+  --name "$SSM_PREFIX/tempo/endpoint" \\
+  --value "$TEMPO_ENDPOINT" \\
+  --type "String" \\
+  --overwrite \\
+  --region "$REGION" || echo "WARNING: Failed to store Tempo endpoint in SSM"
 
 echo "=== Monitoring stack setup complete ==="
 echo "Access via SSM port forwarding (SSM-only security model):"

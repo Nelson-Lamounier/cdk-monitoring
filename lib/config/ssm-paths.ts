@@ -264,7 +264,7 @@ export function monitoringSsmPaths(environment: Environment): MonitoringSsmPaths
     return {
         prefix,
         securityGroupId: `${prefix}/security-group/id`,
-        lokiEndpoint: '/monitoring/loki/endpoint',
-        tempoEndpoint: '/monitoring/tempo/endpoint',
+        lokiEndpoint: `${prefix}/loki/endpoint`,
+        tempoEndpoint: `${prefix}/tempo/endpoint`,
     };
 }
