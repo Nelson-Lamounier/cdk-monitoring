@@ -374,7 +374,11 @@ jobs:
   deploy-data:
     name: Deploy Data
     needs: [setup, validate-templates, security-scan, drift-detection]
-    if: always() && needs.setup.result == 'success' && needs.validate-templates.result == 'success'
+    if: >-
+      always()
+      && needs.setup.result == 'success'
+      && needs.validate-templates.result == 'success'
+      && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.data-stack }}
@@ -601,6 +605,49 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Rollback (Conditional — staging/production only)
+  #
+  # Triggers when Application deployed successfully but verification or smoke
+  # tests failed. Rolls back the Application stack CloudFormation to the
+  # previous known-good template. Only targets Application — Data, Compute,
+  # Networking, API, and Edge are left intact.
+  # ===========================================================================
+  rollback:
+    name: Rollback Application
+    needs: [setup, deploy-application, verify-service, smoke-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    if: |-
+      always()
+      && needs.deploy-application.result == 'success'
+      && (needs.verify-service.result == 'failure' || needs.smoke-tests.result == 'failure')
+      && inputs.cdk-environment != 'development'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Rollback Application Stack
+        id: rollback
+        run: npx tsx scripts/deployment/rollback.ts "${{ needs.setup.outputs.application-stack }}" --region ${{ env.AWS_REGION }}
+
+  # ===========================================================================
   # Deployment Summary (via deployment-summary.ts)
   # ===========================================================================
   summary:
@@ -618,6 +665,7 @@ jobs:
       - sync-static-assets
       - verify-service
       - smoke-tests
+      - rollback
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -669,5 +717,6 @@ jobs:
           VERIFY_RESULT: ${{ needs.verify-service.result || 'skipped' }}
           SMOKE_TESTS_RESULT: ${{ needs.smoke-tests.result || 'skipped' }}
           SYNC_ASSETS_RESULT: ${{ needs.sync-static-assets.result || 'skipped' }}
+          ROLLBACK_RESULT: ${{ needs.rollback.result || 'skipped' }}
           COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
         run: yarn tsx scripts/deployment/deployment-summary.ts nextjs ${{ inputs.cdk-environment }}

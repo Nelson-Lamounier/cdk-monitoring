@@ -1,34 +1,16 @@
 # @format
-# @description Deploy Monitoring to Production - Uses immutable artifacts from staging
+# @description Deploy Monitoring to Production — Manual Only
+# Requires typing "DEPLOY" to confirm. No auto-deploy on push.
 
 name: Deploy Monitoring to Production
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      # Monitoring-specific
-      - "lib/stacks/monitoring/**"
-      - "lib/projects/monitoring/**"
-      - "lib/config/monitoring/**"
-      - "scripts/monitoring/**"
-      # Shared infrastructure (used by monitoring constructs)
-      - "lib/config/*.ts"
-      - "lib/common/**"
-      - "lib/factories/**"
-      - "lib/aspects/**"
-      - "lib/shared/**"
-      - "lib/utilities/**"
-      - "bin/app.ts"
-      # Workflow files
-      - ".github/workflows/deploy-monitoring-prod.yml"
-      - ".github/workflows/_deploy-monitoring.yml"
-      - ".github/workflows/_deploy-stack.yml"
-      - ".github/workflows/_verify-stack.yml"
-      - ".github/actions/**"
   workflow_dispatch:
     inputs:
+      confirm-deployment:
+        description: 'Type "DEPLOY" to confirm production deployment'
+        required: true
+        type: string
       staging_run_id:
         description: "Staging workflow run ID to deploy (leave empty for latest)"
         type: string
@@ -49,7 +31,7 @@ concurrency:
 
 jobs:
   # ===========================================================================
-  # Pre-Flight: Retrieve Staging Artifact
+  # Pre-Flight: Validate DEPLOY Gate + Retrieve Staging Artifact
   # ===========================================================================
   preflight:
     name: Pre-Flight Checks
@@ -60,6 +42,14 @@ jobs:
       staging-run-id: ${{ steps.artifact.outputs.run_id }}
 
     steps:
+      - name: Validate Deployment Confirmation
+        run: |
+          if [ "${{ inputs.confirm-deployment }}" != "DEPLOY" ]; then
+            echo "ERROR: Deployment not confirmed. Type 'DEPLOY' to proceed."
+            exit 1
+          fi
+          echo "✓ Production deployment confirmed"
+
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
