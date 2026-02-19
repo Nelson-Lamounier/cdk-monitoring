@@ -9,12 +9,22 @@ on:
     branches:
       - main
     paths:
+      # NextJS-specific
       - "lib/stacks/nextjs/**"
       - "lib/projects/nextjs/**"
+      - "lib/config/nextjs/**"
+      # Shared infrastructure (used by NextJS constructs)
+      - "lib/config/*.ts"
       - "lib/common/**"
+      - "lib/factories/**"
+      - "lib/aspects/**"
+      - "lib/shared/**"
+      - "lib/utilities/**"
       - "bin/app.ts"
+      # Workflow files
       - ".github/workflows/_deploy-nextjs.yml"
       - ".github/workflows/deploy-nextjs-prod.yml"
+      - ".github/actions/**"
   workflow_dispatch:
     inputs:
       confirm-deployment:

@@ -8,8 +8,20 @@ on:
     branches:
       - main
     paths:
-      - "lib/**"
-      - "bin/stacks/monitoring/**"
+      # Monitoring-specific
+      - "lib/stacks/monitoring/**"
+      - "lib/projects/monitoring/**"
+      - "lib/config/monitoring/**"
+      - "scripts/monitoring/**"
+      # Shared infrastructure (used by monitoring constructs)
+      - "lib/config/*.ts"
+      - "lib/common/**"
+      - "lib/factories/**"
+      - "lib/aspects/**"
+      - "lib/shared/**"
+      - "lib/utilities/**"
+      - "bin/app.ts"
+      # Workflow files
       - ".github/workflows/deploy-monitoring-prod.yml"
       - ".github/workflows/_deploy-monitoring.yml"
       - ".github/workflows/_deploy-stack.yml"
