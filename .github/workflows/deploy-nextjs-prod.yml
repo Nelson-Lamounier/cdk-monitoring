@@ -47,15 +47,19 @@ jobs:
       - name: Validate Confirmation
         id: check
         run: |
-          if [ "${{ inputs.confirm-deployment }}" != "DEPLOY" ]; then
-            echo "ERROR: Deployment not confirmed. Type 'DEPLOY' to proceed."
-            exit 1
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            if [ "${{ inputs.confirm-deployment }}" != "DEPLOY" ]; then
+              echo "ERROR: Deployment not confirmed. Type 'DEPLOY' to proceed."
+              exit 1
+            fi
+            echo "✓ Deployment confirmed (manual trigger)"
+          else
+            echo "✓ Automatic deployment via push to main"
           fi
           echo "proceed=true" >> $GITHUB_OUTPUT
-          echo "✓ Deployment confirmed"
 
       - name: Check Staging Status
-        if: inputs.skip-staging-check != true
+        if: github.event_name == 'push' || inputs.skip-staging-check != true
         run: |
           echo "Verifying staging deployment was successful..."
           # In a full implementation, this would check the latest staging run
@@ -97,7 +101,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "NextJS application has been deployed to production." >> $GITHUB_STEP_SUMMARY
           else
-            echo "## ❌ Production Deployment Failed" >> $GITHUB_STEP_SUMMARY
+            echo "## Production Deployment Failed" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Review the deployment logs for details." >> $GITHUB_STEP_SUMMARY
           fi
