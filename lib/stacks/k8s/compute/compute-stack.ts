@@ -369,13 +369,16 @@ export class K8sComputeStack extends cdk.Stack {
         // =====================================================================
         // User Data (k3s bootstrap)
         //
-        // ORDERING: cfn-signal is sent after critical infrastructure
-        // (system update, AWS CLI, EBS attach) but BEFORE k3s install.
-        // This prevents k3s install failures from blocking the cfn-signal,
-        // which would cause CREATE_FAILED with 0 SUCCESS signals.
+        // ORDERING: cfn-signal fires after critical infra (AWS CLI, EBS)
+        // but BEFORE dnf update.
         //
-        // k3s install happens after signaling — if it fails, the instance
-        // is accessible via SSM for debugging and manual re-run.
+        //   installAwsCli → attachEbs → sendCfnSignal → updateSystem → k3s
+        //
+        // Why: dnf update takes 10-15 min on cold boot, which exceeds the
+        // 15-min signal timeout → "0 SUCCESS signals" → rollback.
+        // EBS attach is critical (k3s persistent storage), so we signal
+        // only after confirming it's mounted. AWS CLI is needed for
+        // EBS attach (aws ec2 attach-volume).
         //
         // skipPreamble: true because CDK's UserData.forLinux() already adds
         // the shebang line. We add the logging preamble here.
@@ -388,17 +391,19 @@ export class K8sComputeStack extends cdk.Stack {
         );
 
         new UserDataBuilder(userData, { skipPreamble: true })
-            .updateSystem()
             .installAwsCli()
             .attachEbsVolume({
                 volumeId: ebsVolume.volumeId,
                 mountPoint: configs.storage.mountPoint,
             })
+            // Signal after EBS attach (critical infra confirmed) but
+            // BEFORE dnf update (the 10-15 min cold-boot bottleneck).
             .sendCfnSignal({
                 stackName: this.stackName,
                 asgLogicalId,
                 region: this.region,
             })
+            .updateSystem()
             .installK3s({
                 channel: configs.cluster.channel,
                 dataDir: configs.cluster.dataDir,
