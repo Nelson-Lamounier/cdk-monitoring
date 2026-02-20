@@ -339,9 +339,12 @@ echo "Volume ID: $VOLUME_ID"
 # Wait for volume to become available (handles ASG rolling update race condition).
 # During rolling updates the lifecycle hook Lambda detaches the volume from the
 # old instance. This may take 10-30s. Poll until the volume is available.
-EBS_MAX_WAIT=120
+# If it's still attached after 120s, force-detach it.
+EBS_MAX_WAIT=300
+EBS_FORCE_DETACH_AFTER=120
 EBS_POLL_INTERVAL=10
 EBS_WAITED=0
+EBS_FORCE_DETACHED=false
 
 while true; do
     VOLUME_STATE=$(aws ec2 describe-volumes --volume-ids $VOLUME_ID --query "Volumes[0].State" --output text --region $REGION 2>/dev/null || echo "not-found")
@@ -363,7 +366,15 @@ while true; do
             echo "Volume is already attached to this instance"
             break
         fi
-        echo "Volume attached to $ATTACHED_INSTANCE (terminating). Waiting for detach..."
+
+        # Force-detach if the old instance hasn't released the volume after 120s
+        if [ $EBS_WAITED -ge $EBS_FORCE_DETACH_AFTER ] && [ "$EBS_FORCE_DETACHED" = "false" ]; then
+            echo "WARNING: Volume still attached to $ATTACHED_INSTANCE after \${EBS_FORCE_DETACH_AFTER}s. Force-detaching..."
+            aws ec2 detach-volume --volume-id $VOLUME_ID --instance-id $ATTACHED_INSTANCE --force --region $REGION || true
+            EBS_FORCE_DETACHED=true
+        else
+            echo "Volume attached to $ATTACHED_INSTANCE (terminating). Waiting for detach..."
+        fi
 
     elif [ "$VOLUME_STATE" = "detaching" ]; then
         echo "Volume is detaching from old instance. Waiting..."
