@@ -22,14 +22,14 @@
       "type": "table",
       "id": 1,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 1 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  account_id AS \"Account\",\n  region AS \"Region\",\n  instance_id AS \"Instance ID\",\n  tags ->> 'Name' AS \"Name\",\n  instance_type AS \"Type\",\n  instance_state AS \"State\",\n  public_ip_address AS \"Public IP\",\n  launch_time AS \"Launched\"\nFROM\n  aws_all.aws_ec2_instance\nORDER BY\n  account_id, instance_state, launch_time DESC;",
@@ -66,14 +66,14 @@
       "type": "table",
       "id": 2,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  account_id AS \"Account\",\n  name AS \"Bucket Name\",\n  region AS \"Region\",\n  versioning_status AS \"Versioning\",\n  CASE\n    WHEN server_side_encryption_configuration IS NOT NULL THEN 'Encrypted'\n    ELSE 'NOT ENCRYPTED'\n  END AS \"Encryption\",\n  bucket_policy_is_public AS \"Public\",\n  creation_date AS \"Created\"\nFROM\n  aws_all.aws_s3_bucket\nORDER BY\n  account_id, name;",
@@ -130,14 +130,14 @@
       "type": "table",
       "id": 3,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  account_id AS \"Account\",\n  user_name AS \"User\",\n  password_last_used AS \"Last Login\",\n  create_date AS \"Created\"\nFROM\n  aws_all.aws_iam_user\nWHERE\n  mfa_enabled = false\n  AND user_name != 'root'\nORDER BY\n  account_id, user_name;",
@@ -152,14 +152,14 @@
       "type": "table",
       "id": 4,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 6, "w": 12, "x": 12, "y": 18 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  sg.account_id AS \"Account\",\n  sg.group_name AS \"Security Group\",\n  sg.group_id AS \"SG ID\",\n  perm ->> 'IpProtocol' AS \"Protocol\",\n  perm ->> 'FromPort' AS \"From Port\",\n  perm ->> 'ToPort' AS \"To Port\"\nFROM\n  aws_all.aws_vpc_security_group sg,\n  jsonb_array_elements(ip_permissions) AS perm,\n  jsonb_array_elements(perm -> 'IpRanges') AS ip_range\nWHERE\n  ip_range ->> 'CidrIp' = '0.0.0.0/0'\nORDER BY\n  sg.account_id, sg.group_name;",
@@ -174,14 +174,14 @@
       "type": "stat",
       "id": 5,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 24 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  COUNT(*) AS \"count\"\nFROM\n  aws_all.aws_s3_bucket\nWHERE\n  bucket_policy_is_public = true;",
@@ -213,14 +213,14 @@
       "type": "stat",
       "id": 6,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 24 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  COUNT(*) AS \"count\"\nFROM\n  aws_all.aws_s3_bucket\nWHERE\n  server_side_encryption_configuration IS NULL;",
@@ -252,14 +252,14 @@
       "type": "stat",
       "id": 7,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 4, "w": 6, "x": 12, "y": 24 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  COUNT(*) AS \"count\"\nFROM\n  aws_all.aws_iam_user\nWHERE\n  mfa_enabled = false\n  AND user_name != 'root';",
@@ -292,14 +292,14 @@
       "type": "stat",
       "id": 8,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 24 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  COUNT(DISTINCT sg.group_id) AS \"count\"\nFROM\n  aws_all.aws_vpc_security_group sg,\n  jsonb_array_elements(ip_permissions) AS perm,\n  jsonb_array_elements(perm -> 'IpRanges') AS ip_range\nWHERE\n  ip_range ->> 'CidrIp' = '0.0.0.0/0';",
@@ -339,14 +339,14 @@
       "type": "table",
       "id": 9,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 6, "w": 12, "x": 0, "y": 29 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  account_id AS \"Account\",\n  volume_id AS \"Volume ID\",\n  volume_type AS \"Type\",\n  size AS \"Size (GB)\",\n  state AS \"State\",\n  create_time AS \"Created\"\nFROM\n  aws_all.aws_ebs_volume\nWHERE\n  jsonb_array_length(attachments) = 0\n  OR attachments IS NULL\nORDER BY\n  size DESC;",
@@ -361,14 +361,14 @@
       "type": "table",
       "id": 10,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 6, "w": 12, "x": 12, "y": 29 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  account_id AS \"Account\",\n  allocation_id AS \"Allocation ID\",\n  public_ip AS \"Public IP\",\n  region AS \"Region\"\nFROM\n  aws_all.aws_vpc_eip\nWHERE\n  instance_id IS NULL\n  AND network_interface_id IS NULL\nORDER BY\n  account_id;",
@@ -383,14 +383,14 @@
       "type": "barchart",
       "id": 11,
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "steampipe"
       },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 35 },
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "steampipe"
           },
           "rawSql": "SELECT\n  account_id AS \"Account\",\n  'EC2' AS \"Resource\",\n  COUNT(*) AS \"Count\"\nFROM aws_all.aws_ec2_instance\nGROUP BY account_id\n\nUNION ALL\n\nSELECT\n  account_id,\n  'S3',\n  COUNT(*)\nFROM aws_all.aws_s3_bucket\nGROUP BY account_id\n\nUNION ALL\n\nSELECT\n  account_id,\n  'Lambda',\n  COUNT(*)\nFROM aws_all.aws_lambda_function\nGROUP BY account_id\n\nUNION ALL\n\nSELECT\n  account_id,\n  'IAM Users',\n  COUNT(*)\nFROM aws_all.aws_iam_user\nGROUP BY account_id\n\nORDER BY \"Account\", \"Resource\";",
