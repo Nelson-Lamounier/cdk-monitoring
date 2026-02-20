@@ -75,7 +75,7 @@ export class K8sProjectFactory implements IProjectFactory<K8sFactoryContext> {
      */
     createAllStacks(scope: cdk.App, context: K8sFactoryContext): ProjectStackFamily {
         const environment = context.environment ?? this.environment;
-        const envConfig = getEnvironmentConfig(environment);
+        const _envConfig = getEnvironmentConfig(environment);
         const configs = getK8sConfigs(environment);
 
         const namePrefix = `k8s-${environment}`;

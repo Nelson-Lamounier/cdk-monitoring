@@ -17,8 +17,10 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
+import {
+    K3S_DEFAULT_CHANNEL,
+} from '../defaults';
 import { Environment } from '../environments';
-import { K3S_DEFAULT_CHANNEL } from '../defaults';
 
 // =============================================================================
 // TYPE DEFINITIONS

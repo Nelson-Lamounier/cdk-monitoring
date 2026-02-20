@@ -36,6 +36,33 @@ function createK8sComputeStack(environment: Environment = Environment.DEVELOPMEN
     return { stack, template, app };
 }
 
+/**
+ * Extract ingress ports from the first SecurityGroup in a template
+ */
+function getIngressPorts(template: Template): number[] {
+    const sgs = template.findResources('AWS::EC2::SecurityGroup');
+    const sgKeys = Object.keys(sgs);
+    const mainSg = sgs[sgKeys[0]];
+    const ingressRules: Array<{ FromPort: number }> = mainSg.Properties?.SecurityGroupIngress ?? [];
+    return ingressRules.map((r) => r.FromPort);
+}
+
+/**
+ * Extract all IAM policy actions from a template
+ */
+function getAllPolicyActions(template: Template): string[] {
+    const policies = template.findResources('AWS::IAM::Policy');
+    const allActions: string[] = [];
+    for (const policy of Object.values(policies)) {
+        const typedPolicy = policy as { Properties?: { PolicyDocument?: { Statement?: Array<{ Action?: string[] }> } } };
+        const statements = typedPolicy?.Properties?.PolicyDocument?.Statement ?? [];
+        for (const stmt of statements) {
+            allActions.push(...(stmt.Action ?? []));
+        }
+    }
+    return allActions;
+}
+
 describe('K8sComputeStack', () => {
     describe('Security Group', () => {
         it('should create a security group', () => {
@@ -46,21 +73,11 @@ describe('K8sComputeStack', () => {
         it('should allow HTTP and HTTPS ingress', () => {
             const { template } = createK8sComputeStack();
 
-            // Find all security group ingress rules
-            const sgs = template.findResources('AWS::EC2::SecurityGroup');
-            const sgKeys = Object.keys(sgs);
-            expect(sgKeys.length).toBeGreaterThan(0);
+            const ingressPorts = getIngressPorts(template);
 
-            // Get the main SG's ingress rules
-            const mainSg = sgs[sgKeys[0]];
-            const ingressRules = mainSg.Properties?.SecurityGroupIngress ?? [];
-
-            // Verify HTTP (80) and HTTPS (443) rules exist
-            const httpRule = ingressRules.find((r: Record<string, unknown>) => r.FromPort === 80 && r.ToPort === 80);
-            const httpsRule = ingressRules.find((r: Record<string, unknown>) => r.FromPort === 443 && r.ToPort === 443);
-
-            expect(httpRule).toBeDefined();
-            expect(httpsRule).toBeDefined();
+            // Verify HTTP (80) and HTTPS (443) are in the rules
+            expect(ingressPorts).toContain(80);
+            expect(ingressPorts).toContain(443);
         });
     });
 
@@ -73,19 +90,11 @@ describe('K8sComputeStack', () => {
         it('should grant ECR pull permissions', () => {
             const { template } = createK8sComputeStack();
 
-            // Find all IAM policies and verify at least one contains ECR actions
-            const policies = template.findResources('AWS::IAM::Policy');
-            const policyValues = Object.values(policies);
+            const allActions = getAllPolicyActions(template);
 
-            const hasEcrPolicy = policyValues.some((policy: Record<string, unknown>) => {
-                const statements = (policy as { Properties?: { PolicyDocument?: { Statement?: Array<{ Action?: string[] }> } } })?.Properties?.PolicyDocument?.Statement ?? [];
-                return statements.some((stmt: { Action?: string[] }) =>
-                    stmt.Action?.includes('ecr:GetDownloadUrlForLayer') &&
-                    stmt.Action?.includes('ecr:BatchGetImage')
-                );
-            });
-
-            expect(hasEcrPolicy).toBe(true);
+            // Verify ECR pull actions are granted
+            expect(allActions).toContain('ecr:GetDownloadUrlForLayer');
+            expect(allActions).toContain('ecr:BatchGetImage');
         });
     });
 

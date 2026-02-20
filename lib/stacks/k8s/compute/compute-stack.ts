@@ -36,8 +36,6 @@ import {
     LaunchTemplateConstruct,
     UserDataBuilder,
 } from '../../../common/index';
-import { K8sConfigs } from '../../../config/k8s';
-import { Environment } from '../../../config/environments';
 import {
     K3S_API_PORT,
     TRAEFIK_HTTP_PORT,
@@ -45,6 +43,8 @@ import {
     PROMETHEUS_PORT,
     NODE_EXPORTER_PORT,
 } from '../../../config/defaults';
+import { Environment } from '../../../config/environments';
+import { K8sConfigs } from '../../../config/k8s';
 
 // =============================================================================
 // PROPS
