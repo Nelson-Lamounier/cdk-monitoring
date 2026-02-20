@@ -26,6 +26,17 @@ MAX_RETRIES=${MAX_RETRIES:-6}
 RETRY_DELAY=${RETRY_DELAY:-10}
 MONITORING_DIR=${MONITORING_DIR:-/opt/monitoring}
 DISK_THRESHOLD=${DISK_THRESHOLD:-85}
+
+# Source .env from monitoring directory if available (contains GRAFANA_ADMIN_PASSWORD
+# set by SSM document during instance boot). Without this, authenticated Grafana API
+# calls fail because the smoke test defaults to admin:admin.
+if [ -f "${MONITORING_DIR}/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${MONITORING_DIR}/.env"
+  set +a
+fi
+
 GRAFANA_URL="http://localhost:3000"
 GRAFANA_USER="${GRAFANA_ADMIN_USER:-admin}"
 GRAFANA_PASS="${GRAFANA_ADMIN_PASSWORD:-admin}"
@@ -36,8 +47,8 @@ NODE_EXPORTER_URL="http://localhost:9100"
 PROMTAIL_URL="http://localhost:9080"
 
 # Expected counts
-EXPECTED_DASHBOARDS=9
-EXPECTED_DATASOURCES=4
+EXPECTED_DASHBOARDS=7
+EXPECTED_DATASOURCES=5
 
 # Colors
 RED='\033[0;31m'
