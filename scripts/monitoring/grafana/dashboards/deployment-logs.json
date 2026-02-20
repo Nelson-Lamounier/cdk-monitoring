@@ -37,7 +37,7 @@
           "logGroups": [
             {
               "arn": "",
-              "name": "/aws/lambda/nextjs-subscribe-$environment"
+              "name": "/aws/lambda/nextjs-subscribe-production"
             }
           ],
           "namespace": "",
@@ -77,7 +77,7 @@
           "logGroups": [
             {
               "arn": "",
-              "name": "/aws/lambda/nextjs-get-article-$environment"
+              "name": "/aws/lambda/nextjs-get-article-production"
             }
           ],
           "namespace": "",
@@ -115,10 +115,10 @@
           "expression": "filter @message like /ERROR|Error|error|Exception|Runtime\\.ImportModuleError|Task timed out/\n| stats count(*) as errors by bin(5m)",
           "id": "",
           "logGroups": [
-            { "arn": "", "name": "/aws/lambda/nextjs-subscribe-$environment" },
-            { "arn": "", "name": "/aws/lambda/nextjs-get-article-$environment" },
-            { "arn": "", "name": "/aws/lambda/nextjs-list-articles-$environment" },
-            { "arn": "", "name": "/aws/lambda/nextjs-verify-subscription-$environment" }
+            { "arn": "", "name": "/aws/lambda/nextjs-subscribe-production" },
+            { "arn": "", "name": "/aws/lambda/nextjs-get-article-production" },
+            { "arn": "", "name": "/aws/lambda/nextjs-list-articles-production" },
+            { "arn": "", "name": "/aws/lambda/nextjs-verify-subscription-production" }
           ],
           "namespace": "",
           "queryMode": "Logs",
@@ -217,7 +217,7 @@
           "logGroups": [
             {
               "arn": "",
-              "name": "/ecs/nextjs/nextjs-app-$environment"
+              "name": "/ecs/nextjs/nextjs-app-production"
             }
           ],
           "namespace": "",
@@ -257,7 +257,7 @@
           "logGroups": [
             {
               "arn": "",
-              "name": "/ecs/nextjs/promtail-$environment"
+              "name": "/ecs/nextjs/promtail-production"
             }
           ],
           "namespace": "",
@@ -297,7 +297,7 @@
           "logGroups": [
             {
               "arn": "",
-              "name": "/ecs/nextjs/node-exporter-$environment"
+              "name": "/ecs/nextjs/node-exporter-production"
             }
           ],
           "namespace": "",
@@ -342,7 +342,7 @@
               "expression": "fields @timestamp, @message, @logStream\n| filter @message not like /START RequestId|END RequestId|REPORT RequestId/\n| sort @timestamp desc\n| limit 200",
               "id": "",
               "logGroups": [
-                { "arn": "", "name": "/aws/lambda/nextjs-alb-acm-validation-$environment" }
+                { "arn": "", "name": "/aws/lambda/nextjs-alb-acm-validation-production" }
               ],
               "namespace": "",
               "queryMode": "Logs",
@@ -390,7 +390,7 @@
               "logGroups": [
                 {
                   "arn": "",
-                  "name": "/ec2/monitoring-$environment/instances"
+                  "name": "/ec2/monitoring-production/instances"
                 }
               ],
               "namespace": "",
@@ -416,26 +416,6 @@
   "tags": ["cloudwatch", "deployment", "lambda", "api-gateway", "ecs"],
   "templating": {
     "list": [
-      {
-        "current": {
-          "selected": true,
-          "text": "production",
-          "value": "production"
-        },
-        "hide": 0,
-        "includeAll": false,
-        "label": "Environment",
-        "multi": false,
-        "name": "environment",
-        "options": [
-          { "selected": false, "text": "development", "value": "development" },
-          { "selected": false, "text": "staging", "value": "staging" },
-          { "selected": true, "text": "production", "value": "production" }
-        ],
-        "query": "development,staging,production",
-        "skipUrlSync": false,
-        "type": "custom"
-      },
       {
         "current": {
           "selected": false,
