@@ -59,6 +59,31 @@ if [ -n "${S3_BUCKET}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 1b. Clean stale nodes from previous instances
+#
+# k3s stores cluster state on the persistent EBS volume (/data/k3s).
+# When a new instance boots, the old ETCD data still contains node
+# registrations from terminated instances. These stale NotReady nodes
+# cause DaemonSets to schedule pods on dead nodes and block PVC binding.
+# ---------------------------------------------------------------------------
+echo "=== Step 1b: Cleaning stale nodes ==="
+
+CURRENT_NODE=$(kubectl get nodes -o jsonpath='{.items[?(@.status.conditions[-1:].status=="True")].metadata.name}' 2>/dev/null || echo "")
+echo "  Current Ready node(s): ${CURRENT_NODE:-none}"
+
+STALE_NODES=$(kubectl get nodes -o jsonpath='{.items[?(@.status.conditions[-1:].status!="True")].metadata.name}' 2>/dev/null || echo "")
+if [ -n "${STALE_NODES}" ]; then
+    for node in $STALE_NODES; do
+        echo "  → Deleting stale node: ${node}"
+        kubectl delete node "${node}" --force --ignore-not-found 2>/dev/null || true
+    done
+    echo "✓ Stale nodes cleaned"
+else
+    echo "✓ No stale nodes found"
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
 # 2. Resolve secrets from SSM (if not already set via env)
 # ---------------------------------------------------------------------------
 resolve_secret() {
