@@ -143,14 +143,14 @@ cdk-monitoring/
 │   ├── deploy-*-dev.yml        #   Environment-specific triggers
 │   ├── deploy-*-staging.yml
 │   ├── deploy-*-prod.yml
-│   └── sync-dashboards.yml     #   Grafana dashboard sync to S3
+│   └── sync-monitoring-configs.yml #   Monitoring config sync to S3 + EC2
 ├── scripts/
 │   ├── deployment/             # 20 deployment scripts
 │   │   ├── cli.ts              #   Interactive CLI (33,000 lines)
 │   │   ├── smoke-tests-nextjs.ts # Post-deploy smoke tests (1,150 lines, 9 checks)
 │   │   ├── drift-detection.ts  #   CloudFormation drift detection
 │   │   ├── rollback.ts         #   Stack rollback automation
-│   │   ├── sync-dashboards.ts  #   Grafana dashboard S3 sync
+│   │   ├── sync-monitoring-configs.ts #   Monitoring config S3 sync + reload
 │   │   ├── verify-deployment.ts
 │   │   └── verify-nextjs.ts
 │   ├── bootstrap/              # CDK bootstrapping scripts
@@ -201,7 +201,7 @@ yarn cli:deploy             # Deploy stacks
 yarn cli:diff               # Show changes vs. deployed
 yarn cli:destroy            # Destroy stacks
 yarn cli:list               # List all stacks
-yarn cli:sync-dashboards    # Sync Grafana dashboards to S3
+yarn cli:sync-configs       # Sync monitoring configs to S3 + EC2
 ```
 
 ### Direct CDK Commands
@@ -311,7 +311,7 @@ The `.checkov/custom_checks/` directory contains 33 Python check classes across 
 | `_smoke-tests-nextjs.yml`     | Reusable | Post-deploy smoke tests (9 checks)       |
 | `_verify-stack.yml`           | Reusable | CloudFormation status verification       |
 | `deploy-*-{dev,staging,prod}` | Trigger  | Environment-specific deployment triggers |
-| `sync-dashboards.yml`         | Trigger  | Grafana dashboard sync to S3             |
+| `sync-monitoring-configs.yml` | Trigger  | Monitoring config sync to S3 + EC2       |
 
 ### Authentication
 

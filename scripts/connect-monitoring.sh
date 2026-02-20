@@ -18,8 +18,8 @@
 set -e
 
 # Configuration
-AWS_PROFILE="${AWS_PROFILE:-dev-account}"
-ENVIRONMENT="${ENVIRONMENT:-development}"
+AWS_PROFILE="${AWS_PROFILE:-prod-account}"
+ENVIRONMENT="${ENVIRONMENT:-production}"
 SERVICE="${1:-grafana}"
 
 # Remote port mappings (fixed — these are the ports on the EC2 instance)

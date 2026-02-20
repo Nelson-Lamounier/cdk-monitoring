@@ -615,12 +615,12 @@ program
   });
 
 // =============================================================================
-// DASHBOARD SYNC COMMAND
+// MONITORING CONFIG SYNC COMMAND
 // =============================================================================
 
 program
-  .command('sync-dashboards')
-  .description('Sync Grafana dashboards to S3 + EC2 (no full infrastructure deploy needed)')
+  .command('sync-configs')
+  .description('Sync monitoring configs to S3 + EC2 (no full infrastructure deploy needed)')
   .option('-e, --environment <env>', 'Environment (development, staging, production)')
   .option('--profile <profile>', 'AWS profile to use')
   .option('--region <region>', 'AWS region')
@@ -629,14 +629,14 @@ program
     const actualProfile = options.profile ?? profileMap[environment];
     const region = options.region ?? defaults.awsRegion;
 
-    logger.header('Sync Grafana Dashboards');
+    logger.header('Sync Monitoring Configs');
     logger.keyValue('Environment', environment);
     logger.keyValue('Profile', actualProfile);
     logger.keyValue('Region', region);
     logger.blank();
 
     const scriptArgs = [
-      'scripts/deployment/sync-dashboards.ts',
+      'scripts/deployment/sync-monitoring-configs.ts',
       environment,
       '--region', region,
     ];
@@ -646,7 +646,7 @@ program
 
     const result = await runCommand('npx', ['tsx', ...scriptArgs]);
     if (result.exitCode !== 0) {
-      logger.error('Dashboard sync failed');
+      logger.error('Monitoring config sync failed');
       process.exit(1);
     }
   });

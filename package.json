@@ -63,7 +63,7 @@
     "cli:diff": "tsx scripts/deployment/cli.ts diff",
     "cli:destroy": "tsx scripts/deployment/cli.ts destroy",
     "cli:list": "tsx scripts/deployment/cli.ts list",
-    "cli:sync-dashboards": "tsx scripts/deployment/cli.ts sync-dashboards"
+    "cli:sync-configs": "tsx scripts/deployment/cli.ts sync-configs"
   },
   "lint-staged": {
     "**/*.test.ts": [

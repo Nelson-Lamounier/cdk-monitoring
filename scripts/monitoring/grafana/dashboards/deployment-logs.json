@@ -13,7 +13,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "id": 100,
-      "title": "🔧 API Lambda Functions",
+      "title": "API Lambda Functions",
       "type": "row"
     },
     {
@@ -36,8 +36,8 @@
           "id": "",
           "logGroups": [
             {
-              "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/aws/lambda/nextjs-subscribe-development:*",
-              "name": "/aws/lambda/nextjs-subscribe-development"
+              "arn": "",
+              "name": "/aws/lambda/nextjs-subscribe-${environment}"
             }
           ],
           "namespace": "",
@@ -76,8 +76,8 @@
           "id": "",
           "logGroups": [
             {
-              "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/aws/lambda/nextjs-get-article-development:*",
-              "name": "/aws/lambda/nextjs-get-article-development"
+              "arn": "",
+              "name": "/aws/lambda/nextjs-get-article-${environment}"
             }
           ],
           "namespace": "",
@@ -115,10 +115,10 @@
           "expression": "filter @message like /ERROR|Error|error|Exception|Runtime\\.ImportModuleError|Task timed out/\n| stats count(*) as errors by bin(5m)",
           "id": "",
           "logGroups": [
-            { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/aws/lambda/nextjs-subscribe-development:*", "name": "/aws/lambda/nextjs-subscribe-development" },
-            { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/aws/lambda/nextjs-get-article-development:*", "name": "/aws/lambda/nextjs-get-article-development" },
-            { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/aws/lambda/nextjs-list-articles-development:*", "name": "/aws/lambda/nextjs-list-articles-development" },
-            { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/aws/lambda/nextjs-verify-subscription-development:*", "name": "/aws/lambda/nextjs-verify-subscription-development" }
+            { "arn": "", "name": "/aws/lambda/nextjs-subscribe-${environment}" },
+            { "arn": "", "name": "/aws/lambda/nextjs-get-article-${environment}" },
+            { "arn": "", "name": "/aws/lambda/nextjs-list-articles-${environment}" },
+            { "arn": "", "name": "/aws/lambda/nextjs-verify-subscription-${environment}" }
           ],
           "namespace": "",
           "queryMode": "Logs",
@@ -146,7 +146,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 19 },
       "id": 101,
-      "title": "🌐 API Gateway",
+      "title": "API Gateway",
       "type": "row"
     },
     {
@@ -169,8 +169,8 @@
           "id": "",
           "logGroups": [
             {
-              "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:API-Gateway-Execution-Logs_3twd0za7of/api:*",
-              "name": "API-Gateway-Execution-Logs_3twd0za7of/api"
+              "arn": "",
+              "name": "API-Gateway-Execution-Logs_${apigw_id}/api"
             }
           ],
           "namespace": "",
@@ -193,7 +193,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
       "id": 102,
-      "title": "📦 ECS Application",
+      "title": "ECS Application",
       "type": "row"
     },
     {
@@ -216,8 +216,8 @@
           "id": "",
           "logGroups": [
             {
-              "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/nextjs-app-development:*",
-              "name": "/ecs/nextjs/nextjs-app-development"
+              "arn": "",
+              "name": "/ecs/nextjs/nextjs-app-${environment}"
             }
           ],
           "namespace": "",
@@ -256,8 +256,8 @@
           "id": "",
           "logGroups": [
             {
-              "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/promtail-development:*",
-              "name": "/ecs/nextjs/promtail-development"
+              "arn": "",
+              "name": "/ecs/nextjs/promtail-${environment}"
             }
           ],
           "namespace": "",
@@ -296,8 +296,8 @@
           "id": "",
           "logGroups": [
             {
-              "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ecs/nextjs/node-exporter-development:*",
-              "name": "/ecs/nextjs/node-exporter-development"
+              "arn": "",
+              "name": "/ecs/nextjs/node-exporter-${environment}"
             }
           ],
           "namespace": "",
@@ -320,7 +320,7 @@
       "collapsed": true,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 55 },
       "id": 103,
-      "title": "⚙️ CDK Custom Resource Lambdas (Deployment-Time)",
+      "title": "CDK Custom Resource Lambdas (Deployment-Time)",
       "type": "row",
       "panels": [
         {
@@ -342,7 +342,7 @@
               "expression": "fields @timestamp, @message, @logStream\n| filter @message not like /START RequestId|END RequestId|REPORT RequestId/\n| sort @timestamp desc\n| limit 200",
               "id": "",
               "logGroups": [
-                { "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/aws/lambda/nextjs-alb-acm-validation-development:*", "name": "/aws/lambda/nextjs-alb-acm-validation-development" }
+                { "arn": "", "name": "/aws/lambda/nextjs-alb-acm-validation-${environment}" }
               ],
               "namespace": "",
               "queryMode": "Logs",
@@ -366,7 +366,7 @@
       "collapsed": true,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 56 },
       "id": 104,
-      "title": "🔍 Monitoring Infrastructure",
+      "title": "Monitoring Infrastructure",
       "type": "row",
       "panels": [
         {
@@ -389,8 +389,8 @@
               "id": "",
               "logGroups": [
                 {
-                  "arn": "arn:aws:logs:eu-west-1:771826808455:log-group:/ec2/monitoring-development/instances:*",
-                  "name": "/ec2/monitoring-development/instances"
+                  "arn": "",
+                  "name": "/ec2/monitoring-${environment}/instances"
                 }
               ],
               "namespace": "",
@@ -415,7 +415,45 @@
   "schemaVersion": 39,
   "tags": ["cloudwatch", "deployment", "lambda", "api-gateway", "ecs"],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "development",
+          "value": "development"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "environment",
+        "options": [
+          { "selected": true, "text": "development", "value": "development" },
+          { "selected": false, "text": "staging", "value": "staging" },
+          { "selected": false, "text": "production", "value": "production" }
+        ],
+        "query": "development,staging,production",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "3twd0za7of",
+          "value": "3twd0za7of"
+        },
+        "description": "API Gateway REST API ID (changes per environment deployment)",
+        "hide": 0,
+        "label": "API Gateway ID",
+        "name": "apigw_id",
+        "options": [
+          { "selected": true, "text": "3twd0za7of", "value": "3twd0za7of" }
+        ],
+        "query": "3twd0za7of",
+        "skipUrlSync": false,
+        "type": "textbox"
+      }
+    ]
   },
   "time": {
     "from": "now-3h",

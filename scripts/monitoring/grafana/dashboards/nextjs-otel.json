@@ -22,7 +22,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "id": 100,
-      "title": "📊 Data Source Overview",
+      "title": "Data Source Overview",
       "type": "row"
     },
     {
@@ -124,7 +124,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
       "id": 200,
-      "title": "⚡ DynamoDB Performance",
+      "title": "DynamoDB Performance",
       "type": "row"
     },
     {
@@ -202,7 +202,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
       "id": 300,
-      "title": "💾 Cache Effectiveness",
+      "title": "Cache Effectiveness",
       "type": "row"
     },
     {
@@ -321,7 +321,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
       "id": 400,
-      "title": "🔥 Article Service Latency",
+      "title": "Article Service Latency",
       "type": "row"
     },
     {
@@ -399,7 +399,29 @@
   "schemaVersion": 39,
   "tags": ["nextjs", "otel", "dynamodb", "cache"],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": ["All"],
+          "value": ["$__all"]
+        },
+        "hide": 0,
+        "includeAll": true,
+        "label": "Environment",
+        "multi": true,
+        "name": "environment",
+        "options": [
+          { "selected": false, "text": "development", "value": "development" },
+          { "selected": false, "text": "staging", "value": "staging" },
+          { "selected": false, "text": "production", "value": "production" }
+        ],
+        "query": "development,staging,production",
+        "skipUrlSync": false,
+        "type": "custom"
+      }
+    ]
   },
   "time": {
     "from": "now-1h",
@@ -407,7 +429,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Next.js Application Metrics (OTel)",
+  "title": "Article Service Metrics",
   "uid": "nextjs-otel-metrics",
   "version": 1
 }

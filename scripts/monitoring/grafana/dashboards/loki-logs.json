@@ -69,33 +69,6 @@
         "type": "loki",
         "uid": "loki"
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
-      "id": 3,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      },
-      "targets": [
-        {
-          "expr": "{job=\"containerlogs\"}",
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Container Logs",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
       "id": 4,
       "options": {

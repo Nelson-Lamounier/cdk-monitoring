@@ -429,6 +429,7 @@ export class NextJsApiStack extends cdk.Stack {
                 properties: {
                     email: { type: apigateway.JsonSchemaType.STRING },
                     name: { type: apigateway.JsonSchemaType.STRING, minLength: 1, maxLength: 100 },
+                    source: { type: apigateway.JsonSchemaType.STRING, minLength: 1, maxLength: 50 },
                 },
                 additionalProperties: false,
             },

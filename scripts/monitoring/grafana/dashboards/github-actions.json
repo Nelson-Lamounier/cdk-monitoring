@@ -22,7 +22,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "id": 100,
-      "title": "📊 Overview",
+      "title": "Overview",
       "type": "row"
     },
     {
@@ -197,7 +197,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
       "id": 101,
-      "title": "⏱️ Workflow Duration Trends",
+      "title": "Workflow Duration Trends",
       "type": "row"
     },
     {
@@ -264,7 +264,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
       "id": 102,
-      "title": "📋 Breakdown",
+      "title": "Breakdown",
       "type": "row"
     },
     {
@@ -421,7 +421,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 },
       "id": 103,
-      "title": "📝 Recent Workflow Runs",
+      "title": "Recent Workflow Runs",
       "type": "row"
     },
     {
@@ -437,11 +437,11 @@
           "mappings": [
             {
               "options": {
-                "0": { "color": "red", "index": 0, "text": "❌ Failed" },
-                "1": { "color": "green", "index": 1, "text": "✅ Success" },
-                "2": { "color": "yellow", "index": 2, "text": "⏭️ Skipped" },
-                "3": { "color": "blue", "index": 3, "text": "🔄 In Progress" },
-                "4": { "color": "purple", "index": 4, "text": "⏳ Queued" }
+                "0": { "color": "red", "index": 0, "text": "Failed" },
+                "1": { "color": "green", "index": 1, "text": "Success" },
+                "2": { "color": "yellow", "index": 2, "text": "Skipped" },
+                "3": { "color": "blue", "index": 3, "text": "In Progress" },
+                "4": { "color": "purple", "index": 4, "text": "Queued" }
               },
               "type": "value"
             }
@@ -546,7 +546,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 42 },
       "id": 104,
-      "title": "⏱️ Workflow Usage (Billable)",
+      "title": "Workflow Usage (Billable)",
       "type": "row"
     },
     {
