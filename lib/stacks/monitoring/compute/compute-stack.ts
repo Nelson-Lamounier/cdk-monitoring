@@ -31,8 +31,8 @@ import {
     SecurityGroupConstruct,
     DEFAULT_MONITORING_PORTS,
 } from '../../../common/security/security-group';
-import { nextjsSsmPaths } from '../../../config/ssm-paths';
 import { Environment } from '../../../config/environments';
+import { nextjsSsmPaths } from '../../../config/ssm-paths';
 
 
 /**

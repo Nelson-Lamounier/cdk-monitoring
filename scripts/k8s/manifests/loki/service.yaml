@@ -1,4 +1,6 @@
 # @format
+# Loki service — NodePort for cross-stack access
+# NodePort 30100 allows ECS tasks to push logs via host IP
 apiVersion: v1
 kind: Service
 metadata:
@@ -7,13 +9,14 @@ metadata:
   labels:
     app: loki
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: loki
   ports:
     - name: http
       port: 3100
       targetPort: http
+      nodePort: 30100
       protocol: TCP
     - name: grpc
       port: 9096

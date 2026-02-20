@@ -48,6 +48,20 @@ resources:
   # Ingress
   - traefik/ingress.yaml
 
+# Grafana dashboards — loaded from JSON files via configMapGenerator
+configMapGenerator:
+  - name: grafana-dashboards
+    namespace: monitoring
+    files:
+      - grafana/dashboards/deployment-logs.json
+      - grafana/dashboards/github-actions.json
+      - grafana/dashboards/loki-logs.json
+      - grafana/dashboards/nextjs-app-metrics.json
+      - grafana/dashboards/nextjs-otel.json
+
+generatorOptions:
+  disableNameSuffixHash: true
+
 labels:
   - pairs:
       app.kubernetes.io/managed-by: kustomize

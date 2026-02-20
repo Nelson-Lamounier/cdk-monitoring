@@ -666,9 +666,12 @@ k3s kubectl get namespaces`);
     /**
      * Download k8s manifests from S3 and deploy to k3s.
      *
-     * Downloads the complete k8s manifests bundle from S3 (synced via CDK
-     * BucketDeployment), substitutes secret placeholders from SSM, and
-     * applies all resources via `kubectl apply -k`.
+     * Downloads the k8s bundle from S3 (synced via CDK BucketDeployment)
+     * and delegates to `deploy-manifests.sh` for secret resolution,
+     * manifest application, and SSM endpoint registration.
+     *
+     * This keeps UserData slim — all k8s logic lives in the deploy
+     * script which can also be triggered via SSM Run Command from CI/CD.
      *
      * @param config - S3 bucket and manifest configuration
      * @remarks **k8s project** - Requires k3s and kubectl to be configured.
@@ -682,58 +685,31 @@ k3s kubectl get namespaces`);
 
         this.userData.addCommands(`
 # =============================================================================
-# Deploy k8s Monitoring Manifests
+# Deploy k8s Monitoring Manifests (first boot)
+# Downloads bundle from S3, then delegates to deploy-manifests.sh
+# Subsequent deployments are triggered via SSM Run Command from CI/CD
 # =============================================================================
 
 echo "=== Downloading k8s manifests from S3 ==="
-MANIFESTS_DIR="${manifestsDir}"
-mkdir -p $MANIFESTS_DIR
+K8S_DIR="${manifestsDir}"
+mkdir -p $K8S_DIR
 
-# Sync the k8s bundle from S3 (manifests + deploy script)
-aws s3 sync s3://${config.s3BucketName}/${s3KeyPrefix}/ $MANIFESTS_DIR/ --region ${region}
-echo "k8s manifests downloaded to $MANIFESTS_DIR"
+aws s3 sync s3://${config.s3BucketName}/${s3KeyPrefix}/ $K8S_DIR/ --region ${region}
+echo "k8s bundle downloaded to $K8S_DIR"
 
-# Restore execute permissions on scripts
-find $MANIFESTS_DIR -name '*.sh' -exec chmod +x {} +
+# Restore execute permissions lost during S3 sync
+find $K8S_DIR -name '*.sh' -exec chmod +x {} +
 
-# Resolve secrets from SSM for manifest templating
-SSM_PREFIX="${ssmPrefix}"
-REGION="${region}"
-
-echo "Resolving secrets from SSM..."
-GRAFANA_PASS=$(aws ssm get-parameter --name "$SSM_PREFIX/grafana-admin-password" --with-decryption --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "admin")
-GH_TOKEN=$(aws ssm get-parameter --name "$SSM_PREFIX/github-token" --with-decryption --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
-
-# Substitute secret placeholders in manifests
-if [ -f "$MANIFESTS_DIR/manifests/grafana/secret.yaml" ]; then
-    sed -i "s|__GRAFANA_ADMIN_PASSWORD__|$GRAFANA_PASS|g" "$MANIFESTS_DIR/manifests/grafana/secret.yaml"
-    echo "  ✓ Grafana admin password injected"
-fi
-if [ -f "$MANIFESTS_DIR/manifests/github-actions-exporter/deployment.yaml" ] && [ -n "$GH_TOKEN" ]; then
-    sed -i "s|__GITHUB_TOKEN__|$GH_TOKEN|g" "$MANIFESTS_DIR/manifests/github-actions-exporter/deployment.yaml"
-    echo "  ✓ GitHub token injected"
-fi
-
-# Apply all manifests via kustomize (k3s includes kustomize support)
-echo "Applying k8s manifests..."
+# Run the deploy script (handles secrets, kubectl apply, SSM endpoints)
 export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig
-k3s kubectl apply -k $MANIFESTS_DIR/manifests/
+export SSM_PREFIX="${ssmPrefix}"
+export AWS_REGION="${region}"
+export MANIFESTS_DIR="$K8S_DIR/manifests"
 
-# Wait for core deployments to be ready (best-effort, non-blocking)
-echo "Waiting for monitoring pods to be ready..."
-for deploy in prometheus grafana loki tempo; do
-    k3s kubectl rollout status deployment/$deploy -n monitoring --timeout=180s 2>/dev/null || echo "  ⚠ $deploy not ready within timeout"
-done
+echo "Running deploy-manifests.sh..."
+$K8S_DIR/deploy-manifests.sh
 
-for ds in promtail node-exporter; do
-    k3s kubectl rollout status daemonset/$ds -n monitoring --timeout=120s 2>/dev/null || echo "  ⚠ $ds not ready within timeout"
-done
-
-echo ""
-echo "=== k8s Monitoring Stack Summary ==="
-k3s kubectl get pods -n monitoring -o wide
-k3s kubectl get svc -n monitoring
-echo "=== Monitoring stack deployment complete ==="`);
+echo "=== k8s first-boot deployment complete ==="`);
         return this;
     }
 

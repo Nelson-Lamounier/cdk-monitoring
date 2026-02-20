@@ -18,6 +18,7 @@ on:
       - "lib/projects/k8s/**"
       - "lib/stacks/k8s/**"
       - "lib/common/compute/builders/user-data-builder.ts"
+      - "scripts/k8s/**"
       - "bin/app.ts"
       - ".github/workflows/deploy-k8s-dev.yml"
       - ".github/workflows/_deploy-k8s.yml"

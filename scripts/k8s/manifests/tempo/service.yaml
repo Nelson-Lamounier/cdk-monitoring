@@ -1,4 +1,6 @@
 # @format
+# Tempo service — NodePort for cross-stack OTLP access
+# NodePort 30417 allows ECS tasks to send traces via host IP
 apiVersion: v1
 kind: Service
 metadata:
@@ -7,7 +9,7 @@ metadata:
   labels:
     app: tempo
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: tempo
   ports:
@@ -18,6 +20,7 @@ spec:
     - name: otlp-grpc
       port: 4317
       targetPort: otlp-grpc
+      nodePort: 30417
       protocol: TCP
     - name: otlp-http
       port: 4318

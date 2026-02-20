@@ -21,6 +21,8 @@
  * ```
  */
 
+import { NagSuppressions } from 'cdk-nag';
+
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -36,6 +38,7 @@ import { Construct } from 'constructs';
 import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
+    SsmRunCommandDocument,
     UserDataBuilder,
 } from '../../../common/index';
 import {
@@ -240,6 +243,28 @@ export class K8sComputeStack extends cdk.Stack {
         const asgLogicalId = asgCfnResource.logicalId;
 
         // =====================================================================
+        // S3 Access Logs Bucket (AwsSolutions-S1)
+        // =====================================================================
+        const accessLogsBucket = new s3.Bucket(this, 'K8sScriptsAccessLogsBucket', {
+            bucketName: `${namePrefix}-k8s-scripts-logs-${this.account}-${this.region}`,
+            encryption: s3.BucketEncryption.S3_MANAGED,
+            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+            removalPolicy: configs.removalPolicy,
+            autoDeleteObjects: !configs.isProduction,
+            enforceSSL: true,
+            lifecycleRules: [{
+                expiration: cdk.Duration.days(90),
+            }],
+        });
+
+        NagSuppressions.addResourceSuppressions(accessLogsBucket, [
+            {
+                id: 'AwsSolutions-S1',
+                reason: 'Access logs bucket cannot log to itself — this is the terminal logging destination',
+            },
+        ]);
+
+        // =====================================================================
         // S3 Bucket for k8s Scripts & Manifests
         // =====================================================================
         const scriptsBucket = new s3.Bucket(this, 'K8sScriptsBucket', {
@@ -250,6 +275,8 @@ export class K8sComputeStack extends cdk.Stack {
             blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
             enforceSSL: true,
             versioned: configs.isProduction,
+            serverAccessLogsBucket: accessLogsBucket,
+            serverAccessLogsPrefix: 'k8s-scripts-bucket/',
         });
 
         // Sync k8s manifests + deploy script from local
@@ -258,6 +285,71 @@ export class K8sComputeStack extends cdk.Stack {
             destinationBucket: scriptsBucket,
             destinationKeyPrefix: 'k8s',
             prune: true,
+        });
+
+        try {
+            NagSuppressions.addResourceSuppressionsByPath(
+                this,
+                `/${this.stackName}/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/Resource`,
+                [
+                    {
+                        id: 'AwsSolutions-L1',
+                        reason: 'BucketDeployment Lambda runtime is managed by CDK singleton — cannot override',
+                    },
+                ],
+            );
+        } catch {
+            // Suppression path may not exist in test environments — this is expected
+        }
+
+        // =====================================================================
+        // SSM Run Command Document (manifest deployment)
+        //
+        // Enables re-running deploy-manifests.sh without instance replacement.
+        // Triggered by:
+        //   - GitHub Actions pipeline (deploy-manifests job)
+        //   - Manual: aws ssm send-command --document-name <name> --targets ...
+        // =====================================================================
+        const manifestDeployDoc = new SsmRunCommandDocument(this, 'ManifestDeployDocument', {
+            documentName: `${namePrefix}-deploy-manifests`,
+            description: 'Deploy k8s monitoring manifests — re-syncs from S3, applies via kubectl',
+            parameters: {
+                S3Bucket: {
+                    type: 'String',
+                    description: 'S3 bucket containing k8s manifests',
+                    default: scriptsBucket.bucketName,
+                },
+                S3KeyPrefix: {
+                    type: 'String',
+                    description: 'S3 key prefix',
+                    default: 'k8s',
+                },
+                SsmPrefix: {
+                    type: 'String',
+                    description: 'SSM parameter prefix for secrets',
+                    default: props.ssmPrefix,
+                },
+                Region: {
+                    type: 'String',
+                    description: 'AWS region',
+                    default: this.region,
+                },
+            },
+            steps: [{
+                name: 'deployManifests',
+                commands: [
+                    'export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig',
+                    'export S3_BUCKET="{{S3Bucket}}"',
+                    'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
+                    'export SSM_PREFIX="{{SsmPrefix}}"',
+                    'export AWS_REGION="{{Region}}"',
+                    'export MANIFESTS_DIR=/data/k8s/manifests',
+                    '',
+                    '# Re-sync from S3 and run deploy script',
+                    '/data/k8s/deploy-manifests.sh',
+                ],
+                timeoutSeconds: 600,
+            }],
         });
 
         // =====================================================================
@@ -425,6 +517,16 @@ export class K8sComputeStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'KubectlPortForward', {
             value: `aws ssm start-session --target <instance-id> --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["6443"],"localPortNumber":["6443"]}' --region ${this.region}`,
             description: 'Port-forward K8s API via SSM (replace <instance-id>)',
+        });
+
+        new cdk.CfnOutput(this, 'ManifestDeployDocumentName', {
+            value: manifestDeployDoc.documentName,
+            description: 'SSM document name for manifest deployment (use with aws ssm send-command)',
+        });
+
+        new cdk.CfnOutput(this, 'ScriptsBucketName', {
+            value: scriptsBucket.bucketName,
+            description: 'S3 bucket containing k8s scripts and manifests',
         });
     }
 }
