@@ -61,6 +61,7 @@ datasources:
     uid: steampipe
     access: proxy
     url: steampipe:9193
+    user: steampipe
     isDefault: false
     editable: false
     jsonData:
@@ -68,6 +69,6 @@ datasources:
       sslmode: disable
       maxOpenConns: 5
       maxIdleConns: 2
+      postgresVersion: 1400
     secureJsonData:
-      user: steampipe
-      password: ""
+      password: steampipe

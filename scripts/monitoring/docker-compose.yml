@@ -133,6 +133,8 @@ services:
     image: turbot/steampipe:latest
     container_name: steampipe
     restart: unless-stopped
+    environment:
+      - STEAMPIPE_DATABASE_PASSWORD=steampipe
     ports:
       - "127.0.0.1:9193:9193"
     volumes:
