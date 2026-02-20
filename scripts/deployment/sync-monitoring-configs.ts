@@ -219,17 +219,18 @@ function getAllFiles(dir: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Get S3 bucket name from CloudFormation stack resources
+// Get S3 bucket name from SSM parameter (canonical discovery pattern)
 // ---------------------------------------------------------------------------
 async function getBucketName(): Promise<string> {
-  const stackName = `Monitoring-Compute-${envSuffix}`;
-  logger.task(`Resolving S3 bucket from stack: ${stackName}`);
+  const ssmPath = `/monitoring-${envSuffix}/ssm/scripts-bucket-name`;
+  logger.task(`Resolving S3 bucket from SSM: ${ssmPath}`);
 
   try {
     const awsArgs = [
-      'cloudformation', 'list-stack-resources',
-      '--stack-name', stackName,
-      '--output', 'json',
+      'ssm', 'get-parameter',
+      '--name', ssmPath,
+      '--query', 'Parameter.Value',
+      '--output', 'text',
       '--region', region,
     ];
     if (profile) {
@@ -239,19 +240,14 @@ async function getBucketName(): Promise<string> {
     const result = await runCommand('aws', awsArgs, { captureOutput: true });
 
     if (result.exitCode !== 0) {
-      throw new Error(`Failed to query stack resources: ${result.stderr}`);
+      throw new Error(`Failed to query SSM parameter ${ssmPath}: ${result.stderr}`);
     }
 
-    const data = JSON.parse(result.stdout.trim());
-    const summaries: { ResourceType: string; PhysicalResourceId: string }[] =
-      data.StackResourceSummaries ?? [];
-
-    const s3Bucket = summaries.find((r) => r.ResourceType === 'AWS::S3::Bucket');
-    if (!s3Bucket) {
-      throw new Error(`No S3 bucket found in stack ${stackName}`);
+    const bucketName = result.stdout.trim();
+    if (!bucketName || bucketName === 'None') {
+      throw new Error(`SSM parameter ${ssmPath} is empty or not found`);
     }
 
-    const bucketName = s3Bucket.PhysicalResourceId;
     logger.success(`Resolved bucket: ${bucketName}`);
     return bucketName;
   } catch (err) {
