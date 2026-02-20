@@ -47,6 +47,8 @@ import {
     TRAEFIK_HTTPS_PORT,
     PROMETHEUS_PORT,
     NODE_EXPORTER_PORT,
+    LOKI_NODEPORT,
+    TEMPO_NODEPORT,
 } from '../../../config/defaults';
 import { Environment } from '../../../config/environments';
 import { K8sConfigs } from '../../../config/k8s';
@@ -161,6 +163,18 @@ export class K8sComputeStack extends cdk.Stack {
             ec2.Peer.ipv4(vpc.vpcCidrBlock),
             ec2.Port.tcp(NODE_EXPORTER_PORT),
             'Allow Node Exporter metrics from VPC',
+        );
+
+        // Loki/Tempo NodePorts: accessible from VPC (ECS tasks → k8s monitoring)
+        this.securityGroup.addIngressRule(
+            ec2.Peer.ipv4(vpc.vpcCidrBlock),
+            ec2.Port.tcp(LOKI_NODEPORT),
+            'Allow Loki push API from VPC (cross-stack log shipping)',
+        );
+        this.securityGroup.addIngressRule(
+            ec2.Peer.ipv4(vpc.vpcCidrBlock),
+            ec2.Port.tcp(TEMPO_NODEPORT),
+            'Allow Tempo OTLP gRPC from VPC (cross-stack trace shipping)',
         );
 
         // =====================================================================

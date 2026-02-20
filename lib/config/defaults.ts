@@ -43,6 +43,12 @@ export const PROMETHEUS_PORT = 9090;
 /** Node Exporter default port */
 export const NODE_EXPORTER_PORT = 9100;
 
+/** Loki push API NodePort (k8s → host, cross-stack access from ECS) */
+export const LOKI_NODEPORT = 30100;
+
+/** Tempo OTLP gRPC NodePort (k8s → host, cross-stack access from ECS) */
+export const TEMPO_NODEPORT = 30417;
+
 // =============================================================================
 // Configuration Objects - Grouped defaults using the constants above
 // =============================================================================
