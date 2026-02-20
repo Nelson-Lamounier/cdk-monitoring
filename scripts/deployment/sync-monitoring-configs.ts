@@ -88,6 +88,8 @@ interface ConfigCategory {
   reloadCommands: string[];
   /** File extensions to validate */
   validationExts?: string[];
+  /** Optional: only match files matching this pattern (basename) */
+  filePattern?: string;
 }
 
 const CONFIG_CATEGORIES: ConfigCategory[] = [
@@ -135,6 +137,18 @@ const CONFIG_CATEGORIES: ConfigCategory[] = [
     reloadCommands: ['docker restart steampipe'],
     validationExts: ['.spc'],
   },
+  {
+    name: 'Docker Compose',
+    path: '.',
+    filePattern: 'docker-compose.yml',
+    // docker compose up -d starts new services, recreates changed ones,
+    // and --remove-orphans cleans up services removed from the file.
+    reloadCommands: [
+      'cd /opt/monitoring && docker compose pull --quiet 2>/dev/null || true',
+      'cd /opt/monitoring && docker compose up -d --remove-orphans',
+    ],
+    validationExts: ['.yml'],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -167,7 +181,11 @@ function validateConfigs(): number {
       continue;
     }
 
-    const files = getAllFiles(dir).filter((f) => {
+    const allFiles = category.filePattern
+      ? [resolve(dir, category.filePattern)].filter(existsSync)
+      : getAllFiles(dir);
+
+    const files = allFiles.filter((f) => {
       if (!category.validationExts) return true;
       return category.validationExts.includes(extname(f));
     });
@@ -307,7 +325,12 @@ function determineReloads(changedPaths: string[]): { services: string[]; command
   const services: string[] = [];
 
   for (const category of CONFIG_CATEGORIES) {
-    const categoryChanged = changedPaths.some((p) => p.startsWith(category.path));
+    // For categories with filePattern (e.g. Docker Compose), match exact file
+    // For sub-directory categories, match by path prefix
+    const categoryChanged = category.filePattern
+      ? changedPaths.some((p) => p === category.filePattern || p.endsWith(`/${category.filePattern}`))
+      : changedPaths.some((p) => p.startsWith(category.path));
+
     if (categoryChanged && category.reloadCommands.length > 0) {
       services.push(category.name);
       commands.push(...category.reloadCommands);
@@ -315,13 +338,6 @@ function determineReloads(changedPaths: string[]): { services: string[]; command
     if (categoryChanged && category.reloadCommands.length === 0) {
       services.push(`${category.name} (auto-detected)`);
     }
-  }
-
-  // Check if docker-compose.yml changed
-  if (changedPaths.some((p) => p === 'docker-compose.yml')) {
-    services.push('Docker Compose');
-    // docker compose up -d will recreate only changed services
-    commands.push('cd /opt/monitoring && docker compose up -d');
   }
 
   return { services, commands };
