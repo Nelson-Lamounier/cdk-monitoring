@@ -31,6 +31,8 @@ import {
     SecurityGroupConstruct,
     DEFAULT_MONITORING_PORTS,
 } from '../../../common/security/security-group';
+import { nextjsSsmPaths } from '../../../config/ssm-paths';
+import { Environment } from '../../../config/environments';
 
 
 /**
@@ -190,6 +192,26 @@ export class MonitoringComputeStack extends cdk.Stack {
             purpose: 'Monitoring',
         });
         this.securityGroup = sgConstruct.securityGroup;
+
+        // =================================================================
+        // Cross-stack ingress: allow Prometheus to scrape ECS tasks
+        //
+        // The Next.js ECS task SG only allows port 3000 from the ALB.
+        // Prometheus needs direct access to scrape /api/metrics.
+        // We look up the task SG via SSM and add an ingress rule.
+        // =================================================================
+        const nextjsPaths = nextjsSsmPaths(Environment.PRODUCTION);
+        const taskSgId = ssm.StringParameter.valueForStringParameter(
+            this, nextjsPaths.taskSecurityGroupId,
+        );
+        const ecsTaskSg = ec2.SecurityGroup.fromSecurityGroupId(
+            this, 'EcsTaskSg', taskSgId,
+        );
+        ecsTaskSg.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcp(3000),
+            'Allow Prometheus metrics scraping from monitoring instance',
+        );
 
         // =================================================================
         // SSM Parameter Discovery
