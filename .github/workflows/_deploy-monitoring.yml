@@ -119,6 +119,7 @@ jobs:
           # into factory context overrides
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           ALLOWED_IP_RANGE: ${{ vars.ALLOWED_IP_RANGE }}
+          STEAMPIPE_ACCOUNTS: ${{ vars.STEAMPIPE_ACCOUNTS }}
         run: npx tsx scripts/deployment/synthesize-ci.ts monitoring ${{ inputs.cdk-environment }}
 
       - name: Upload Synthesized Templates

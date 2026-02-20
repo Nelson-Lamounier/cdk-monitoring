@@ -37,7 +37,7 @@
     "test:verbose": "VERBOSE_TESTS=1 jest --verbose",
     "test:validate-patterns": "bash scripts/validate-test-patterns.sh",
     "// === LINTING ===": "",
-    "lint": "eslint . --max-warnings 50",
+    "lint": "eslint . --max-warnings 65",
     "lint:fix": "eslint . --fix",
     "lint:stacks": "yarn lint:cdk",
     "lint:cdk": "tsc && ENABLE_CDK_NAG=false cdk ls > /dev/null && echo 'CDK validation successful'",

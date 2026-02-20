@@ -129,6 +129,12 @@ const CONFIG_CATEGORIES: ConfigCategory[] = [
     reloadCommands: ['docker restart tempo'],
     validationExts: ['.yml', '.yaml'],
   },
+  {
+    name: 'Steampipe',
+    path: 'steampipe',
+    reloadCommands: ['docker restart steampipe'],
+    validationExts: ['.spc'],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -303,7 +309,6 @@ async function syncToS3(bucket: string): Promise<{ fileCount: number; changedPat
 function determineReloads(changedPaths: string[]): { services: string[]; commands: string[] } {
   const commands: string[] = [];
   const services: string[] = [];
-  let dockerComposeChanged = false;
 
   for (const category of CONFIG_CATEGORIES) {
     const categoryChanged = changedPaths.some((p) => p.startsWith(category.path));
@@ -318,7 +323,6 @@ function determineReloads(changedPaths: string[]): { services: string[]; command
 
   // Check if docker-compose.yml changed
   if (changedPaths.some((p) => p === 'docker-compose.yml')) {
-    dockerComposeChanged = true;
     services.push('Docker Compose');
     // docker compose up -d will recreate only changed services
     commands.push('cd /opt/monitoring && docker compose up -d');

@@ -676,6 +676,121 @@ program
   });
 
 // =============================================================================
+// STEAMPIPE CROSS-ACCOUNT ROLE DEPLOYMENT
+// =============================================================================
+
+program
+  .command('deploy-steampipe-roles')
+  .description('Deploy SteampipeReadOnly IAM role to target AWS accounts for cross-account governance')
+  .requiredOption('--monitoring-account <id>', 'AWS Account ID of the monitoring (production) account')
+  .option('--accounts <json>', 'JSON map of connection names to account IDs (default: reads STEAMPIPE_ACCOUNTS env var)')
+  .option('--region <region>', 'AWS region', defaults.awsRegion)
+  .option('--external-id <id>', 'External ID for role trust', 'steampipe-governance')
+  .option('--dry-run', 'Print commands without executing')
+  .action(async (options) => {
+    const monitoringAccountId = options.monitoringAccount as string;
+    const region = options.region as string;
+    const externalId = options.externalId as string;
+    const dryRun = options.dryRun === true;
+
+    // Read account map: CLI arg > env var
+    let accountMap: Record<string, string>;
+    if (options.accounts) {
+      accountMap = JSON.parse(options.accounts as string);
+    } else if (process.env.STEAMPIPE_ACCOUNTS) {
+      accountMap = JSON.parse(process.env.STEAMPIPE_ACCOUNTS);
+    } else {
+      logger.error('No accounts specified. Use --accounts or set STEAMPIPE_ACCOUNTS env var.');
+      logger.info('Example: STEAMPIPE_ACCOUNTS=\'{"nextjs_dev":"222222222222","nextjs_prod":"444444444444"}\'');
+      process.exit(1);
+    }
+
+    const templatePath = 'scripts/monitoring/steampipe/steampipe-readonly-role.yml';
+    const stackName = 'SteampipeReadOnlyRole';
+
+    logger.header('Deploy Steampipe Cross-Account Roles');
+    logger.keyValue('Monitoring Account', monitoringAccountId);
+    logger.keyValue('External ID', externalId);
+    logger.keyValue('Template', templatePath);
+    logger.keyValue('Region', region);
+    logger.keyValue('Target Accounts', String(Object.keys(accountMap).length));
+    if (dryRun) logger.warn('DRY RUN — commands will be printed but not executed');
+    logger.blank();
+
+    // Map connection names to AWS CLI profiles
+    // Convention: connection name "nextjs_dev" → profile lookup via environment mapping
+    const connectionToProfile: Record<string, string> = {
+      nextjs_dev: profileMap.development,
+      nextjs_staging: profileMap.staging,
+      nextjs_prod: profileMap.production,
+      org: profileMap.production,
+    };
+
+    let deployed = 0;
+    let skipped = 0;
+
+    for (const [connectionName, accountId] of Object.entries(accountMap)) {
+      // Skip monitoring account — it uses its own instance role
+      if (accountId === monitoringAccountId) {
+        logger.info(`Skipping ${connectionName} (${accountId}) — monitoring account uses instance role`);
+        skipped++;
+        continue;
+      }
+
+      const awsProfile = connectionToProfile[connectionName];
+      if (!awsProfile) {
+        logger.warn(`No profile mapping for "${connectionName}" — skipping. Add mapping in cli.ts connectionToProfile.`);
+        skipped++;
+        continue;
+      }
+
+      logger.task(`Deploying to ${connectionName} (${accountId}) via profile ${awsProfile}...`);
+
+      const deployArgs = [
+        'cloudformation', 'deploy',
+        '--template-file', templatePath,
+        '--stack-name', stackName,
+        '--parameter-overrides',
+        `MonitoringAccountId=${monitoringAccountId}`,
+        `ExternalId=${externalId}`,
+        '--capabilities', 'CAPABILITY_NAMED_IAM',
+        '--profile', awsProfile,
+        '--region', region,
+        '--no-fail-on-empty-changeset',
+      ];
+
+      if (dryRun) {
+        logger.info(`  aws ${deployArgs.join(' ')}`);
+      } else {
+        const result = await runCommand('aws', deployArgs);
+        if (result.exitCode !== 0) {
+          logger.error(`Failed to deploy to ${connectionName} (${accountId})`);
+          process.exit(1);
+        }
+        logger.success(`Deployed SteampipeReadOnly to ${connectionName} (${accountId})`);
+      }
+      deployed++;
+    }
+
+    logger.blank();
+    logger.table(
+      ['Metric', 'Value'],
+      [
+        ['Accounts Deployed', String(deployed)],
+        ['Accounts Skipped', String(skipped)],
+        ['Stack Name', stackName],
+        ['Monitoring Account', monitoringAccountId],
+      ]
+    );
+
+    if (!dryRun) {
+      logger.blank();
+      logger.success('Cross-account roles deployed. Redeploy SSM stack to regenerate Steampipe config:');
+      logger.info('  yarn cli deploy -p monitoring -s ssm -e production');
+    }
+  });
+
+// =============================================================================
 // UTILITY COMMANDS
 // =============================================================================
 

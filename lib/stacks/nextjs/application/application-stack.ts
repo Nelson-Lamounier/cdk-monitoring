@@ -641,7 +641,7 @@ export class NextJsApplicationStack extends cdk.Stack {
         isProd: boolean;
         namePrefix: string;
     }): void {
-        const { monitoring, environment, isProd, namePrefix } = params;
+        const { monitoring, environment, isProd } = params;
 
         const lokiEndpoint = monitoring.lokiSsmPath
             ? ssm.StringParameter.valueForStringParameter(this, monitoring.lokiSsmPath)
@@ -739,7 +739,7 @@ export class NextJsApplicationStack extends cdk.Stack {
         isProd: boolean;
         namePrefix: string;
     }): void {
-        const { monitoring, environment, isProd, namePrefix } = params;
+        const { monitoring, isProd } = params;
 
         const tempoEndpoint = monitoring.tempoSsmPath
             ? ssm.StringParameter.valueForStringParameter(this, monitoring.tempoSsmPath)

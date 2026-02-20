@@ -126,6 +126,21 @@ services:
     networks:
       - monitoring
 
+  # Steampipe — SQL-based cloud governance and inventory
+  # Exposes PostgreSQL-compatible endpoint for Grafana queries
+  # Multi-account access via cross-account IAM AssumeRole
+  steampipe:
+    image: turbot/steampipe:latest
+    container_name: steampipe
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9193:9193"
+    volumes:
+      - ./steampipe/config:/home/steampipe/.steampipe/config:ro
+    command: service start --foreground --database-listen local --database-port 9193
+    networks:
+      - monitoring
+
 volumes:
   prometheus_data:
   grafana_data:
