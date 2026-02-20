@@ -187,6 +187,31 @@ done
 echo ""
 
 # ---------------------------------------------------------------------------
+# 5b. Reset Grafana admin password via grafana-cli
+#
+# Grafana persists the admin password in its internal SQLite database
+# on the PVC. The GF_SECURITY_ADMIN_PASSWORD env var only takes effect
+# on first boot. On subsequent deploys, the env var is ignored and the
+# old password remains. This step forces the password from SSM into
+# Grafana's database on every deploy.
+# ---------------------------------------------------------------------------
+if [ -n "${GRAFANA_ADMIN_PASSWORD:-}" ]; then
+    echo "=== Step 5b: Resetting Grafana admin password ==="
+    GRAFANA_POD=$(kubectl get pod -n monitoring -l app=grafana \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+
+    if [ -n "${GRAFANA_POD}" ]; then
+        kubectl exec -n monitoring "${GRAFANA_POD}" -- \
+            grafana-cli admin reset-admin-password "${GRAFANA_ADMIN_PASSWORD}" \
+            2>/dev/null && echo "  ✓ Grafana admin password reset" \
+            || echo "  ⚠ grafana-cli reset failed (pod may still be starting)"
+    else
+        echo "  ⚠ No Grafana pod found — skipping password reset"
+    fi
+    echo ""
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Register Loki/Tempo endpoints in SSM (cross-stack discovery)
 #
 # ECS tasks (Next.js) discover Loki and Tempo via SSM parameters.
