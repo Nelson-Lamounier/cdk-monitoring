@@ -195,7 +195,7 @@ export class NextJsApiStack extends cdk.Stack {
         );
         const table = dynamodb.Table.fromTableName(this, 'ImportedTable', tableName);
 
-        const bucketName = ssm.StringParameter.valueForStringParameter(
+        const _bucketName = ssm.StringParameter.valueForStringParameter(
             this, props.bucketSsmPath,
         );
 

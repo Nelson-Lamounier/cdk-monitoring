@@ -53,3 +53,21 @@ datasources:
         enabled: true
       lokiSearch:
         datasourceUid: loki
+
+  # Steampipe — SQL-based cloud governance
+  # Exposes AWS resources as SQL tables via PostgreSQL protocol
+  - name: Steampipe
+    type: postgres
+    uid: steampipe
+    access: proxy
+    url: steampipe:9193
+    isDefault: false
+    editable: false
+    jsonData:
+      database: steampipe
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 2
+    secureJsonData:
+      user: steampipe
+      password: ""

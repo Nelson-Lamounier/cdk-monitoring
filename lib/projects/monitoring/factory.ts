@@ -153,6 +153,7 @@ export class MonitoringProjectFactory implements IProjectFactory<MonitoringFacto
             {
                 namePrefix,
                 grafanaAdminPassword: grafanaPassword,
+                steampipeAccounts: config.steampipeAccounts,
                 env,
             }
         );

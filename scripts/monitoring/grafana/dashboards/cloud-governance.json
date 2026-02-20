@@ -1,0 +1,433 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Cross-account AWS governance — live inventory, security compliance, and cost waste detection via Steampipe SQL queries",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Resource Inventory",
+      "type": "row"
+    },
+    {
+      "title": "EC2 Instances (All Accounts)",
+      "description": "Live inventory of all EC2 instances across accounts",
+      "type": "table",
+      "id": 1,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  account_id AS \"Account\",\n  region AS \"Region\",\n  instance_id AS \"Instance ID\",\n  tags ->> 'Name' AS \"Name\",\n  instance_type AS \"Type\",\n  instance_state AS \"State\",\n  public_ip_address AS \"Public IP\",\n  launch_time AS \"Launched\"\nFROM\n  aws_all.aws_ec2_instance\nORDER BY\n  account_id, instance_state, launch_time DESC;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "State" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "running": { "text": "Running", "color": "green" }, "stopped": { "text": "Stopped", "color": "red" }, "terminated": { "text": "Terminated", "color": "dark-gray" } } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "title": "S3 Buckets (All Accounts)",
+      "description": "All S3 buckets with encryption and versioning status",
+      "type": "table",
+      "id": 2,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  account_id AS \"Account\",\n  name AS \"Bucket Name\",\n  region AS \"Region\",\n  versioning_status AS \"Versioning\",\n  CASE\n    WHEN server_side_encryption_configuration IS NOT NULL THEN 'Encrypted'\n    ELSE 'NOT ENCRYPTED'\n  END AS \"Encryption\",\n  bucket_policy_is_public AS \"Public\",\n  creation_date AS \"Created\"\nFROM\n  aws_all.aws_s3_bucket\nORDER BY\n  account_id, name;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Encryption" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-text" }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "Encrypted": { "text": "Encrypted", "color": "green" }, "NOT ENCRYPTED": { "text": "NOT ENCRYPTED", "color": "red" } } }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Public" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-text" }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "true": { "text": "PUBLIC", "color": "red" }, "false": { "text": "Private", "color": "green" } } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "id": 101,
+      "title": "Security Compliance",
+      "type": "row"
+    },
+    {
+      "title": "IAM Users Without MFA",
+      "description": "IAM users that do not have MFA enabled — security risk",
+      "type": "table",
+      "id": 3,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  account_id AS \"Account\",\n  user_name AS \"User\",\n  password_last_used AS \"Last Login\",\n  create_date AS \"Created\"\nFROM\n  aws_all.aws_iam_user\nWHERE\n  mfa_enabled = false\n  AND user_name != 'root'\nORDER BY\n  account_id, user_name;",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Security Groups with Open Ingress",
+      "description": "Security groups allowing inbound traffic from 0.0.0.0/0",
+      "type": "table",
+      "id": 4,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  sg.account_id AS \"Account\",\n  sg.group_name AS \"Security Group\",\n  sg.group_id AS \"SG ID\",\n  perm ->> 'IpProtocol' AS \"Protocol\",\n  perm ->> 'FromPort' AS \"From Port\",\n  perm ->> 'ToPort' AS \"To Port\"\nFROM\n  aws_all.aws_vpc_security_group sg,\n  jsonb_array_elements(ip_permissions) AS perm,\n  jsonb_array_elements(perm -> 'IpRanges') AS ip_range\nWHERE\n  ip_range ->> 'CidrIp' = '0.0.0.0/0'\nORDER BY\n  sg.account_id, sg.group_name;",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Public S3 Buckets",
+      "description": "S3 buckets with public access — immediate attention required",
+      "type": "stat",
+      "id": 5,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  COUNT(*) AS \"count\"\nFROM\n  aws_all.aws_s3_bucket\nWHERE\n  bucket_policy_is_public = true;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "title": "Unencrypted S3 Buckets",
+      "description": "S3 buckets without server-side encryption configured",
+      "type": "stat",
+      "id": 6,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 24 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  COUNT(*) AS \"count\"\nFROM\n  aws_all.aws_s3_bucket\nWHERE\n  server_side_encryption_configuration IS NULL;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "title": "Users Without MFA",
+      "description": "Total IAM users without MFA enabled",
+      "type": "stat",
+      "id": 7,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  COUNT(*) AS \"count\"\nFROM\n  aws_all.aws_iam_user\nWHERE\n  mfa_enabled = false\n  AND user_name != 'root';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "title": "Open Security Groups",
+      "description": "Security groups with 0.0.0.0/0 ingress rules",
+      "type": "stat",
+      "id": 8,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 24 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  COUNT(DISTINCT sg.group_id) AS \"count\"\nFROM\n  aws_all.aws_vpc_security_group sg,\n  jsonb_array_elements(ip_permissions) AS perm,\n  jsonb_array_elements(perm -> 'IpRanges') AS ip_range\nWHERE\n  ip_range ->> 'CidrIp' = '0.0.0.0/0';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 28 },
+      "id": 102,
+      "title": "Cost Optimization",
+      "type": "row"
+    },
+    {
+      "title": "Unattached EBS Volumes",
+      "description": "EBS volumes not attached to any instance — potential cost waste",
+      "type": "table",
+      "id": 9,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 29 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  account_id AS \"Account\",\n  volume_id AS \"Volume ID\",\n  volume_type AS \"Type\",\n  size AS \"Size (GB)\",\n  state AS \"State\",\n  create_time AS \"Created\"\nFROM\n  aws_all.aws_ebs_volume\nWHERE\n  jsonb_array_length(attachments) = 0\n  OR attachments IS NULL\nORDER BY\n  size DESC;",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Unused Elastic IPs",
+      "description": "Elastic IPs not associated with any instance — charged when unused",
+      "type": "table",
+      "id": 10,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 29 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  account_id AS \"Account\",\n  allocation_id AS \"Allocation ID\",\n  public_ip AS \"Public IP\",\n  region AS \"Region\"\nFROM\n  aws_all.aws_vpc_eip\nWHERE\n  instance_id IS NULL\n  AND network_interface_id IS NULL\nORDER BY\n  account_id;",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Resource Count by Account",
+      "description": "Distribution of key resources across accounts",
+      "type": "barchart",
+      "id": 11,
+      "datasource": {
+        "type": "postgres",
+        "uid": "steampipe"
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 35 },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "steampipe"
+          },
+          "rawSql": "SELECT\n  account_id AS \"Account\",\n  'EC2' AS \"Resource\",\n  COUNT(*) AS \"Count\"\nFROM aws_all.aws_ec2_instance\nGROUP BY account_id\n\nUNION ALL\n\nSELECT\n  account_id,\n  'S3',\n  COUNT(*)\nFROM aws_all.aws_s3_bucket\nGROUP BY account_id\n\nUNION ALL\n\nSELECT\n  account_id,\n  'Lambda',\n  COUNT(*)\nFROM aws_all.aws_lambda_function\nGROUP BY account_id\n\nUNION ALL\n\nSELECT\n  account_id,\n  'IAM Users',\n  COUNT(*)\nFROM aws_all.aws_iam_user\nGROUP BY account_id\n\nORDER BY \"Account\", \"Resource\";",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "stacking": "normal",
+        "xField": "Account",
+        "groupWidth": 0.7,
+        "barWidth": 0.7
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["steampipe", "governance", "security", "compliance", "cost"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-5m",
+    "to": "now"
+  },
+  "timepicker": {
+    "hidden": true
+  },
+  "timezone": "",
+  "title": "Cloud Governance",
+  "uid": "cloud-governance",
+  "version": 1
+}

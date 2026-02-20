@@ -31,6 +31,20 @@ function fromEnv(key: string): string | undefined {
 }
 
 /**
+ * Read a JSON-encoded map from process.env.
+ * Returns undefined if the variable is not set.
+ */
+function fromEnvJson<T>(key: string): T | undefined {
+    const value = process.env[key];
+    if (!value) return undefined;
+    try {
+        return JSON.parse(value) as T;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
  * Read a comma-separated list from process.env.
  * Returns undefined if the variable is not set.
  */
@@ -76,6 +90,17 @@ export interface PrometheusConfig {
 }
 
 /**
+ * Steampipe cross-account configuration.
+ * Maps connection names to AWS account IDs for the aggregator.
+ *
+ * Supplied via STEAMPIPE_ACCOUNTS env var as JSON:
+ *   STEAMPIPE_ACCOUNTS='{"nextjs_dev":"222222222222","nextjs_staging":"333333333333"}'
+ */
+export interface SteampipeAccountConfig {
+    readonly [connectionName: string]: string; // connectionName → AWS account ID
+}
+
+/**
  * Complete resource configurations for Monitoring project
  */
 export interface MonitoringConfigs {
@@ -95,6 +120,14 @@ export interface MonitoringConfigs {
      * in CI, or defaults to 'admin' in non-production at factory level.
      */
     readonly grafanaAdminPassword?: string;
+
+    /**
+     * Steampipe cross-account connections.
+     * Maps connection names to AWS account IDs.
+     * Supplied via STEAMPIPE_ACCOUNTS env var as JSON.
+     * The monitoring account uses the EC2 instance role (no account ID needed).
+     */
+    readonly steampipeAccounts?: SteampipeAccountConfig;
 
     // =========================================================================
     // Resource behavior (policies, retention, limits)
@@ -122,6 +155,7 @@ export const MONITORING_CONFIGS: Record<Environment, MonitoringConfigs> = {
         // Synth-time context (env var > default)
         trustedCidrs: fromEnvList('ALLOWED_IP_RANGE') ?? ['0.0.0.0/0'],
         grafanaAdminPassword: fromEnv('GRAFANA_ADMIN_PASSWORD'),  // Defaults to 'admin' at factory level
+        steampipeAccounts: fromEnvJson<SteampipeAccountConfig>('STEAMPIPE_ACCOUNTS'),
 
         // Resource behavior
         backup: {
@@ -150,6 +184,7 @@ export const MONITORING_CONFIGS: Record<Environment, MonitoringConfigs> = {
         // Synth-time context (env var > default)
         trustedCidrs: fromEnvList('ALLOWED_IP_RANGE') ?? [],
         grafanaAdminPassword: fromEnv('GRAFANA_ADMIN_PASSWORD'),
+        steampipeAccounts: fromEnvJson<SteampipeAccountConfig>('STEAMPIPE_ACCOUNTS'),
 
         // Resource behavior
         backup: {
@@ -178,6 +213,7 @@ export const MONITORING_CONFIGS: Record<Environment, MonitoringConfigs> = {
         // Synth-time context (env var > default)
         trustedCidrs: fromEnvList('ALLOWED_IP_RANGE') ?? [],
         grafanaAdminPassword: fromEnv('GRAFANA_ADMIN_PASSWORD'),  // Required in production
+        steampipeAccounts: fromEnvJson<SteampipeAccountConfig>('STEAMPIPE_ACCOUNTS'),
 
         // Resource behavior
         backup: {
