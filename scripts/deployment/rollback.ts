@@ -9,8 +9,8 @@
  *   npx tsx scripts/deployment/rollback.ts <stack-name> --region <region>
  *
  * Exit codes:
- *   0 = rollback succeeded or was skipped (stack not in rollable state)
- *   1 = rollback failed
+ *   0 = rollback succeeded or was skipped (stack healthy or not in rollable state)
+ *   1 = rollback failed (stack in FAILED state and rollback also failed)
  */
 
 import { appendFileSync } from 'fs';
@@ -144,15 +144,36 @@ async function main(): Promise<void> {
     console.log(`::warning::Rolling back ${stackName} due to post-deploy verification failure`);
   }
 
-  // 2. Only rollback if stack is in UPDATE_COMPLETE state
-  if (currentStatus !== 'UPDATE_COMPLETE') {
-    logger.warn(`Stack not in UPDATE_COMPLETE state (${currentStatus}), skipping rollback`);
+  // 2. Determine if rollback is appropriate based on stack status
+  //
+  // RollbackStack API only works on UPDATE_FAILED / CREATE_FAILED stacks.
+  // If the stack is UPDATE_COMPLETE, the CDK deployment succeeded — the
+  // failure is in post-deploy validation (smoke tests, verify checks).
+  // In that case, warn — don't try to rollback a healthy stack.
+  const ROLLABLE_STATES = ['UPDATE_FAILED', 'CREATE_FAILED'];
+
+  if (currentStatus === 'UPDATE_COMPLETE') {
+    const reason = 'Stack deployment succeeded (UPDATE_COMPLETE) but post-deploy checks failed. ' +
+      'This is likely a smoke test configuration issue, not a bad deployment. Skipping rollback.';
+    logger.warn(reason);
+
+    if (process.env.GITHUB_ACTIONS) {
+      console.log(`::warning::${stackName}: ${reason}`);
+    }
+
+    setOutput('result', 'skipped');
+    writeSummary('skipped', currentStatus, reason);
+    return;
+  }
+
+  if (!ROLLABLE_STATES.includes(currentStatus)) {
+    logger.warn(`Stack not in a rollable state (${currentStatus}), skipping rollback`);
     setOutput('result', 'skipped');
     writeSummary('skipped', currentStatus, `Stack not in rollable state (${currentStatus})`);
     return;
   }
 
-  // 3. Initiate rollback
+  // 3. Initiate rollback (only for UPDATE_FAILED / CREATE_FAILED)
   logger.info('Initiating CloudFormation rollback...');
   try {
     await cfn.send(new RollbackStackCommand({ StackName: stackName }));
