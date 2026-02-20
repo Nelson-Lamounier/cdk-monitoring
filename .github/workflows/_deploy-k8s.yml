@@ -1,0 +1,311 @@
+# @format
+# @description Reusable k3s Kubernetes Deployment Workflow
+# Single-Stack Architecture: Compute (EC2 + k3s + EBS + EIP)
+# Uses Shared VPC from deploy-shared workflow
+#
+# Inline logic extracted to TypeScript scripts in scripts/deployment/
+
+name: Deploy k8s (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+      cdk-environment:
+        description: "CDK context environment value (dev, staging, prod)"
+        required: true
+        type: string
+      require-approval:
+        description: "CDK approval level"
+        required: false
+        type: string
+        default: "never"
+      enable-security-scan:
+        description: "Run IaC security scan before deployment"
+        required: false
+        type: boolean
+        default: false
+      security-scan-blocking:
+        description: "Block deployment on security scan failure"
+        required: false
+        type: boolean
+        default: false
+      skip-verification:
+        description: "Skip post-deployment verification"
+        required: false
+        type: boolean
+        default: false
+      create-production-artifact:
+        description: "Create immutable artifact for production"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      AWS_OIDC_ROLE:
+        description: "AWS OIDC role ARN (resolved from environment context)"
+        required: false
+
+env:
+  NODE_VERSION: "22"
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+
+jobs:
+  # ===========================================================================
+  # Setup, Build & Synthesize
+  # ===========================================================================
+  setup:
+    name: Setup & Synthesize
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    outputs:
+      aws-account-id: ${{ steps.account-id.outputs.account_id }}
+      commit-sha: ${{ github.sha }}
+      commit-short-sha: ${{ steps.commit-info.outputs.short_sha }}
+      node-version: ${{ steps.setup-tools.outputs.node-version }}
+      # Stack names from synthesize-ci.ts (single-stack architecture)
+      compute-stack: ${{ steps.synth.outputs.compute }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Record Commit Information
+        id: commit-info
+        run: echo "short_sha=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js and Yarn
+        id: setup-tools
+        uses: ./.github/actions/setup-node-yarn
+
+      - name: Validate AWS Account ID
+        id: account-id
+        run: |
+          ACCOUNT_ID="${{ vars.AWS_ACCOUNT_ID }}"
+          if [ -z "$ACCOUNT_ID" ]; then
+            echo "ERROR: AWS_ACCOUNT_ID variable not configured"
+            exit 1
+          fi
+          if ! [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "ERROR: Invalid AWS account ID format"
+            exit 1
+          fi
+          echo "::add-mask::$ACCOUNT_ID"
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+
+      - name: Build TypeScript
+        run: yarn build
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Synthesize & Determine Stack Names
+        id: synth
+        run: npx tsx scripts/deployment/synthesize-ci.ts k8s ${{ inputs.cdk-environment }}
+
+      - name: Upload Synthesized Templates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cdk-out-k8s-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
+          path: cdk.out/
+          retention-days: ${{ inputs.create-production-artifact && 90 || 30 }}
+
+      - name: Upload for Security Scan
+        if: inputs.enable-security-scan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cdk-synthesis
+          path: cdk.out/
+          retention-days: 7
+
+  # ===========================================================================
+  # IaC Security Scan (Conditional)
+  # ===========================================================================
+  security-scan:
+    name: Security Scan
+    needs: setup
+    if: inputs.enable-security-scan
+    uses: ./.github/workflows/_iac-security-scan.yml
+    with:
+      environment: ${{ inputs.environment }}
+      enforce-blocking: ${{ inputs.security-scan-blocking }}
+      cdk-output-path: "cdk.out"
+      skip-checks: ""
+      soft-fail-on: ${{ inputs.security-scan-blocking && '' || 'LOW' }}
+
+  # ===========================================================================
+  # Drift Detection (staging/production only — informational)
+  #
+  # Runs `cdk diff` for all stacks and surfaces the output in the step
+  # summary. Gives reviewers visibility into what's actually changing
+  # and catches unexpected infrastructure drift before deployment.
+  # ===========================================================================
+  drift-detection:
+    name: Drift Detection
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    if: needs.setup.result == 'success' && inputs.cdk-environment != 'development'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Run Drift Detection
+        id: diff
+        run: npx tsx scripts/deployment/drift-detection.ts k8s ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+
+  # ===========================================================================
+  # Deploy Compute Stack (EC2 + k3s + EBS + EIP)
+  # ===========================================================================
+  deploy-compute:
+    name: Deploy Compute
+    needs: [setup, security-scan, drift-detection]
+    if: always() && needs.setup.result == 'success' && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped') && (needs.drift-detection.result == 'success' || needs.drift-detection.result == 'skipped')
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.compute-stack }}
+      project: k8s
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Verify Deployment
+  # ===========================================================================
+  verify:
+    name: Verify Deployment
+    needs: [setup, deploy-compute]
+    if: always() && needs.deploy-compute.result == 'success' && inputs.skip-verification != true
+    uses: ./.github/workflows/_verify-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.compute-stack }}
+      environment: ${{ inputs.environment }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Rollback (Conditional — staging/production only)
+  #
+  # Triggers when Compute deployed successfully but verification failed.
+  # Rolls back CloudFormation to the previous known-good template.
+  # ===========================================================================
+  rollback:
+    name: Rollback Compute
+    needs: [setup, deploy-compute, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    if: |
+      always()
+      && needs.deploy-compute.result == 'success'
+      && needs.verify.result == 'failure'
+      && inputs.cdk-environment != 'development'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Rollback Compute Stack
+        id: rollback
+        run: npx tsx scripts/deployment/rollback.ts "${{ needs.setup.outputs.compute-stack }}" --region ${{ env.AWS_REGION }}
+
+  # ===========================================================================
+  # Deployment Summary (TypeScript)
+  # ===========================================================================
+  summary:
+    name: Deployment Summary
+    needs: [setup, security-scan, deploy-compute, verify, rollback]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+
+    steps:
+      # Guard: if setup was cancelled/failed, write minimal fallback and skip TS
+      - name: Check Prerequisites
+        id: prereqs
+        run: |
+          if [ "${{ needs.setup.result }}" != "success" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## ⚠️ Pipeline Aborted
+
+          **Reason**: Setup job did not complete successfully (`${{ needs.setup.result }}`)
+          **Commit**: `${{ github.sha }}`
+          **Environment**: ${{ inputs.environment }}
+
+          No stacks were deployed. Check the setup job logs for details.
+          EOF
+            echo "::warning::Setup did not succeed (${{ needs.setup.result }}), skipping full summary"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout
+        if: steps.prereqs.outputs.skip != 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        if: steps.prereqs.outputs.skip != 'true'
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        if: steps.prereqs.outputs.skip != 'true'
+        run: yarn install --frozen-lockfile
+
+      - name: Generate Summary
+        if: steps.prereqs.outputs.skip != 'true'
+        env:
+          DEPLOY_COMPUTE_RESULT: ${{ needs.deploy-compute.result }}
+          SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
+          VERIFY_RESULT: ${{ needs.verify.result || 'skipped' }}
+          ROLLBACK_RESULT: ${{ needs.rollback.result || 'skipped' }}
+          COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
+        run: yarn tsx scripts/deployment/deployment-summary.ts k8s ${{ inputs.cdk-environment }}

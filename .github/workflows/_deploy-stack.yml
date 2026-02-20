@@ -1,0 +1,189 @@
+# @format
+
+name: Deploy CDK Stack (Reusable)
+# Reusable workflow for deploying a single CDK stack
+
+on:
+  workflow_call:
+    inputs:
+      stack-name:
+        description: "Full CDK stack name (e.g., NetworkingStack-monitoring-development)"
+        required: true
+        type: string
+      project:
+        description: "Project name (monitoring, nextjs, org)"
+        required: true
+        type: string
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+      aws-account-id:
+        description: "Target AWS account ID"
+        required: true
+        type: string
+      aws-region:
+        description: "AWS region"
+        required: false
+        type: string
+        default: "eu-west-1"
+      # Scoped optional inputs — only pass for stacks that need them
+      # Edge config (Networking + Edge stacks)
+      domain-name:
+        description: "Domain name for edge/networking (optional)"
+        required: false
+        type: string
+        default: ""
+      hosted-zone-id:
+        description: "Route53 hosted zone ID (optional)"
+        required: false
+        type: string
+        default: ""
+      cross-account-role-arn:
+        description: "Cross-account IAM role ARN for Route53 (optional)"
+        required: false
+        type: string
+        default: ""
+      # Email/API config (API stack only)
+      notification-email:
+        description: "Notification email for contact form (optional)"
+        required: false
+        type: string
+        default: ""
+      ses-from-email:
+        description: "SES sender email address (optional)"
+        required: false
+        type: string
+        default: ""
+      verification-base-url:
+        description: "Base URL for email verification links (optional)"
+        required: false
+        type: string
+        default: ""
+      require-approval:
+        description: "CDK approval requirement (never, any-change, broadening)"
+        required: false
+        type: string
+        default: "never"
+      verify-bootstrap:
+        description: "Verify CDK bootstrap before deployment"
+        required: false
+        type: boolean
+        default: false
+      outputs-directory:
+        description: "Directory to save stack outputs"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      AWS_OIDC_ROLE:
+        description: "AWS OIDC role ARN for authentication (resolved from environment if not passed)"
+        required: false
+      VERIFICATION_SECRET:
+        description: "Verification secret for NextJS API stack (scoped — only pass for API stack)"
+        required: false
+      GRAFANA_ADMIN_PASSWORD:
+        description: "Grafana admin password for monitoring stack (scoped — only pass for monitoring stacks)"
+        required: false
+    outputs:
+      deployment-status:
+        description: "Deployment status (success/failure)"
+        value: ${{ jobs.deploy.outputs.status }}
+      stack-outputs:
+        description: "CloudFormation stack outputs (JSON)"
+        value: ${{ jobs.deploy.outputs.outputs }}
+
+env:
+  # Node.js version is read from .nvmrc for centralization
+  NODE_VERSION: "22" # Fallback - prefer .nvmrc
+
+jobs:
+  deploy:
+    name: ${{ inputs.stack-name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    outputs:
+      status: ${{ steps.deploy-stack.outputs.deployment-status }}
+      outputs: ${{ steps.deploy-stack.outputs.stack-outputs }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ inputs.aws-region }}
+          audience: sts.amazonaws.com
+
+      - name: Resolve AWS Account ID
+        id: resolve-account
+        run: |
+          # First try input, then fall back to vars
+          ACCOUNT_ID="${{ inputs.aws-account-id }}"
+
+          if [ -z "$ACCOUNT_ID" ]; then
+            echo "Input aws-account-id is empty, trying vars.AWS_ACCOUNT_ID..."
+            ACCOUNT_ID="${{ vars.AWS_ACCOUNT_ID }}"
+          fi
+
+          if [ -z "$ACCOUNT_ID" ]; then
+            echo "ERROR: Could not resolve AWS Account ID from inputs or vars"
+            exit 1
+          fi
+
+          echo "::add-mask::$ACCOUNT_ID"
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "✓ Resolved AWS Account ID"
+
+      - name: Set Scoped Config
+        shell: bash
+        run: |
+          # Only export env vars that the calling workflow actually provides.
+          # This keeps the environment clean for stacks that don't need them
+          # (e.g. Shared doesn't need DOMAIN_NAME, VERIFICATION_SECRET, etc.).
+          [[ -n "$DOMAIN_NAME"            ]] && echo "DOMAIN_NAME=$DOMAIN_NAME"                       >> $GITHUB_ENV
+          [[ -n "$HOSTED_ZONE_ID"         ]] && echo "HOSTED_ZONE_ID=$HOSTED_ZONE_ID"                 >> $GITHUB_ENV
+          [[ -n "$CROSS_ACCOUNT_ROLE_ARN" ]] && echo "CROSS_ACCOUNT_ROLE_ARN=$CROSS_ACCOUNT_ROLE_ARN" >> $GITHUB_ENV
+          [[ -n "$NOTIFICATION_EMAIL"     ]] && echo "NOTIFICATION_EMAIL=$NOTIFICATION_EMAIL"         >> $GITHUB_ENV
+          [[ -n "$SES_FROM_EMAIL"         ]] && echo "SES_FROM_EMAIL=$SES_FROM_EMAIL"                 >> $GITHUB_ENV
+          [[ -n "$VERIFICATION_SECRET"      ]] && echo "VERIFICATION_SECRET=$VERIFICATION_SECRET"           >> $GITHUB_ENV
+          [[ -n "$VERIFICATION_BASE_URL"    ]] && echo "VERIFICATION_BASE_URL=$VERIFICATION_BASE_URL"       >> $GITHUB_ENV
+          [[ -n "$GRAFANA_ADMIN_PASSWORD"   ]] && echo "GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD"     >> $GITHUB_ENV
+          echo "✓ Scoped config applied"
+        env:
+          DOMAIN_NAME: ${{ inputs.domain-name }}
+          HOSTED_ZONE_ID: ${{ inputs.hosted-zone-id }}
+          CROSS_ACCOUNT_ROLE_ARN: ${{ inputs.cross-account-role-arn }}
+          NOTIFICATION_EMAIL: ${{ inputs.notification-email }}
+          SES_FROM_EMAIL: ${{ inputs.ses-from-email }}
+          VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
+          VERIFICATION_BASE_URL: ${{ inputs.verification-base-url }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+
+      - name: Deploy CDK Stack
+        id: deploy-stack
+        uses: ./.github/actions/deploy-cdk-stack
+        with:
+          stack-name: ${{ inputs.stack-name }}
+          project: ${{ inputs.project }}
+          environment: ${{ inputs.environment }}
+          aws-account-id: ${{ steps.resolve-account.outputs.account_id }}
+          aws-region: ${{ inputs.aws-region }}
+          require-approval: ${{ inputs.require-approval }}
+          verify-bootstrap: ${{ inputs.verify-bootstrap }}
+          outputs-directory: ${{ inputs.outputs-directory }}
+
+      - name: Upload Stack Outputs
+        if: always() && inputs.outputs-directory != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.stack-name }}-outputs
+          path: ${{ github.workspace }}/${{ inputs.outputs-directory }}
+          retention-days: 30
+          if-no-files-found: warn

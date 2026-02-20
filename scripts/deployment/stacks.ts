@@ -237,6 +237,30 @@ const orgProject: ProjectConfig = {
 };
 
 // =============================================================================
+// K8S PROJECT (k3s Kubernetes Cluster — Single Stack)
+// =============================================================================
+
+const k8sStacks: StackConfig[] = [
+  {
+    id: 'compute',
+    name: 'Compute Stack',
+    getStackName: (env) => `K8s-Compute-${env}`,
+    description: 'k3s Kubernetes cluster: EC2 + ASG + EBS + Security Group + Elastic IP',
+  },
+];
+
+const k8sProject: ProjectConfig = {
+  id: 'k8s',
+  name: 'Kubernetes',
+  description: 'Self-managed k3s Kubernetes cluster for unified workloads (requires Shared VPC)',
+  stacks: k8sStacks,
+  cdkContext: (env) => ({
+    project: 'k8s',
+    environment: env,
+  }),
+};
+
+// =============================================================================
 // EXPORTS
 // =============================================================================
 
@@ -245,6 +269,7 @@ export const projects: ProjectConfig[] = [
   monitoringProject,
   nextjsProject,
   orgProject,
+  k8sProject,
 ];
 
 export function getProject(projectId: string): ProjectConfig | undefined {

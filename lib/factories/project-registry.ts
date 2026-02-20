@@ -12,6 +12,7 @@ import { MonitoringProjectFactory } from '../projects/monitoring';
 import { NextJSProjectFactory } from '../projects/nextjs';
 import { OrgProjectFactory } from '../projects/org';
 import { SharedProjectFactory } from '../projects/shared';
+import { K8sProjectFactory } from '../projects/k8s';
 
 import { IProjectFactory, ProjectFactoryConstructor } from './project-interfaces';
 
@@ -23,6 +24,7 @@ const projectFactoryRegistry: Record<Project, ProjectFactoryConstructor> = {
     [Project.MONITORING]: MonitoringProjectFactory,
     [Project.NEXTJS]: NextJSProjectFactory,
     [Project.ORG]: OrgProjectFactory,
+    [Project.K8S]: K8sProjectFactory,
 };
 
 /**

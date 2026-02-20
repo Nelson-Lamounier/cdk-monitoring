@@ -17,6 +17,10 @@
  * - `addCustomScript()` - Add any custom script section
  * - `addCompletionMarker()` - Add final success banner
  *
+ * ## Kubernetes (k3s) Methods
+ * - `installK3s()` - Install k3s lightweight Kubernetes
+ * - `configureKubeconfig()` - Set up kubectl access
+ *
  * ## Monitoring-Specific Methods
  * - `downloadAndStartMonitoringStack()` - Download monitoring stack from S3 and start it
  *
@@ -132,6 +136,21 @@ export interface UserDataBuilderOptions {
      * @default false
      */
     skipPreamble?: boolean;
+}
+
+/**
+ * Configuration for k3s installation.
+ * Used by `installK3s()` method.
+ */
+export interface K3sInstallConfig {
+    /** k3s release channel (e.g., 'v1.31') @default 'v1.31' */
+    channel?: string;
+    /** k3s data directory (should be on persistent volume) @default '/data/k3s' */
+    dataDir?: string;
+    /** Whether to disable the built-in Traefik ingress @default false */
+    disableTraefik?: boolean;
+    /** SSM parameter prefix for storing cluster info @default '/k8s/development' */
+    ssmPrefix?: string;
 }
 
 // =============================================================================
@@ -481,6 +500,150 @@ echo ""
 echo "=============================================="
 echo "=== User data completed at $(date) ==="
 echo "=============================================="`);
+        return this;
+    }
+
+    // =========================================================================
+    // KUBERNETES (k3s) METHODS
+    // =========================================================================
+
+    /**
+     * Install k3s lightweight Kubernetes.
+     *
+     * Installs k3s via the official install script with configurable:
+     * - Release channel (pinned version)
+     * - Data directory (persistent volume)
+     * - TLS SAN (Elastic IP for external access)
+     * - Traefik ingress (built-in, can be disabled)
+     *
+     * Also stores the instance ID in SSM for CI/CD pipeline access.
+     *
+     * @param config - k3s installation configuration
+     * @remarks **k8s project** - For other projects, use `addCustomScript()`.
+     * @returns this - for method chaining
+     */
+    installK3s(config: K3sInstallConfig = {}): this {
+        const channel = config.channel ?? 'v1.31';
+        const dataDir = config.dataDir ?? '/data/k3s';
+        const disableTraefik = config.disableTraefik ?? false;
+        const ssmPrefix = config.ssmPrefix ?? '/k8s/development';
+
+        const traefikFlag = disableTraefik ? '--disable traefik' : '';
+
+        this.userData.addCommands(`
+# =============================================================================
+# Install k3s Kubernetes
+# =============================================================================
+
+echo "=== Installing k3s (channel: ${channel}) ==="
+
+# Ensure data directory exists on persistent volume
+mkdir -p ${dataDir}
+
+# Get public IP for TLS SAN (so kubectl works from outside)
+if [ -z "\${IMDS_TOKEN:-}" ]; then
+    IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+fi
+PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4 || echo "")
+PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+
+# Build TLS SAN from public and private IPs
+TLS_SAN="--tls-san $PRIVATE_IP"
+if [ -n "$PUBLIC_IP" ]; then
+    TLS_SAN="$TLS_SAN --tls-san $PUBLIC_IP"
+fi
+
+# Install k3s server
+export INSTALL_K3S_CHANNEL="${channel}"
+curl -sfL https://get.k3s.io | sh -s - server \\
+    --data-dir ${dataDir} \\
+    --write-kubeconfig-mode 644 \\
+    $TLS_SAN \\
+    ${traefikFlag}
+
+# Wait for k3s to be ready
+echo "Waiting for k3s to be ready..."
+for i in {1..60}; do
+    if ${dataDir}/server/bin/kubectl --kubeconfig ${dataDir}/server/cred/admin.kubeconfig get nodes &>/dev/null; then
+        echo "k3s is ready (waited \${i} seconds)"
+        break
+    fi
+    if [ $i -eq 60 ]; then
+        echo "WARNING: k3s did not become ready in 60s"
+    fi
+    sleep 1
+done
+
+# Store instance info in SSM for CI/CD access
+SSM_PREFIX="${ssmPrefix}"
+aws ssm put-parameter \\
+    --name "$SSM_PREFIX/instance-id" \\
+    --value "$INSTANCE_ID" \\
+    --type "String" \\
+    --overwrite \\
+    --region "$REGION" || echo "WARNING: Failed to store instance-id in SSM"
+
+if [ -n "$PUBLIC_IP" ]; then
+    aws ssm put-parameter \\
+        --name "$SSM_PREFIX/elastic-ip" \\
+        --value "$PUBLIC_IP" \\
+        --type "String" \\
+        --overwrite \\
+        --region "$REGION" || echo "WARNING: Failed to store elastic-ip in SSM"
+fi
+
+echo "k3s installed successfully"
+echo "k3s version: $(k3s --version)"
+echo "Node status:"
+k3s kubectl get nodes -o wide`);
+        return this;
+    }
+
+    /**
+     * Configure kubectl access for ec2-user and root.
+     *
+     * Sets up KUBECONFIG environment variable and copies the kubeconfig
+     * to standard locations for both root and ec2-user.
+     *
+     * @param config - Optional k3s data directory @default '/data/k3s'
+     * @remarks **k8s project** - Requires k3s to be installed first.
+     * @returns this - for method chaining
+     */
+    configureKubeconfig(dataDir = '/data/k3s'): this {
+        this.userData.addCommands(`
+# =============================================================================
+# Configure kubectl Access
+# =============================================================================
+
+echo "=== Configuring kubectl access ==="
+
+K3S_KUBECONFIG="${dataDir}/server/cred/admin.kubeconfig"
+
+# Set up for root
+mkdir -p /root/.kube
+cp $K3S_KUBECONFIG /root/.kube/config
+chmod 600 /root/.kube/config
+
+# Set up for ec2-user
+mkdir -p /home/ec2-user/.kube
+cp $K3S_KUBECONFIG /home/ec2-user/.kube/config
+chown ec2-user:ec2-user /home/ec2-user/.kube/config
+chmod 600 /home/ec2-user/.kube/config
+
+# Add KUBECONFIG to shell profiles for both users
+echo "export KUBECONFIG=$K3S_KUBECONFIG" > /etc/profile.d/k3s.sh
+chmod 644 /etc/profile.d/k3s.sh
+
+# Add kubectl alias
+echo "alias kubectl='k3s kubectl'" >> /etc/profile.d/k3s.sh
+
+# Verify kubectl works
+export KUBECONFIG=$K3S_KUBECONFIG
+echo "kubectl configured. Cluster info:"
+k3s kubectl cluster-info
+k3s kubectl get namespaces`);
         return this;
     }
 

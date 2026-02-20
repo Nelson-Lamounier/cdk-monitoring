@@ -271,3 +271,44 @@ export function monitoringSsmPaths(environment: Environment): MonitoringSsmPaths
         tempoEndpoint: `${prefix}/tempo/endpoint`,
     };
 }
+
+// =============================================================================
+// K8S (k3s) SSM PATHS
+// =============================================================================
+
+/** k8s SSM prefix: /k8s/{environment} */
+export function k8sSsmPrefix(environment: Environment): string {
+    return `/k8s/${environment}`;
+}
+
+/**
+ * SSM parameter paths for the k3s Kubernetes cluster.
+ */
+export interface K8sSsmPaths {
+    /** The prefix itself: /k8s/{environment} */
+    readonly prefix: string;
+    /** k3s node EC2 instance ID */
+    readonly instanceId: string;
+    /** Elastic IP address for stable CloudFront origin */
+    readonly elasticIp: string;
+    /** Security group ID for the k3s node */
+    readonly securityGroupId: string;
+    /** Wildcard path for IAM: /k8s/{environment}/* */
+    readonly wildcard: string;
+}
+
+/**
+ * Get k8s SSM parameter paths for a given environment.
+ */
+export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
+    const prefix = k8sSsmPrefix(environment);
+
+    return {
+        prefix,
+        instanceId: `${prefix}/instance-id`,
+        elasticIp: `${prefix}/elastic-ip`,
+        securityGroupId: `${prefix}/security-group-id`,
+        wildcard: `${prefix}/*`,
+    };
+}
+

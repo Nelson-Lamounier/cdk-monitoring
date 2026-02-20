@@ -87,6 +87,22 @@ export const MONITORING_PORTS = {
     ssh: SSH_PORT,
 } as const;
 
+// =============================================================================
+// Kubernetes (k3s) Constants
+// =============================================================================
+
+/** k3s Kubernetes API server port */
+export const K3S_API_PORT = 6443;
+
+/** k3s default stable channel */
+export const K3S_DEFAULT_CHANNEL = 'v1.31';
+
+/** Traefik HTTP port (k3s built-in ingress) */
+export const TRAEFIK_HTTP_PORT = 80;
+
+/** Traefik HTTPS port (k3s built-in ingress) */
+export const TRAEFIK_HTTPS_PORT = 443;
+
 /**
  * Tag used by DLM, EBS volumes, and EC2 instances for consistent identification.
  * DLM snapshot policies target volumes with this tag — all three locations

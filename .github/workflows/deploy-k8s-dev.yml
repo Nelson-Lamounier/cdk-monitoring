@@ -1,0 +1,54 @@
+# @format
+# @description Deploy k3s Kubernetes to Development
+#
+# Deploys the k3s cluster infrastructure to the dev account.
+# Requires Shared VPC from deploy-shared workflow.
+
+name: Deploy k8s to Development
+
+on:
+  push:
+    branches:
+      - develop
+      - feature/k3s-kubernetes-migration
+    paths:
+      - "lib/config/k8s/**"
+      - "lib/config/projects.ts"
+      - "lib/config/defaults.ts"
+      - "lib/projects/k8s/**"
+      - "lib/stacks/k8s/**"
+      - "lib/common/compute/builders/user-data-builder.ts"
+      - "bin/app.ts"
+      - ".github/workflows/deploy-k8s-dev.yml"
+      - ".github/workflows/_deploy-k8s.yml"
+      - ".github/workflows/_verify-stack.yml"
+      - ".github/workflows/_iac-security-scan.yml"
+      - ".github/actions/**"
+  workflow_dispatch:
+    inputs:
+      skip_verification:
+        description: "Skip post-deployment verification"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-k8s-development
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Development
+    uses: ./.github/workflows/_deploy-k8s.yml
+    with:
+      environment: development
+      cdk-environment: development
+      require-approval: never
+      enable-security-scan: true
+      security-scan-blocking: false
+      skip-verification: ${{ inputs.skip_verification || false }}
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
