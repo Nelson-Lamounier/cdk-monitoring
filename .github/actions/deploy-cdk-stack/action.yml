@@ -439,13 +439,17 @@ runs:
           echo "Deployment completed in ${{ steps.deploy.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
           
           # Add outputs if available
-          # Store outputs in variable to avoid bash interpolation issues
-          STACK_OUTPUTS='${{ steps.outputs.outputs.stack_outputs }}'
-          if [ -n "$STACK_OUTPUTS" ] && [ "$STACK_OUTPUTS" != "[]" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Stack Outputs" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "$STACK_OUTPUTS" | jq -r '.[] | "- **\(.OutputKey)**: `\(.OutputValue)`"' >> $GITHUB_STEP_SUMMARY
+          # Read from CDK outputs file directly to avoid bash quoting issues
+          # (stack outputs may contain single quotes, e.g. kubectl port-forward commands)
+          CDK_OUTPUTS_FILE="/tmp/cdk-outputs/stack-outputs.json"
+          if [ -f "$CDK_OUTPUTS_FILE" ]; then
+            STACK_OUTPUTS=$(jq -c '[.["${{ inputs.stack-name }}"] // {} | to_entries[] | {OutputKey: .key, OutputValue: .value}]' "$CDK_OUTPUTS_FILE" 2>/dev/null || echo "[]")
+            if [ -n "$STACK_OUTPUTS" ] && [ "$STACK_OUTPUTS" != "[]" ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### Stack Outputs" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "$STACK_OUTPUTS" | jq -r '.[] | "- **\(.OutputKey)**: `\(.OutputValue)`"' >> $GITHUB_STEP_SUMMARY
+            fi
           fi
           
           # Add outputs file location if saved
