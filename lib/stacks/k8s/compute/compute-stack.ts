@@ -239,6 +239,17 @@ export class K8sComputeStack extends cdk.Stack {
 
         // =====================================================================
         // User Data (k3s bootstrap)
+        //
+        // ORDERING: cfn-signal is sent after critical infrastructure
+        // (system update, AWS CLI, EBS attach) but BEFORE k3s install.
+        // This prevents k3s install failures from blocking the cfn-signal,
+        // which would cause CREATE_FAILED with 0 SUCCESS signals.
+        //
+        // k3s install happens after signaling — if it fails, the instance
+        // is accessible via SSM for debugging and manual re-run.
+        //
+        // skipPreamble: true because CDK's UserData.forLinux() already adds
+        // the shebang line. We add the logging preamble here.
         // =====================================================================
         userData.addCommands(
             'set -euxo pipefail',
@@ -254,6 +265,11 @@ export class K8sComputeStack extends cdk.Stack {
                 volumeId: ebsVolume.volumeId,
                 mountPoint: configs.storage.mountPoint,
             })
+            .sendCfnSignal({
+                stackName: this.stackName,
+                asgLogicalId,
+                region: this.region,
+            })
             .installK3s({
                 channel: configs.cluster.channel,
                 dataDir: configs.cluster.dataDir,
@@ -261,11 +277,6 @@ export class K8sComputeStack extends cdk.Stack {
                 ssmPrefix: props.ssmPrefix,
             })
             .configureKubeconfig(configs.cluster.dataDir)
-            .sendCfnSignal({
-                stackName: this.stackName,
-                asgLogicalId,
-                region: this.region,
-            })
             .addCompletionMarker();
 
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
