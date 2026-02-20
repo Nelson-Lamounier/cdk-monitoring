@@ -1,0 +1,64 @@
+# @format
+# Promtail configuration — adapted for k8s
+# In k8s, Promtail ships pod logs and host logs to Loki
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: monitoring
+  labels:
+    app: promtail
+data:
+  config.yml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+
+    positions:
+      filename: /tmp/positions.yaml
+
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+
+    scrape_configs:
+      # Kubernetes pod logs (replaces Docker container log scraping)
+      - job_name: kubernetes-pods
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: "podlogs"
+              __path__: /var/log/pods/*/*/*.log
+        pipeline_stages:
+          - cri: {}
+          - labels:
+              namespace:
+              pod:
+              container:
+
+      # System logs
+      - job_name: syslog
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: "syslog"
+              __path__: /var/log/syslog
+
+      # User data logs (k3s bootstrap)
+      - job_name: user-data
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: "user-data"
+              __path__: /var/log/user-data.log
+
+      # k3s server logs
+      - job_name: k3s
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: "k3s"
+              __path__: /var/log/k3s*.log

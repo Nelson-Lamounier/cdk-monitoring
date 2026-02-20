@@ -1,0 +1,20 @@
+# @format
+# Steampipe AWS config — multi-account via AssumeRole
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: steampipe-config
+  namespace: monitoring
+  labels:
+    app: steampipe
+data:
+  aws.spc: |
+    connection "aws" {
+      plugin = "aws"
+      regions = ["eu-west-1"]
+    }
+
+  default.spc: |
+    options "general" {
+      update_check = false
+    }

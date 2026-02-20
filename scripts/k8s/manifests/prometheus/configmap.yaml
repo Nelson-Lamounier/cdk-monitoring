@@ -1,0 +1,149 @@
+# @format
+# Prometheus configuration — ported from scripts/monitoring/prometheus/
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+  labels:
+    app: prometheus
+    app.kubernetes.io/part-of: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        monitor: "k8s-monitoring"
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: []
+
+    rule_files:
+      - /etc/prometheus/alert_rules.yml
+
+    scrape_configs:
+      - job_name: "prometheus"
+        static_configs:
+          - targets: ["localhost:9090"]
+
+      - job_name: "node-exporter"
+        static_configs:
+          - targets: ["node-exporter:9100"]
+            labels:
+              environment: "production"
+              instance_name: "k8s-host"
+
+      # Next.js ECS node-exporter metrics via EC2 service discovery
+      - job_name: "ecs-nextjs-node-exporter"
+        ec2_sd_configs:
+          - region: eu-west-1
+            port: 9100
+            filters:
+              - name: tag:Purpose
+                values: ["NextJS"]
+        relabel_configs:
+          - source_labels: [__meta_ec2_tag_Name]
+            target_label: instance_name
+          - source_labels: [__meta_ec2_tag_Environment]
+            target_label: environment
+          - source_labels: [__meta_ec2_instance_id]
+            target_label: instance_id
+          - source_labels: [__meta_ec2_availability_zone]
+            target_label: availability_zone
+
+      # Next.js application metrics via Cloud Map DNS service discovery
+      - job_name: "nextjs-application-metrics"
+        metrics_path: "/api/metrics"
+        scrape_interval: 30s
+        authorization:
+          type: Bearer
+          credentials_file: /etc/prometheus/secrets/metrics-token
+        dns_sd_configs:
+          - names:
+              - "nextjs-app.nextjs.local"
+            type: A
+            port: 3000
+            refresh_interval: 30s
+        relabel_configs:
+          - source_labels: [__meta_dns_name]
+            target_label: cloudmap_service
+          - target_label: environment
+            replacement: "production"
+
+      # GitHub Actions workflow run metrics
+      - job_name: "github-actions"
+        scrape_interval: 30s
+        static_configs:
+          - targets: ["github-actions-exporter:9101"]
+
+  alert_rules.yml: |
+    groups:
+      - name: ec2_host_alerts
+        rules:
+          - alert: HighCpuUsage
+            expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High CPU usage on {{ $labels.instance }}"
+
+          - alert: HighMemoryUsage
+            expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High memory usage on {{ $labels.instance }}"
+
+          - alert: InstanceDown
+            expr: up == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Instance {{ $labels.instance }} is down"
+
+          - alert: EcsNodeExporterDown
+            expr: up{job="ecs-nextjs-node-exporter"} == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "ECS target {{ $labels.instance_name }} is down"
+
+      - name: nextjs_app_alerts
+        rules:
+          - alert: NextJsAppMetricsDown
+            expr: up{job="nextjs-app-metrics"} == 0
+            for: 3m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Next.js /metrics endpoint down on {{ $labels.instance_name }}"
+
+          - alert: NextJsHighErrorRate
+            expr: |
+              (
+                sum(rate(http_requests_total{job="nextjs-app-metrics", status_code=~"5.."}[5m])) by (instance_name)
+                /
+                sum(rate(http_requests_total{job="nextjs-app-metrics"}[5m])) by (instance_name)
+              ) > 0.05
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "High 5xx error rate on {{ $labels.instance_name }}"
+
+          - alert: NextJsHighLatency
+            expr: |
+              histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="nextjs-app-metrics"}[5m])) by (le, instance_name))
+              > 2
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High p95 latency on {{ $labels.instance_name }}"

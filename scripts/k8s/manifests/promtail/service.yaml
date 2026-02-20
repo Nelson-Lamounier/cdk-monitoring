@@ -1,0 +1,18 @@
+# @format
+apiVersion: v1
+kind: Service
+metadata:
+  name: promtail
+  namespace: monitoring
+  labels:
+    app: promtail
+spec:
+  type: ClusterIP
+  clusterIP: None # headless — no load-balancing needed for DaemonSet
+  selector:
+    app: promtail
+  ports:
+    - name: http
+      port: 9080
+      targetPort: http
+      protocol: TCP

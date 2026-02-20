@@ -1,0 +1,54 @@
+# @format
+# Kustomize entrypoint — aggregates all monitoring manifests
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+resources:
+  # Base
+  - namespace.yaml
+
+  # Core services
+  - prometheus/configmap.yaml
+  - prometheus/pvc.yaml
+  - prometheus/deployment.yaml
+  - prometheus/service.yaml
+
+  - grafana/configmap.yaml
+  - grafana/secret.yaml
+  - grafana/pvc.yaml
+  - grafana/deployment.yaml
+  - grafana/service.yaml
+
+  - loki/configmap.yaml
+  - loki/pvc.yaml
+  - loki/deployment.yaml
+  - loki/service.yaml
+
+  - tempo/configmap.yaml
+  - tempo/pvc.yaml
+  - tempo/deployment.yaml
+  - tempo/service.yaml
+
+  # Agents
+  - promtail/configmap.yaml
+  - promtail/daemonset.yaml
+  - promtail/service.yaml
+
+  - node-exporter/daemonset.yaml
+  - node-exporter/service.yaml
+
+  # Integrations
+  - github-actions-exporter/deployment.yaml
+
+  - steampipe/configmap.yaml
+  - steampipe/deployment.yaml
+
+  # Ingress
+  - traefik/ingress.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: monitoring-stack

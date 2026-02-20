@@ -26,6 +26,8 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -238,6 +240,27 @@ export class K8sComputeStack extends cdk.Stack {
         const asgLogicalId = asgCfnResource.logicalId;
 
         // =====================================================================
+        // S3 Bucket for k8s Scripts & Manifests
+        // =====================================================================
+        const scriptsBucket = new s3.Bucket(this, 'K8sScriptsBucket', {
+            bucketName: `${namePrefix}-${targetEnvironment}-k8s-scripts-${this.account}`,
+            removalPolicy: configs.removalPolicy,
+            autoDeleteObjects: !configs.isProduction,
+            encryption: s3.BucketEncryption.S3_MANAGED,
+            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+            enforceSSL: true,
+            versioned: configs.isProduction,
+        });
+
+        // Sync k8s manifests + deploy script from local
+        new s3deploy.BucketDeployment(this, 'K8sManifestsDeployment', {
+            sources: [s3deploy.Source.asset('./scripts/k8s')],
+            destinationBucket: scriptsBucket,
+            destinationKeyPrefix: 'k8s',
+            prune: true,
+        });
+
+        // =====================================================================
         // User Data (k3s bootstrap)
         //
         // ORDERING: cfn-signal is sent after critical infrastructure
@@ -277,11 +300,21 @@ export class K8sComputeStack extends cdk.Stack {
                 ssmPrefix: props.ssmPrefix,
             })
             .configureKubeconfig(configs.cluster.dataDir)
+            .deployK8sManifests({
+                s3BucketName: scriptsBucket.bucketName,
+                s3KeyPrefix: 'k8s',
+                manifestsDir: '/data/k8s',
+                ssmPrefix: props.ssmPrefix,
+                region: this.region,
+            })
             .addCompletionMarker();
 
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
         this.instanceRole = launchTemplateConstruct.instanceRole;
         this.logGroup = launchTemplateConstruct.logGroup;
+
+        // Grant S3 read access for manifest download
+        scriptsBucket.grantRead(this.instanceRole);
 
         // =====================================================================
         // IAM Grants

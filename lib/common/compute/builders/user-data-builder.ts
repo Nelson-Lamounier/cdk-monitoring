@@ -153,6 +153,22 @@ export interface K3sInstallConfig {
     ssmPrefix?: string;
 }
 
+/**
+ * Configuration for downloading and deploying k8s manifests from S3.
+ * Used by `deployK8sManifests()` method.
+ */
+export interface K8sManifestsS3Config {
+    /** S3 bucket name containing the k8s scripts/manifests */
+    readonly s3BucketName: string;
+    /** S3 key prefix for the k8s directory @default 'k8s' */
+    readonly s3KeyPrefix?: string;
+    /** Local directory to store manifests @default '/data/k8s' */
+    readonly manifestsDir?: string;
+    /** SSM prefix for resolving secrets @default '/k8s/development' */
+    readonly ssmPrefix?: string;
+    /** AWS region @default 'eu-west-1' */
+    readonly region?: string;
+}
 // =============================================================================
 // USER DATA BUILDER CLASS
 // =============================================================================
@@ -644,6 +660,80 @@ export KUBECONFIG=$K3S_KUBECONFIG
 echo "kubectl configured. Cluster info:"
 k3s kubectl cluster-info
 k3s kubectl get namespaces`);
+        return this;
+    }
+
+    /**
+     * Download k8s manifests from S3 and deploy to k3s.
+     *
+     * Downloads the complete k8s manifests bundle from S3 (synced via CDK
+     * BucketDeployment), substitutes secret placeholders from SSM, and
+     * applies all resources via `kubectl apply -k`.
+     *
+     * @param config - S3 bucket and manifest configuration
+     * @remarks **k8s project** - Requires k3s and kubectl to be configured.
+     * @returns this - for method chaining
+     */
+    deployK8sManifests(config: K8sManifestsS3Config): this {
+        const s3KeyPrefix = config.s3KeyPrefix ?? 'k8s';
+        const manifestsDir = config.manifestsDir ?? '/data/k8s';
+        const region = config.region ?? 'eu-west-1';
+        const ssmPrefix = config.ssmPrefix ?? '/k8s/development';
+
+        this.userData.addCommands(`
+# =============================================================================
+# Deploy k8s Monitoring Manifests
+# =============================================================================
+
+echo "=== Downloading k8s manifests from S3 ==="
+MANIFESTS_DIR="${manifestsDir}"
+mkdir -p $MANIFESTS_DIR
+
+# Sync the k8s bundle from S3 (manifests + deploy script)
+aws s3 sync s3://${config.s3BucketName}/${s3KeyPrefix}/ $MANIFESTS_DIR/ --region ${region}
+echo "k8s manifests downloaded to $MANIFESTS_DIR"
+
+# Restore execute permissions on scripts
+find $MANIFESTS_DIR -name '*.sh' -exec chmod +x {} +
+
+# Resolve secrets from SSM for manifest templating
+SSM_PREFIX="${ssmPrefix}"
+REGION="${region}"
+
+echo "Resolving secrets from SSM..."
+GRAFANA_PASS=$(aws ssm get-parameter --name "$SSM_PREFIX/grafana-admin-password" --with-decryption --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "admin")
+GH_TOKEN=$(aws ssm get-parameter --name "$SSM_PREFIX/github-token" --with-decryption --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
+
+# Substitute secret placeholders in manifests
+if [ -f "$MANIFESTS_DIR/manifests/grafana/secret.yaml" ]; then
+    sed -i "s|__GRAFANA_ADMIN_PASSWORD__|$GRAFANA_PASS|g" "$MANIFESTS_DIR/manifests/grafana/secret.yaml"
+    echo "  ✓ Grafana admin password injected"
+fi
+if [ -f "$MANIFESTS_DIR/manifests/github-actions-exporter/deployment.yaml" ] && [ -n "$GH_TOKEN" ]; then
+    sed -i "s|__GITHUB_TOKEN__|$GH_TOKEN|g" "$MANIFESTS_DIR/manifests/github-actions-exporter/deployment.yaml"
+    echo "  ✓ GitHub token injected"
+fi
+
+# Apply all manifests via kustomize (k3s includes kustomize support)
+echo "Applying k8s manifests..."
+export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig
+k3s kubectl apply -k $MANIFESTS_DIR/manifests/
+
+# Wait for core deployments to be ready (best-effort, non-blocking)
+echo "Waiting for monitoring pods to be ready..."
+for deploy in prometheus grafana loki tempo; do
+    k3s kubectl rollout status deployment/$deploy -n monitoring --timeout=180s 2>/dev/null || echo "  ⚠ $deploy not ready within timeout"
+done
+
+for ds in promtail node-exporter; do
+    k3s kubectl rollout status daemonset/$ds -n monitoring --timeout=120s 2>/dev/null || echo "  ⚠ $ds not ready within timeout"
+done
+
+echo ""
+echo "=== k8s Monitoring Stack Summary ==="
+k3s kubectl get pods -n monitoring -o wide
+k3s kubectl get svc -n monitoring
+echo "=== Monitoring stack deployment complete ==="`);
         return this;
     }
 
