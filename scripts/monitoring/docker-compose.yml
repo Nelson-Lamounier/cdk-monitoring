@@ -136,7 +136,7 @@ services:
     ports:
       - "127.0.0.1:9193:9193"
     volumes:
-      - ./steampipe/config:/home/steampipe/.steampipe/config:ro
+      - ./steampipe/config:/home/steampipe/.steampipe/config
     command: service start --foreground --database-listen local --database-port 9193
     networks:
       - monitoring
