@@ -134,6 +134,18 @@ const nextjsStacks: StackConfig[] = [
   },
 
   // -------------------------------------------------------------------------
+  // Phase 4b: K8s Compute Layer (EC2 k3s agent + EIP + EBS)
+  // Replaces: ECS Compute + Networking + Application stacks
+  // -------------------------------------------------------------------------
+  {
+    id: 'k8sCompute',
+    name: 'K8s Compute Stack',
+    getStackName: (env) => `NextJS-K8s-Compute-${env}`,
+    description: 'k3s Kubernetes agent node: EC2 + ASG + EBS + EIP for NextJS workloads',
+    dependsOn: ['data'],
+  },
+
+  // -------------------------------------------------------------------------
   // Phase 5: API Layer (API Gateway, Lambda)
   // -------------------------------------------------------------------------
   {
