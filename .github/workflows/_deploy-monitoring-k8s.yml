@@ -3,7 +3,7 @@
 # Single-Stack Architecture: Compute (EC2 + k3s + EBS + EIP)
 # Uses Shared VPC from deploy-shared workflow
 #
-# Inline logic extracted to TypeScript scripts in scripts/deployment/
+# Inline logic extracted to TypeScript scripts in scripts/deployment/ test
 
 name: Deploy Monitoring k8s (Reusable)
 
