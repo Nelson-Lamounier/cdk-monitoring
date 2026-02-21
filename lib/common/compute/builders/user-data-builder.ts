@@ -144,12 +144,19 @@ export interface UserDataBuilderOptions {
  * Used by `installK3s()` method.
  */
 export interface K3sInstallConfig {
-    /** k3s release channel (e.g., 'v1.31') @default 'v1.31' */
+    /** k3s release channel (e.g., 'v1.32') @default 'v1.32' */
     channel?: string;
     /** k3s data directory (should be on persistent volume) @default '/data/k3s' */
     dataDir?: string;
     /** Whether to disable the built-in Traefik ingress @default false */
     disableTraefik?: boolean;
+    /**
+     * Disable the built-in Flannel CNI to use an external CNI (e.g., Calico).
+     * When true, passes `--flannel-backend=none --disable-network-policy` to k3s.
+     * Requires calling `installCalicoCNI()` after k3s is ready.
+     * @default false
+     */
+    disableFlannel?: boolean;
     /** SSM parameter prefix for storing cluster info @default '/k8s/development' */
     ssmPrefix?: string;
 }
@@ -187,7 +194,7 @@ export interface K3sAgentConfig {
     readonly nodeLabel: string;
     /** Kubernetes node taint for workload isolation (e.g., 'role=application:NoSchedule') */
     readonly nodeTaint: string;
-    /** k3s release channel @default 'v1.31' */
+    /** k3s release channel @default 'v1.32' */
     readonly channel?: string;
     /** AWS region for SSM lookups @default 'eu-west-1' */
     readonly region?: string;
@@ -574,12 +581,16 @@ echo "=============================================="`);
      * @returns this - for method chaining
      */
     installK3s(config: K3sInstallConfig = {}): this {
-        const channel = config.channel ?? 'v1.31';
+        const channel = config.channel ?? 'v1.32';
         const dataDir = config.dataDir ?? '/data/k3s';
         const disableTraefik = config.disableTraefik ?? false;
+        const disableFlannel = config.disableFlannel ?? false;
         const ssmPrefix = config.ssmPrefix ?? '/k8s/development';
 
         const traefikFlag = disableTraefik ? '--disable traefik' : '';
+        const flannelFlags = disableFlannel
+            ? '--flannel-backend=none --disable-network-policy'
+            : '';
 
         this.userData.addCommands(`
 # =============================================================================
@@ -612,7 +623,8 @@ curl -sfL https://get.k3s.io | sh -s - server \\
     --data-dir ${dataDir} \\
     --write-kubeconfig-mode 644 \\
     $TLS_SAN \\
-    ${traefikFlag}
+    ${traefikFlag} \\
+    ${flannelFlags}
 
 # Wait for k3s to be ready
 echo "Waiting for k3s to be ready..."
@@ -664,7 +676,7 @@ k3s kubectl get nodes -o wide`);
      * @returns this - for method chaining
      */
     installK3sAgent(config: K3sAgentConfig): this {
-        const channel = config.channel ?? 'v1.31';
+        const channel = config.channel ?? 'v1.32';
         const region = config.region ?? 'eu-west-1';
 
         this.userData.addCommands(`
@@ -732,6 +744,76 @@ aws ssm put-parameter \\
 echo "k3s agent installed successfully"
 echo "k3s version: $(k3s --version)"
 echo "Agent service status: $(systemctl is-active k3s-agent)"`);
+        return this;
+    }
+
+    /**
+     * Install Calico CNI — replaces the default Flannel CNI for NetworkPolicy enforcement.
+     *
+     * Must be called AFTER `installK3s({ disableFlannel: true })`.
+     * Applies the Calico operator and custom resource, then waits for
+     * the CNI to become healthy before proceeding.
+     *
+     * @param dataDir - k3s data directory for kubectl access @default '/data/k3s'
+     * @remarks **k8s project** - Requires k3s installed with `--flannel-backend=none`.
+     * @returns this - for method chaining
+     */
+    installCalicoCNI(dataDir = '/data/k3s'): this {
+        this.userData.addCommands(`
+# =============================================================================
+# Install Calico CNI (NetworkPolicy enforcement)
+# =============================================================================
+
+echo "=== Installing Calico CNI ==="
+
+export KUBECONFIG=${dataDir}/server/cred/admin.kubeconfig
+KUBECTL="${dataDir}/server/bin/kubectl"
+
+# Install Calico operator
+echo "Applying Calico operator..."
+$KUBECTL create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.2/manifests/tigera-operator.yaml 2>/dev/null || \\
+$KUBECTL apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.2/manifests/tigera-operator.yaml
+
+# Wait for operator to be available
+echo "Waiting for Calico operator..."
+$KUBECTL wait --for=condition=Available deployment/tigera-operator \\
+    -n tigera-operator --timeout=120s || echo "WARNING: Operator not ready in 120s"
+
+# Apply Calico custom resource (default CIDR 10.42.0.0/16 matches k3s default)
+cat <<CALICO_EOF | $KUBECTL apply -f -
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  calicoNetwork:
+    ipPools:
+      - cidr: 10.42.0.0/16
+        encapsulation: VXLANCrossSubnet
+        natOutgoing: Enabled
+        nodeSelector: all()
+    linuxDataplane: Iptables
+CALICO_EOF
+
+# Wait for Calico pods to be ready
+echo "Waiting for Calico pods to become ready..."
+for i in {1..120}; do
+    READY=$($KUBECTL get pods -n calico-system --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+    TOTAL=$($KUBECTL get pods -n calico-system --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$TOTAL" -gt 0 ] && [ "$READY" -eq "$TOTAL" ]; then
+        echo "Calico pods ready (\${READY}/\${TOTAL}, waited \${i} seconds)"
+        break
+    fi
+    if [ $i -eq 120 ]; then
+        echo "WARNING: Calico pods not fully ready after 120s (\${READY}/\${TOTAL})"
+        $KUBECTL get pods -n calico-system
+    fi
+    sleep 1
+done
+
+echo "Calico CNI installed successfully"
+$KUBECTL get pods -n calico-system
+$KUBECTL get nodes -o wide`);
         return this;
     }
 

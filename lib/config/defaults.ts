@@ -101,7 +101,7 @@ export const MONITORING_PORTS = {
 export const K3S_API_PORT = 6443;
 
 /** k3s default stable channel */
-export const K3S_DEFAULT_CHANNEL = 'v1.31';
+export const K3S_DEFAULT_CHANNEL = 'v1.32';
 
 /** Traefik HTTP port (k3s built-in ingress) */
 export const TRAEFIK_HTTP_PORT = 80;

@@ -408,8 +408,10 @@ export class K8sComputeStack extends cdk.Stack {
                 channel: configs.cluster.channel,
                 dataDir: configs.cluster.dataDir,
                 disableTraefik: !configs.cluster.enableTraefik,
+                disableFlannel: true,
                 ssmPrefix: props.ssmPrefix,
             })
+            .installCalicoCNI(configs.cluster.dataDir)
             .configureKubeconfig(configs.cluster.dataDir)
             .deployK8sManifests({
                 s3BucketName: scriptsBucket.bucketName,
