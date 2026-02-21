@@ -629,7 +629,7 @@ curl -sfL https://get.k3s.io | sh -s - server \\
 # Wait for k3s to be ready
 echo "Waiting for k3s to be ready..."
 for i in {1..60}; do
-    if ${dataDir}/server/bin/kubectl --kubeconfig ${dataDir}/server/cred/admin.kubeconfig get nodes &>/dev/null; then
+    if k3s kubectl --kubeconfig ${dataDir}/server/cred/admin.kubeconfig get nodes &>/dev/null; then
         echo "k3s is ready (waited \${i} seconds)"
         break
     fi
@@ -767,7 +767,7 @@ echo "Agent service status: $(systemctl is-active k3s-agent)"`);
 echo "=== Installing Calico CNI ==="
 
 export KUBECONFIG=${dataDir}/server/cred/admin.kubeconfig
-KUBECTL="${dataDir}/server/bin/kubectl"
+KUBECTL="k3s kubectl"
 
 # Install Calico operator
 echo "Applying Calico operator..."
