@@ -9,6 +9,9 @@ metadata:
   namespace: monitoring
   labels:
     app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: metrics-db
+    app.kubernetes.io/part-of: monitoring
 spec:
   type: ClusterIP
   selector:

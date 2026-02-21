@@ -10,6 +10,8 @@ metadata:
   namespace: monitoring
   labels:
     app: promtail
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/component: log-agent
     app.kubernetes.io/part-of: monitoring
 spec:
   selector:

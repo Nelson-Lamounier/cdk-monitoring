@@ -10,6 +10,8 @@ metadata:
   namespace: monitoring
   labels:
     app: grafana
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboard
     app.kubernetes.io/part-of: monitoring
 data:
   datasources.yml: |

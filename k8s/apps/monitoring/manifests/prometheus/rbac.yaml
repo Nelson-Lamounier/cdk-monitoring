@@ -15,6 +15,8 @@ metadata:
   namespace: monitoring
   labels:
     app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: metrics-db
     app.kubernetes.io/part-of: monitoring
 ---
 # ClusterRole: read-only access to pods, nodes, endpoints, services
@@ -26,6 +28,8 @@ metadata:
     kubernetes.io/description: "Read-only access to pods, nodes, services, endpoints for metric discovery"
   labels:
     app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: metrics-db
     app.kubernetes.io/part-of: monitoring
 rules:
   - apiGroups: [""]
@@ -52,6 +56,8 @@ metadata:
     kubernetes.io/description: "Binds Prometheus ClusterRole to the prometheus ServiceAccount"
   labels:
     app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: metrics-db
     app.kubernetes.io/part-of: monitoring
 roleRef:
   apiGroup: rbac.authorization.k8s.io

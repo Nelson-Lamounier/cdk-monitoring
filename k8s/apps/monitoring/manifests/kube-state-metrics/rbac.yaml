@@ -12,6 +12,8 @@ metadata:
   namespace: monitoring
   labels:
     app: kube-state-metrics
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/component: cluster-metrics
     app.kubernetes.io/part-of: monitoring
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -22,6 +24,8 @@ metadata:
     kubernetes.io/description: "Read-only access to all K8s object types for state metrics"
   labels:
     app: kube-state-metrics
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/component: cluster-metrics
     app.kubernetes.io/part-of: monitoring
 rules:
   - apiGroups: [""]
@@ -87,6 +91,8 @@ metadata:
     kubernetes.io/description: "Binds kube-state-metrics ClusterRole to its ServiceAccount"
   labels:
     app: kube-state-metrics
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/component: cluster-metrics
     app.kubernetes.io/part-of: monitoring
 roleRef:
   apiGroup: rbac.authorization.k8s.io

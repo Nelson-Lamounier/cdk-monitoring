@@ -13,6 +13,8 @@ metadata:
   namespace: nextjs-app
   labels:
     app: nextjs
+    app.kubernetes.io/name: nextjs
+    app.kubernetes.io/component: web
     app.kubernetes.io/part-of: nextjs
 data:
   config.alloy: |

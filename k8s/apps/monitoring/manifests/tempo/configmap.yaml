@@ -9,6 +9,9 @@ metadata:
   namespace: monitoring
   labels:
     app: tempo
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/component: trace-backend
+    app.kubernetes.io/part-of: monitoring
 data:
   config.yml: |
     server:

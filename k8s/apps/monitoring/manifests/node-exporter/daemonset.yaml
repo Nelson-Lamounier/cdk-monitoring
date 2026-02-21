@@ -10,6 +10,8 @@ metadata:
   namespace: monitoring
   labels:
     app: node-exporter
+    app.kubernetes.io/name: node-exporter
+    app.kubernetes.io/component: node-metrics
     app.kubernetes.io/part-of: monitoring
 spec:
   selector:

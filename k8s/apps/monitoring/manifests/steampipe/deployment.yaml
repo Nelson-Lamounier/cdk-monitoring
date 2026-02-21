@@ -8,6 +8,8 @@ metadata:
   namespace: monitoring
   labels:
     app: steampipe
+    app.kubernetes.io/name: steampipe
+    app.kubernetes.io/component: cloud-query
     app.kubernetes.io/part-of: monitoring
 spec:
   replicas: 1
@@ -61,6 +63,9 @@ metadata:
   namespace: monitoring
   labels:
     app: steampipe
+    app.kubernetes.io/name: steampipe
+    app.kubernetes.io/component: cloud-query
+    app.kubernetes.io/part-of: monitoring
 spec:
   type: ClusterIP
   selector:

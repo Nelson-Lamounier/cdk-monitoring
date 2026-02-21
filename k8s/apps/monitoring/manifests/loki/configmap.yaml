@@ -9,6 +9,9 @@ metadata:
   namespace: monitoring
   labels:
     app: loki
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/component: log-aggregator
+    app.kubernetes.io/part-of: monitoring
 data:
   config.yml: |
     auth_enabled: false
