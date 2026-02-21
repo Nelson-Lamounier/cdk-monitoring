@@ -18,7 +18,8 @@
  * - `addCompletionMarker()` - Add final success banner
  *
  * ## Kubernetes (k3s) Methods
- * - `installK3s()` - Install k3s lightweight Kubernetes
+ * - `installK3s()` - Install k3s lightweight Kubernetes (server mode)
+ * - `installK3sAgent()` - Install k3s as agent node (joins existing cluster)
  * - `configureKubeconfig()` - Set up kubectl access
  *
  * ## Monitoring-Specific Methods
@@ -169,6 +170,29 @@ export interface K8sManifestsS3Config {
     /** AWS region @default 'eu-west-1' */
     readonly region?: string;
 }
+
+/**
+ * Configuration for k3s agent installation.
+ * Used by `installK3sAgent()` method.
+ *
+ * The agent joins an existing k3s server cluster and applies
+ * node labels and taints for workload isolation.
+ */
+export interface K3sAgentConfig {
+    /** URL of the k3s server to join (e.g., 'https://10.0.0.1:6443') */
+    readonly serverUrl: string;
+    /** SSM parameter path where the k3s join token is stored */
+    readonly tokenSsmPath: string;
+    /** Kubernetes node label for workload isolation (e.g., 'role=application') */
+    readonly nodeLabel: string;
+    /** Kubernetes node taint for workload isolation (e.g., 'role=application:NoSchedule') */
+    readonly nodeTaint: string;
+    /** k3s release channel @default 'v1.31' */
+    readonly channel?: string;
+    /** AWS region for SSM lookups @default 'eu-west-1' */
+    readonly region?: string;
+}
+
 // =============================================================================
 // USER DATA BUILDER CLASS
 // =============================================================================
@@ -625,6 +649,89 @@ echo "k3s installed successfully"
 echo "k3s version: $(k3s --version)"
 echo "Node status:"
 k3s kubectl get nodes -o wide`);
+        return this;
+    }
+
+    /**
+     * Install k3s in agent mode — joins an existing k3s server cluster.
+     *
+     * Retrieves the join token from SSM (published by the k3s server node),
+     * installs k3s in agent mode, and applies node labels + taints for
+     * workload isolation.
+     *
+     * @param config - k3s agent configuration (server URL, token SSM path, labels)
+     * @remarks **k8s project** - Requires a running k3s server.
+     * @returns this - for method chaining
+     */
+    installK3sAgent(config: K3sAgentConfig): this {
+        const channel = config.channel ?? 'v1.31';
+        const region = config.region ?? 'eu-west-1';
+
+        this.userData.addCommands(`
+# =============================================================================
+# Install k3s Agent (joins existing cluster)
+# =============================================================================
+
+echo "=== Installing k3s agent (channel: ${channel}) ==="
+
+# Get instance metadata
+if [ -z "\${IMDS_TOKEN:-}" ]; then
+    IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+fi
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
+
+echo "Instance: $INSTANCE_ID, Private IP: $PRIVATE_IP"
+
+# Retrieve join token from SSM (published by k3s server at boot)
+echo "Retrieving k3s join token from SSM: ${config.tokenSsmPath}"
+K3S_TOKEN=$(aws ssm get-parameter \\
+    --name "${config.tokenSsmPath}" \\
+    --query "Parameter.Value" \\
+    --output text \\
+    --region "${region}" 2>/dev/null || echo "")
+
+if [ -z "$K3S_TOKEN" ]; then
+    echo "ERROR: Failed to retrieve k3s join token from SSM"
+    echo "Ensure the k3s server has started and published its token to ${config.tokenSsmPath}"
+    exit 1
+fi
+echo "Join token retrieved successfully"
+
+# Install k3s in agent mode
+export INSTALL_K3S_CHANNEL="${channel}"
+export K3S_URL="${config.serverUrl}"
+export K3S_TOKEN="$K3S_TOKEN"
+
+curl -sfL https://get.k3s.io | sh -s - agent \\
+    --node-label "${config.nodeLabel}" \\
+    --node-taint "${config.nodeTaint}"
+
+# Wait for agent to register with the server
+echo "Waiting for k3s agent to register..."
+for i in {1..60}; do
+    if systemctl is-active --quiet k3s-agent; then
+        echo "k3s agent is active (waited \${i} seconds)"
+        break
+    fi
+    if [ $i -eq 60 ]; then
+        echo "WARNING: k3s agent did not become active in 60s"
+        journalctl -u k3s-agent --no-pager -n 20
+    fi
+    sleep 1
+done
+
+# Store agent instance info in SSM
+aws ssm put-parameter \\
+    --name "${config.tokenSsmPath}/../agent-instance-id" \\
+    --value "$INSTANCE_ID" \\
+    --type "String" \\
+    --overwrite \\
+    --region "${region}" || echo "WARNING: Failed to store agent instance-id in SSM"
+
+echo "k3s agent installed successfully"
+echo "k3s version: $(k3s --version)"
+echo "Agent service status: $(systemctl is-active k3s-agent)"`);
         return this;
     }
 
