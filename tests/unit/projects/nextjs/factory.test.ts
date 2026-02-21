@@ -64,19 +64,20 @@ describe('ConsolidatedNextJSFactory', () => {
     });
 
     describe('createAllStacks', () => {
-        it('should create all 6 stacks', () => {
+        it('should create all 7 stacks', () => {
             const app = createFactoryApp();
             const factory = new ConsolidatedNextJSFactory(Environment.DEVELOPMENT);
 
             const { stacks, stackMap } = factory.createAllStacks(app, TEST_CONTEXT);
 
-            expect(stacks).toHaveLength(6);
+            expect(stacks).toHaveLength(7);
             expect(stackMap).toHaveProperty('data');
             expect(stackMap).toHaveProperty('compute');
             expect(stackMap).toHaveProperty('networking');
             expect(stackMap).toHaveProperty('application');
             expect(stackMap).toHaveProperty('api');
             expect(stackMap).toHaveProperty('edge');
+            expect(stackMap).toHaveProperty('k8sCompute');
         });
 
         it('should name stacks with correct namespace and environment suffix', () => {
@@ -92,6 +93,7 @@ describe('ConsolidatedNextJSFactory', () => {
             expect(stackNames).toContain('NextJS-Application-development');
             expect(stackNames).toContain('NextJS-Api-development');
             expect(stackNames).toContain('NextJS-Edge-development');
+            expect(stackNames).toContain('NextJS-K8s-Compute-development');
         });
     });
 

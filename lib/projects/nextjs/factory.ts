@@ -2,19 +2,20 @@
  * @format
  * Next.js Project Factory (Consolidated Domain Stacks)
  *
- * Creates complete infrastructure for Next.js web application on ECS
- * using consolidated domain-based stacks for simpler deployment.
+ * Creates complete infrastructure for Next.js web application.
+ * Supports both ECS (current) and K8s (migration target) deployment paths.
  *
- * Stack Deployment Order (6 stacks):
+ * Stack Deployment Order (7 stacks):
  * 1. DataStack: DynamoDB Personal Portfolio Table + S3 + SSM Secrets
  * 2. ComputeStack: ECS Cluster + IAM Roles + ASG + Launch Template
  * 3. NetworkingStack: ALB + Target Group + Task Security Group
  * 4. ApplicationStack: Task Definition + ECS Service + Auto-Deploy
  * 5. ApiStack: API Gateway + Lambda (separate lifecycle)
  * 6. EdgeStack: ACM + WAF + CloudFront (us-east-1)
+ * 7. K8sComputeStack: k3s agent node + manifests (K8s migration)
  *
  * Benefits over legacy factory:
- * - Fewer stacks to manage (6 vs 14+)
+ * - Fewer stacks to manage (7 vs 14+)
  * - Faster deployments
  * - Clearer domain boundaries
  * - Simpler dependency management
@@ -23,7 +24,7 @@
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Environment, cdkEnvironment, cdkEdgeEnvironment } from '../../config/environments';
-import { getNextJsConfigs } from '../../config/nextjs';
+import { getNextJsConfigs, getNextJsK8sConfig } from '../../config/nextjs';
 import { nextjsResourceNames } from '../../config/nextjs/resource-names';
 import { Project, getProjectConfig } from '../../config/projects';
 import { nextjsSsmPaths, monitoringSsmPaths } from '../../config/ssm-paths';
@@ -39,6 +40,7 @@ import {
     NextJsApplicationStack,
     NextJsApiStack,
     NextJsEdgeStack,
+    NextJsK8sComputeStack,
 } from '../../stacks/nextjs';
 
 // =========================================================================
@@ -363,6 +365,35 @@ export class ConsolidatedNextJSFactory implements IProjectFactory<ConsolidatedFa
             `Edge stack enabled for domain: ${edgeConfig.domainName} ` +
             `(ACM + WAF + CloudFront in us-east-1)`,
         );
+
+        // =================================================================
+        // Stack 7: K8s COMPUTE STACK (K8s Migration)
+        // k3s agent node + S3 manifest sync + Elastic IP
+        // Runs alongside ECS stacks during migration; eventually replaces
+        // Compute + Networking + Application stacks.
+        // =================================================================
+        const k8sConfig = getNextJsK8sConfig(this.environment);
+        const k8sSsmPrefix = `/nextjs-k8s/${this.environment}`;
+
+        const k8sComputeStack = new NextJsK8sComputeStack(scope, this.stackId('K8s-Compute'), {
+            targetEnvironment: this.environment,
+            k8sConfig,
+            namePrefix: `${namePrefix}-k8s`,
+            ssmPrefix: k8sSsmPrefix,
+            vpcName,
+            // Grant same data access as ECS task roles
+            ssmParameterPath: ssmPaths.wildcard,
+            secretsManagerPathPattern: `${namePrefix}/${this.environment}/*`,
+            s3ReadBucketArns: [`arn:aws:s3:::${resourceNames.assetsBucketName}`],
+            dynamoTableArns: [
+                `arn:aws:dynamodb:${env.region}:${env.account}:table/${resourceNames.dynamoTableName}`,
+            ],
+            dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
+            env,
+        });
+        k8sComputeStack.addDependency(dataStack);
+        stacks.push(k8sComputeStack);
+        stackMap.k8sCompute = k8sComputeStack;
 
         return {
             stacks,
