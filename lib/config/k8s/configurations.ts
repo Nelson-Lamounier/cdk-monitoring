@@ -157,7 +157,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
         },
         image: {
             amiSsmPath: '/k8s/development/golden-ami/latest',
-            enableImageBuilder: false, // Disabled until bootstrap imagebuilder permissions are verified
+            enableImageBuilder: true,
             parentImageSsmPath: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64',
             bakedVersions: {
                 dockerCompose: 'v2.24.0',
