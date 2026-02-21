@@ -125,7 +125,7 @@ export class GoldenAmiPipelineConstruct extends Construct {
         const recipe = new imagebuilder.CfnImageRecipe(this, 'Recipe', {
             name: `${namePrefix}-golden-ami-recipe`,
             version: '1.0.0',
-            parentImage: `resolve:ssm:${imageConfig.parentImageSsmPath}`,
+            parentImage: `ssm:${imageConfig.parentImageSsmPath}`,
             components: [
                 {
                     componentArn: installComponent.attrArn,
