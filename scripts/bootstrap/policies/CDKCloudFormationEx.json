@@ -120,6 +120,30 @@
       "Resource": "*"
     },
     {
+      "Sid": "ImageBuilderServices",
+      "Effect": "Allow",
+      "Action": "imagebuilder:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "WebApplicationFirewall",
+      "Effect": "Allow",
+      "Action": "wafv2:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "EmailServices",
+      "Effect": "Allow",
+      "Action": "ses:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ContentDeliveryNetwork",
+      "Effect": "Allow",
+      "Action": "cloudfront:*",
+      "Resource": "*"
+    },
+    {
       "Sid": "STSAccess",
       "Effect": "Allow",
       "Action": ["sts:AssumeRole", "sts:GetCallerIdentity"],
