@@ -82,10 +82,8 @@ spec:
                 secretKeyRef:
                   name: nextjs-secrets
                   key: NEXT_PUBLIC_API_URL
-
-          # Environment-specific overrides applied via Kustomize overlays
-          # so the base manifest works for all environments.
-          env:
+            # Environment-specific overrides applied via Kustomize overlays
+            # so the base manifest works for all environments.
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: "environment=development,service.namespace=nextjs"
 
