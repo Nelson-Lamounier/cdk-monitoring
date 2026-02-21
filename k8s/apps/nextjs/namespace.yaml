@@ -1,0 +1,11 @@
+# @format
+# Next.js Application Namespace
+# Isolates the application workload from the monitoring stack
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nextjs-app
+  labels:
+    app.kubernetes.io/part-of: nextjs
+    app.kubernetes.io/managed-by: kustomize

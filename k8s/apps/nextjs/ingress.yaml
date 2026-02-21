@@ -1,0 +1,28 @@
+# @format
+# Next.js Traefik IngressRoute
+#
+# Maps from: ALB Listener Rules (networking-stack.ts)
+# Routes all incoming HTTP traffic to the Next.js ClusterIP service.
+#
+# CloudFront → Elastic IP → Traefik (port 80) → this IngressRoute → Service
+
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nextjs-ingress
+  namespace: nextjs-app
+  labels:
+    app: nextjs
+    app.kubernetes.io/part-of: nextjs
+spec:
+  entryPoints:
+    - web
+  routes:
+    # Default route: all paths to Next.js
+    # Priority is lower than the Grafana IngressRoute in monitoring namespace
+    - match: PathPrefix(`/`)
+      kind: Rule
+      priority: 1
+      services:
+        - name: nextjs
+          port: 3000

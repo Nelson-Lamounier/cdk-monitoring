@@ -1,0 +1,168 @@
+# @format
+# Next.js Application Deployment
+#
+# Maps from: ECS Task Definition + ECS Service (application-stack.ts)
+# Container composition: Next.js app + Alloy sidecar (OTLP traces)
+#
+# Note: Promtail is NOT a sidecar here — the monitoring DaemonSet
+# (already deployed in the monitoring namespace) collects pod logs
+# automatically via the K8s log driver.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nextjs
+  namespace: nextjs-app
+  labels:
+    app: nextjs
+    app.kubernetes.io/name: nextjs
+    app.kubernetes.io/part-of: nextjs
+    app.kubernetes.io/component: web
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: nextjs
+  template:
+    metadata:
+      labels:
+        app: nextjs
+        app.kubernetes.io/name: nextjs
+        app.kubernetes.io/part-of: nextjs
+    spec:
+      # Schedule on the application node (2-node architecture)
+      nodeSelector:
+        role: application
+      tolerations:
+        - key: role
+          value: application
+          effect: NoSchedule
+
+      # Non-root user (matches ECS user: '1001')
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+
+      containers:
+        # ─────────────────────────────────────────────
+        # Main: Next.js Application
+        # ─────────────────────────────────────────────
+        - name: nextjs
+          image: "${ECR_REPOSITORY_URI}:latest"
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+
+          envFrom:
+            - configMapRef:
+                name: nextjs-config
+
+          env:
+            # SSM-resolved secrets (from nextjs-secrets Secret)
+            - name: DYNAMODB_TABLE_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: nextjs-secrets
+                  key: DYNAMODB_TABLE_NAME
+            - name: ASSETS_BUCKET_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: nextjs-secrets
+                  key: ASSETS_BUCKET_NAME
+            - name: NEXT_PUBLIC_API_URL
+              valueFrom:
+                secretKeyRef:
+                  name: nextjs-secrets
+                  key: NEXT_PUBLIC_API_URL
+
+          # Environment-specific overrides applied via Kustomize overlays
+          # so the base manifest works for all environments.
+          env:
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "environment=development,service.namespace=nextjs"
+
+          resources:
+            requests:
+              cpu: 256m
+              memory: 512Mi
+            limits:
+              cpu: 512m
+              memory: 1Gi
+
+          # Maps from: ECS healthCheck (application-stack.ts L430-441)
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Maps from: ALB Target Group health check
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Startup probe (no ECS equivalent — gives container time to start)
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12
+
+          # Volumes: cache directory for Next.js ISR
+          volumeMounts:
+            - name: nextjs-cache
+              mountPath: /app/.next/cache
+
+        # ─────────────────────────────────────────────
+        # Sidecar: Grafana Alloy (OTLP trace collector)
+        # Maps from: addAlloySidecar() in application-stack.ts
+        # ─────────────────────────────────────────────
+        - name: alloy
+          image: grafana/alloy:v1.8.3
+          args:
+            - run
+            - --stability.level=generally-available
+            - /etc/alloy/config.alloy
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+          env:
+            # In K8s, Tempo is reachable via cluster DNS (no SSM needed)
+            - name: TEMPO_ENDPOINT
+              value: "tempo.monitoring.svc.cluster.local:4317"
+          resources:
+            requests:
+              cpu: 32m
+              memory: 64Mi
+            limits:
+              cpu: 64m
+              memory: 128Mi
+          volumeMounts:
+            - name: alloy-config
+              mountPath: /etc/alloy
+
+      volumes:
+        - name: nextjs-cache
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: alloy-config
+          configMap:
+            name: alloy-config

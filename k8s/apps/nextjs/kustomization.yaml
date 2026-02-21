@@ -1,0 +1,26 @@
+# @format
+# Next.js Application Kustomization
+#
+# Aggregates all Next.js manifests for deployment.
+# Usage: kubectl apply -k k8s/apps/nextjs/
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: nextjs-app
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - alloy-configmap.yaml
+  - secret.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - network-policy.yaml

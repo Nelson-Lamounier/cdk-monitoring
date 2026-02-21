@@ -1,0 +1,23 @@
+# @format
+# Next.js ClusterIP Service
+#
+# Maps from: ALB Target Group + ECS Service (networking-stack.ts)
+# Internal access only — Traefik IngressRoute handles external traffic.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextjs
+  namespace: nextjs-app
+  labels:
+    app: nextjs
+    app.kubernetes.io/part-of: nextjs
+spec:
+  type: ClusterIP
+  selector:
+    app: nextjs
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
