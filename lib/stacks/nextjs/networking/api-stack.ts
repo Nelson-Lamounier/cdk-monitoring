@@ -312,17 +312,25 @@ export class NextJsApiStack extends cdk.Stack {
         }
 
         // =================================================================
-        // KMS DECRYPT GRANT (customer-managed encryption)
+        // KMS DECRYPT GRANT (customer-managed encryption — production only)
         //
         // Table.fromTableName() creates an unencrypted reference — so
         // grantReadWriteData() only grants DynamoDB actions, NOT kms:Decrypt.
         // In production the table uses a customer-managed KMS key, so we
         // must read the key ARN from SSM and grant encrypt/decrypt explicitly.
+        //
+        // In non-production, DynamoDB uses AWS-managed encryption (no CMK),
+        // so the SSM parameter doesn't exist and no explicit grant is needed.
         // =================================================================
-        const kmsKeyArnParam = ssm.StringParameter.valueForStringParameter(
-            this, ssmPaths.dynamodbKmsKeyArn,
-        );
-        const dynamoKmsKey = kms.Key.fromKeyArn(this, 'ImportedDynamoKmsKey', kmsKeyArnParam);
+        const isProduction = configs.isProduction;
+        let dynamoKmsKey: kms.IKey | undefined;
+
+        if (isProduction) {
+            const kmsKeyArnParam = ssm.StringParameter.valueForStringParameter(
+                this, ssmPaths.dynamodbKmsKeyArn,
+            );
+            dynamoKmsKey = kms.Key.fromKeyArn(this, 'ImportedDynamoKmsKey', kmsKeyArnParam);
+        }
 
         // =====================================================================
         // LAMBDA FUNCTIONS - EMAIL SUBSCRIPTIONS
@@ -400,8 +408,11 @@ export class NextJsApiStack extends cdk.Stack {
 
         // KMS grants for subscription Lambdas (read-write needs encrypt + decrypt)
         // Table.fromTableName() doesn't propagate encryption key, so explicit grant needed.
-        dynamoKmsKey.grantEncryptDecrypt(subscribeLambda.function);
-        dynamoKmsKey.grantEncryptDecrypt(verifyLambda.function);
+        // Only needed in production where customer-managed KMS is used.
+        if (dynamoKmsKey) {
+            dynamoKmsKey.grantEncryptDecrypt(subscribeLambda.function);
+            dynamoKmsKey.grantEncryptDecrypt(verifyLambda.function);
+        }
 
         // Grant SES SendEmail permission — scoped to the verified sender identity
         subscribeLambda.function.addToRolePolicy(
