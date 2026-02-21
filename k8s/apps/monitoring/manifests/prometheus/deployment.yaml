@@ -18,6 +18,7 @@ spec:
       labels:
         app: prometheus
     spec:
+      serviceAccountName: prometheus
       securityContext:
         fsGroup: 65534 # nobody group — Prometheus runs as nobody
       containers:
@@ -45,9 +46,6 @@ spec:
               readOnly: true
             - name: data
               mountPath: /prometheus
-            - name: secrets
-              mountPath: /etc/prometheus/secrets
-              readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -74,7 +72,3 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: prometheus-data
-        - name: secrets
-          secret:
-            secretName: prometheus-secrets
-            optional: true

@@ -1,5 +1,17 @@
 # @format
-# Prometheus configuration — ported from scripts/monitoring/prometheus/
+# Prometheus configuration — K8s-native service discovery
+#
+# Scrape targets:
+#   1. prometheus  — self-monitoring
+#   2. node-exporter — DaemonSet on ALL nodes (hostNetwork:true)
+#      Uses kubernetes_sd_configs to discover each pod individually
+#      so per-node labels (server vs application) are preserved.
+#   3. nextjs-app  — Next.js /api/metrics via K8s Service DNS
+#   4. github-actions — GitHub Actions exporter
+#
+# Replaced ECS-era discovery:
+#   - ec2_sd_configs (tag:Purpose=NextJS) → kubernetes_sd_configs
+#   - dns_sd_configs (nextjs-app.nextjs.local) → K8s service DNS
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -25,55 +37,68 @@ data:
       - /etc/prometheus/alert_rules.yml
 
     scrape_configs:
+      # -----------------------------------------------------------------
+      # 1. Prometheus self-monitoring
+      # -----------------------------------------------------------------
       - job_name: "prometheus"
         static_configs:
           - targets: ["localhost:9090"]
 
+      # -----------------------------------------------------------------
+      # 2. Node Exporter (DaemonSet — all nodes)
+      #
+      # kubernetes_sd_configs discovers each DaemonSet pod individually,
+      # giving per-node labels (hostname, node role) for Grafana dashboards.
+      #
+      # The DaemonSet uses hostNetwork:true so containerPort == hostPort.
+      # Tolerations: Exists means it runs on BOTH server and agent nodes.
+      # -----------------------------------------------------------------
       - job_name: "node-exporter"
-        static_configs:
-          - targets: ["node-exporter:9100"]
-            labels:
-              environment: "production"
-              instance_name: "k8s-host"
-
-      # Next.js ECS node-exporter metrics via EC2 service discovery
-      - job_name: "ecs-nextjs-node-exporter"
-        ec2_sd_configs:
-          - region: eu-west-1
-            port: 9100
-            filters:
-              - name: tag:Purpose
-                values: ["NextJS"]
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["monitoring"]
         relabel_configs:
-          - source_labels: [__meta_ec2_tag_Name]
-            target_label: instance_name
-          - source_labels: [__meta_ec2_tag_Environment]
-            target_label: environment
-          - source_labels: [__meta_ec2_instance_id]
-            target_label: instance_id
-          - source_labels: [__meta_ec2_availability_zone]
-            target_label: availability_zone
+          # Only scrape pods with app=node-exporter
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: node-exporter
+            action: keep
+          # Use the node name as the instance label
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: instance
+          # Add node_name label for dashboard filtering
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node_name
+          # Use the host IP (hostNetwork pods bind to node IP)
+          - source_labels: [__meta_kubernetes_pod_host_ip]
+            regex: (.+)
+            target_label: __address__
+            replacement: "${1}:9100"
 
-      # Next.js application metrics via Cloud Map DNS service discovery
+      # -----------------------------------------------------------------
+      # 3. Next.js Application Metrics
+      #
+      # Scrapes /api/metrics from the Next.js K8s Service via cluster DNS.
+      # Replaces the ECS Cloud Map DNS target (nextjs-app.nextjs.local).
+      # -----------------------------------------------------------------
       - job_name: "nextjs-application-metrics"
         metrics_path: "/api/metrics"
         scrape_interval: 30s
-        authorization:
-          type: Bearer
-          credentials_file: /etc/prometheus/secrets/metrics-token
         dns_sd_configs:
           - names:
-              - "nextjs-app.nextjs.local"
+              - "nextjs.nextjs-app.svc.cluster.local"
             type: A
             port: 3000
             refresh_interval: 30s
         relabel_configs:
           - source_labels: [__meta_dns_name]
-            target_label: cloudmap_service
+            target_label: k8s_service
           - target_label: environment
             replacement: "production"
 
-      # GitHub Actions workflow run metrics
+      # -----------------------------------------------------------------
+      # 4. GitHub Actions Exporter
+      # -----------------------------------------------------------------
       - job_name: "github-actions"
         scrape_interval: 30s
         static_configs:
@@ -81,7 +106,7 @@ data:
 
   alert_rules.yml: |
     groups:
-      - name: ec2_host_alerts
+      - name: host_alerts
         rules:
           - alert: HighCpuUsage
             expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
@@ -107,43 +132,43 @@ data:
             annotations:
               summary: "Instance {{ $labels.instance }} is down"
 
-          - alert: EcsNodeExporterDown
-            expr: up{job="ecs-nextjs-node-exporter"} == 0
+          - alert: NodeExporterDown
+            expr: up{job="node-exporter"} == 0
             for: 2m
             labels:
               severity: critical
             annotations:
-              summary: "ECS target {{ $labels.instance_name }} is down"
+              summary: "Node Exporter down on {{ $labels.node_name }}"
 
       - name: nextjs_app_alerts
         rules:
           - alert: NextJsAppMetricsDown
-            expr: up{job="nextjs-app-metrics"} == 0
+            expr: up{job="nextjs-application-metrics"} == 0
             for: 3m
             labels:
               severity: warning
             annotations:
-              summary: "Next.js /metrics endpoint down on {{ $labels.instance_name }}"
+              summary: "Next.js /api/metrics endpoint unreachable"
 
           - alert: NextJsHighErrorRate
             expr: |
               (
-                sum(rate(http_requests_total{job="nextjs-app-metrics", status_code=~"5.."}[5m])) by (instance_name)
+                sum(rate(http_requests_total{job="nextjs-application-metrics", status_code=~"5.."}[5m]))
                 /
-                sum(rate(http_requests_total{job="nextjs-app-metrics"}[5m])) by (instance_name)
+                sum(rate(http_requests_total{job="nextjs-application-metrics"}[5m]))
               ) > 0.05
             for: 5m
             labels:
               severity: critical
             annotations:
-              summary: "High 5xx error rate on {{ $labels.instance_name }}"
+              summary: "High 5xx error rate on Next.js"
 
           - alert: NextJsHighLatency
             expr: |
-              histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="nextjs-app-metrics"}[5m])) by (le, instance_name))
+              histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="nextjs-application-metrics"}[5m])) by (le))
               > 2
             for: 5m
             labels:
               severity: warning
             annotations:
-              summary: "High p95 latency on {{ $labels.instance_name }}"
+              summary: "High p95 latency on Next.js"

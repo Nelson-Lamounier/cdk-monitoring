@@ -10,6 +10,7 @@ resources:
   - namespace.yaml
 
   # Core services
+  - prometheus/rbac.yaml
   - prometheus/configmap.yaml
   - prometheus/pvc.yaml
   - prometheus/deployment.yaml
