@@ -24,3 +24,6 @@ export * from './configurations';
 
 // Export shared resource naming
 export * from './resource-names';
+
+// Export K8s deployment configurations
+export * from './k8s-configurations';

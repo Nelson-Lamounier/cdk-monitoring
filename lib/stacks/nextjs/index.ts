@@ -29,6 +29,9 @@ export * from './networking';
 // Edge Domain (ACM + WAF + CloudFront) - MUST be deployed in us-east-1
 export * from './edge';
 
+// K8s Domain (k3s agent node + manifests) - K8s migration target
+export * from './k8s';
+
 // ============================================================================
 // REMAINING INDEPENDENT STACKS
 // ============================================================================
