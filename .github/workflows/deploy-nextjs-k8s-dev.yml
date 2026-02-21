@@ -1,0 +1,59 @@
+# @format
+# @description Deploy Next.js K8s to Development
+#
+# Deploys the Next.js K8s compute stack (k3s agent node) to the dev account.
+# This is the K8s migration equivalent of deploy-nextjs-dev.yml (ECS).
+# Both pipelines can run in parallel during migration.
+#
+# Prerequisites:
+#   - Shared VPC from deploy-shared workflow
+#   - k3s server (monitoring stack) must be running for agent join
+
+name: Deploy Next.js K8s to Development
+
+on:
+  push:
+    branches:
+      - develop
+      - feature/k3s-kubernetes-migration
+    paths:
+      - "lib/config/nextjs/k8s-configurations.ts"
+      - "lib/config/projects.ts"
+      - "lib/config/defaults.ts"
+      - "lib/projects/nextjs/**"
+      - "lib/stacks/nextjs/k8s/**"
+      - "lib/common/compute/builders/user-data-builder.ts"
+      - "k8s/apps/nextjs/**"
+      - "k8s/base/**"
+      - "k8s/overlays/**"
+      - "bin/app.ts"
+      - ".github/workflows/deploy-nextjs-k8s-dev.yml"
+      - ".github/workflows/_deploy-nextjs-k8s.yml"
+  workflow_dispatch:
+    inputs:
+      skip_verification:
+        description: "Skip post-deployment verification"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-nextjs-k8s-development
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Development
+    uses: ./.github/workflows/_deploy-nextjs-k8s.yml
+    with:
+      environment: development
+      cdk-environment: development
+      require-approval: never
+      enable-security-scan: true
+      security-scan-blocking: false
+      skip-verification: ${{ inputs.skip_verification || false }}
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}

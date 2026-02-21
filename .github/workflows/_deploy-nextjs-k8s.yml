@@ -1,0 +1,352 @@
+# @format
+# @description Reusable Next.js K8s Deployment Workflow
+#
+# Deploys the Next.js K8s compute stack (k3s agent node) and
+# syncs K8s manifests via SSM Run Command.
+#
+# Architecture:
+#   1. CDK Deploy: NextJsK8sComputeStack (EC2 + k3s agent + EIP + S3)
+#   2. Manifest Deploy: S3 sync + kubectl apply via SSM
+#   3. ArgoCD Sync: Trigger ArgoCD sync if installed (optional)
+#
+# Follows the same pattern as _deploy-k8s.yml (monitoring stack) but targets
+# the nextjs project and the K8s-Compute stack.
+
+name: Deploy Next.js K8s (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+      cdk-environment:
+        description: "CDK environment name"
+        required: true
+        type: string
+      require-approval:
+        description: "CDK deployment approval mode"
+        required: false
+        default: "never"
+        type: string
+      enable-security-scan:
+        description: "Run IaC security scan"
+        required: false
+        default: false
+        type: boolean
+      security-scan-blocking:
+        description: "Fail pipeline on security scan findings"
+        required: false
+        default: false
+        type: boolean
+      skip-verification:
+        description: "Skip post-deployment verification"
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      AWS_OIDC_ROLE:
+        description: "AWS OIDC role ARN"
+        required: false
+
+env:
+  NODE_VERSION: "22"
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+
+jobs:
+  # ===========================================================================
+  # Setup, Build & Synthesize
+  # ===========================================================================
+  setup:
+    name: Setup & Synthesize
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    outputs:
+      aws-account-id: ${{ steps.account-id.outputs.account_id }}
+      commit-sha: ${{ github.sha }}
+      commit-short-sha: ${{ steps.commit-info.outputs.short_sha }}
+      node-version: ${{ steps.setup-tools.outputs.node-version }}
+      k8s-compute-stack: ${{ steps.synth.outputs.k8sCompute }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Record Commit Information
+        id: commit-info
+        run: echo "short_sha=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js and Yarn
+        id: setup-tools
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Synthesize & Determine Stack Names
+        id: synth
+        run: npx tsx scripts/deployment/synthesize-ci.ts nextjs ${{ inputs.cdk-environment }}
+
+      - name: Get AWS Account ID
+        id: account-id
+        run: echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+
+      - name: Upload Synthesized Templates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cdk-out-nextjs-k8s-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
+          path: cdk.out/
+          retention-days: 7
+
+  # ===========================================================================
+  # IaC Security Scan (Conditional)
+  # ===========================================================================
+  security-scan:
+    name: Security Scan
+    needs: setup
+    if: inputs.enable-security-scan
+    uses: ./.github/workflows/_iac-security-scan.yml
+    with:
+      environment: ${{ inputs.environment }}
+      enforce-blocking: ${{ inputs.security-scan-blocking }}
+
+  # ===========================================================================
+  # Deploy K8s Compute Stack (EC2 + k3s agent + EIP + S3)
+  # ===========================================================================
+  deploy-k8s-compute:
+    name: Deploy K8s Compute
+    needs: [setup, security-scan]
+    if: always() && needs.setup.result == 'success' && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Deploy K8s Compute Stack
+        run: |
+          STACK_NAME="${{ needs.setup.outputs.k8s-compute-stack }}"
+          echo "Deploying stack: ${STACK_NAME}"
+          npx cdk deploy "${STACK_NAME}" \
+            --require-approval ${{ inputs.require-approval }} \
+            -c project=nextjs \
+            -c environment=${{ inputs.cdk-environment }} \
+            --exclusively
+
+  # ===========================================================================
+  # Deploy Manifests via SSM Run Command
+  # ===========================================================================
+  deploy-manifests:
+    name: Deploy Manifests
+    needs: [setup, deploy-k8s-compute]
+    if: always() && needs.deploy-k8s-compute.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Get Instance ID
+        id: instance
+        run: |
+          SSM_PREFIX="/nextjs-k8s/${{ inputs.environment }}"
+          INSTANCE_ID=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/agent-instance-id" \
+            --query "Parameter.Value" \
+            --output text \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+
+          if [ -z "${INSTANCE_ID}" ]; then
+            echo "::warning::No agent instance-id found in SSM — skipping manifest deployment"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "instance_id=${INSTANCE_ID}" >> $GITHUB_OUTPUT
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Instance: ${INSTANCE_ID}"
+          fi
+
+      - name: Wait for SSM Agent
+        if: steps.instance.outputs.skip != 'true'
+        run: |
+          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+          echo "Waiting for SSM Agent on ${INSTANCE_ID}..."
+          MAX_WAIT=120
+          WAITED=0
+
+          while true; do
+            STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+              --query "InstanceInformationList[0].PingStatus" \
+              --output text \
+              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "NotFound")
+
+            if [ "$STATUS" = "Online" ]; then
+              echo "✓ SSM Agent online (waited ${WAITED}s)"
+              break
+            fi
+
+            if [ $WAITED -ge $MAX_WAIT ]; then
+              echo "::error::SSM Agent not online after ${MAX_WAIT}s"
+              exit 1
+            fi
+
+            sleep 5
+            WAITED=$((WAITED + 5))
+          done
+
+      - name: Deploy Manifests via SSM
+        if: steps.instance.outputs.skip != 'true'
+        id: deploy
+        run: |
+          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+          DOC_NAME="${{ inputs.environment == 'production' && 'nextjs-k8s-production-k8s' || 'nextjs-k8s-development-k8s' }}-deploy-manifests"
+
+          echo "Sending SSM command: ${DOC_NAME} → ${INSTANCE_ID}"
+          COMMAND_ID=$(aws ssm send-command \
+            --document-name "${DOC_NAME}" \
+            --targets "Key=instanceids,Values=${INSTANCE_ID}" \
+            --timeout-seconds 600 \
+            --query "Command.CommandId" \
+            --output text \
+            --region ${{ env.AWS_REGION }})
+
+          echo "command_id=${COMMAND_ID}" >> $GITHUB_OUTPUT
+          echo "SSM Command: ${COMMAND_ID}"
+
+          # Poll for completion
+          WAITED=0
+          while true; do
+            CMD_STATUS=$(aws ssm get-command-invocation \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query "Status" \
+              --output text \
+              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "InProgress")
+
+            if [ "$CMD_STATUS" = "Success" ]; then
+              echo "✓ Manifest deployment completed successfully"
+              break
+            elif [ "$CMD_STATUS" = "Failed" ] || [ "$CMD_STATUS" = "Cancelled" ] || [ "$CMD_STATUS" = "TimedOut" ]; then
+              echo "::error::SSM command ${CMD_STATUS}"
+              aws ssm get-command-invocation \
+                --command-id "${COMMAND_ID}" \
+                --instance-id "${INSTANCE_ID}" \
+                --region ${{ env.AWS_REGION }} 2>/dev/null || true
+              exit 1
+            fi
+
+            if [ $WAITED -ge 600 ]; then
+              echo "::error::SSM command timed out after 600s"
+              exit 1
+            fi
+
+            sleep 10
+            WAITED=$((WAITED + 10))
+            echo "  Status: ${CMD_STATUS} (${WAITED}s elapsed)"
+          done
+
+      # ===========================================================================
+      # ArgoCD Sync (if ArgoCD is installed in the cluster)
+      # ===========================================================================
+      - name: Trigger ArgoCD Sync
+        if: steps.instance.outputs.skip != 'true'
+        continue-on-error: true
+        run: |
+          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+          echo "Triggering ArgoCD sync for nextjs app..."
+
+          COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --targets "Key=instanceids,Values=${INSTANCE_ID}" \
+            --parameters 'commands=["if command -v argocd &>/dev/null; then argocd app sync nextjs --grpc-web 2>/dev/null || echo \"ArgoCD sync skipped (not configured)\"; else echo \"ArgoCD not installed — skipping sync\"; fi"]' \
+            --timeout-seconds 60 \
+            --query "Command.CommandId" \
+            --output text \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+
+          if [ -n "${COMMAND_ID}" ]; then
+            echo "ArgoCD sync triggered: ${COMMAND_ID}"
+          else
+            echo "ArgoCD sync skipped (SSM command failed)"
+          fi
+
+      - name: Collect Deployment Logs
+        if: steps.instance.outputs.skip != 'true' && always()
+        run: |
+          COMMAND_ID="${{ steps.deploy.outputs.command_id }}"
+          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+
+          if [ -n "${COMMAND_ID}" ]; then
+            echo "### 📋 Next.js K8s Manifest Deployment Output" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            aws ssm get-command-invocation \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query "StandardOutputContent" \
+              --output text \
+              --region ${{ env.AWS_REGION }} 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "Output unavailable"
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ===========================================================================
+  # Deployment Summary
+  # ===========================================================================
+  summary:
+    name: Deployment Summary
+    needs: [setup, security-scan, deploy-k8s-compute, deploy-manifests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+
+    steps:
+      - name: Generate Summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## Next.js K8s Deployment Summary
+
+          | Step | Result |
+          |---|---|
+          | Setup & Synthesize | ${{ needs.setup.result }} |
+          | Security Scan | ${{ needs.security-scan.result || 'skipped' }} |
+          | Deploy K8s Compute | ${{ needs.deploy-k8s-compute.result || 'skipped' }} |
+          | Deploy Manifests | ${{ needs.deploy-manifests.result || 'skipped' }} |
+
+          **Environment**: ${{ inputs.environment }}
+          **Commit**: \`${{ github.sha }}\`
+          **Triggered by**: ${{ github.event_name }} (${{ github.actor }})
+          EOF
