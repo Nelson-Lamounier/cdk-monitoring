@@ -1,11 +1,11 @@
 # @format
-# @description Reusable k3s Kubernetes Deployment Workflow
+# @description Reusable Monitoring k3s Kubernetes Deployment Workflow
 # Single-Stack Architecture: Compute (EC2 + k3s + EBS + EIP)
 # Uses Shared VPC from deploy-shared workflow
 #
 # Inline logic extracted to TypeScript scripts in scripts/deployment/
 
-name: Deploy k8s (Reusable)
+name: Deploy Monitoring k8s (Reusable)
 
 on:
   workflow_call:
@@ -327,6 +327,28 @@ jobs:
             WAITED=$((WAITED + 10))
             echo "  Status: ${CMD_STATUS} (${WAITED}s elapsed)"
           done
+
+      - name: Trigger ArgoCD Sync
+        if: steps.instance.outputs.skip != 'true'
+        continue-on-error: true
+        run: |
+          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+          echo "Triggering ArgoCD sync for monitoring app..."
+
+          COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --targets "Key=instanceids,Values=${INSTANCE_ID}" \
+            --parameters 'commands=["if command -v argocd &>/dev/null; then argocd app sync monitoring --grpc-web 2>/dev/null || echo \"ArgoCD sync skipped (not configured)\"; else echo \"ArgoCD not installed — skipping sync\"; fi"]' \
+            --timeout-seconds 60 \
+            --query "Command.CommandId" \
+            --output text \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+
+          if [ -n "${COMMAND_ID}" ]; then
+            echo "ArgoCD sync triggered: ${COMMAND_ID}"
+          else
+            echo "ArgoCD sync skipped (SSM command failed)"
+          fi
 
       - name: Collect Deployment Logs
         if: steps.instance.outputs.skip != 'true' && always()

@@ -1,16 +1,15 @@
 # @format
-# @description Deploy k3s Kubernetes to Development
+# @description Deploy Monitoring k3s Kubernetes to Production
 #
-# Deploys the k3s cluster infrastructure to the dev account.
+# Deploys the k3s monitoring cluster infrastructure to the production account.
 # Requires Shared VPC from deploy-shared workflow.
 
-name: Deploy k8s to Development
+name: Deploy Monitoring k8s to Production
 
 on:
   push:
     branches:
-      - develop
-      - feature/k3s-kubernetes-migration
+      - main
     paths:
       - "lib/config/k8s/**"
       - "lib/config/projects.ts"
@@ -18,10 +17,10 @@ on:
       - "lib/projects/k8s/**"
       - "lib/stacks/k8s/**"
       - "lib/common/compute/builders/user-data-builder.ts"
-      - "scripts/k8s/**"
+      - "k8s/apps/monitoring/**"
       - "bin/app.ts"
-      - ".github/workflows/deploy-k8s-dev.yml"
-      - ".github/workflows/_deploy-k8s.yml"
+      - ".github/workflows/deploy-monitoring-k8s-prod.yml"
+      - ".github/workflows/_deploy-monitoring-k8s.yml"
       - ".github/workflows/_verify-stack.yml"
       - ".github/workflows/_iac-security-scan.yml"
       - ".github/actions/**"
@@ -37,19 +36,19 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-k8s-development
+  group: deploy-monitoring-k8s-production
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Deploy to Development
-    uses: ./.github/workflows/_deploy-k8s.yml
+    name: Deploy to Production
+    uses: ./.github/workflows/_deploy-monitoring-k8s.yml
     with:
-      environment: development
-      cdk-environment: development
-      require-approval: never
+      environment: production
+      cdk-environment: production
+      require-approval: broadening
       enable-security-scan: true
-      security-scan-blocking: false
+      security-scan-blocking: true
       skip-verification: ${{ inputs.skip_verification || false }}
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}

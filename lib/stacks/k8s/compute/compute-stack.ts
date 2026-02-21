@@ -295,7 +295,7 @@ export class K8sComputeStack extends cdk.Stack {
 
         // Sync k8s manifests + deploy script from local
         new s3deploy.BucketDeployment(this, 'K8sManifestsDeployment', {
-            sources: [s3deploy.Source.asset('./scripts/k8s')],
+            sources: [s3deploy.Source.asset('./k8s/apps/monitoring')],
             destinationBucket: scriptsBucket,
             destinationKeyPrefix: 'k8s',
             prune: true,
