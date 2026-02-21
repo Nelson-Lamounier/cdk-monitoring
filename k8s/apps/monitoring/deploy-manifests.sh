@@ -84,7 +84,11 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# 2. Resolve secrets from SSM (if not already set via env)
+# 2. Resolve secrets from SSM and create Kubernetes secrets
+#
+# Instead of sed-replacing placeholders in YAML files (destructive),
+# we create Kubernetes Secrets directly. This is idempotent and
+# doesn't modify manifest files on disk.
 # ---------------------------------------------------------------------------
 resolve_secret() {
     local param_name="$1"
@@ -115,36 +119,20 @@ resolve_secret() {
     fi
 }
 
-echo "=== Step 2: Resolving secrets ==="
+echo "=== Step 2: Resolving secrets from SSM ==="
 resolve_secret "grafana-admin-password" "GRAFANA_ADMIN_PASSWORD"
 resolve_secret "github-token" "GITHUB_TOKEN"
 echo ""
 
 # ---------------------------------------------------------------------------
-# 3. Substitute secret placeholders in manifests
+# 3. Apply manifests via kustomize
+#
+# Apply manifests BEFORE creating secrets so that:
+#   - Namespaces, services, PVCs are created first
+#   - The grafana/secret.yaml placeholder is applied (admin-user only)
+#   - Step 4 then overwrites with the full secret (admin-user + admin-password)
 # ---------------------------------------------------------------------------
-echo "=== Step 3: Substituting secret placeholders ==="
-
-# Grafana admin password
-if [ -n "${GRAFANA_ADMIN_PASSWORD:-}" ]; then
-    sed -i "s|__GRAFANA_ADMIN_PASSWORD__|${GRAFANA_ADMIN_PASSWORD}|g" \
-        "${MANIFESTS_DIR}/grafana/secret.yaml"
-    echo "  ✓ Grafana admin password injected"
-fi
-
-# GitHub token
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-    sed -i "s|__GITHUB_TOKEN__|${GITHUB_TOKEN}|g" \
-        "${MANIFESTS_DIR}/github-actions-exporter/deployment.yaml"
-    echo "  ✓ GitHub token injected"
-fi
-
-echo ""
-
-# ---------------------------------------------------------------------------
-# 4. Apply manifests via kustomize
-# ---------------------------------------------------------------------------
-echo "=== Step 4: Applying manifests ==="
+echo "=== Step 3: Applying manifests ==="
 
 # Show diff before applying (informational)
 echo "--- kubectl diff (preview) ---"
@@ -155,6 +143,34 @@ echo ""
 kubectl apply -k "${MANIFESTS_DIR}"
 echo ""
 echo "✓ All manifests applied"
+echo ""
+
+# ---------------------------------------------------------------------------
+# 4. Create/update Kubernetes secrets (post-apply, always wins)
+#
+# Using kubectl create --dry-run=client | kubectl apply is idempotent and
+# doesn't modify files on disk. Applied AFTER kustomize so our secrets
+# always overwrite any placeholder values from the manifest YAML files.
+# ---------------------------------------------------------------------------
+echo "=== Step 4: Creating Kubernetes secrets ==="
+
+if [ -n "${GRAFANA_ADMIN_PASSWORD:-}" ]; then
+    kubectl create secret generic grafana-credentials \
+        --from-literal=admin-user=admin \
+        --from-literal=admin-password="${GRAFANA_ADMIN_PASSWORD}" \
+        --namespace monitoring \
+        --dry-run=client -o yaml | kubectl apply -f -
+    echo "  ✓ grafana-credentials secret created/updated"
+fi
+
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    kubectl create secret generic github-actions-exporter-credentials \
+        --from-literal=github-token="${GITHUB_TOKEN}" \
+        --namespace monitoring \
+        --dry-run=client -o yaml | kubectl apply -f -
+    echo "  ✓ github-actions-exporter-credentials secret created/updated"
+fi
+
 echo ""
 
 # ---------------------------------------------------------------------------

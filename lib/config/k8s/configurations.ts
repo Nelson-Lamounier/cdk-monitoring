@@ -73,6 +73,45 @@ export interface K8sNetworkingConfig {
 }
 
 /**
+ * Golden AMI configuration (EC2 Image Builder)
+ *
+ * Controls the AMI baking pipeline that pre-installs Docker, AWS CLI,
+ * k3s binary, and Calico manifests to reduce instance boot time.
+ */
+export interface K8sImageConfig {
+    /** SSM parameter path storing the latest Golden AMI ID */
+    readonly amiSsmPath: string;
+    /** Whether to create the Image Builder pipeline (first run bootstraps) */
+    readonly enableImageBuilder: boolean;
+    /** Parent image for Image Builder (base Amazon Linux 2023 AMI) */
+    readonly parentImageSsmPath: string;
+    /** Software versions to bake into the AMI */
+    readonly bakedVersions: {
+        readonly dockerCompose: string;
+        readonly awsCli: string;
+        readonly k3sBinary: string;
+    };
+}
+
+/**
+ * SSM State Manager configuration
+ *
+ * Controls post-boot configuration management via SSM associations.
+ * State Manager handles tasks like k3s bootstrap, CNI installation,
+ * manifest deployment, and drift remediation.
+ */
+export interface K8sSsmConfig {
+    /** Whether to create SSM State Manager associations */
+    readonly enableStateManager: boolean;
+    /** Association schedule (rate expression, e.g., 'rate(30 minutes)') */
+    readonly associationSchedule: string;
+    /** Maximum concurrent targets for association execution */
+    readonly maxConcurrency: string;
+    /** Maximum allowed errors before stopping */
+    readonly maxErrors: string;
+}
+
+/**
  * Complete resource configurations for k3s/Kubernetes project
  */
 export interface K8sConfigs {
@@ -80,6 +119,8 @@ export interface K8sConfigs {
     readonly compute: K8sComputeConfig;
     readonly storage: K8sStorageConfig;
     readonly networking: K8sNetworkingConfig;
+    readonly image: K8sImageConfig;
+    readonly ssm: K8sSsmConfig;
     readonly logRetention: logs.RetentionDays;
     readonly isProduction: boolean;
     readonly removalPolicy: cdk.RemovalPolicy;
@@ -114,6 +155,22 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             useElasticIp: true,
             ssmOnlyAccess: true,
         },
+        image: {
+            amiSsmPath: '/k8s/development/golden-ami/latest',
+            enableImageBuilder: true,
+            parentImageSsmPath: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64',
+            bakedVersions: {
+                dockerCompose: 'v2.24.0',
+                awsCli: '2.x',
+                k3sBinary: K3S_DEFAULT_CHANNEL,
+            },
+        },
+        ssm: {
+            enableStateManager: true,
+            associationSchedule: 'rate(30 minutes)',
+            maxConcurrency: '1',
+            maxErrors: '0',
+        },
         logRetention: logs.RetentionDays.ONE_WEEK,
         isProduction: false,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -140,6 +197,22 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             useElasticIp: true,
             ssmOnlyAccess: true,
         },
+        image: {
+            amiSsmPath: '/k8s/staging/golden-ami/latest',
+            enableImageBuilder: true,
+            parentImageSsmPath: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64',
+            bakedVersions: {
+                dockerCompose: 'v2.24.0',
+                awsCli: '2.x',
+                k3sBinary: K3S_DEFAULT_CHANNEL,
+            },
+        },
+        ssm: {
+            enableStateManager: true,
+            associationSchedule: 'rate(30 minutes)',
+            maxConcurrency: '1',
+            maxErrors: '0',
+        },
         logRetention: logs.RetentionDays.ONE_MONTH,
         isProduction: false,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -165,6 +238,22 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
         networking: {
             useElasticIp: true,
             ssmOnlyAccess: true,
+        },
+        image: {
+            amiSsmPath: '/k8s/production/golden-ami/latest',
+            enableImageBuilder: true,
+            parentImageSsmPath: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64',
+            bakedVersions: {
+                dockerCompose: 'v2.24.0',
+                awsCli: '2.x',
+                k3sBinary: K3S_DEFAULT_CHANNEL,
+            },
+        },
+        ssm: {
+            enableStateManager: true,
+            associationSchedule: 'rate(30 minutes)',
+            maxConcurrency: '1',
+            maxErrors: '0',
         },
         logRetention: logs.RetentionDays.THREE_MONTHS,
         isProduction: true,

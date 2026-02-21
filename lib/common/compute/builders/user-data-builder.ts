@@ -1191,4 +1191,121 @@ while true; do
     SSM_CMD_WAITED=$((SSM_CMD_WAITED + 10))
 done`);
     }
+
+    // =====================================================================
+    // STATIC FACTORY METHODS
+    // =====================================================================
+
+    /**
+     * Build a "light" user data script for the hybrid bootstrap strategy.
+     *
+     * Layer 2 of the 4-layer architecture:
+     * - Layer 1: Golden AMI (pre-baked Docker, AWS CLI, k3s binary, Calico)
+     * - **Layer 2: Light User Data (THIS)** — EBS attach, EIP, k3s start, cfn-signal
+     * - Layer 3: SSM State Manager (post-boot config, CNI, manifests)
+     * - Layer 4: SSM Documents (on-demand runbooks)
+     *
+     * This method creates a minimal script that:
+     * 1. Attaches and mounts the EBS data volume
+     * 2. Associates the Elastic IP for stable CloudFront origin
+     * 3. Starts k3s (binary pre-installed in Golden AMI)
+     * 4. Sends cfn-signal to the ASG
+     *
+     * Total boot time target: ~2 minutes (vs ~10-15 min with full user-data)
+     *
+     * @param config - Configuration for the light user data
+     * @returns Configured ec2.UserData object
+     */
+    static buildLightUserData(config: {
+        /** EBS volume attachment config */
+        ebsVolume: EbsVolumeConfig;
+        /** Elastic IP allocation ID */
+        eipAllocationId: string;
+        /** CloudFormation stack name (CDK Token) */
+        stackName: string;
+        /** ASG logical ID for cfn-signal (CDK Token) */
+        asgLogicalId: string;
+        /** k3s configuration */
+        k3s: {
+            /** k3s release channel */
+            channel: string;
+            /** k3s data directory */
+            dataDir: string;
+            /** Whether to disable Flannel (for Calico) */
+            disableFlannel: boolean;
+        };
+        /** AWS region */
+        region: string;
+    }): ec2.UserData {
+        const userData = ec2.UserData.forLinux();
+        const builder = new UserDataBuilder(userData);
+
+        // Step 1: Attach EBS volume (critical for k3s data persistence)
+        builder.attachEbsVolume(config.ebsVolume);
+
+        // Step 2: Associate Elastic IP for stable CloudFront origin
+        builder.addCustomScript(`
+# ============================================================
+# LIGHT USER DATA — Layer 2 (Hybrid Bootstrap)
+# Golden AMI provides: Docker, AWS CLI, k3s binary, Calico manifests
+# This script only does: EBS + EIP + k3s start + cfn-signal
+# ============================================================
+
+# --- Associate Elastic IP ---
+echo "=== Associating Elastic IP ==="
+INSTANCE_ID=$(ec2-metadata -i | cut -d' ' -f2)
+aws ec2 associate-address \\
+    --instance-id "$INSTANCE_ID" \\
+    --allocation-id "${config.eipAllocationId}" \\
+    --allow-reassociation \\
+    --region ${config.region}
+echo "✓ Elastic IP associated"
+`);
+
+        // Step 3: Start k3s (binary is pre-installed in Golden AMI)
+        const flannelFlags = config.k3s.disableFlannel
+            ? '--flannel-backend=none --disable-network-policy'
+            : '';
+
+        builder.addCustomScript(`
+# --- Start k3s (binary pre-installed in Golden AMI) ---
+echo "=== Starting k3s ==="
+if ! systemctl is-active --quiet k3s; then
+    # k3s binary is installed but service may not be configured yet
+    INSTALL_K3S_SKIP_DOWNLOAD=true \\
+    INSTALL_K3S_CHANNEL=${config.k3s.channel} \\
+    K3S_DATA_DIR=${config.k3s.dataDir} \\
+    /usr/local/bin/k3s-install.sh server \\
+        --data-dir ${config.k3s.dataDir} \\
+        ${flannelFlags} \\
+        --write-kubeconfig-mode 644
+
+    # Wait for k3s to be ready (max 120s)
+    echo "Waiting for k3s API server..."
+    WAIT_COUNT=0
+    until kubectl get nodes &>/dev/null; do
+        sleep 5
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+        if [ $WAIT_COUNT -ge 24 ]; then
+            echo "ERROR: k3s not ready after 120s"
+            break
+        fi
+    done
+    echo "✓ k3s started"
+else
+    echo "✓ k3s already running"
+fi
+`);
+
+        // Step 4: Send cfn-signal (success or failure)
+        builder.sendCfnSignal({
+            stackName: config.stackName,
+            asgLogicalId: config.asgLogicalId,
+            region: config.region,
+        });
+
+        builder.addCompletionMarker();
+
+        return userData;
+    }
 }

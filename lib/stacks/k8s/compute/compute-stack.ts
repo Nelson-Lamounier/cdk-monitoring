@@ -37,8 +37,10 @@ import { Construct } from 'constructs';
 
 import {
     AutoScalingGroupConstruct,
+    GoldenAmiPipelineConstruct,
     LaunchTemplateConstruct,
     SsmRunCommandDocument,
+    SsmStateManagerConstruct,
     UserDataBuilder,
 } from '../../../common/index';
 import {
@@ -49,6 +51,7 @@ import {
     NODE_EXPORTER_PORT,
     LOKI_NODEPORT,
     TEMPO_NODEPORT,
+    MONITORING_APP_TAG,
 } from '../../../config/defaults';
 import { Environment } from '../../../config/environments';
 import { K8sConfigs } from '../../../config/k8s';
@@ -367,6 +370,50 @@ export class K8sComputeStack extends cdk.Stack {
         });
 
         // =====================================================================
+        // Golden AMI Pipeline (Layer 1 — pre-baked software)
+        //
+        // Creates an EC2 Image Builder pipeline that bakes Docker, AWS CLI,
+        // k3s binary, and Calico manifests into a Golden AMI.
+        // Gated by imageConfig.enableImageBuilder flag.
+        // =====================================================================
+        let goldenAmiPipeline: GoldenAmiPipelineConstruct | undefined;
+        if (configs.image.enableImageBuilder) {
+            goldenAmiPipeline = new GoldenAmiPipelineConstruct(this, 'GoldenAmi', {
+                namePrefix,
+                imageConfig: configs.image,
+                clusterConfig: configs.cluster,
+                vpc,
+                subnetId: vpc.publicSubnets[0].subnetId,
+                securityGroupId: this.securityGroup.securityGroupId,
+            });
+        }
+
+        // =====================================================================
+        // SSM State Manager (Layer 3 — post-boot configuration)
+        //
+        // Creates associations that auto-configure k8s after boot:
+        // Calico CNI → kubeconfig → manifest deployment.
+        // Runs on schedule for drift remediation.
+        // Gated by ssmConfig.enableStateManager flag.
+        // =====================================================================
+        let stateManager: SsmStateManagerConstruct | undefined;
+        if (configs.ssm.enableStateManager) {
+            stateManager = new SsmStateManagerConstruct(this, 'StateManager', {
+                namePrefix,
+                ssmConfig: configs.ssm,
+                clusterConfig: configs.cluster,
+                instanceRole: launchTemplateConstruct.instanceRole,
+                targetTag: {
+                    key: MONITORING_APP_TAG.key,
+                    value: MONITORING_APP_TAG.value,
+                },
+                s3BucketName: scriptsBucket.bucketName,
+                ssmPrefix: props.ssmPrefix,
+                region: this.region,
+            });
+        }
+
+        // =====================================================================
         // User Data (k3s bootstrap)
         //
         // ORDERING: cfn-signal fires after critical infra (AWS CLI, EBS)
@@ -474,6 +521,17 @@ export class K8sComputeStack extends cdk.Stack {
             ],
         }));
 
+        // Elastic IP association (needed for user-data and SSM-based EIP re-association)
+        this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'EipAssociation',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ec2:AssociateAddress',
+                'ec2:DescribeAddresses',
+            ],
+            resources: ['*'],
+        }));
+
         // =====================================================================
         // Elastic IP (stable endpoint for CloudFront origin)
         // =====================================================================
@@ -549,5 +607,29 @@ export class K8sComputeStack extends cdk.Stack {
             value: scriptsBucket.bucketName,
             description: 'S3 bucket containing k8s scripts and manifests',
         });
+
+        if (goldenAmiPipeline) {
+            new cdk.CfnOutput(this, 'GoldenAmiPipelineName', {
+                value: goldenAmiPipeline.pipeline.name!,
+                description: 'EC2 Image Builder pipeline name for Golden AMI',
+            });
+
+            new cdk.CfnOutput(this, 'GoldenAmiSsmPath', {
+                value: configs.image.amiSsmPath,
+                description: 'SSM parameter path storing the latest Golden AMI ID',
+            });
+        }
+
+        if (stateManager) {
+            new cdk.CfnOutput(this, 'SsmDocumentName', {
+                value: stateManager.document.name!,
+                description: 'SSM Document name for post-boot k8s configuration',
+            });
+
+            new cdk.CfnOutput(this, 'SsmAssociationName', {
+                value: stateManager.association.associationName!,
+                description: 'SSM State Manager association name',
+            });
+        }
     }
 }

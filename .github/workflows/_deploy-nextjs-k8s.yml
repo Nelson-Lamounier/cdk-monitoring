@@ -479,8 +479,9 @@ jobs:
           echo "command_id=${COMMAND_ID}" >> $GITHUB_OUTPUT
           echo "SSM Command: ${COMMAND_ID}"
 
-          # Poll for completion
+          # Poll for completion with progress indicators
           WAITED=0
+          LAST_OUTPUT_LEN=0
           while true; do
             CMD_STATUS=$(aws ssm get-command-invocation \
               --command-id "${COMMAND_ID}" \
@@ -494,10 +495,24 @@ jobs:
               break
             elif [ "$CMD_STATUS" = "Failed" ] || [ "$CMD_STATUS" = "Cancelled" ] || [ "$CMD_STATUS" = "TimedOut" ]; then
               echo "::error::SSM command ${CMD_STATUS}"
+
+              # Capture both stdout and stderr on failure
+              echo "--- SSM Command Output (stdout) ---"
               aws ssm get-command-invocation \
                 --command-id "${COMMAND_ID}" \
                 --instance-id "${INSTANCE_ID}" \
-                --region ${{ env.AWS_REGION }} 2>/dev/null || true
+                --query "StandardOutputContent" \
+                --output text \
+                --region ${{ env.AWS_REGION }} 2>/dev/null || echo "(stdout unavailable)"
+
+              echo "--- SSM Command Output (stderr) ---"
+              aws ssm get-command-invocation \
+                --command-id "${COMMAND_ID}" \
+                --instance-id "${INSTANCE_ID}" \
+                --query "StandardErrorContent" \
+                --output text \
+                --region ${{ env.AWS_REGION }} 2>/dev/null || echo "(stderr unavailable)"
+
               exit 1
             fi
 
@@ -508,7 +523,7 @@ jobs:
 
             sleep 10
             WAITED=$((WAITED + 10))
-            echo "  Status: ${CMD_STATUS} (${WAITED}s elapsed)"
+            echo "  ⏳ Status: ${CMD_STATUS} (${WAITED}s / 600s)"
           done
 
       - name: Trigger ArgoCD Sync
@@ -540,16 +555,103 @@ jobs:
           INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
 
           if [ -n "${COMMAND_ID}" ]; then
-            echo "### 📋 Next.js K8s Manifest Deployment Output" >> $GITHUB_STEP_SUMMARY
+            # Capture stdout
+            echo "### 📋 Manifest Deployment — stdout" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             aws ssm get-command-invocation \
               --command-id "${COMMAND_ID}" \
               --instance-id "${INSTANCE_ID}" \
               --query "StandardOutputContent" \
               --output text \
-              --region ${{ env.AWS_REGION }} 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "Output unavailable"
+              --region ${{ env.AWS_REGION }} 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "(stdout unavailable)"
+            echo '```' >> $GITHUB_STEP_SUMMARY
+
+            # Capture stderr (often contains kubectl warnings, AWS CLI errors)
+            STDERR=$(aws ssm get-command-invocation \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query "StandardErrorContent" \
+              --output text \
+              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+            if [ -n "${STDERR}" ] && [ "${STDERR}" != "None" ]; then
+              echo "### ⚠️ Manifest Deployment — stderr" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "${STDERR}" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            fi
+
+            # Show execution status metadata
+            echo "### 📊 SSM Command Metadata" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            aws ssm get-command-invocation \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query '{Status: Status, StatusDetails: StatusDetails, ExecutionStartDateTime: ExecutionStartDateTime, ExecutionEndDateTime: ExecutionEndDateTime, ResponseCode: ResponseCode}' \
+              --output json \
+              --region ${{ env.AWS_REGION }} 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "{}"
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
+
+      - name: Diagnose Failed Pods
+        if: steps.instance.outputs.skip != 'true' && failure()
+        continue-on-error: true
+        run: |
+          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+          echo "::group::🔍 Pod Failure Diagnostics"
+          echo "Gathering diagnostics from instance ${INSTANCE_ID}..."
+
+          DIAG_COMMAND_ID=$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --targets "Key=instanceids,Values=${INSTANCE_ID}" \
+            --parameters 'commands=[
+              "export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig",
+              "echo \"=== Node Status ===",
+              "kubectl get nodes -o wide 2>/dev/null || echo \"kubectl not available\"",
+              "echo \"\"",
+              "echo \"=== All Pods ===",
+              "kubectl get pods -A -o wide 2>/dev/null || echo \"No pods found\"",
+              "echo \"\"",
+              "echo \"=== Non-Running Pods (describe) ===",
+              "for ns_pod in $(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name 2>/dev/null | tr \"\\t\" \"/\"); do ns=${ns_pod%%/*}; pod=${ns_pod##*/}; echo \"--- $ns/$pod ---\"; kubectl describe pod $pod -n $ns 2>/dev/null | tail -30; echo \"\"; done",
+              "echo \"=== Recent Events (last 30) ===",
+              "kubectl get events -A --sort-by=.lastTimestamp 2>/dev/null | tail -30",
+              "echo \"\"",
+              "echo \"=== k3s Service Status ===",
+              "systemctl is-active k3s && echo \"k3s: active\" || echo \"k3s: INACTIVE\"",
+              "echo \"=== System Resources ===",
+              "free -h",
+              "df -h /data"
+            ]' \
+            --timeout-seconds 60 \
+            --query "Command.CommandId" \
+            --output text \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+
+          if [ -n "${DIAG_COMMAND_ID}" ]; then
+            # Wait for diagnostics to complete
+            sleep 20
+
+            echo "### 🔍 Pod Failure Diagnostics" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            aws ssm get-command-invocation \
+              --command-id "${DIAG_COMMAND_ID}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query "StandardOutputContent" \
+              --output text \
+              --region ${{ env.AWS_REGION }} 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "Diagnostics unavailable"
+            echo '```' >> $GITHUB_STEP_SUMMARY
+
+            # Also print to console for immediate visibility
+            aws ssm get-command-invocation \
+              --command-id "${DIAG_COMMAND_ID}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query "StandardOutputContent" \
+              --output text \
+              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "Diagnostics unavailable"
+          else
+            echo "::warning::Could not send diagnostics command to instance"
+          fi
+          echo "::endgroup::"
 
   # ===========================================================================
   # Verify Service (K8s-specific: checks EIP health + pod readiness)

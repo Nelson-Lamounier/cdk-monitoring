@@ -1,19 +1,10 @@
 # @format
 # GitHub Actions Exporter — CI/CD metrics for Prometheus
-apiVersion: v1
-kind: Secret
-metadata:
-  name: github-actions-exporter-credentials
-  namespace: monitoring
-  labels:
-    app: github-actions-exporter
-    app.kubernetes.io/name: github-actions-exporter
-    app.kubernetes.io/component: ci-metrics
-    app.kubernetes.io/part-of: monitoring
-type: Opaque
-stringData:
-  github-token: "__GITHUB_TOKEN__"
----
+#
+# NOTE: The Secret "github-actions-exporter-credentials" is NOT defined here.
+# It's created at deploy-time by deploy-manifests.sh via `kubectl create secret`,
+# which reads the GitHub token from SSM Parameter Store. This avoids embedding
+# placeholder tokens in version-controlled manifests.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -219,6 +219,7 @@ runs:
         DEPLOY_CMD="$DEPLOY_CMD --require-approval ${{ inputs.require-approval }}"
         DEPLOY_CMD="$DEPLOY_CMD --method=direct"
         DEPLOY_CMD="$DEPLOY_CMD --exclusively"
+        DEPLOY_CMD="$DEPLOY_CMD --progress events"
 
         # Add outputs file to capture stack outputs during deployment
         mkdir -p /tmp/cdk-outputs
@@ -263,6 +264,48 @@ runs:
         CDK_ENVIRONMENT: ${{ inputs.environment }}
         AWS_ACCOUNT_ID: ${{ inputs.aws-account-id }}
         AWS_REGION: ${{ inputs.aws-region }}
+
+    - name: Diagnose CloudFormation Failure
+      if: failure() && steps.deploy.outputs.status != 'success'
+      shell: bash
+      continue-on-error: true
+      run: |
+        echo "::group::🔍 CloudFormation Failure Diagnostics"
+        STACK_NAME="${{ inputs.stack-name }}"
+        REGION="${{ inputs.aws-region }}"
+
+        echo "Querying CloudFormation events for stack: ${STACK_NAME}"
+        echo ""
+
+        # Get recent failed events and create GitHub annotations
+        FAILED_EVENTS=$(aws cloudformation describe-stack-events \
+          --stack-name "${STACK_NAME}" \
+          --region "${REGION}" \
+          --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED'].{LogicalId: LogicalResourceId, Type: ResourceType, Status: ResourceStatus, Reason: ResourceStatusReason, Time: Timestamp}" \
+          --output json 2>/dev/null || echo "[]")
+
+        if [ "$FAILED_EVENTS" != "[]" ]; then
+          echo "### ❌ CloudFormation Failed Resources" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          echo "$FAILED_EVENTS" | jq '.' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Create GitHub error annotations for each failed resource
+          echo "$FAILED_EVENTS" | jq -r '.[] | "::error title=CFN \(.Status)::\(.Type) \(.LogicalId): \(.Reason)"' 2>/dev/null || true
+        else
+          echo "No failed CloudFormation events found (stack may have rolled back)"
+        fi
+
+        # Show stack status
+        echo ""
+        echo "Current stack status:"
+        aws cloudformation describe-stacks \
+          --stack-name "${STACK_NAME}" \
+          --region "${REGION}" \
+          --query "Stacks[0].{Status: StackStatus, Reason: StackStatusReason}" \
+          --output table 2>/dev/null || echo "Stack not found or deleted"
+
+        echo "::endgroup::"
 
     - name: Create Outputs Directory (Always)
       if: always() && inputs.outputs-directory != ''

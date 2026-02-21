@@ -182,5 +182,103 @@ describe('K8sComputeStack', () => {
             expect(outputKeys.some(k => k.includes('ElasticIpAddress'))).toBe(true);
             expect(outputKeys.some(k => k.includes('EbsVolumeId'))).toBe(true);
         });
+
+        it('should export Golden AMI and SSM State Manager outputs', () => {
+            const { template } = createK8sComputeStack();
+
+            const outputs = template.findOutputs('*');
+            const outputKeys = Object.keys(outputs);
+
+            expect(outputKeys.some(k => k.includes('GoldenAmiPipelineName'))).toBe(true);
+            expect(outputKeys.some(k => k.includes('GoldenAmiSsmPath'))).toBe(true);
+            expect(outputKeys.some(k => k.includes('SsmDocumentName'))).toBe(true);
+            expect(outputKeys.some(k => k.includes('SsmAssociationName'))).toBe(true);
+        });
+    });
+
+    // =========================================================================
+    // Golden AMI Pipeline (Layer 1)
+    // =========================================================================
+    describe('Golden AMI Pipeline', () => {
+        it('should create an Image Builder component', () => {
+            const { template } = createK8sComputeStack();
+            template.hasResource('AWS::ImageBuilder::Component', {});
+        });
+
+        it('should create an Image Builder image recipe', () => {
+            const { template } = createK8sComputeStack();
+            template.hasResource('AWS::ImageBuilder::ImageRecipe', {});
+        });
+
+        it('should create an Image Builder pipeline', () => {
+            const { template } = createK8sComputeStack();
+            template.hasResource('AWS::ImageBuilder::ImagePipeline', {});
+        });
+
+        it('should create an SSM parameter for AMI ID', () => {
+            const { template } = createK8sComputeStack();
+
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/k8s/development/golden-ami/latest',
+                Type: 'String',
+            });
+        });
+
+        it('should create an IAM role for Image Builder', () => {
+            const { template } = createK8sComputeStack();
+
+            // Should have an instance profile for Image Builder
+            template.hasResource('AWS::IAM::InstanceProfile', {});
+        });
+    });
+
+    // =========================================================================
+    // SSM State Manager (Layer 3)
+    // =========================================================================
+    describe('SSM State Manager', () => {
+        it('should create an SSM Command document', () => {
+            const { template } = createK8sComputeStack();
+
+            // Find SSM documents with type 'Command'
+            const docs = template.findResources('AWS::SSM::Document');
+            const docKeys = Object.keys(docs);
+
+            // Should have at least 2 SSM documents (manifest deploy + state manager)
+            expect(docKeys.length).toBeGreaterThanOrEqual(2);
+        });
+
+        it('should create an SSM State Manager association', () => {
+            const { template } = createK8sComputeStack();
+            template.hasResource('AWS::SSM::Association', {});
+        });
+
+        it('should target instances by Application tag', () => {
+            const { template } = createK8sComputeStack();
+
+            template.hasResourceProperties('AWS::SSM::Association', {
+                Targets: [
+                    {
+                        Key: 'tag:Application',
+                        Values: ['Prometheus-Grafana'],
+                    },
+                ],
+            });
+        });
+
+        it('should grant EIP association permissions', () => {
+            const { template } = createK8sComputeStack();
+            const allActions = getAllPolicyActions(template);
+
+            expect(allActions).toContain('ec2:AssociateAddress');
+            expect(allActions).toContain('ec2:DescribeAddresses');
+        });
+
+        it('should grant SSM State Manager permissions', () => {
+            const { template } = createK8sComputeStack();
+            const allActions = getAllPolicyActions(template);
+
+            expect(allActions).toContain('ssm:GetDocument');
+            expect(allActions).toContain('ssm:DescribeAssociation');
+        });
     });
 });
