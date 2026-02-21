@@ -700,6 +700,10 @@ jobs:
     timeout-minutes: 10
     environment: ${{ inputs.environment }}
     if: always() && needs.deploy-data.result == 'success' && (needs.deploy-edge.result == 'success' || needs.deploy-edge.result == 'skipped')
+    outputs:
+      s3-bucket: ${{ steps.sync.outputs.bucket }}
+      files-synced: ${{ steps.sync.outputs.files_synced }}
+      invalidation-id: ${{ steps.sync.outputs.invalidation_id }}
 
     steps:
       - name: Checkout
