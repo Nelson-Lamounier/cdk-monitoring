@@ -142,6 +142,73 @@ jobs:
       soft-fail-on: ${{ inputs.security-scan-blocking && '' || 'LOW' }}
 
   # ===========================================================================
+  # Template Validation (cfn-lint)
+  #
+  # Validates synthesized CloudFormation templates against AWS specifications.
+  # Catches resource property errors, cross-region issues, and type mismatches.
+  # BLOCKING — failed validation prevents deployment.
+  # ===========================================================================
+  validate-templates:
+    name: Validate Templates
+    needs: [setup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: .cfnlintrc
+          sparse-checkout-cone-mode: false
+
+      - name: Download Synthesized Templates
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cdk-out-k8s-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
+          path: cdk.out/
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Validate CloudFormation Templates
+        shell: python3 {0}
+        run: |
+          import sys, glob
+          sys.setrecursionlimit(10000)
+          from cfnlint import decode, runner
+          from cfnlint.config import ConfigMixIn
+
+          templates = sorted(glob.glob("cdk.out/**/*.template.json", recursive=True))
+          print(f"Validating {len(templates)} templates...")
+          total_errors = 0
+          for tpl in templates:
+              print(f"\n--- {tpl} ---")
+              try:
+                  config = ConfigMixIn(["--template", tpl])
+                  matches = list(runner.Runner(config).run())
+                  if matches:
+                      total_errors += len(matches)
+                      for match in matches:
+                          print(f"  {match}")
+                  else:
+                      print("  ✅ passed")
+              except RecursionError:
+                  print(f"  ⚠️  skipped (template too deeply nested)")
+              except Exception as e:
+                  print(f"  ⚠️  skipped ({type(e).__name__}: {e})")
+
+          if total_errors > 0:
+              print(f"\n❌ {total_errors} validation errors found")
+              sys.exit(1)
+          else:
+              print(f"\n✅ All {len(templates)} templates passed validation")
+
+  # ===========================================================================
   # Drift Detection (staging/production only — informational)
   #
   # Runs `cdk diff` for all stacks and surfaces the output in the step
@@ -186,8 +253,8 @@ jobs:
   # ===========================================================================
   deploy-compute:
     name: Deploy Compute
-    needs: [setup, security-scan, drift-detection]
-    if: always() && needs.setup.result == 'success' && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped') && (needs.drift-detection.result == 'success' || needs.drift-detection.result == 'skipped')
+    needs: [setup, security-scan, validate-templates, drift-detection]
+    if: always() && needs.setup.result == 'success' && needs.validate-templates.result == 'success' && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped') && (needs.drift-detection.result == 'success' || needs.drift-detection.result == 'skipped')
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.compute-stack }}

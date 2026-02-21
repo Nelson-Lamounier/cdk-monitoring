@@ -50,5 +50,4 @@ jobs:
       enable-security-scan: true
       security-scan-blocking: true
       skip-verification: ${{ inputs.skip_verification || false }}
-    secrets:
-      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+    secrets: inherit
