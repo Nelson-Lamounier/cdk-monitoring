@@ -2,16 +2,16 @@
 # Prometheus configuration — K8s-native service discovery
 #
 # Scrape targets:
-#   1. prometheus  — self-monitoring
-#   2. node-exporter — DaemonSet on ALL nodes (hostNetwork:true)
-#      Uses kubernetes_sd_configs to discover each pod individually
-#      so per-node labels (server vs application) are preserved.
-#   3. nextjs-app  — Next.js /api/metrics via K8s Service DNS
-#   4. github-actions — GitHub Actions exporter
-#
-# Replaced ECS-era discovery:
-#   - ec2_sd_configs (tag:Purpose=NextJS) → kubernetes_sd_configs
-#   - dns_sd_configs (nextjs-app.nextjs.local) → K8s service DNS
+#   1. prometheus         — self-monitoring
+#   2. node-exporter      — DaemonSet on ALL nodes (hostNetwork:true)
+#   3. kubelet            — pod lifecycle, volume stats (role: node)
+#   4. cadvisor           — container CPU/memory/network (role: node)
+#   5. kube-state-metrics — K8s object states (deployments, pods, nodes)
+#   6. nextjs-app         — Next.js /api/metrics via K8s Service DNS
+#   7. coredns            — DNS resolution health
+#   8. apiserver          — K8s control plane
+#   9. traefik            — L7 ingress metrics
+#  10. github-actions     — GitHub Actions exporter
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -49,9 +49,7 @@ data:
       #
       # kubernetes_sd_configs discovers each DaemonSet pod individually,
       # giving per-node labels (hostname, node role) for Grafana dashboards.
-      #
       # The DaemonSet uses hostNetwork:true so containerPort == hostPort.
-      # Tolerations: Exists means it runs on BOTH server and agent nodes.
       # -----------------------------------------------------------------
       - job_name: "node-exporter"
         kubernetes_sd_configs:
@@ -59,27 +57,66 @@ data:
             namespaces:
               names: ["monitoring"]
         relabel_configs:
-          # Only scrape pods with app=node-exporter
           - source_labels: [__meta_kubernetes_pod_label_app]
             regex: node-exporter
             action: keep
-          # Use the node name as the instance label
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: instance
-          # Add node_name label for dashboard filtering
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node_name
-          # Use the host IP (hostNetwork pods bind to node IP)
           - source_labels: [__meta_kubernetes_pod_host_ip]
             regex: (.+)
             target_label: __address__
             replacement: "${1}:9100"
 
       # -----------------------------------------------------------------
-      # 3. Next.js Application Metrics
+      # 3. Kubelet (pod lifecycle, volume stats)
       #
-      # Scrapes /api/metrics from the Next.js K8s Service via cluster DNS.
-      # Replaces the ECS Cloud Map DNS target (nextjs-app.nextjs.local).
+      # Every node runs kubelet at :10250/metrics.
+      # k3s uses self-signed certs → insecure_skip_verify.
+      # -----------------------------------------------------------------
+      - job_name: "kubelet"
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+
+      # -----------------------------------------------------------------
+      # 4. cAdvisor (container CPU/memory/network/disk per pod)
+      #
+      # Built into kubelet at :10250/metrics/cadvisor.
+      # Provides container_cpu_usage_seconds_total,
+      # container_memory_working_set_bytes, etc.
+      # -----------------------------------------------------------------
+      - job_name: "cadvisor"
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        metrics_path: /metrics/cadvisor
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+
+      # -----------------------------------------------------------------
+      # 5. kube-state-metrics (K8s object states)
+      #
+      # Reports: kube_pod_status_phase, kube_deployment_status_replicas,
+      # kube_node_status_condition, restart counts, OOMKills, etc.
+      # -----------------------------------------------------------------
+      - job_name: "kube-state-metrics"
+        static_configs:
+          - targets: ["kube-state-metrics:8080"]
+
+      # -----------------------------------------------------------------
+      # 6. Next.js Application Metrics
       # -----------------------------------------------------------------
       - job_name: "nextjs-application-metrics"
         metrics_path: "/api/metrics"
@@ -97,7 +134,52 @@ data:
             replacement: "production"
 
       # -----------------------------------------------------------------
-      # 4. GitHub Actions Exporter
+      # 7. CoreDNS (DNS resolution health)
+      #
+      # k3s bundles CoreDNS in kube-system namespace.
+      # Exposes Prometheus metrics on :9153 by default.
+      # -----------------------------------------------------------------
+      - job_name: "coredns"
+        static_configs:
+          - targets: ["kube-dns.kube-system.svc.cluster.local:9153"]
+
+      # -----------------------------------------------------------------
+      # 8. K8s API Server (control plane health)
+      #
+      # Discovers the kubernetes endpoint in the default namespace
+      # and scrapes :6443/metrics.
+      # -----------------------------------------------------------------
+      - job_name: "apiserver"
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names: ["default"]
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels:
+              [
+                __meta_kubernetes_namespace,
+                __meta_kubernetes_service_name,
+                __meta_kubernetes_endpoint_port_name,
+              ]
+            regex: default;kubernetes;https
+            action: keep
+
+      # -----------------------------------------------------------------
+      # 9. Traefik Ingress (L7 traffic metrics)
+      #
+      # k3s deploys Traefik as default ingress controller.
+      # Metrics are exposed on port 9100 of the traefik service.
+      # -----------------------------------------------------------------
+      - job_name: "traefik"
+        static_configs:
+          - targets: ["traefik.kube-system.svc.cluster.local:9100"]
+
+      # -----------------------------------------------------------------
+      # 10. GitHub Actions Exporter
       # -----------------------------------------------------------------
       - job_name: "github-actions"
         scrape_interval: 30s
@@ -106,6 +188,9 @@ data:
 
   alert_rules.yml: |
     groups:
+      # =================================================================
+      # Host-level alerts (node-exporter)
+      # =================================================================
       - name: host_alerts
         rules:
           - alert: HighCpuUsage
@@ -140,6 +225,9 @@ data:
             annotations:
               summary: "Node Exporter down on {{ $labels.node_name }}"
 
+      # =================================================================
+      # Next.js application alerts
+      # =================================================================
       - name: nextjs_app_alerts
         rules:
           - alert: NextJsAppMetricsDown
@@ -172,3 +260,101 @@ data:
               severity: warning
             annotations:
               summary: "High p95 latency on Next.js"
+
+      # =================================================================
+      # K8s object state alerts (kube-state-metrics)
+      # =================================================================
+      - name: k8s_object_alerts
+        rules:
+          - alert: PodCrashLooping
+            expr: increase(kube_pod_container_status_restarts_total[10m]) > 5
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping ({{ $value }} restarts in 10m)"
+
+          - alert: PodNotReady
+            expr: |
+              kube_pod_status_phase{phase=~"Pending|Unknown|Failed"} > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is {{ $labels.phase }}"
+
+          - alert: DeploymentReplicasMismatch
+            expr: |
+              kube_deployment_spec_replicas != kube_deployment_status_ready_replicas
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has {{ $value }} unavailable replicas"
+
+          - alert: NodeNotReady
+            expr: kube_node_status_condition{condition="Ready", status!="true"} == 1
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Node {{ $labels.node }} is not Ready"
+
+          - alert: HighPodMemoryUsage
+            expr: |
+              (
+                container_memory_working_set_bytes{container!="", container!="POD"}
+                / on(namespace, pod, container) kube_pod_container_resource_limits{resource="memory"}
+              ) > 0.9
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} using >90% memory limit"
+
+          - alert: PodOOMKilled
+            expr: kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+            for: 0m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} was OOMKilled"
+
+      # =================================================================
+      # K8s system component alerts
+      # =================================================================
+      - name: k8s_system_alerts
+        rules:
+          - alert: CoreDNSDown
+            expr: up{job="coredns"} == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "CoreDNS is down — DNS resolution will fail"
+
+          - alert: APIServerDown
+            expr: up{job="apiserver"} == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "K8s API Server is down"
+
+          - alert: APIServerHighLatency
+            expr: |
+              histogram_quantile(0.99, sum(rate(apiserver_request_duration_seconds_bucket{verb!="WATCH"}[5m])) by (le))
+              > 1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "K8s API Server p99 latency > 1s"
+
+          - alert: KubeStateMetricsDown
+            expr: up{job="kube-state-metrics"} == 0
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "kube-state-metrics is down — K8s object metrics unavailable"

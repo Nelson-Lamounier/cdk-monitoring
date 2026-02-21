@@ -40,6 +40,11 @@ resources:
   - node-exporter/daemonset.yaml
   - node-exporter/service.yaml
 
+  # K8s object state metrics
+  - kube-state-metrics/rbac.yaml
+  - kube-state-metrics/deployment.yaml
+  - kube-state-metrics/service.yaml
+
   # Integrations
   - github-actions-exporter/deployment.yaml
 
@@ -54,11 +59,18 @@ configMapGenerator:
   - name: grafana-dashboards
     namespace: monitoring
     files:
+      # Application dashboards
       - grafana/dashboards/deployment-logs.json
       - grafana/dashboards/github-actions.json
       - grafana/dashboards/loki-logs.json
       - grafana/dashboards/nextjs-app-metrics.json
       - grafana/dashboards/nextjs-otel.json
+      # K8s system dashboards (community)
+      - grafana/dashboards/k8s-cluster-overview.json
+      - grafana/dashboards/k8s-pod-resources.json
+      - grafana/dashboards/node-exporter-full.json
+      - grafana/dashboards/coredns.json
+      - grafana/dashboards/traefik.json
 
 generatorOptions:
   disableNameSuffixHash: true

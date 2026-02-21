@@ -1,6 +1,10 @@
 # @format
-# Promtail configuration — adapted for k8s
-# In k8s, Promtail ships pod logs and host logs to Loki
+# Promtail configuration — K8s-native log collection
+#
+# Uses kubernetes_sd_configs for automatic pod labeling.
+# Promtail runs as a DaemonSet on every node, collecting:
+#   1. Pod logs (via K8s SD — automatic app/namespace/pod labels)
+#   2. System logs (syslog, user-data, k3s)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -21,22 +25,50 @@ data:
       - url: http://loki:3100/loki/api/v1/push
 
     scrape_configs:
-      # Kubernetes pod logs (replaces Docker container log scraping)
+      # ---------------------------------------------------------------
+      # Kubernetes pod logs (K8s service discovery)
+      #
+      # Automatically discovers all pods and adds:
+      #   - namespace, pod, container labels
+      #   - app label from pod metadata
+      # Replaces static /var/log/pods/*/*/*.log glob.
+      # ---------------------------------------------------------------
       - job_name: kubernetes-pods
-        static_configs:
-          - targets:
-              - localhost
-            labels:
-              job: "podlogs"
-              __path__: /var/log/pods/*/*/*.log
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # Use the pod's namespace
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          # Use the pod name
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          # Use the container name
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          # Use the app label from pod metadata
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+          # Use the part-of label for grouping
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_part_of]
+            target_label: part_of
+          # Set the log file path using pod UID and container name
+          - source_labels:
+              [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
+            target_label: __path__
+            separator: /
+            replacement: /var/log/pods/*$1/*.log
+          # Only collect logs from pods on this node
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: __host__
+            action: keep
+            regex: ${HOSTNAME}
         pipeline_stages:
           - cri: {}
-          - labels:
-              namespace:
-              pod:
-              container:
 
-      # System logs
+      # ---------------------------------------------------------------
+      # Host system logs
+      # ---------------------------------------------------------------
       - job_name: syslog
         static_configs:
           - targets:
@@ -45,7 +77,6 @@ data:
               job: "syslog"
               __path__: /var/log/syslog
 
-      # User data logs (k3s bootstrap)
       - job_name: user-data
         static_configs:
           - targets:
@@ -54,7 +85,6 @@ data:
               job: "user-data"
               __path__: /var/log/user-data.log
 
-      # k3s server logs
       - job_name: k3s
         static_configs:
           - targets:
