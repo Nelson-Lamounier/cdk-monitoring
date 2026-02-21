@@ -684,11 +684,29 @@ jobs:
           audience: sts.amazonaws.com
 
       - name: Verify K8s Stack
-        uses: ./.github/workflows/_verify-stack.yml
-        with:
-          stack-name: ${{ needs.setup.outputs.k8s-compute-stack }}
-          environment: ${{ inputs.environment }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        id: verify-stack
+        run: |
+          STACK_NAME="${{ needs.setup.outputs.k8s-compute-stack }}"
+          echo "Verifying stack: $STACK_NAME"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Region: ${{ vars.AWS_REGION || 'eu-west-1' }}"
+          echo ""
+
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+
+          echo "status=$STACK_STATUS" >> $GITHUB_OUTPUT
+
+          if [[ "$STACK_STATUS" == *"COMPLETE"* ]] && [[ "$STACK_STATUS" != *"ROLLBACK"* ]]; then
+            echo "verified=true" >> $GITHUB_OUTPUT
+            echo "✓ $STACK_NAME verified: $STACK_STATUS"
+          else
+            echo "verified=false" >> $GITHUB_OUTPUT
+            echo "✗ $STACK_NAME verification failed: $STACK_STATUS"
+            exit 1
+          fi
 
   # ===========================================================================
   # Sync Static Assets to S3 + CloudFront Cache Invalidation
