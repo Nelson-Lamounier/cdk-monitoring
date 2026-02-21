@@ -285,7 +285,7 @@ export class K8sComputeStack extends cdk.Stack {
         // S3 Bucket for k8s Scripts & Manifests
         // =====================================================================
         const scriptsBucket = new s3.Bucket(this, 'K8sScriptsBucket', {
-            bucketName: `${namePrefix}-${targetEnvironment}-k8s-scripts-${this.account}`,
+            bucketName: `${namePrefix}-k8s-scripts-${this.account}`,
             removalPolicy: configs.removalPolicy,
             autoDeleteObjects: !configs.isProduction,
             encryption: s3.BucketEncryption.S3_MANAGED,
