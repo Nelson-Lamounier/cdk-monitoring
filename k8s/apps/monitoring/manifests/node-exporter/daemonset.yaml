@@ -5,6 +5,8 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: node-exporter
+  annotations:
+    kubernetes.io/description: "Node Exporter DaemonSet — host-level CPU/memory/disk metrics on all nodes"
   namespace: monitoring
   labels:
     app: node-exporter

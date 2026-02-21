@@ -10,6 +10,8 @@ apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: nextjs-ingress
+  annotations:
+    kubernetes.io/description: "Traefik IngressRoute for Next.js app external access"
   namespace: nextjs-app
   labels:
     app: nextjs

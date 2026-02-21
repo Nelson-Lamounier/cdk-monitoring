@@ -6,6 +6,8 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: nextjs-app
+  annotations:
+    kubernetes.io/description: "Namespace for the Next.js portfolio application"
   labels:
     app.kubernetes.io/part-of: nextjs
     app.kubernetes.io/managed-by: kustomize

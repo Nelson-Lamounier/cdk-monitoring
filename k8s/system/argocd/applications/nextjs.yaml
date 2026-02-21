@@ -8,6 +8,8 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: nextjs
+  annotations:
+    kubernetes.io/description: "ArgoCD application for the Next.js portfolio deployment"
   namespace: argocd
   labels:
     app.kubernetes.io/part-of: argocd

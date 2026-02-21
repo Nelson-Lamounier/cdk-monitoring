@@ -8,6 +8,8 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: nextjs
+  annotations:
+    kubernetes.io/description: "CPU-based autoscaler for the Next.js deployment"
   namespace: nextjs-app
   labels:
     app: nextjs

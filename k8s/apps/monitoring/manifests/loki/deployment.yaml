@@ -3,6 +3,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: loki
+  annotations:
+    kubernetes.io/description: "Loki log aggregation and query engine"
   namespace: monitoring
   labels:
     app: loki

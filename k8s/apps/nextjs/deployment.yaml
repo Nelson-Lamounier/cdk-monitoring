@@ -12,6 +12,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nextjs
+  annotations:
+    kubernetes.io/description: "Next.js portfolio app with Alloy OTLP sidecar for distributed tracing"
   namespace: nextjs-app
   labels:
     app: nextjs

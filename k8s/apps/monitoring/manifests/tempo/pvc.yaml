@@ -3,6 +3,8 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: tempo-data
+  annotations:
+    kubernetes.io/description: "Persistent storage for Tempo trace data"
   namespace: monitoring
   labels:
     app: tempo

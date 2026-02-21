@@ -10,6 +10,8 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: prometheus
+  annotations:
+    kubernetes.io/description: "ServiceAccount for Prometheus kubernetes_sd_configs API access"
   namespace: monitoring
   labels:
     app: prometheus
@@ -20,6 +22,8 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: prometheus
+  annotations:
+    kubernetes.io/description: "Read-only access to pods, nodes, services, endpoints for metric discovery"
   labels:
     app: prometheus
     app.kubernetes.io/part-of: monitoring
@@ -44,6 +48,8 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: prometheus
+  annotations:
+    kubernetes.io/description: "Binds Prometheus ClusterRole to the prometheus ServiceAccount"
   labels:
     app: prometheus
     app.kubernetes.io/part-of: monitoring

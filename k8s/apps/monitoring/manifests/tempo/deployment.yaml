@@ -3,6 +3,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: tempo
+  annotations:
+    kubernetes.io/description: "Tempo distributed tracing backend"
   namespace: monitoring
   labels:
     app: tempo

@@ -7,6 +7,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kube-state-metrics
+  annotations:
+    kubernetes.io/description: "Reports Kubernetes object states as Prometheus metrics"
   namespace: monitoring
   labels:
     app: kube-state-metrics

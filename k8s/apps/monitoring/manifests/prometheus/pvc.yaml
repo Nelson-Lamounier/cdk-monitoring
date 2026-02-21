@@ -4,6 +4,8 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: prometheus-data
+  annotations:
+    kubernetes.io/description: "Persistent storage for Prometheus TSDB data"
   namespace: monitoring
   labels:
     app: prometheus

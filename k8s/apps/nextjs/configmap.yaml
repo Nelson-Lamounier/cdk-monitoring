@@ -12,6 +12,8 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: nextjs-config
+  annotations:
+    kubernetes.io/description: "Next.js app environment variables and OpenTelemetry settings"
   namespace: nextjs-app
   labels:
     app: nextjs

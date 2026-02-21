@@ -8,6 +8,8 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: alloy-config
+  annotations:
+    kubernetes.io/description: "Grafana Alloy OTLP collector sidecar configuration for traces"
   namespace: nextjs-app
   labels:
     app: nextjs

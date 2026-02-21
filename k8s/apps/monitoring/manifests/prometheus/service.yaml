@@ -4,6 +4,8 @@ apiVersion: v1
 kind: Service
 metadata:
   name: prometheus
+  annotations:
+    kubernetes.io/description: "Exposes Prometheus UI and API on port 9090"
   namespace: monitoring
   labels:
     app: prometheus

@@ -12,6 +12,8 @@ apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
 metadata:
   name: traefik
+  annotations:
+    kubernetes.io/description: "k3s Traefik overrides: Prometheus metrics on 9100 and OTLP tracing to Tempo"
   namespace: kube-system
 spec:
   valuesContent: |-

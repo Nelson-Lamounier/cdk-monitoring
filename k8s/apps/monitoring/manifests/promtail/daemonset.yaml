@@ -5,6 +5,8 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: promtail
+  annotations:
+    kubernetes.io/description: "Promtail log agent DaemonSet — collects pod and system logs for Loki"
   namespace: monitoring
   labels:
     app: promtail

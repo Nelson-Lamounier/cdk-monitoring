@@ -4,6 +4,8 @@ apiVersion: v1
 kind: Service
 metadata:
   name: kube-state-metrics
+  annotations:
+    kubernetes.io/description: "Exposes kube-state-metrics on port 8080 and telemetry on 8081"
   namespace: monitoring
   labels:
     app: kube-state-metrics

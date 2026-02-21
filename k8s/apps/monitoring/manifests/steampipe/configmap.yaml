@@ -4,6 +4,8 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: steampipe-config
+  annotations:
+    kubernetes.io/description: "Steampipe AWS plugin configuration for cloud resource queries"
   namespace: monitoring
   labels:
     app: steampipe
