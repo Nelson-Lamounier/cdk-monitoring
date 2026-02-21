@@ -3,6 +3,9 @@
 #
 # Aggregates all Next.js manifests for deployment.
 # Usage: kubectl apply -k k8s/apps/nextjs/
+#
+# Order: Namespace → ConfigMap/Secret → Service → Deployment → HPA/Ingress/NetworkPolicy
+# Services are created before workloads so K8s injects env vars at pod start
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -19,8 +22,8 @@ resources:
   - configmap.yaml
   - alloy-configmap.yaml
   - secret.yaml
-  - deployment.yaml
   - service.yaml
+  - deployment.yaml
   - ingress.yaml
   - hpa.yaml
   - network-policy.yaml

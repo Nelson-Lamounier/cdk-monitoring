@@ -10,40 +10,42 @@ resources:
   - namespace.yaml
 
   # Core services
+  # Order: RBAC → ConfigMap/Secret → PVC → Service → Deployment
+  # Services are created before workloads so K8s injects env vars at pod start
   - prometheus/rbac.yaml
   - prometheus/configmap.yaml
   - prometheus/pvc.yaml
-  - prometheus/deployment.yaml
   - prometheus/service.yaml
+  - prometheus/deployment.yaml
 
   - grafana/configmap.yaml
   - grafana/secret.yaml
   - grafana/pvc.yaml
-  - grafana/deployment.yaml
   - grafana/service.yaml
+  - grafana/deployment.yaml
 
   - loki/configmap.yaml
   - loki/pvc.yaml
-  - loki/deployment.yaml
   - loki/service.yaml
+  - loki/deployment.yaml
 
   - tempo/configmap.yaml
   - tempo/pvc.yaml
-  - tempo/deployment.yaml
   - tempo/service.yaml
+  - tempo/deployment.yaml
 
   # Agents
   - promtail/configmap.yaml
-  - promtail/daemonset.yaml
   - promtail/service.yaml
+  - promtail/daemonset.yaml
 
-  - node-exporter/daemonset.yaml
   - node-exporter/service.yaml
+  - node-exporter/daemonset.yaml
 
   # K8s object state metrics
   - kube-state-metrics/rbac.yaml
-  - kube-state-metrics/deployment.yaml
   - kube-state-metrics/service.yaml
+  - kube-state-metrics/deployment.yaml
 
   # Integrations
   - github-actions-exporter/deployment.yaml
