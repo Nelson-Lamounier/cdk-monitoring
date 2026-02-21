@@ -25,13 +25,10 @@ spec:
           ports:
             - name: http
               containerPort: 3200
-              protocol: TCP
             - name: otlp-grpc
               containerPort: 4317
-              protocol: TCP
             - name: otlp-http
               containerPort: 4318
-              protocol: TCP
           volumeMounts:
             - name: config
               mountPath: /etc/tempo/config.yml

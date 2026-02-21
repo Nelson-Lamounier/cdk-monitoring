@@ -27,10 +27,8 @@ spec:
           ports:
             - name: http
               containerPort: 3100
-              protocol: TCP
             - name: grpc
               containerPort: 9096
-              protocol: TCP
           volumeMounts:
             - name: config
               mountPath: /etc/loki/config.yml

@@ -29,10 +29,8 @@ spec:
           ports:
             - name: http-metrics
               containerPort: 8080
-              protocol: TCP
             - name: telemetry
               containerPort: 8081
-              protocol: TCP
           livenessProbe:
             httpGet:
               path: /livez

@@ -34,7 +34,6 @@ spec:
               kubernetes.io/metadata.name: kube-system
       ports:
         - port: 3000
-          protocol: TCP
 
     # Allow Prometheus scraping from monitoring namespace
     - from:
@@ -43,7 +42,6 @@ spec:
               kubernetes.io/metadata.name: monitoring
       ports:
         - port: 3000
-          protocol: TCP
 
   egress:
     # Allow DNS resolution
@@ -55,7 +53,6 @@ spec:
         - port: 53
           protocol: UDP
         - port: 53
-          protocol: TCP
 
     # Allow Alloy sidecar → Tempo (monitoring namespace)
     - to:
@@ -67,7 +64,6 @@ spec:
               app: tempo
       ports:
         - port: 4317
-          protocol: TCP
 
     # Allow AWS API access (DynamoDB, S3, SSM, ECR)
     - to:
@@ -78,4 +74,3 @@ spec:
               - 10.43.0.0/16
       ports:
         - port: 443
-          protocol: TCP

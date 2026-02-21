@@ -15,4 +15,3 @@ spec:
     - name: http
       port: 9080
       targetPort: http
-      protocol: TCP

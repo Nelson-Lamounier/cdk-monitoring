@@ -16,13 +16,10 @@ spec:
     - name: http
       port: 3200
       targetPort: http
-      protocol: TCP
     - name: otlp-grpc
       port: 4317
       targetPort: otlp-grpc
       nodePort: 30417
-      protocol: TCP
     - name: otlp-http
       port: 4318
       targetPort: otlp-http
-      protocol: TCP

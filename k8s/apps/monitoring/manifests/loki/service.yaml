@@ -17,8 +17,6 @@ spec:
       port: 3100
       targetPort: http
       nodePort: 30100
-      protocol: TCP
     - name: grpc
       port: 9096
       targetPort: grpc
-      protocol: TCP
