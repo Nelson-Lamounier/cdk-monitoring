@@ -515,6 +515,26 @@ export class K8sComputeStack extends cdk.Stack {
       }),
     );
 
+    // Cross-project S3 read: NextJS K8s manifests bucket
+    // The SSM document (nextjs-k8s-deploy-manifests) runs on this k3s server
+    // but needs to sync from the NextJS project's manifests bucket.
+    // Bucket name follows deterministic pattern: nextjs-k8s-{env}-k8s-manifests-{account}
+    const nextjsManifestsBucket = `nextjs-k8s-${targetEnvironment}-k8s-manifests-${this.account}`;
+    this.instanceRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        sid: "NextJsManifestsS3Read",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "s3:GetObject",
+          "s3:ListBucket",
+        ],
+        resources: [
+          `arn:aws:s3:::${nextjsManifestsBucket}`,
+          `arn:aws:s3:::${nextjsManifestsBucket}/*`,
+        ],
+      }),
+    );
+
     // ECR pull (for deploying container images to k3s)
     this.instanceRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
