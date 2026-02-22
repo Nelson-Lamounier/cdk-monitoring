@@ -1,11 +1,153 @@
 /**
  * @format
- * Naming Utilities
+ * Naming Utilities — Single Source of Truth
  *
- * Consistent resource naming conventions.
+ * Centralised resource and stack naming conventions.
+ * All CDK factories and deployment scripts derive names from here.
+ *
+ * Stack name pattern: {Namespace}-{Component}-{environment}
+ *   e.g. NextJS-Compute-development, Monitoring-K8s-Compute-production
  */
 
 import { EnvironmentName } from '../config/environments';
+import { Project, getProjectConfig } from '../config/projects';
+
+// =============================================================================
+// STACK REGISTRY — Every stack's identity, defined once
+// =============================================================================
+
+/**
+ * Maps each project's stack keys to their component names.
+ * This is the authoritative list of all stacks in the codebase.
+ *
+ * The component name is combined with the project namespace and environment
+ * to produce the full CloudFormation stack name / CDK construct ID.
+ *
+ * @example
+ * STACK_REGISTRY.nextjs.k8sCompute  // → 'K8s-Compute'
+ * // Full stack name: NextJS-K8s-Compute-development
+ */
+export const STACK_REGISTRY = {
+    shared: {
+        infra: 'Infra',
+    },
+    monitoring: {
+        storage: 'Storage',
+        ssm: 'SSM',
+        compute: 'Compute',
+    },
+    nextjs: {
+        data: 'Data',
+        compute: 'Compute',
+        networking: 'Networking',
+        application: 'Application',
+        k8sCompute: 'K8s-Compute',
+        api: 'Api',
+        edge: 'Edge',
+    },
+    k8s: {
+        compute: 'Compute',
+        edge: 'Edge',
+    },
+    org: {
+        dnsRole: 'DnsRole',
+    },
+} as const;
+
+/** Type-safe project keys */
+export type RegistryProject = keyof typeof STACK_REGISTRY;
+
+/** Type-safe stack keys for a given project */
+export type RegistryStackKey<P extends RegistryProject> = keyof (typeof STACK_REGISTRY)[P];
+
+// =============================================================================
+// STACK NAMING FUNCTIONS
+// =============================================================================
+
+/**
+ * Generate a CDK construct ID / CloudFormation stack name.
+ *
+ * Pattern: {Namespace}-{Component}-{environment}
+ *
+ * @param namespace - Project namespace (e.g. 'NextJS', 'Monitoring-K8s')
+ * @param component - Stack component name (e.g. 'Compute', 'K8s-Compute')
+ * @param environment - Target environment (e.g. 'development')
+ * @returns Full stack name (e.g. 'NextJS-K8s-Compute-development')
+ *
+ * @example
+ * stackId('Monitoring', 'Storage', 'development')
+ * // Returns: 'Monitoring-Storage-development'
+ *
+ * stackId('NextJS', 'K8s-Compute', 'production')
+ * // Returns: 'NextJS-K8s-Compute-production'
+ */
+export function stackId(
+    namespace: string,
+    component: string,
+    environment: EnvironmentName
+): string {
+    return `${namespace}-${component}-${environment}`;
+}
+
+/**
+ * Mapping from Project enum to STACK_REGISTRY key.
+ * Required because Project enum values ('shared', 'monitoring', …)
+ * already match the registry keys exactly.
+ */
+const PROJECT_TO_REGISTRY: Record<Project, RegistryProject> = {
+    [Project.SHARED]: 'shared',
+    [Project.MONITORING]: 'monitoring',
+    [Project.NEXTJS]: 'nextjs',
+    [Project.K8S]: 'k8s',
+    [Project.ORG]: 'org',
+};
+
+/**
+ * Resolve a full stack name from project enum, stack key, and environment.
+ *
+ * Combines the project namespace from `projects.ts` with the component
+ * name from `STACK_REGISTRY` to produce the CloudFormation stack name.
+ *
+ * @param project - Project enum value
+ * @param stackKey - Key into the project's registry entry (e.g. 'compute', 'k8sCompute')
+ * @param environment - Target environment
+ * @returns Full stack name
+ * @throws Error if project or stackKey is invalid
+ *
+ * @example
+ * getStackId(Project.NEXTJS, 'k8sCompute', 'development')
+ * // Returns: 'NextJS-K8s-Compute-development'
+ *
+ * getStackId(Project.MONITORING, 'storage', 'production')
+ * // Returns: 'Monitoring-Storage-production'
+ */
+export function getStackId(
+    project: Project,
+    stackKey: string,
+    environment: EnvironmentName
+): string {
+    const registryKey = PROJECT_TO_REGISTRY[project];
+    if (!registryKey) {
+        throw new Error(`Unknown project: ${project}`);
+    }
+
+    const projectRegistry = STACK_REGISTRY[registryKey];
+    const component = (projectRegistry as Record<string, string>)[stackKey];
+    if (!component) {
+        const validKeys = Object.keys(projectRegistry).join(', ');
+        throw new Error(
+            `Unknown stack key '${stackKey}' for project '${project}'. ` +
+            `Valid keys: ${validKeys}`
+        );
+    }
+
+    const namespace = getProjectConfig(project).namespace;
+    return stackId(namespace, component, environment);
+}
+
+// =============================================================================
+// RESOURCE NAMING FUNCTIONS
+// =============================================================================
 
 /**
  * Options for resource naming
@@ -44,21 +186,6 @@ export function resourceName(options: NamingOptions): string {
     }
 
     return parts.join('-');
-}
-
-/**
- * Generate stack name
- *
- * Format: {Project}{Component}Stack-{Environment}
- */
-export function stackName(
-    project: string,
-    component: string,
-    environment: EnvironmentName
-): string {
-    const capitalizedProject = project.charAt(0).toUpperCase() + project.slice(1);
-    const capitalizedComponent = component.charAt(0).toUpperCase() + component.slice(1);
-    return `${capitalizedProject}${capitalizedComponent}Stack-${environment}`;
 }
 
 /**

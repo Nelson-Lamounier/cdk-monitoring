@@ -17,6 +17,7 @@ import * as cdk from 'aws-cdk-lib/core';
 import { MONITORING_APP_TAG } from '../../config/defaults';
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { getMonitoringConfigs } from '../../config/monitoring';
+import { stackId } from '../../utilities/naming';
 import { Project, getProjectConfig } from '../../config/projects';
 import {
     IProjectFactory,
@@ -66,12 +67,7 @@ export class MonitoringProjectFactory implements IProjectFactory<MonitoringFacto
         this.namespace = getProjectConfig(Project.MONITORING).namespace;
     }
 
-    /**
-     * Generate stack ID with project namespace and environment suffix
-     */
-    private stackId(resource: string): string {
-        return `${this.namespace}-${resource}-${this.environment}`;
-    }
+
 
     createAllStacks(scope: cdk.App, context: MonitoringFactoryContext): ProjectStackFamily {
         // -------------------------------------------------------------
@@ -122,7 +118,7 @@ export class MonitoringProjectFactory implements IProjectFactory<MonitoringFacto
         const asgName = `${namePrefix}-asg`;
         const storageStack = new MonitoringStorageStack(
             scope,
-            this.stackId('Storage'),
+            stackId(this.namespace, 'Storage', this.environment),
             {
                 vpcName,
                 volumeSizeGb,
@@ -149,7 +145,7 @@ export class MonitoringProjectFactory implements IProjectFactory<MonitoringFacto
         // =================================================================
         const ssmStack = new MonitoringSsmStack(
             scope,
-            this.stackId('SSM'),
+            stackId(this.namespace, 'SSM', this.environment),
             {
                 namePrefix,
                 grafanaAdminPassword: grafanaPassword,
@@ -170,7 +166,7 @@ export class MonitoringProjectFactory implements IProjectFactory<MonitoringFacto
         // =================================================================
         const computeStack = new MonitoringComputeStack(
             scope,
-            this.stackId('Compute'),
+            stackId(this.namespace, 'Compute', this.environment),
             {
                 vpcName,
                 trustedCidrs,

@@ -28,6 +28,7 @@ import { getNextJsConfigs, getNextJsK8sConfig } from '../../config/nextjs';
 import { nextjsResourceNames } from '../../config/nextjs/resource-names';
 import { Project, getProjectConfig } from '../../config/projects';
 import { nextjsSsmPaths, monitoringSsmPaths } from '../../config/ssm-paths';
+import { stackId } from '../../utilities/naming';
 import {
     IProjectFactory,
     ProjectFactoryContext,
@@ -103,12 +104,7 @@ export class ConsolidatedNextJSFactory implements IProjectFactory<ConsolidatedFa
         this.namespace = getProjectConfig(Project.NEXTJS).namespace;
     }
 
-    /**
-     * Generate stack ID with project namespace and environment suffix
-     */
-    private stackId(resource: string): string {
-        return `${this.namespace}-${resource}-${this.environment}`;
-    }
+
 
     createAllStacks(scope: cdk.App, context: ConsolidatedFactoryContext): ProjectStackFamily {
         // -------------------------------------------------------------
@@ -203,7 +199,7 @@ export class ConsolidatedNextJSFactory implements IProjectFactory<ConsolidatedFa
         // Stack 1: DATA STACK
         // DynamoDB Personal Portfolio Table + S3 Assets Bucket + SSM
         // =================================================================
-        const dataStack = new NextJsDataStack(scope, this.stackId('Data'), {
+        const dataStack = new NextJsDataStack(scope, stackId(this.namespace, 'Data', this.environment), {
             targetEnvironment: this.environment,
             projectName: namePrefix,
             env,
@@ -215,7 +211,7 @@ export class ConsolidatedNextJSFactory implements IProjectFactory<ConsolidatedFa
         // Stack 2: COMPUTE STACK
         // ECS Cluster + IAM Roles + Launch Template + ASG
         // =================================================================
-        const computeStack = new NextJsComputeStack(scope, this.stackId('Compute'), {
+        const computeStack = new NextJsComputeStack(scope, stackId(this.namespace, 'Compute', this.environment), {
             targetEnvironment: this.environment,
             vpcName,
             namePrefix,
@@ -245,7 +241,7 @@ export class ConsolidatedNextJSFactory implements IProjectFactory<ConsolidatedFa
         // ALB + Target Group + Task Security Group
         // Deploys in parallel with Compute (no dependency needed — Item 10)
         // =================================================================
-        const networkingStack = new NextJsNetworkingStack(scope, this.stackId('Networking'), {
+        const networkingStack = new NextJsNetworkingStack(scope, stackId(this.namespace, 'Networking', this.environment), {
             targetEnvironment: this.environment,
             vpcName,
             namePrefix,
@@ -265,7 +261,7 @@ export class ConsolidatedNextJSFactory implements IProjectFactory<ConsolidatedFa
         // Stack 4: APPLICATION STACK
         // Task Definition + ECS Service + Auto-Deploy
         // =================================================================
-        const applicationStack = new NextJsApplicationStack(scope, this.stackId('Application'), {
+        const applicationStack = new NextJsApplicationStack(scope, stackId(this.namespace, 'Application', this.environment), {
             targetEnvironment: this.environment,
             vpcName,
             // ECR is discovered via SSM from SharedVpcStack: /shared/ecr/{env}/repository-*
@@ -305,7 +301,7 @@ export class ConsolidatedNextJSFactory implements IProjectFactory<ConsolidatedFa
         // Stack 5: API STACK (Separate Lifecycle)
         // API Gateway + Lambda for email subscriptions (frontend contact form)
         // =================================================================
-        const apiStack = new NextJsApiStack(scope, this.stackId('Api'), {
+        const apiStack = new NextJsApiStack(scope, stackId(this.namespace, 'Api', this.environment), {
             targetEnvironment: this.environment,
             projectName: namePrefix,
             tableSsmPath: ssmPaths.dynamodbTableName,
@@ -337,7 +333,7 @@ export class ConsolidatedNextJSFactory implements IProjectFactory<ConsolidatedFa
         // =================================================================
         const edgeEnv = cdkEdgeEnvironment(this.environment);
 
-        const edgeStack = new NextJsEdgeStack(scope, this.stackId('Edge'), {
+        const edgeStack = new NextJsEdgeStack(scope, stackId(this.namespace, 'Edge', this.environment), {
             targetEnvironment: this.environment,
             domainName: edgeConfig.domainName ?? '',
             subjectAlternativeNames: context.subjectAlternativeNames,
@@ -375,7 +371,7 @@ export class ConsolidatedNextJSFactory implements IProjectFactory<ConsolidatedFa
         const k8sConfig = getNextJsK8sConfig(this.environment);
         const k8sSsmPrefix = `/nextjs-k8s/${this.environment}`;
 
-        const k8sComputeStack = new NextJsK8sComputeStack(scope, this.stackId('K8s-Compute'), {
+        const k8sComputeStack = new NextJsK8sComputeStack(scope, stackId(this.namespace, 'K8s-Compute', this.environment), {
             targetEnvironment: this.environment,
             k8sConfig,
             namePrefix: `${namePrefix}-k8s`,

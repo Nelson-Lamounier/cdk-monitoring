@@ -18,6 +18,7 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Environment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
+import { stackId } from '../../utilities/naming';
 import {
     IProjectFactory,
     ProjectFactoryContext,
@@ -124,7 +125,7 @@ export class OrgProjectFactory implements IProjectFactory<OrgFactoryContext> {
         // =================================================================
         // Stack 1: Cross-Account DNS Role
         // =================================================================
-        const dnsRoleStack = new CrossAccountDnsRoleStack(scope, this.stackId('DnsRole'), {
+        const dnsRoleStack = new CrossAccountDnsRoleStack(scope, stackId(this.namespace, 'DnsRole', this.environment), {
             hostedZoneIds,
             trustedAccountIds,
             externalId,
@@ -147,10 +148,4 @@ export class OrgProjectFactory implements IProjectFactory<OrgFactoryContext> {
         return { stacks, stackMap };
     }
 
-    /**
-     * Generate consistent stack ID
-     */
-    private stackId(resource: string): string {
-        return `${this.namespace}-${resource}Stack-${this.environment}`;
-    }
 }

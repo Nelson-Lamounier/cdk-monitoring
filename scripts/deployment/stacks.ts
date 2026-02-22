@@ -1,9 +1,12 @@
 /**
- * Stack Configuration - Single Source of Truth
+ * Stack Configuration
  *
  * All stack definitions for the multi-project CDK infrastructure.
- * This replaces the duplicated stack names in the Makefile.
+ * Stack names are derived from the centralised naming utility (lib/utilities/naming.ts).
  */
+
+import { getStackId } from '../../lib/utilities/naming.js';
+import { Project } from '../../lib/config/projects.js';
 
 export type Environment = 'development' | 'staging' | 'production';
 
@@ -56,19 +59,19 @@ const monitoringStacks: StackConfig[] = [
   {
     id: 'storage',
     name: 'Storage Stack',
-    getStackName: (env) => `Monitoring-Storage-${env}`,
+    getStackName: (env) => getStackId(Project.MONITORING, 'storage', env),
     description: 'EBS volume with DLM backups and lifecycle management',
   },
   {
     id: 'ssm',
     name: 'SSM Stack',
-    getStackName: (env) => `Monitoring-SSM-${env}`,
+    getStackName: (env) => getStackId(Project.MONITORING, 'ssm', env),
     description: 'SSM Run Command document and S3 scripts bucket for monitoring configuration',
   },
   {
     id: 'compute',
     name: 'Compute Stack',
-    getStackName: (env) => `Monitoring-Compute-${env}`,
+    getStackName: (env) => getStackId(Project.MONITORING, 'compute', env),
     description: 'Security group + EC2/ASG running Prometheus and Grafana',
     dependsOn: ['storage'],
   },
@@ -96,7 +99,7 @@ const nextjsStacks: StackConfig[] = [
   {
     id: 'data',
     name: 'Data Stack',
-    getStackName: (env) => `NextJS-Data-${env}`,
+    getStackName: (env) => getStackId(Project.NEXTJS, 'data', env),
     description: 'DynamoDB table, S3 assets bucket, and SSM parameters (ECR is in Shared stack)',
   },
 
@@ -106,7 +109,7 @@ const nextjsStacks: StackConfig[] = [
   {
     id: 'compute',
     name: 'Compute Stack',
-    getStackName: (env) => `NextJS-Compute-${env}`,
+    getStackName: (env) => getStackId(Project.NEXTJS, 'compute', env),
     description: 'ECS cluster, IAM roles, launch template, and auto scaling',
     dependsOn: ['data'],
   },
@@ -117,7 +120,7 @@ const nextjsStacks: StackConfig[] = [
   {
     id: 'networking',
     name: 'Networking Stack',
-    getStackName: (env) => `NextJS-Networking-${env}`,
+    getStackName: (env) => getStackId(Project.NEXTJS, 'networking', env),
     description: 'Application Load Balancer, target groups, and security groups',
     dependsOn: ['compute'],
   },
@@ -128,7 +131,7 @@ const nextjsStacks: StackConfig[] = [
   {
     id: 'application',
     name: 'Application Stack',
-    getStackName: (env) => `NextJS-Application-${env}`,
+    getStackName: (env) => getStackId(Project.NEXTJS, 'application', env),
     description: 'ECS service with NextJS task definition and auto-deploy Lambda',
     dependsOn: ['networking', 'compute'],
   },
@@ -140,7 +143,7 @@ const nextjsStacks: StackConfig[] = [
   {
     id: 'k8sCompute',
     name: 'K8s Compute Stack',
-    getStackName: (env) => `NextJS-K8s-Compute-${env}`,
+    getStackName: (env) => getStackId(Project.NEXTJS, 'k8sCompute', env),
     description: 'k3s Kubernetes agent node: EC2 + ASG + EBS + EIP for NextJS workloads',
     dependsOn: ['data'],
   },
@@ -151,7 +154,7 @@ const nextjsStacks: StackConfig[] = [
   {
     id: 'api',
     name: 'API Stack',
-    getStackName: (env) => `NextJS-Api-${env}`,
+    getStackName: (env) => getStackId(Project.NEXTJS, 'api', env),
     description: 'API Gateway with Lambda functions for articles CRUD',
     dependsOn: ['data'],
   },
@@ -162,7 +165,7 @@ const nextjsStacks: StackConfig[] = [
   {
     id: 'edge',
     name: 'Edge Stack',
-    getStackName: (env) => `NextJS-Edge-${env}`,
+    getStackName: (env) => getStackId(Project.NEXTJS, 'edge', env),
     description: 'CloudFront distribution with ACM certificate and WAF (deploys to us-east-1)',
     dependsOn: ['networking', 'application', 'api'],
     region: 'us-east-1',
@@ -188,7 +191,7 @@ const sharedStacks: StackConfig[] = [
   {
     id: 'infra',
     name: 'Shared Infrastructure',
-    getStackName: (env) => `Shared-Infra-${env}`,
+    getStackName: (env) => getStackId(Project.SHARED, 'infra', env),
     description: 'Shared VPC with public subnets and ECR repository',
   },
 ];
@@ -212,7 +215,7 @@ const orgStacks: StackConfig[] = [
   {
     id: 'dns-role',
     name: 'DNS Role Stack',
-    getStackName: () => 'Org-DnsRole-production', // Always production for root account
+    getStackName: () => getStackId(Project.ORG, 'dnsRole', 'production'), // Always production for root account
     description: 'Cross-account DNS delegation role in root account',
   },
 ];
@@ -256,13 +259,13 @@ const k8sStacks: StackConfig[] = [
   {
     id: 'compute',
     name: 'Compute Stack',
-    getStackName: (env) => `Monitoring-K8s-Compute-${env}`,
+    getStackName: (env) => getStackId(Project.K8S, 'compute', env),
     description: 'k3s Kubernetes cluster: EC2 + ASG + EBS + Security Group + Elastic IP',
   },
   {
     id: 'edge',
     name: 'Edge Stack',
-    getStackName: (env) => `Monitoring-K8s-Edge-${env}`,
+    getStackName: (env) => getStackId(Project.K8S, 'edge', env),
     description: 'CloudFront distribution with ACM certificate and WAF for monitoring (us-east-1)',
     dependsOn: ['compute'],
     region: 'us-east-1',

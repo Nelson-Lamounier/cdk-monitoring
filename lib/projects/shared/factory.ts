@@ -10,6 +10,7 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
+import { stackId } from '../../utilities/naming';
 import {
     IProjectFactory,
     ProjectFactoryContext,
@@ -48,7 +49,8 @@ export class SharedProjectFactory implements IProjectFactory {
         // =================================================================
         // Infrastructure Stack - VPC + ECR shared by all projects
         // =================================================================
-        const infraStack = new SharedVpcStack(scope, `${this.namespace}-Infra-${env}`, {
+        const stackName = stackId(this.namespace, 'Infra', env);
+        const infraStack = new SharedVpcStack(scope, stackName, {
             targetEnvironment: env,
             flowLogConfig: {
                 logGroupName: `/vpc/${this.namespace.toLowerCase()}/${env}/flow-logs`,
@@ -60,7 +62,7 @@ export class SharedProjectFactory implements IProjectFactory {
         stackMap['infra'] = infraStack;
 
         console.log(`✅ Shared factory created 1 stack for ${env}:`);
-        console.log(`   - ${this.namespace}-Infra-${env}`);
+        console.log(`   - ${stackName}`);
         console.log(`\nOther projects can reference this VPC using:`);
         console.log(`   -c useSharedVpc=Shared`);
 
