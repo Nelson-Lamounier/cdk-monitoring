@@ -553,6 +553,13 @@ export class K8sComputeStack extends cdk.Stack {
             tier: ssm.ParameterTier.STANDARD,
         });
 
+        new ssm.StringParameter(this, 'ElasticIpParam', {
+            parameterName: `${props.ssmPrefix}/elastic-ip`,
+            stringValue: this.elasticIp.ref,
+            description: 'k3s Elastic IP address (used by Edge stack as CloudFront origin)',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
         // =====================================================================
         // Stack Outputs
         // =====================================================================

@@ -112,6 +112,28 @@ export interface K8sSsmConfig {
 }
 
 /**
+ * Edge configuration for CloudFront + WAF + ACM
+ *
+ * Domain, hosted zone, and cross-account role are resolved from process.env
+ * at synth time — same pattern as the NextJs edge stack. Optional so the
+ * compute stack can still synth without edge env vars.
+ */
+export interface K8sEdgeConfig {
+    /** Domain name for monitoring dashboard (e.g., 'monitoring.nelsonlamounier.com') */
+    readonly domainName?: string;
+    /** Route 53 Hosted Zone ID in root account */
+    readonly hostedZoneId?: string;
+    /** Cross-account IAM role ARN for Route 53 DNS validation */
+    readonly crossAccountRoleArn?: string;
+    /** WAF rate limit per IP per 5 minutes @default 2000 */
+    readonly rateLimitPerIp: number;
+    /** Enable WAF rate limiting @default true */
+    readonly enableRateLimiting: boolean;
+    /** Enable IP reputation list @default true */
+    readonly enableIpReputationList: boolean;
+}
+
+/**
  * Complete resource configurations for k3s/Kubernetes project
  */
 export interface K8sConfigs {
@@ -121,6 +143,7 @@ export interface K8sConfigs {
     readonly networking: K8sNetworkingConfig;
     readonly image: K8sImageConfig;
     readonly ssm: K8sSsmConfig;
+    readonly edge: K8sEdgeConfig;
     readonly logRetention: logs.RetentionDays;
     readonly isProduction: boolean;
     readonly removalPolicy: cdk.RemovalPolicy;
@@ -171,6 +194,14 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             maxConcurrency: '1',
             maxErrors: '0',
         },
+        edge: {
+            domainName: process.env.MONITOR_DOMAIN_NAME || undefined,
+            hostedZoneId: process.env.HOSTED_ZONE_ID || undefined,
+            crossAccountRoleArn: process.env.CROSS_ACCOUNT_ROLE_ARN || undefined,
+            rateLimitPerIp: 2000,
+            enableRateLimiting: true,
+            enableIpReputationList: true,
+        },
         logRetention: logs.RetentionDays.ONE_WEEK,
         isProduction: false,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -213,6 +244,14 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             maxConcurrency: '1',
             maxErrors: '0',
         },
+        edge: {
+            domainName: process.env.MONITOR_DOMAIN_NAME || undefined,
+            hostedZoneId: process.env.HOSTED_ZONE_ID || undefined,
+            crossAccountRoleArn: process.env.CROSS_ACCOUNT_ROLE_ARN || undefined,
+            rateLimitPerIp: 2000,
+            enableRateLimiting: true,
+            enableIpReputationList: true,
+        },
         logRetention: logs.RetentionDays.ONE_MONTH,
         isProduction: false,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -254,6 +293,14 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             associationSchedule: 'rate(30 minutes)',
             maxConcurrency: '1',
             maxErrors: '0',
+        },
+        edge: {
+            domainName: process.env.MONITOR_DOMAIN_NAME || undefined,
+            hostedZoneId: process.env.HOSTED_ZONE_ID || undefined,
+            crossAccountRoleArn: process.env.CROSS_ACCOUNT_ROLE_ARN || undefined,
+            rateLimitPerIp: 2000,
+            enableRateLimiting: true,
+            enableIpReputationList: true,
         },
         logRetention: logs.RetentionDays.THREE_MONTHS,
         isProduction: true,
