@@ -256,14 +256,22 @@ const k8sStacks: StackConfig[] = [
   {
     id: 'compute',
     name: 'Compute Stack',
-    getStackName: (env) => `K8s-Compute-${env}`,
+    getStackName: (env) => `Monitoring-K8s-Compute-${env}`,
     description: 'k3s Kubernetes cluster: EC2 + ASG + EBS + Security Group + Elastic IP',
+  },
+  {
+    id: 'edge',
+    name: 'Edge Stack',
+    getStackName: (env) => `Monitoring-K8s-Edge-${env}`,
+    description: 'CloudFront distribution with ACM certificate and WAF for monitoring (us-east-1)',
+    dependsOn: ['compute'],
+    region: 'us-east-1',
   },
 ];
 
 const k8sProject: ProjectConfig = {
   id: 'k8s',
-  name: 'Kubernetes',
+  name: 'Monitoring-K8s',
   description: 'Self-managed k3s Kubernetes cluster for unified workloads (requires Shared VPC)',
   stacks: k8sStacks,
   cdkContext: (env) => ({

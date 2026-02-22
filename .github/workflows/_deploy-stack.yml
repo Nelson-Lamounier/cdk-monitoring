@@ -60,6 +60,11 @@ on:
         required: false
         type: string
         default: ""
+      monitor-domain-name:
+        description: "Domain name for monitoring dashboard (optional)"
+        required: false
+        type: string
+        default: ""
       require-approval:
         description: "CDK approval requirement (never, any-change, broadening)"
         required: false
@@ -155,6 +160,7 @@ jobs:
           [[ -n "$VERIFICATION_SECRET"      ]] && echo "VERIFICATION_SECRET=$VERIFICATION_SECRET"           >> $GITHUB_ENV
           [[ -n "$VERIFICATION_BASE_URL"    ]] && echo "VERIFICATION_BASE_URL=$VERIFICATION_BASE_URL"       >> $GITHUB_ENV
           [[ -n "$GRAFANA_ADMIN_PASSWORD"   ]] && echo "GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD"     >> $GITHUB_ENV
+          [[ -n "$MONITOR_DOMAIN_NAME"      ]] && echo "MONITOR_DOMAIN_NAME=$MONITOR_DOMAIN_NAME"           >> $GITHUB_ENV
           echo "✓ Scoped config applied"
         env:
           DOMAIN_NAME: ${{ inputs.domain-name }}
@@ -165,6 +171,7 @@ jobs:
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
           VERIFICATION_BASE_URL: ${{ inputs.verification-base-url }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          MONITOR_DOMAIN_NAME: ${{ inputs.monitor-domain-name }}
 
       - name: Deploy CDK Stack
         id: deploy-stack
