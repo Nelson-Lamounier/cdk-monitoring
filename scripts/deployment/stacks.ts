@@ -5,8 +5,8 @@
  * Stack names are derived from the centralised naming utility (lib/utilities/naming.ts).
  */
 
-import { getStackId } from '../../lib/utilities/naming.js';
 import { Project } from '../../lib/config/projects.js';
+import { getStackId } from '../../lib/utilities/naming.js';
 
 export type Environment = 'development' | 'staging' | 'production';
 

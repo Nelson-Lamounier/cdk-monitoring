@@ -10,13 +10,13 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
-import { stackId } from '../../utilities/naming';
 import {
     IProjectFactory,
     ProjectFactoryContext,
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import { SharedVpcStack } from '../../shared/vpc-stack';
+import { stackId } from '../../utilities/naming';
 
 /**
  * Factory for creating shared infrastructure resources.

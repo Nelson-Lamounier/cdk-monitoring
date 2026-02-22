@@ -28,7 +28,6 @@ import { getNextJsConfigs, getNextJsK8sConfig } from '../../config/nextjs';
 import { nextjsResourceNames } from '../../config/nextjs/resource-names';
 import { Project, getProjectConfig } from '../../config/projects';
 import { nextjsSsmPaths, monitoringSsmPaths } from '../../config/ssm-paths';
-import { stackId } from '../../utilities/naming';
 import {
     IProjectFactory,
     ProjectFactoryContext,
@@ -43,6 +42,7 @@ import {
     NextJsEdgeStack,
     NextJsK8sComputeStack,
 } from '../../stacks/nextjs';
+import { stackId } from '../../utilities/naming';
 
 // =========================================================================
 // Factory Context

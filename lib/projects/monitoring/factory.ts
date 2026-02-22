@@ -17,7 +17,6 @@ import * as cdk from 'aws-cdk-lib/core';
 import { MONITORING_APP_TAG } from '../../config/defaults';
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { getMonitoringConfigs } from '../../config/monitoring';
-import { stackId } from '../../utilities/naming';
 import { Project, getProjectConfig } from '../../config/projects';
 import {
     IProjectFactory,
@@ -29,6 +28,7 @@ import {
     MonitoringComputeStack,
     MonitoringSsmStack,
 } from '../../stacks/monitoring';
+import { stackId } from '../../utilities/naming';
 
 // =========================================================================
 // Factory Context

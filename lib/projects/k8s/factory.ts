@@ -19,13 +19,13 @@ import { Environment, cdkEnvironment, cdkEdgeEnvironment, getEnvironmentConfig }
 import { getK8sConfigs } from '../../config/k8s';
 import { Project, getProjectConfig } from '../../config/projects';
 import { k8sSsmPaths } from '../../config/ssm-paths';
-import { stackId } from '../../utilities/naming';
 import {
     IProjectFactory,
     ProjectFactoryContext,
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import { K8sComputeStack, K8sEdgeStack } from '../../stacks/monitoring/k8s';
+import { stackId } from '../../utilities/naming';
 
 // =============================================================================
 // FACTORY CONTEXT

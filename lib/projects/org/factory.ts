@@ -18,13 +18,13 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Environment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
-import { stackId } from '../../utilities/naming';
 import {
     IProjectFactory,
     ProjectFactoryContext,
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import { CrossAccountDnsRoleStack } from '../../stacks/org';
+import { stackId } from '../../utilities/naming';
 
 export interface OrgProjectConfig {
     /**
