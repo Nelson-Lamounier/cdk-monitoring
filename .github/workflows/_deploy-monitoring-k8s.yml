@@ -67,6 +67,10 @@ jobs:
       commit-sha: ${{ github.sha }}
       commit-short-sha: ${{ steps.commit-info.outputs.short_sha }}
       node-version: ${{ steps.setup-tools.outputs.node-version }}
+      # Resolved edge configuration
+      monitor-domain-name: ${{ steps.resolve-edge.outputs.monitor-domain-name }}
+      hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
+      cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
       # Stack names from synthesize-ci.ts (two-stack architecture)
       compute-stack: ${{ steps.synth.outputs.compute }}
       edge-stack: ${{ steps.synth.outputs.edge }}
@@ -112,8 +116,38 @@ jobs:
 
       # Synthesize k8s stacks and output stack names for downstream deploy jobs.
       # Recipe: justfile → ci-synth → npx tsx scripts/deployment/synthesize-ci.ts
+      - name: Resolve Edge Configuration
+        id: resolve-edge
+        run: |
+          DOMAIN="${{ vars.MONITOR_DOMAIN_NAME }}"
+          if [ -z "$DOMAIN" ]; then
+            echo "::warning::MONITOR_DOMAIN_NAME not set in environment vars, using fallback"
+            DOMAIN="monitoring.dev.nelsonlamounier.com"
+          fi
+
+          HZ_ID="${{ vars.HOSTED_ZONE_ID }}"
+          if [ -z "$HZ_ID" ]; then
+            echo "ERROR: No hosted zone ID. Set HOSTED_ZONE_ID in environment '${{ inputs.environment }}'"
+            exit 1
+          fi
+
+          ROLE_ARN="${{ vars.DNS_VALIDATION_ROLE }}"
+          if [ -z "$ROLE_ARN" ]; then
+            echo "ERROR: No cross-account role. Set DNS_VALIDATION_ROLE in environment '${{ inputs.environment }}'"
+            exit 1
+          fi
+
+          echo "monitor-domain-name=$DOMAIN" >> $GITHUB_OUTPUT
+          echo "hosted-zone-id=$HZ_ID" >> $GITHUB_OUTPUT
+          echo "cross-account-role-arn=$ROLE_ARN" >> $GITHUB_OUTPUT
+          echo "✓ Edge config: $DOMAIN (Zone: $HZ_ID)"
+
       - name: Synthesize & Determine Stack Names
         id: synth
+        env:
+          MONITOR_DOMAIN_NAME: ${{ steps.resolve-edge.outputs.monitor-domain-name }}
+          HOSTED_ZONE_ID: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
+          CROSS_ACCOUNT_ROLE_ARN: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
         run: just ci-synth k8s ${{ inputs.cdk-environment }}
 
       - name: Upload Synthesized Templates
@@ -289,9 +323,10 @@ jobs:
       aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
       aws-region: us-east-1
       require-approval: ${{ inputs.require-approval }}
-      # NOTE: monitor-domain-name, hosted-zone-id, and cross-account-role-arn
-      # are NOT passed here — the k8s factory reads these from SSM Parameter Store
-      # at deploy time (see lib/projects/k8s/factory.ts L98-110).
+      # Pass edge config env vars so CDK resolves them at synth time
+      monitor-domain-name: ${{ needs.setup.outputs.monitor-domain-name }}
+      hosted-zone-id: ${{ needs.setup.outputs.hosted-zone-id }}
+      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
     secrets: inherit
 
   # ===========================================================================

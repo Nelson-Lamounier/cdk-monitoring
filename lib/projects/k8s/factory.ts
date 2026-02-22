@@ -18,7 +18,6 @@ import * as cdk from 'aws-cdk-lib/core';
 import { Environment, cdkEnvironment, cdkEdgeEnvironment, getEnvironmentConfig } from '../../config/environments';
 import { getK8sConfigs } from '../../config/k8s';
 import { Project, getProjectConfig } from '../../config/projects';
-import { k8sSsmPaths } from '../../config/ssm-paths';
 import {
     IProjectFactory,
     ProjectFactoryContext,
@@ -96,20 +95,16 @@ export class K8sProjectFactory implements IProjectFactory<K8sFactoryContext> {
         // =====================================================================
 
         // Edge config values (domainName, hostedZoneId, crossAccountRoleArn)
-        // are read from SSM Parameter Store at deploy time — no process.env needed.
+        // are resolved from env vars at synth time — same pattern as NextJS.
         const edgeConfig = configs.edge;
-        const ssmPaths = k8sSsmPaths(environment);
 
         const edgeStack = new K8sEdgeStack(scope, stackId(this.namespace, 'Edge', environment), {
             env: cdkEdgeEnvironment(environment),
             description: `Edge infrastructure (ACM + WAF + CloudFront) for k8s monitoring (${environment})`,
             targetEnvironment: environment,
-            edgeSsmPaths: {
-                domainName: ssmPaths.edge.domainName,
-                hostedZoneId: ssmPaths.edge.hostedZoneId,
-                crossAccountRoleArn: ssmPaths.edge.crossAccountRoleArn,
-            },
-            edgeSsmRegion: env.region,
+            domainName: edgeConfig.domainName ?? '',
+            hostedZoneId: edgeConfig.hostedZoneId ?? '',
+            crossAccountRoleArn: edgeConfig.crossAccountRoleArn ?? '',
             elasticIpSsmPath: `${ssmPrefix}/elastic-ip`,
             elasticIpSsmRegion: env.region,
             rateLimitPerIp: edgeConfig.rateLimitPerIp,

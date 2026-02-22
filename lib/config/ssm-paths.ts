@@ -294,16 +294,6 @@ export interface K8sSsmPaths {
     /** Security group ID for the k3s node */
     readonly securityGroupId: string;
 
-    // --- Edge config (replaces GitHub env vars) ---
-    readonly edge: {
-        /** Domain name for monitoring dashboard (e.g., 'monitoring.nelsonlamounier.com') */
-        readonly domainName: string;
-        /** Route 53 Hosted Zone ID in root account */
-        readonly hostedZoneId: string;
-        /** Cross-account IAM role ARN for Route 53 DNS validation */
-        readonly crossAccountRoleArn: string;
-    };
-
     /** Wildcard path for IAM: /k8s/{environment}/* */
     readonly wildcard: string;
 }
@@ -319,11 +309,6 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
         instanceId: `${prefix}/instance-id`,
         elasticIp: `${prefix}/elastic-ip`,
         securityGroupId: `${prefix}/security-group-id`,
-        edge: {
-            domainName: `${prefix}/edge/domain-name`,
-            hostedZoneId: `${prefix}/edge/hosted-zone-id`,
-            crossAccountRoleArn: `${prefix}/edge/cross-account-role-arn`,
-        },
         wildcard: `${prefix}/*`,
     };
 }

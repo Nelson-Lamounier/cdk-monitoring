@@ -29,16 +29,14 @@ import { TEST_ENV, createTestApp } from '../../../fixtures';
 /**
  * Default props for K8sEdgeStack tests.
  * Uses TEST_ENV (us-east-1) which satisfies the region constraint.
+ * Edge config values are direct strings (synth-time resolution).
  */
 const DEFAULT_PROPS: K8sEdgeStackProps = {
     env: TEST_ENV,
     targetEnvironment: Environment.DEVELOPMENT,
-    edgeSsmPaths: {
-        domainName: '/k8s/development/edge/domain-name',
-        hostedZoneId: '/k8s/development/edge/hosted-zone-id',
-        crossAccountRoleArn: '/k8s/development/edge/cross-account-role-arn',
-    },
-    edgeSsmRegion: 'eu-west-1',
+    domainName: 'monitoring.dev.nelsonlamounier.com',
+    hostedZoneId: 'Z04763221QPB6CZ9R77GM',
+    crossAccountRoleArn: 'arn:aws:iam::711387127421:role/Route53DnsValidationRole',
     elasticIpSsmPath: '/k8s/development/elastic-ip',
     elasticIpSsmRegion: 'eu-west-1',
     namePrefix: 'k8s',
@@ -172,13 +170,11 @@ describe('K8sEdgeStack', () => {
             });
         });
 
-        it('should configure domain aliases from SSM', () => {
+        it('should configure domain aliases from config', () => {
             const { template } = createEdgeStack();
-            // domainNames is resolved from SSM at deploy time, so the template
-            // will contain a reference token rather than a static string
             template.hasResourceProperties('AWS::CloudFront::Distribution', {
                 DistributionConfig: Match.objectLike({
-                    Aliases: Match.anyValue(),
+                    Aliases: ['monitoring.dev.nelsonlamounier.com'],
                 }),
             });
         });
@@ -273,20 +269,19 @@ describe('K8sEdgeStack', () => {
     });
 
     // =========================================================================
-    // Cross-Region SSM Read
+    // Cross-Region SSM Read (EIP only)
     // =========================================================================
     describe('Cross-Region SSM Read', () => {
-        it('should create AwsCustomResources for SSM lookups', () => {
+        it('should create AwsCustomResource for EIP SSM lookup', () => {
             const { template } = createEdgeStack();
-            // AwsCustomResource creates AWS::CloudFormation::CustomResource
-            // for EIP + domain + hostedZoneId + crossAccountRoleArn SSM reads
+            // Only the EIP SSM reader remains as a custom resource
             const customResources = template.findResources(
                 'AWS::CloudFormation::CustomResource'
             );
             expect(Object.keys(customResources).length).toBeGreaterThanOrEqual(2);
         });
 
-        it('should grant SSM GetParameter permission for cross-region read', () => {
+        it('should grant SSM GetParameter permission for cross-region EIP read', () => {
             const { template } = createEdgeStack();
             template.hasResourceProperties('AWS::IAM::Policy', {
                 PolicyDocument: Match.objectLike({
@@ -301,24 +296,6 @@ describe('K8sEdgeStack', () => {
                 }),
             });
         });
-
-        it('should grant SSM GetParameter permission for edge config paths', () => {
-            const { template } = createEdgeStack();
-            template.hasResourceProperties('AWS::IAM::Policy', {
-                PolicyDocument: Match.objectLike({
-                    Statement: Match.arrayWith([
-                        Match.objectLike({
-                            Action: 'ssm:GetParameter',
-                            Resource: Match.arrayWith([
-                                Match.stringLikeRegexp('edge/domain-name'),
-                                Match.stringLikeRegexp('edge/hosted-zone-id'),
-                                Match.stringLikeRegexp('edge/cross-account-role-arn'),
-                            ]),
-                        }),
-                    ]),
-                }),
-            });
-        });
     });
 
     // =========================================================================
@@ -327,10 +304,9 @@ describe('K8sEdgeStack', () => {
     describe('DNS Alias Record', () => {
         it('should create DNS alias custom resource by default', () => {
             const { template } = createEdgeStack();
-            // Values are SSM tokens, so we check for anyValue()
             template.hasResourceProperties('AWS::CloudFormation::CustomResource', {
-                DomainName: Match.anyValue(),
-                HostedZoneId: Match.anyValue(),
+                DomainName: 'monitoring.dev.nelsonlamounier.com',
+                HostedZoneId: 'Z04763221QPB6CZ9R77GM',
             });
         });
 
@@ -342,10 +318,10 @@ describe('K8sEdgeStack', () => {
             });
         });
 
-        it('should pass cross-account role ARN from SSM', () => {
+        it('should pass cross-account role ARN directly', () => {
             const { template } = createEdgeStack();
             template.hasResourceProperties('AWS::CloudFormation::CustomResource', {
-                CrossAccountRoleArn: Match.anyValue(),
+                CrossAccountRoleArn: 'arn:aws:iam::711387127421:role/Route53DnsValidationRole',
             });
         });
 
@@ -457,13 +433,14 @@ describe('K8sEdgeStack', () => {
             });
         });
 
-        it('should grant STS AssumeRole for cross-account DNS', () => {
+        it('should grant STS AssumeRole for cross-account DNS with concrete ARN', () => {
             const { template } = createEdgeStack();
             template.hasResourceProperties('AWS::IAM::Policy', {
                 PolicyDocument: Match.objectLike({
                     Statement: Match.arrayWith([
                         Match.objectLike({
                             Action: 'sts:AssumeRole',
+                            Resource: 'arn:aws:iam::711387127421:role/Route53DnsValidationRole',
                         }),
                     ]),
                 }),
@@ -487,15 +464,18 @@ describe('K8sEdgeStack', () => {
             ).toThrow(/us-east-1/);
         });
 
-        it('should succeed without explicit edge values (resolved from SSM at deploy time)', () => {
+        it('should throw if required edge config values are missing', () => {
             const app = createTestApp();
 
             expect(
                 () =>
-                    new K8sEdgeStack(app, 'SsmEdgeStack', {
+                    new K8sEdgeStack(app, 'MissingConfigStack', {
                         ...DEFAULT_PROPS,
+                        domainName: '',
+                        hostedZoneId: '',
+                        crossAccountRoleArn: '',
                     })
-            ).not.toThrow();
+            ).toThrow(/domainName/);
         });
     });
 
@@ -514,27 +494,10 @@ describe('K8sEdgeStack', () => {
     // Custom Resource Properties
     // =========================================================================
     describe('Custom Resource Properties', () => {
-        it('should create SSM readers for edge config paths', () => {
-            const { template } = createEdgeStack();
-            // Should have IAM policy for edge SSM reads
-            template.hasResourceProperties('AWS::IAM::Policy', {
-                PolicyDocument: Match.objectLike({
-                    Statement: Match.arrayWith([
-                        Match.objectLike({
-                            Action: 'ssm:GetParameter',
-                            Resource: Match.arrayWith([
-                                Match.stringLikeRegexp('edge/domain-name'),
-                            ]),
-                        }),
-                    ]),
-                }),
-            });
-        });
-
-        it('should pass SSM-resolved hosted zone ID to custom resource', () => {
+        it('should pass concrete hosted zone ID to custom resource', () => {
             const { template } = createEdgeStack();
             template.hasResourceProperties('AWS::CloudFormation::CustomResource', {
-                HostedZoneId: Match.anyValue(),
+                HostedZoneId: 'Z04763221QPB6CZ9R77GM',
             });
         });
 

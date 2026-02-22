@@ -62,7 +62,7 @@ import { Environment } from '../../../../config/environments';
  * ```typescript
  * const edgeStack = new K8sEdgeStack(app, 'Edge', {
  *     targetEnvironment: Environment.DEVELOPMENT,
- *     domainName: 'monitoring.nelsonlamounier.com',
+ *     domainName: 'monitoring.dev.nelsonlamounier.com',
  *     hostedZoneId: 'Z123ABC',
  *     crossAccountRoleArn: 'arn:aws:iam::ROOT:role/Route53Role',
  *     elasticIpSsmPath: '/k8s/development/elastic-ip',
@@ -75,21 +75,14 @@ export interface K8sEdgeStackProps extends cdk.StackProps {
     /** Target environment */
     readonly targetEnvironment: Environment;
 
-    /**
-     * SSM parameter paths for edge config values (domain, hosted zone, role ARN).
-     * Read cross-region from eu-west-1 → us-east-1 at deploy time.
-     */
-    readonly edgeSsmPaths: {
-        /** SSM path for monitoring domain name */
-        readonly domainName: string;
-        /** SSM path for Route 53 Hosted Zone ID */
-        readonly hostedZoneId: string;
-        /** SSM path for cross-account DNS validation role ARN */
-        readonly crossAccountRoleArn: string;
-    };
+    /** Domain name for CloudFront distribution (resolved at synth time) */
+    readonly domainName: string;
 
-    /** Region where edge SSM parameters live @default 'eu-west-1' */
-    readonly edgeSsmRegion?: string;
+    /** Route 53 Hosted Zone ID (resolved at synth time) */
+    readonly hostedZoneId: string;
+
+    /** Cross-account IAM role ARN for DNS validation (resolved at synth time) */
+    readonly crossAccountRoleArn: string;
 
     /**
      * SSM parameter path storing the Elastic IP address.
@@ -169,39 +162,24 @@ export class K8sEdgeStack extends cdk.Stack {
         }
 
         // =====================================================================
-        // RESOLVE EDGE CONFIG FROM SSM (cross-region read)
+        // RESOLVE EDGE CONFIG (direct string props — synth-time values)
         //
-        // Domain, hosted zone, and role ARN are stored in SSM in eu-west-1.
-        // This stack runs in us-east-1, so we use AwsCustomResource for
-        // cross-region reads — same pattern as the Elastic IP reader.
+        // Domain, hosted zone, and role ARN are now passed as direct string
+        // props from the K8s config (env vars at synth time), following the
+        // same proven pattern as the NextJS Edge Stack. This eliminates
+        // cross-region SSM reads and the IAM propagation race condition.
         // =====================================================================
-        const edgeSsmRegion = props.edgeSsmRegion ?? 'eu-west-1';
+        const domainName = props.domainName;
+        const hostedZoneId = props.hostedZoneId;
+        const crossAccountRoleArn = props.crossAccountRoleArn;
 
-        const edgeSsmPolicy = cr.AwsCustomResourcePolicy.fromStatements([
-            new iam.PolicyStatement({
-                actions: ['ssm:GetParameter'],
-                resources: [
-                    `arn:aws:ssm:${edgeSsmRegion}:${this.account}:parameter${props.edgeSsmPaths.domainName}`,
-                    `arn:aws:ssm:${edgeSsmRegion}:${this.account}:parameter${props.edgeSsmPaths.hostedZoneId}`,
-                    `arn:aws:ssm:${edgeSsmRegion}:${this.account}:parameter${props.edgeSsmPaths.crossAccountRoleArn}`,
-                ],
-            }),
-        ]);
-
-        const domainName = this.readSsmParameter(
-            'ReadDomainName', props.edgeSsmPaths.domainName, edgeSsmRegion, edgeSsmPolicy,
-        );
-        const hostedZoneId = this.readSsmParameter(
-            'ReadHostedZoneId', props.edgeSsmPaths.hostedZoneId, edgeSsmRegion, edgeSsmPolicy,
-        );
-        const crossAccountRoleArn = this.readSsmParameter(
-            'ReadCrossAccountRoleArn', props.edgeSsmPaths.crossAccountRoleArn, edgeSsmRegion, edgeSsmPolicy,
-        );
-
-        // Soft-fail validation — values will be CDK tokens at synth time,
-        // so actual validation happens at deploy time when SSM is read.
-        // If parameters are missing, the AwsCustomResource will fail with
-        // a descriptive error.
+        // Validate required edge config
+        if (!domainName || !hostedZoneId || !crossAccountRoleArn) {
+            throw new Error(
+                'K8sEdgeStack requires domainName, hostedZoneId, and crossAccountRoleArn. '
+                + 'Set MONITOR_DOMAIN_NAME, HOSTED_ZONE_ID, and CROSS_ACCOUNT_ROLE_ARN env vars.'
+            );
+        }
 
         // =====================================================================
         // ACM CERTIFICATE (Cross-account DNS validation)
@@ -473,7 +451,7 @@ export class K8sEdgeStack extends cdk.Stack {
     ): string {
         // Explicit log group replaces deprecated `logRetention` prop
         const logGroup = new logs.LogGroup(this, `${id}Logs`, {
-            logGroupName: `/aws/custom-resource/${id}`,
+            logGroupName: `/aws/custom-resource/${this.stackName}/${id}`,
             retention: logs.RetentionDays.ONE_WEEK,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
         });

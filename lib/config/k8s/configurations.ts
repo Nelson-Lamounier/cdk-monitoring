@@ -23,6 +23,18 @@ import {
 import { Environment } from '../environments';
 
 // =============================================================================
+// ENVIRONMENT VARIABLE HELPER
+// =============================================================================
+
+/**
+ * Read a value from process.env at synth time.
+ * Returns undefined if the variable is not set.
+ */
+function fromEnv(key: string): string | undefined {
+    return process.env[key] || undefined;
+}
+
+// =============================================================================
 // TYPE DEFINITIONS
 // =============================================================================
 
@@ -112,6 +124,15 @@ export interface K8sSsmConfig {
 }
 
 export interface K8sEdgeConfig {
+    // Synth-time context — DNS/Edge (env var > hardcoded default)
+    /** Domain name for monitoring CloudFront distribution */
+    readonly domainName?: string;
+    /** Route53 Hosted Zone ID for DNS validation and alias records */
+    readonly hostedZoneId?: string;
+    /** Cross-account IAM role ARN for Route53 access */
+    readonly crossAccountRoleArn?: string;
+
+    // WAF configuration
     /** WAF rate limit per IP per 5 minutes @default 2000 */
     readonly rateLimitPerIp: number;
     /** Enable WAF rate limiting @default true */
@@ -182,6 +203,11 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             maxErrors: '0',
         },
         edge: {
+            // Synth-time context — Edge (env var > hardcoded default)
+            domainName: fromEnv('MONITOR_DOMAIN_NAME') ?? 'monitoring.dev.nelsonlamounier.com',
+            hostedZoneId: fromEnv('HOSTED_ZONE_ID'),
+            crossAccountRoleArn: fromEnv('CROSS_ACCOUNT_ROLE_ARN'),
+            // WAF
             rateLimitPerIp: 2000,
             enableRateLimiting: true,
             enableIpReputationList: true,
@@ -229,6 +255,9 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             maxErrors: '0',
         },
         edge: {
+            domainName: fromEnv('MONITOR_DOMAIN_NAME') ?? 'monitoring.staging.nelsonlamounier.com',
+            hostedZoneId: fromEnv('HOSTED_ZONE_ID'),
+            crossAccountRoleArn: fromEnv('CROSS_ACCOUNT_ROLE_ARN'),
             rateLimitPerIp: 2000,
             enableRateLimiting: true,
             enableIpReputationList: true,
@@ -276,6 +305,9 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             maxErrors: '0',
         },
         edge: {
+            domainName: fromEnv('MONITOR_DOMAIN_NAME') ?? 'monitoring.nelsonlamounier.com',
+            hostedZoneId: fromEnv('HOSTED_ZONE_ID'),
+            crossAccountRoleArn: fromEnv('CROSS_ACCOUNT_ROLE_ARN'),
             rateLimitPerIp: 2000,
             enableRateLimiting: true,
             enableIpReputationList: true,
