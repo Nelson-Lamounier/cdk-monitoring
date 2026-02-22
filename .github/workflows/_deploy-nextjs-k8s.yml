@@ -416,23 +416,41 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Get Instance ID
+      - name: Get Instance ID from ASG
         id: instance
         run: |
-          SSM_PREFIX="/nextjs-k8s/${{ inputs.environment }}"
-          INSTANCE_ID=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/agent-instance-id" \
-            --query "Parameter.Value" \
+          ENV="${{ inputs.environment == 'production' && 'production' || 'development' }}"
+          ASG_NAME="k8s-${ENV}-asg"
+          echo "Querying ASG: ${ASG_NAME}"
+
+          # Manifests are applied via kubectl on the k3s server node.
+          # The server ASG is k8s-{env}-asg (created by the monitoring K8s compute stack).
+          # Both monitoring and NextJS manifests target the same server — they share the cluster.
+          INSTANCE_ID=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$ASG_NAME" \
+            --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId | [0]" \
             --output text \
             --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
 
-          if [ -z "${INSTANCE_ID}" ]; then
-            echo "::warning::No agent instance-id found — skipping manifest deployment"
+          # Fallback to SSM if ASG query returns nothing
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::warning::No InService instance in ASG — trying SSM fallback"
+            SSM_PREFIX="/k8s/${ENV}"
+            INSTANCE_ID=$(aws ssm get-parameter \
+              --name "${SSM_PREFIX}/instance-id" \
+              --query 'Parameter.Value' \
+              --output text \
+              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+          fi
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::warning::No k3s server instance found — skipping manifest deployment"
+            echo "::notice::First boot will apply manifests automatically via UserData"
             echo "skip=true" >> $GITHUB_OUTPUT
           else
             echo "instance_id=${INSTANCE_ID}" >> $GITHUB_OUTPUT
             echo "skip=false" >> $GITHUB_OUTPUT
-            echo "Instance: ${INSTANCE_ID}"
+            echo "Instance: ${INSTANCE_ID} (from ASG: ${ASG_NAME})"
           fi
 
       - name: Wait for SSM Agent
