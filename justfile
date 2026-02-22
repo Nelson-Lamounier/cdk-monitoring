@@ -144,6 +144,11 @@ ci-synth-validate:
 ci-synth project environment:
     npx tsx scripts/deployment/synthesize-ci.ts {{project}} {{environment}}
 
+# CI preflight: validate inputs, verify credentials and bootstrap
+[group('ci')]
+ci-preflight *ARGS:
+    npx tsx scripts/deployment/preflight-checks.ts {{ARGS}}
+
 # CI deploy: deploy a specific stack (e.g., just ci-deploy K8s-Compute-development)
 [group('ci')]
 ci-deploy *ARGS:
@@ -158,6 +163,21 @@ ci-rollback *ARGS:
 [group('ci')]
 ci-drift *ARGS:
     npx tsx scripts/deployment/drift-detection.ts {{ARGS}}
+
+# CI diagnose: diagnose a failed CloudFormation stack deployment
+[group('ci')]
+ci-diagnose *ARGS:
+    npx tsx scripts/deployment/diagnose-stack.ts {{ARGS}}
+
+# CI collect-outputs: retrieve and save CDK stack outputs
+[group('ci')]
+ci-collect-outputs *ARGS:
+    npx tsx scripts/deployment/collect-outputs.ts {{ARGS}}
+
+# CI deploy-summary: generate per-stack deployment summary
+[group('ci')]
+ci-deploy-summary *ARGS:
+    npx tsx scripts/deployment/deploy-summary.ts {{ARGS}}
 
 # CI verify deployment
 [group('ci')]
