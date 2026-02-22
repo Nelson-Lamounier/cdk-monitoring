@@ -11,7 +11,7 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Environment } from '../../../../lib/config';
 import { getK8sConfigs } from '../../../../lib/config/k8s';
-import { K8sComputeStack } from '../../../../lib/stacks/k8s';
+import { K8sComputeStack } from '../../../../lib/stacks/monitoring/k8s';
 
 // Set test environment
 process.env.CDK_DEFAULT_ACCOUNT = '123456789012';
