@@ -3,7 +3,7 @@
 #
 # Deploys the complete Next.js application via K8s (k3s agent node).
 # This pipeline is self-contained — it deploys ALL stacks needed for
-# the full application to run, not just the K8s compute layer.
+# the full application to run, not just the K8s compute layer. // Test
 #
 # Stack Deployment Order:
 #   1. Data    (ECR + DynamoDB + S3 + SSM Secrets)
@@ -312,10 +312,10 @@ jobs:
                   print(f"  ⚠️  skipped ({type(e).__name__}: {e})")
 
           if total_errors > 0:
-              print(f"\n❌ {total_errors} validation errors found")
+              print(f"\n{total_errors} validation errors found")
               sys.exit(1)
           else:
-              print(f"\n✅ All {len(templates)} templates passed validation")
+              print(f"\nAll {len(templates)} templates passed validation")
 
   # ===========================================================================
   # Deploy Data Stack (1/4) — ECR + DynamoDB + S3 + SSM Secrets
