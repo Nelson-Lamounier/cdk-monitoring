@@ -182,7 +182,7 @@ jobs:
           SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
           VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL }}
-        run: npx tsx scripts/deployment/synthesize-ci.ts nextjs ${{ inputs.cdk-environment }}
+        run: just ci-synth nextjs ${{ inputs.cdk-environment }}
 
       - name: Get AWS Account ID
         id: account-id-step
@@ -250,7 +250,7 @@ jobs:
           audience: sts.amazonaws.com
 
       - name: Run Drift Detection
-        run: npx tsx scripts/deployment/drift-detection.ts nextjs ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+        run: just ci-drift nextjs ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
         env:
           AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 
@@ -751,7 +751,7 @@ jobs:
       - name: Sync Assets & Invalidate Cache
         id: sync
         run: |
-          SYNC_CMD="npx tsx scripts/deployment/sync-assets-ci.ts ${{ inputs.cdk-environment }}"
+          SYNC_CMD="just ci-sync-assets ${{ inputs.cdk-environment }}"
           SYNC_CMD="$SYNC_CMD --region ${{ env.AWS_REGION }}"
 
           if [ -n "${{ needs.setup.outputs.domain-name }}" ]; then
@@ -827,7 +827,7 @@ jobs:
 
       - name: Rollback K8s Compute Stack
         id: rollback
-        run: npx tsx scripts/deployment/rollback.ts "${{ needs.setup.outputs.k8s-compute-stack }}" --region ${{ env.AWS_REGION }}
+        run: just ci-rollback "${{ needs.setup.outputs.k8s-compute-stack }}" --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # Deployment Summary

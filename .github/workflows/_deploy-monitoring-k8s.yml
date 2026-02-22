@@ -98,8 +98,10 @@ jobs:
           echo "::add-mask::$ACCOUNT_ID"
           echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
 
+      # Build TypeScript sources (required before CDK synth)
+      # Recipe: justfile → build → yarn build
       - name: Build TypeScript
-        run: yarn build
+        run: just build
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
@@ -108,9 +110,11 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
+      # Synthesize k8s stacks and output stack names for downstream deploy jobs.
+      # Recipe: justfile → ci-synth → npx tsx scripts/deployment/synthesize-ci.ts
       - name: Synthesize & Determine Stack Names
         id: synth
-        run: npx tsx scripts/deployment/synthesize-ci.ts k8s ${{ inputs.cdk-environment }}
+        run: just ci-synth k8s ${{ inputs.cdk-environment }}
 
       - name: Upload Synthesized Templates
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -245,7 +249,7 @@ jobs:
 
       - name: Run Drift Detection
         id: diff
-        run: npx tsx scripts/deployment/drift-detection.ts k8s ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+        run: just ci-drift k8s ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
         env:
           AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 
@@ -285,9 +289,9 @@ jobs:
       aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
       aws-region: us-east-1
       require-approval: ${{ inputs.require-approval }}
-      monitor-domain-name: ${{ vars.MONITOR_DOMAIN_NAME }}
-      hosted-zone-id: ${{ vars.HOSTED_ZONE_ID }}
-      cross-account-role-arn: ${{ vars.DNS_VALIDATION_ROLE }}
+      # NOTE: monitor-domain-name, hosted-zone-id, and cross-account-role-arn
+      # are NOT passed here — the k8s factory reads these from SSM Parameter Store
+      # at deploy time (see lib/projects/k8s/factory.ts L98-110).
     secrets: inherit
 
   # ===========================================================================
@@ -568,7 +572,7 @@ jobs:
 
       - name: Rollback Compute Stack
         id: rollback
-        run: npx tsx scripts/deployment/rollback.ts "${{ needs.setup.outputs.compute-stack }}" --region ${{ env.AWS_REGION }}
+        run: just ci-rollback "${{ needs.setup.outputs.compute-stack }}" --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # Deployment Summary (TypeScript)
@@ -633,4 +637,4 @@ jobs:
           VERIFY_RESULT: ${{ needs.verify.result || 'skipped' }}
           ROLLBACK_RESULT: ${{ needs.rollback.result || 'skipped' }}
           COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
-        run: yarn tsx scripts/deployment/deployment-summary.ts k8s ${{ inputs.cdk-environment }}
+        run: just ci-summary k8s ${{ inputs.cdk-environment }}

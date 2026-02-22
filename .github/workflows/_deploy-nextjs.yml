@@ -203,7 +203,7 @@ jobs:
           SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
           VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL }}
-        run: npx tsx scripts/deployment/synthesize-ci.ts nextjs ${{ inputs.cdk-environment }}
+        run: just ci-synth nextjs ${{ inputs.cdk-environment }}
 
       - name: Upload Synthesized Templates
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -270,7 +270,7 @@ jobs:
           audience: sts.amazonaws.com
 
       - name: Run Drift Detection
-        run: npx tsx scripts/deployment/drift-detection.ts nextjs ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+        run: just ci-drift nextjs ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
         env:
           AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 
@@ -524,7 +524,7 @@ jobs:
       - name: Verify NextJS Deployment
         id: verify
         continue-on-error: ${{ inputs.environment != 'production' }}
-        run: npx tsx scripts/deployment/verify-nextjs.ts ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+        run: just ci-verify-nextjs ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # Sync Static Assets to S3 + CloudFront Cache Invalidation (via sync-assets-ci.ts)
@@ -569,7 +569,7 @@ jobs:
       - name: Sync Assets & Invalidate Cache
         id: sync
         run: |
-          SYNC_CMD="npx tsx scripts/deployment/sync-assets-ci.ts ${{ inputs.cdk-environment }}"
+          SYNC_CMD="just ci-sync-assets ${{ inputs.cdk-environment }}"
           SYNC_CMD="$SYNC_CMD --region ${{ env.AWS_REGION }}"
 
           if [ -n "${{ needs.setup.outputs.domain-name }}" ]; then
@@ -670,4 +670,4 @@ jobs:
           SMOKE_TESTS_RESULT: ${{ needs.smoke-tests.result || 'skipped' }}
           SYNC_ASSETS_RESULT: ${{ needs.sync-static-assets.result || 'skipped' }}
           COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
-        run: yarn tsx scripts/deployment/deployment-summary.ts nextjs ${{ inputs.cdk-environment }}
+        run: just ci-summary nextjs ${{ inputs.cdk-environment }}

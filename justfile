@@ -179,6 +179,18 @@ ci-sync-assets *ARGS:
 ci-stack-names *ARGS:
     npx tsx scripts/deployment/get-stack-names.ts {{ARGS}}
 
+# CI deployment summary (generates GitHub step summary)
+# Called by: all _deploy-*.yml workflows → summary job
+[group('ci')]
+ci-summary *ARGS:
+    npx tsx scripts/deployment/deployment-summary.ts {{ARGS}}
+
+# CI verify NextJS deployment (ECS health, ALB, endpoints)
+# Called by: .github/workflows/_deploy-nextjs.yml → verify job
+[group('ci')]
+ci-verify-nextjs *ARGS:
+    npx tsx scripts/deployment/verify-nextjs.ts {{ARGS}}
+
 # =============================================================================
 # TESTING
 # =============================================================================

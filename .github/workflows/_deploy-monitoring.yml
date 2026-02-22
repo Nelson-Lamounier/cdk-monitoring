@@ -103,7 +103,7 @@ jobs:
           echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
 
       - name: Build TypeScript
-        run: yarn build
+        run: just build
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
@@ -119,7 +119,7 @@ jobs:
           # into factory context overrides
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           ALLOWED_IP_RANGE: ${{ vars.ALLOWED_IP_RANGE }}
-        run: npx tsx scripts/deployment/synthesize-ci.ts monitoring ${{ inputs.cdk-environment }}
+        run: just ci-synth monitoring ${{ inputs.cdk-environment }}
 
       - name: Upload Synthesized Templates
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -187,7 +187,7 @@ jobs:
 
       - name: Run Drift Detection
         id: diff
-        run: npx tsx scripts/deployment/drift-detection.ts monitoring ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+        run: just ci-drift monitoring ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
         env:
           AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 
@@ -277,7 +277,7 @@ jobs:
           audience: sts.amazonaws.com
 
       - name: Verify Stacks
-        run: npx tsx scripts/deployment/verify-deployment.ts monitoring ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+        run: just ci-verify monitoring ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # Smoke Tests (Service Health Verification)
@@ -343,7 +343,7 @@ jobs:
 
       - name: Rollback Compute Stack
         id: rollback
-        run: npx tsx scripts/deployment/rollback.ts "${{ needs.setup.outputs.compute-stack }}" --region ${{ env.AWS_REGION }}
+        run: just ci-rollback "${{ needs.setup.outputs.compute-stack }}" --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # Deployment Summary (TypeScript)
@@ -411,4 +411,4 @@ jobs:
           SMOKE_TESTS_RESULT: ${{ needs.smoke-tests.result || 'skipped' }}
           ROLLBACK_RESULT: ${{ needs.rollback.result || 'skipped' }}
           COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
-        run: yarn tsx scripts/deployment/deployment-summary.ts monitoring ${{ inputs.cdk-environment }}
+        run: just ci-summary monitoring ${{ inputs.cdk-environment }}

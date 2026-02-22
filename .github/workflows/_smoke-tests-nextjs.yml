@@ -80,7 +80,7 @@ jobs:
         id: tests
         continue-on-error: ${{ inputs.environment != 'production' }}
         run: |
-          TEST_CMD="npx tsx scripts/deployment/smoke-tests-nextjs.ts ${{ inputs.environment }}"
+          TEST_CMD="just ci-smoke ${{ inputs.environment }}"
           TEST_CMD="$TEST_CMD --region ${{ inputs.aws-region }}"
 
           if [ -n "${{ inputs.alb-dns }}" ]; then
