@@ -56,7 +56,7 @@ spec:
               mountPath: /etc/grafana/provisioning/dashboards/dashboards.yml
               subPath: dashboards.yml
               readOnly: true
-            - name: dashboards
+            - name: dashboard-files
               mountPath: /var/lib/grafana/dashboards
               readOnly: true
           resources:
@@ -89,7 +89,9 @@ spec:
           configMap:
             name: grafana-provisioning
         # Projected volume merges all dashboard ConfigMaps into one mount
-        - name: dashboards
+        # Named 'dashboard-files' (not 'dashboards') to avoid strategic merge
+        # conflict with the old single-ConfigMap volume on the live cluster
+        - name: dashboard-files
           projected:
             sources:
               - configMap:
