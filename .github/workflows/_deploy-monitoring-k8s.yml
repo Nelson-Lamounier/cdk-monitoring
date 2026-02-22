@@ -371,10 +371,10 @@ jobs:
         run: just ci-deploy-manifests monitoring ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
-  # Verify Deployment
+  # Verify & Smoke Tests
   # ===========================================================================
-  verify:
-    name: Verify Deployment
+  verify-and-test:
+    name: Verify & Smoke Tests
     needs: [setup, deploy-compute, deploy-edge, deploy-manifests]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -400,8 +400,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Verify Stacks
-        run: just ci-verify k8s ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+      - name: Run Smoke Tests
+        run: just ci-smoke-monitoring-k8s ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # Rollback (Conditional — staging/production only)
@@ -411,14 +411,15 @@ jobs:
   # ===========================================================================
   rollback:
     name: Rollback Compute
-    needs: [setup, deploy-compute, deploy-edge, deploy-manifests, verify]
+    needs:
+      [setup, deploy-compute, deploy-edge, deploy-manifests, verify-and-test]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
     if: |
       always()
       && needs.deploy-compute.result == 'success'
-      && needs.verify.result == 'failure'
+      && needs.verify-and-test.result == 'failure'
       && inputs.cdk-environment != 'development'
 
     steps:
@@ -456,7 +457,7 @@ jobs:
         deploy-compute,
         deploy-edge,
         deploy-manifests,
-        verify,
+        verify-and-test,
         rollback,
       ]
     runs-on: ubuntu-latest
@@ -504,7 +505,7 @@ jobs:
           DEPLOY_COMPUTE_RESULT: ${{ needs.deploy-compute.result }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
-          VERIFY_RESULT: ${{ needs.verify.result || 'skipped' }}
+          VERIFY_RESULT: ${{ needs.verify-and-test.result || 'skipped' }}
           ROLLBACK_RESULT: ${{ needs.rollback.result || 'skipped' }}
           COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
         run: just ci-summary k8s ${{ inputs.cdk-environment }}

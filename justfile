@@ -201,6 +201,11 @@ ci-smoke *ARGS:
 ci-smoke-k8s *ARGS:
     npx tsx scripts/deployment/smoke-tests-nextjs-k8s.ts {{ARGS}}
 
+# CI smoke tests (Monitoring K8s)
+[group('ci')]
+ci-smoke-monitoring-k8s *ARGS:
+    npx tsx scripts/deployment/smoke-tests-monitoring-k8s.ts {{ARGS}}
+
 # CI sync S3 assets
 [group('ci')]
 ci-sync-assets *ARGS:
