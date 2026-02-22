@@ -403,7 +403,7 @@ routes:
 |----------|--------|-------------|
 | `MONITOR_DOMAIN_NAME` | `vars.MONITOR_DOMAIN_NAME` | `monitoring.nelsonlamounier.com` |
 | `HOSTED_ZONE_ID` | `vars.HOSTED_ZONE_ID` | Route 53 hosted zone (shared with NextJs) |
-| `CROSS_ACCOUNT_ROLE_ARN` | `vars.CROSS_ACCOUNT_ROLE_ARN` | IAM role for cross-account DNS (shared with NextJs) |
+| `CROSS_ACCOUNT_ROLE_ARN` | `vars.DNS_VALIDATION_ROLE` | IAM role for cross-account DNS (shared with NextJs) |
 
 ### Pipeline Integration
 
