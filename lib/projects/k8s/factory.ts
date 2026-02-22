@@ -98,6 +98,20 @@ export class K8sProjectFactory implements IProjectFactory<K8sFactoryContext> {
         // are resolved from env vars at synth time — same pattern as NextJS.
         const edgeConfig = configs.edge;
 
+        // Soft validation — warn if edge config is incomplete.
+        // CDK deploy --exclusively will only deploy the selected stack;
+        // missing values only matter when the Edge stack is actually deployed.
+        if (!edgeConfig.domainName || !edgeConfig.hostedZoneId || !edgeConfig.crossAccountRoleArn) {
+            const missing: string[] = [];
+            if (!edgeConfig.domainName) missing.push('domainName (MONITOR_DOMAIN_NAME)');
+            if (!edgeConfig.hostedZoneId) missing.push('hostedZoneId (HOSTED_ZONE_ID)');
+            if (!edgeConfig.crossAccountRoleArn) missing.push('crossAccountRoleArn (CROSS_ACCOUNT_ROLE_ARN)');
+            cdk.Annotations.of(scope).addWarning(
+                `Edge config incomplete: ${missing.join(', ')}. `
+                + `Edge stack will fail if deployed without these values.`,
+            );
+        }
+
         const edgeStack = new K8sEdgeStack(scope, stackId(this.namespace, 'Edge', environment), {
             env: cdkEdgeEnvironment(environment),
             description: `Edge infrastructure (ACM + WAF + CloudFront) for k8s monitoring (${environment})`,

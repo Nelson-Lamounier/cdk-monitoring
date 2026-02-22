@@ -464,18 +464,17 @@ describe('K8sEdgeStack', () => {
             ).toThrow(/us-east-1/);
         });
 
-        it('should throw if required edge config values are missing', () => {
-            const app = createTestApp();
+        it('should create a no-op placeholder when edge config is missing', () => {
+            const { template } = createEdgeStack({
+                domainName: '',
+                hostedZoneId: '',
+                crossAccountRoleArn: '',
+            });
 
-            expect(
-                () =>
-                    new K8sEdgeStack(app, 'MissingConfigStack', {
-                        ...DEFAULT_PROPS,
-                        domainName: '',
-                        hostedZoneId: '',
-                        crossAccountRoleArn: '',
-                    })
-            ).toThrow(/domainName/);
+            // Stack synthesizes but is empty — no resources created
+            template.resourceCountIs('AWS::CloudFront::Distribution', 0);
+            template.resourceCountIs('AWS::WAFv2::WebACL', 0);
+            template.resourceCountIs('AWS::CloudFormation::CustomResource', 0);
         });
     });
 

@@ -303,11 +303,6 @@ jobs:
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
-      # Edge config env vars are needed because CDK synth creates ALL stacks
-      # (compute + edge), and the edge stack validates these at synth time.
-      monitor-domain-name: ${{ needs.setup.outputs.monitor-domain-name }}
-      hosted-zone-id: ${{ needs.setup.outputs.hosted-zone-id }}
-      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
     secrets: inherit
 
   # ===========================================================================

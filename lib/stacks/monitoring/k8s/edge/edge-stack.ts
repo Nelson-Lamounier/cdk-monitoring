@@ -173,12 +173,17 @@ export class K8sEdgeStack extends cdk.Stack {
         const hostedZoneId = props.hostedZoneId;
         const crossAccountRoleArn = props.crossAccountRoleArn;
 
-        // Validate required edge config
+        // Soft validation — matches NextJS factory pattern.
+        // CDK deploy --exclusively will only deploy the selected stack;
+        // missing values only matter when the Edge stack is actually deployed.
+        // Using addError() ensures CDK blocks deployment of THIS stack,
+        // but other stacks (Compute) can still be synthesized and deployed.
         if (!domainName || !hostedZoneId || !crossAccountRoleArn) {
-            throw new Error(
+            cdk.Annotations.of(this).addError(
                 'K8sEdgeStack requires domainName, hostedZoneId, and crossAccountRoleArn. '
-                + 'Set MONITOR_DOMAIN_NAME, HOSTED_ZONE_ID, and CROSS_ACCOUNT_ROLE_ARN env vars.'
+                + 'Set MONITOR_DOMAIN_NAME, HOSTED_ZONE_ID, and CROSS_ACCOUNT_ROLE_ARN env vars.',
             );
+            return; // Skip resource creation — stack is a no-op placeholder
         }
 
         // =====================================================================
