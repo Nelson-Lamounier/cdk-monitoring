@@ -188,7 +188,7 @@ jobs:
           timeout_minutes: 5
           max_attempts: 3
           retry_wait_seconds: 10
-          command: just audit --ignore 1113296 1113371
+          command: just audit --ignore 1113296 --ignore 1113371
 
   lint:
     name: Lint Code
