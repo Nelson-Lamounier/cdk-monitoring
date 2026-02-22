@@ -1,11 +1,13 @@
 # @format
 # Traefik IngressRoute — exposes Grafana via the k3s built-in Traefik
-# Accessible on the Elastic IP at port 80 (HTTP)
+# Accessible via CloudFront (monitoring.nelsonlamounier.com) or direct EIP
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: grafana-ingress
   namespace: monitoring
+  annotations:
+    kubernetes.io/description: "Traefik IngressRoute for Grafana — host-based routing from CloudFront"
   labels:
     app: grafana
     app.kubernetes.io/name: grafana
@@ -15,8 +17,10 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: PathPrefix(`/`)
+    # Host match for CloudFront traffic + PathPrefix fallback for direct-IP access
+    - match: Host(`monitoring.nelsonlamounier.com`) || PathPrefix(`/`)
       kind: Rule
+      priority: 10
       services:
         - name: grafana
           port: 3000
