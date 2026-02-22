@@ -248,7 +248,7 @@ export class AcmCertificateDnsValidationConstruct extends Construct {
         // ========================================
         new cdk.CfnOutput(this, 'CertificateArnOutput', {
             value: this.certificateArn,
-            description: `ACM certificate ARN for ${props.domainName}`,
+            description: 'ACM certificate ARN provisioned by custom resource',
             exportName: `${namePrefix}-${environment}-certificate-arn`,
         });
 
