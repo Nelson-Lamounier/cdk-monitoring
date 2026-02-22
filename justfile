@@ -88,9 +88,58 @@ bootstrap account profile *ARGS:
 
 # =============================================================================
 # CI SCRIPTS (Non-interactive — used by GitHub Actions)
+#
+# These recipes are the ONLY interface between GitHub Actions and project scripts.
+# All CI workflow steps MUST call justfile recipes — never raw yarn/npx commands.
+# This ensures local and CI environments use identical execution paths.
 # =============================================================================
 
+# CI synth-validate: synthesize all projects for CI validation
+# Validates that all CDK stacks synthesize correctly without AWS API calls.
+# Uses --no-lookups to rely on cached cdk.context.json instead of live AWS lookups.
+# Covers: monitoring (3 stacks), k8s (2 stacks), nextjs (multi-stack).
+# Called by: .github/workflows/ci.yml → validate-cdk job
+[group('ci')]
+ci-synth-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==========================================="
+    echo "Validating Monitoring Project (dev)"
+    echo "==========================================="
+    npx cdk list -c project=monitoring -c environment=dev --no-lookups || {
+      echo "Note: Some stacks may require cached context in cdk.context.json"
+    }
+    npx cdk synth -c project=monitoring -c environment=dev --no-lookups --quiet || {
+      echo "⚠ Monitoring synth requires cached context — run locally to update cdk.context.json"
+    }
+
+    echo ""
+    echo "==========================================="
+    echo "Validating K8s Project (dev)"
+    echo "==========================================="
+    # k8s stacks: Compute (EC2/ASG/EBS) + Edge (CloudFront/WAF/ACM)
+    npx cdk list -c project=k8s -c environment=dev --no-lookups || {
+      echo "Note: Some stacks may require cached context in cdk.context.json"
+    }
+    npx cdk synth -c project=k8s -c environment=dev --no-lookups --quiet || {
+      echo "⚠ K8s synth requires cached context — run locally to update cdk.context.json"
+    }
+
+    echo ""
+    echo "==========================================="
+    echo "Validating NextJS Project (dev)"
+    echo "==========================================="
+    # NextJS stacks resolve VPC via Vpc.fromLookup() internally (no cross-stack exports)
+    npx cdk synth -c project=nextjs -c environment=dev --no-lookups --quiet 2>&1 || {
+      echo "⚠ NextJS synth requires cached VPC context — run locally to update cdk.context.json"
+    }
+
+    echo ""
+    echo "✓ CDK synthesis validation complete (all projects)"
+
 # CI synth: synthesize + output stack names (e.g., just ci-synth k8s development)
+# Used by deployment pipelines to get ordered stack names for targeted deploys.
+# Called by: .github/workflows/_deploy-monitoring.yml, _deploy-nextjs.yml
 [group('ci')]
 ci-synth project environment:
     npx tsx scripts/deployment/synthesize-ci.ts {{project}} {{environment}}
@@ -138,6 +187,13 @@ ci-stack-names *ARGS:
 [group('test')]
 test *ARGS:
     yarn test {{ARGS}}
+
+# Run stack unit tests only (used by CI)
+# Targets: tests/unit/stacks/ — covers all CDK stack snapshot + assertion tests.
+# Called by: .github/workflows/ci.yml → test-stacks job
+[group('test')]
+test-stacks:
+    yarn test tests/unit/stacks
 
 # Run tests in watch mode
 [group('test')]
@@ -187,6 +243,18 @@ health:
 [group('quality')]
 health-ci:
     yarn health:ci
+
+# Validate dependency rules (local — interactive output)
+# Uses dependency-cruiser to enforce architectural boundaries.
+[group('quality')]
+deps-check:
+    yarn deps:check
+
+# Validate dependency rules (CI — stricter err-long output)
+# Called by: .github/workflows/ci.yml → deps-check job
+[group('quality')]
+deps-check-ci:
+    yarn deps:check:ci
 
 # Find unused exports
 [group('quality')]

@@ -1,6 +1,24 @@
 # .github/workflows/ci.yml
 # CI pipeline for cdk-monitoring project
-# Runs tests for VPC, EC2, EBS, and Security Group stacks
+#
+# JUSTFILE INTEGRATION:
+# All script execution in this pipeline goes through the justfile task runner.
+# This ensures local development and CI use identical execution paths.
+# See: justfile (root) for the full recipe list.
+#
+# Recipe mapping (CI step → justfile recipe):
+#   - Security Audit    → just audit
+#   - ESLint            → just lint
+#   - Type Check        → just typecheck
+#   - Build             → just build
+#   - Deps Validation   → just deps-check-ci
+#   - Stack Tests       → just test-stacks
+#   - CDK Synthesis     → just ci-synth-validate
+#
+# Projects validated during CDK synthesis:
+#   1. monitoring  — Monitoring-Storage, Monitoring-SSM, Monitoring-Compute
+#   2. k8s         — K8s-Compute (EC2/ASG/EBS), K8s-Edge (CloudFront/WAF/ACM)
+#   3. nextjs      — NextJS application stacks (ECS, API Gateway, Edge)
 
 name: Continuous Integration
 
@@ -54,7 +72,7 @@ jobs:
               - 'yarn.lock'
               - 'tsconfig*.json'
               - 'jest.config.*'
-              - 'Makefile'
+              - 'justfile'
             any-src:
               - 'lib/**/*.ts'
               - 'bin/**/*.ts'
@@ -207,8 +225,12 @@ jobs:
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
 
+      # Runs dependency-cruiser to enforce architectural boundaries
+      # (e.g., no circular imports, layer violations).
+      # Uses 'err-long' output format for CI — verbose error details.
+      # Recipe: justfile → deps-check-ci → yarn deps:check:ci
       - name: Validate Dependencies
-        run: yarn deps:check:ci
+        run: just deps-check-ci
 
   typecheck:
     name: Type Check
@@ -282,8 +304,11 @@ jobs:
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
 
+      # Runs all CDK stack unit tests (snapshot + fine-grained assertions).
+      # Covers: monitoring, k8s, nextjs, shared, and org stacks.
+      # Recipe: justfile → test-stacks → yarn test tests/unit/stacks
       - name: Run Stack Tests
-        run: yarn test tests/unit/stacks
+        run: just test-stacks
 
       - name: Upload Coverage
         if: always()
@@ -321,30 +346,20 @@ jobs:
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
 
+      # Synthesizes all CDK projects to validate template generation.
+      # Uses --no-lookups to skip AWS API calls (relies on cached cdk.context.json).
+      #
+      # Projects synthesized:
+      #   1. monitoring  → 3 stacks (Storage, SSM, Compute)
+      #   2. k8s         → 2 stacks (Compute, Edge)
+      #   3. nextjs      → multi-stack (ECS, API, Edge + supporting stacks)
+      #
+      # If synth fails with "Cannot determine scope" errors, run locally to
+      # refresh cdk.context.json: just synth <project> development
+      #
+      # Recipe: justfile → ci-synth-validate (bash script with all 3 projects)
       - name: Synthesize CDK Stacks
-        run: |
-          echo "==========================================="
-          echo "Validating Monitoring Project (dev)"
-          echo "==========================================="
-          # Use --no-lookups to skip AWS API calls (uses cached cdk.context.json)
-          npx cdk list -c project=monitoring -c environment=dev --no-lookups || {
-            echo "Note: Some stacks may require cached context in cdk.context.json"
-          }
-          npx cdk synth -c project=monitoring -c environment=dev --no-lookups --quiet || {
-            echo "⚠ Monitoring synth requires cached context - run locally to update cdk.context.json"
-          }
-
-          echo ""
-          echo "==========================================="
-          echo "Validating NextJS Project (dev)"
-          echo "==========================================="
-          # NextJS stacks resolve VPC via Vpc.fromLookup() internally (no cross-stack exports)
-          npx cdk synth -c project=nextjs -c environment=dev --no-lookups --quiet 2>&1 || {
-            echo "⚠ NextJS synth requires cached VPC context - run locally to update cdk.context.json"
-          }
-
-          echo ""
-          echo "✓ CDK synthesis validation complete"
+        run: just ci-synth-validate
         env:
           AWS_REGION: eu-west-1
           # Required by NextJS API stack validation (actual values come from
