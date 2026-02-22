@@ -13,6 +13,41 @@ yarn cli deploy -p nextjs -e development -a
 yarn cli destroy -p nextjs -e development -s data
 ```
 
+## Just Commands (Recommended)
+
+[Just](https://github.com/casey/just) provides a thin CLI layer over the TypeScript scripts. Install once: `brew install just`.
+
+```bash
+# List all available recipes
+just
+
+# CDK operations
+just synth -p k8s -e development
+just deploy -p nextjs -e staging -a
+just diff -p monitoring -e production
+just destroy -p nextjs -s data
+
+# Testing
+just test                    # All tests
+just test-file tests/unit/stacks/k8s/edge-stack.test.ts
+just test-coverage           # With coverage report
+
+# Code quality
+just lint                    # ESLint
+just typecheck               # tsc --noEmit
+just health                  # lint + unused + deps
+
+# CI scripts (same as pipeline)
+just ci-synth k8s development
+just ci-deploy K8s-Compute-development
+
+# Kubernetes
+just k8s-dashboards          # Sync Grafana dashboards
+just k8s-reconfigure         # Reconfigure monitoring via SSM
+```
+
+> **Note:** `yarn cli` commands remain fully functional. `just` is an optional wrapper.
+
 ## Commands
 
 ### CDK Operations
