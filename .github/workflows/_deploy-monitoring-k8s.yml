@@ -196,17 +196,17 @@ jobs:
                       for match in matches:
                           print(f"  {match}")
                   else:
-                      print("  ✅ passed")
+                      print("  passed")
               except RecursionError:
-                  print(f"  ⚠️  skipped (template too deeply nested)")
+                  print(f"  skipped (template too deeply nested)")
               except Exception as e:
-                  print(f"  ⚠️  skipped ({type(e).__name__}: {e})")
+                  print(f"  skipped ({type(e).__name__}: {e})")
 
           if total_errors > 0:
-              print(f"\n❌ {total_errors} validation errors found")
+              print(f"\n {total_errors} validation errors found")
               sys.exit(1)
           else:
-              print(f"\n✅ All {len(templates)} templates passed validation")
+              print(f"\n All {len(templates)} templates passed validation")
 
   # ===========================================================================
   # Drift Detection (staging/production only — informational)
@@ -464,7 +464,7 @@ jobs:
           INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
 
           if [ -n "${COMMAND_ID}" ]; then
-            echo "### 📋 Manifest Deployment Output" >> $GITHUB_STEP_SUMMARY
+            echo "###  Manifest Deployment Output" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             aws ssm get-command-invocation \
               --command-id "${COMMAND_ID}" \
@@ -550,7 +550,7 @@ jobs:
           if [ "${{ needs.setup.result }}" != "success" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             cat >> $GITHUB_STEP_SUMMARY << 'EOF'
-          ## ⚠️ Pipeline Aborted
+          ##  Pipeline Aborted
 
           **Reason**: Setup job did not complete successfully (`${{ needs.setup.result }}`)
           **Commit**: `${{ github.sha }}`
