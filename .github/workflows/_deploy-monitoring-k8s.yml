@@ -296,24 +296,39 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Get Instance ID from SSM
+      - name: Get Instance ID from ASG
         id: instance
         run: |
-          SSM_PREFIX="/${{ inputs.environment == 'production' && 'k8s/production' || 'k8s/development' }}"
-          INSTANCE_ID=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/instance-id" \
-            --query 'Parameter.Value' \
+          ENV="${{ inputs.environment == 'production' && 'production' || 'development' }}"
+          ASG_NAME="k8s-${ENV}-asg"
+          echo "Querying ASG: ${ASG_NAME}"
+
+          # Get the current InService instance from the ASG (always up-to-date)
+          INSTANCE_ID=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$ASG_NAME" \
+            --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId | [0]" \
             --output text \
             --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
 
-          if [ -z "$INSTANCE_ID" ]; then
-            echo "::warning::Instance ID not found in SSM — skipping manifest deployment"
+          # Fallback to SSM if ASG query returns nothing
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::warning::No InService instance in ASG — trying SSM fallback"
+            SSM_PREFIX="/k8s/${ENV}"
+            INSTANCE_ID=$(aws ssm get-parameter \
+              --name "${SSM_PREFIX}/instance-id" \
+              --query 'Parameter.Value' \
+              --output text \
+              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+          fi
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::warning::No instance found — skipping manifest deployment"
             echo "::notice::First boot will apply manifests automatically via UserData"
             echo "skip=true" >> $GITHUB_OUTPUT
           else
             echo "instance_id=${INSTANCE_ID}" >> $GITHUB_OUTPUT
             echo "skip=false" >> $GITHUB_OUTPUT
-            echo "Instance: ${INSTANCE_ID}"
+            echo "Instance: ${INSTANCE_ID} (from ASG: ${ASG_NAME})"
           fi
 
       - name: Wait for SSM Agent
@@ -321,7 +336,7 @@ jobs:
         run: |
           INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
           echo "Waiting for SSM Agent on ${INSTANCE_ID}..."
-          MAX_WAIT=120
+          MAX_WAIT=300
           WAITED=0
           while true; do
             STATUS=$(aws ssm describe-instance-information \
