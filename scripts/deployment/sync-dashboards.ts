@@ -23,8 +23,7 @@
  */
 
 import { appendFileSync, readdirSync, readFileSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { resolve } from 'path';
 
 import {
   EC2Client,
@@ -63,7 +62,7 @@ if (!environment) {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const __dirname = dirname(fileURLToPath(import.meta.url));
+// __dirname is available natively in CJS (no import.meta.url needed)
 const PROJECT_ROOT = resolve(__dirname, '../..');
 const DASHBOARDS_DIR = resolve(PROJECT_ROOT, 'scripts/monitoring/grafana/dashboards');
 const S3_KEY_PREFIX = 'scripts/grafana/dashboards';

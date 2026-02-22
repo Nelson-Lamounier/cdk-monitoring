@@ -1,5 +1,0 @@
-{
-  "type": "module",
-  "private": true,
-  "description": "ESM module type declaration for deployment scripts. Required because the root package.json uses CJS (no 'type' field), but these scripts use ESM features (import.meta.url). Cannot be merged to root without breaking Jest (module.exports in jest.config.js)."
-}

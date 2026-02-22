@@ -5,6 +5,7 @@
  */
 
 import { spawn } from 'child_process';
+import { resolve } from 'path';
 
 export interface CdkArgsOptions {
   command: 'synth' | 'deploy' | 'diff' | 'destroy' | 'list' | 'bootstrap';
@@ -184,8 +185,6 @@ export async function runCommand(
  * Scripts are in scripts/deployment, so go up two levels from the script location
  */
 export function getCdkProjectRoot(): string {
-  // Use import.meta.url to get the current script's location
-  const scriptDir = new URL('.', import.meta.url).pathname;
-  // Go up two levels: scripts/deployment -> scripts -> project root
-  return new URL('../..', `file://${scriptDir}`).pathname;
+  // Scripts are in scripts/deployment, so go up two levels to reach project root
+  return resolve(__dirname, '../..');
 }
