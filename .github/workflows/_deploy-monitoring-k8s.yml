@@ -352,6 +352,18 @@ jobs:
     environment: ${{ inputs.environment }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "yarn"
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
@@ -359,199 +371,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Get Instance ID from ASG
-        id: instance
-        run: |
-          ENV="${{ inputs.environment == 'production' && 'production' || 'development' }}"
-          ASG_NAME="k8s-${ENV}-asg"
-          echo "Querying ASG: ${ASG_NAME}"
-
-          # Get the current InService instance from the ASG (always up-to-date)
-          INSTANCE_ID=$(aws autoscaling describe-auto-scaling-groups \
-            --auto-scaling-group-names "$ASG_NAME" \
-            --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId | [0]" \
-            --output text \
-            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
-
-          # Fallback to SSM if ASG query returns nothing
-          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "::warning::No InService instance in ASG — trying SSM fallback"
-            SSM_PREFIX="/k8s/${ENV}"
-            INSTANCE_ID=$(aws ssm get-parameter \
-              --name "${SSM_PREFIX}/instance-id" \
-              --query 'Parameter.Value' \
-              --output text \
-              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
-          fi
-
-          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "::warning::No instance found — skipping manifest deployment"
-            echo "::notice::First boot will apply manifests automatically via UserData"
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "instance_id=${INSTANCE_ID}" >> $GITHUB_OUTPUT
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "Instance: ${INSTANCE_ID} (from ASG: ${ASG_NAME})"
-          fi
-
-      - name: Wait for SSM Agent
-        if: steps.instance.outputs.skip != 'true'
-        run: |
-          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
-          echo "Waiting for SSM Agent on ${INSTANCE_ID}..."
-          MAX_WAIT=300
-          WAITED=0
-          while true; do
-            STATUS=$(aws ssm describe-instance-information \
-              --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
-              --query "InstanceInformationList[0].PingStatus" \
-              --output text --region ${{ env.AWS_REGION }} 2>/dev/null || echo "NotFound")
-            
-            if [ "$STATUS" = "Online" ]; then
-              echo "✓ SSM Agent online (waited ${WAITED}s)"
-              break
-            fi
-            
-            if [ $WAITED -ge $MAX_WAIT ]; then
-              echo "::error::SSM Agent not online after ${MAX_WAIT}s"
-              exit 1
-            fi
-            
-            sleep 5
-            WAITED=$((WAITED + 5))
-          done
-
-      - name: Show User-Data Log (boot diagnostics)
-        if: steps.instance.outputs.skip != 'true'
-        run: |
-          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
-          echo "=== User-Data Log (last 80 lines) ==="
-
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["cat /var/log/user-data.log | tail -80"]' \
-            --query "Command.CommandId" \
-            --output text \
-            --region ${{ env.AWS_REGION }})
-
-          # Wait for command to complete
-          for i in {1..30}; do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --query "Status" \
-              --output text \
-              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "Pending")
-
-            if [ "$STATUS" = "Success" ] || [ "$STATUS" = "Failed" ]; then
-              break
-            fi
-            sleep 2
-          done
-
-          # Print the output
-          aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query "StandardOutputContent" \
-            --output text \
-            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "WARNING: Could not retrieve user-data log"
-
-          echo ""
-          echo "=== End User-Data Log ==="
-
-      - name: Deploy Manifests via SSM
-        if: steps.instance.outputs.skip != 'true'
-        id: deploy
-        run: |
-          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
-          DOC_NAME="${{ inputs.environment == 'production' && 'k8s-production' || 'k8s-development' }}-deploy-manifests"
-
-          echo "Sending SSM command: ${DOC_NAME} → ${INSTANCE_ID}"
-          COMMAND_ID=$(aws ssm send-command \
-            --document-name "${DOC_NAME}" \
-            --targets "Key=instanceids,Values=${INSTANCE_ID}" \
-            --timeout-seconds 600 \
-            --query "Command.CommandId" \
-            --output text \
-            --region ${{ env.AWS_REGION }})
-
-          echo "command_id=${COMMAND_ID}" >> $GITHUB_OUTPUT
-          echo "SSM Command: ${COMMAND_ID}"
-
-          # Poll for completion
-          WAITED=0
-          while true; do
-            CMD_STATUS=$(aws ssm get-command-invocation \
-              --command-id "${COMMAND_ID}" \
-              --instance-id "${INSTANCE_ID}" \
-              --query "Status" \
-              --output text \
-              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "InProgress")
-            
-            if [ "$CMD_STATUS" = "Success" ]; then
-              echo "✓ Manifest deployment completed successfully"
-              break
-            elif [ "$CMD_STATUS" = "Failed" ] || [ "$CMD_STATUS" = "Cancelled" ] || [ "$CMD_STATUS" = "TimedOut" ]; then
-              echo "::error::SSM command ${CMD_STATUS}"
-              # Fetch output for debugging
-              aws ssm get-command-invocation \
-                --command-id "${COMMAND_ID}" \
-                --instance-id "${INSTANCE_ID}" \
-                --region ${{ env.AWS_REGION }} 2>/dev/null || true
-              exit 1
-            fi
-            
-            if [ $WAITED -ge 600 ]; then
-              echo "::error::SSM command timed out after 600s"
-              exit 1
-            fi
-            
-            sleep 10
-            WAITED=$((WAITED + 10))
-            echo "  Status: ${CMD_STATUS} (${WAITED}s elapsed)"
-          done
-
-      - name: Trigger ArgoCD Sync
-        if: steps.instance.outputs.skip != 'true'
-        continue-on-error: true
-        run: |
-          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
-          echo "Triggering ArgoCD sync for monitoring app..."
-
-          COMMAND_ID=$(aws ssm send-command \
-            --document-name "AWS-RunShellScript" \
-            --targets "Key=instanceids,Values=${INSTANCE_ID}" \
-            --parameters 'commands=["if command -v argocd &>/dev/null; then argocd app sync monitoring --grpc-web 2>/dev/null || echo \"ArgoCD sync skipped (not configured)\"; else echo \"ArgoCD not installed — skipping sync\"; fi"]' \
-            --timeout-seconds 60 \
-            --query "Command.CommandId" \
-            --output text \
-            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
-
-          if [ -n "${COMMAND_ID}" ]; then
-            echo "ArgoCD sync triggered: ${COMMAND_ID}"
-          else
-            echo "ArgoCD sync skipped (SSM command failed)"
-          fi
-
-      - name: Collect Deployment Logs
-        if: steps.instance.outputs.skip != 'true' && always()
-        run: |
-          COMMAND_ID="${{ steps.deploy.outputs.command_id }}"
-          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
-
-          if [ -n "${COMMAND_ID}" ]; then
-            echo "###  Manifest Deployment Output" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            aws ssm get-command-invocation \
-              --command-id "${COMMAND_ID}" \
-              --instance-id "${INSTANCE_ID}" \
-              --query "StandardOutputContent" \
-              --output text \
-              --region ${{ env.AWS_REGION }} 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "Output unavailable"
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          fi
+      - name: Deploy Manifests
+        run: just ci-deploy-manifests monitoring ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # Verify Deployment

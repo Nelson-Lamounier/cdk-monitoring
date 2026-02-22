@@ -179,6 +179,13 @@ ci-collect-outputs *ARGS:
 ci-deploy-summary *ARGS:
     npx tsx scripts/deployment/deploy-summary.ts {{ARGS}}
 
+# CI deploy-manifests: deploy K8s manifests via SSM Run Command
+# Usage: just ci-deploy-manifests monitoring development
+#        just ci-deploy-manifests nextjs production --region eu-west-1
+[group('ci')]
+ci-deploy-manifests *ARGS:
+    npx tsx scripts/deployment/deploy-manifests.ts {{ARGS}}
+
 # CI verify deployment
 [group('ci')]
 ci-verify *ARGS:
