@@ -287,7 +287,7 @@ jobs:
       require-approval: ${{ inputs.require-approval }}
       monitor-domain-name: ${{ vars.MONITOR_DOMAIN_NAME }}
       hosted-zone-id: ${{ vars.HOSTED_ZONE_ID }}
-      cross-account-role-arn: ${{ vars.CROSS_ACCOUNT_ROLE_ARN }}
+      cross-account-role-arn: ${{ vars.DNS_VALIDATION_ROLE }}
     secrets: inherit
 
   # ===========================================================================
