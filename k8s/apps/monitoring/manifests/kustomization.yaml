@@ -56,23 +56,33 @@ resources:
   # Ingress
   - traefik/ingress.yaml
 
-# Grafana dashboards — loaded from JSON files via configMapGenerator
+# Grafana dashboards — split into multiple ConfigMaps to stay under 256KB limit
+# Server-side apply (--server-side) also avoids the annotation size issue
 configMapGenerator:
-  - name: grafana-dashboards
+  # Application dashboards (~99 KB)
+  - name: grafana-dashboards-app
     namespace: monitoring
     files:
-      # Application dashboards
       - grafana/dashboards/deployment-logs.json
       - grafana/dashboards/github-actions.json
       - grafana/dashboards/loki-logs.json
       - grafana/dashboards/nextjs-app-metrics.json
       - grafana/dashboards/nextjs-otel.json
-      # K8s system dashboards (community)
+
+  # Kubernetes dashboards (~192 KB)
+  - name: grafana-dashboards-k8s
+    namespace: monitoring
+    files:
       - grafana/dashboards/k8s-cluster-overview.json
       - grafana/dashboards/k8s-pod-resources.json
-      - grafana/dashboards/node-exporter-full.json
-      - grafana/dashboards/coredns.json
       - grafana/dashboards/traefik.json
+      - grafana/dashboards/coredns.json
+
+  # System dashboards (~474 KB — requires server-side apply)
+  - name: grafana-dashboards-system
+    namespace: monitoring
+    files:
+      - grafana/dashboards/node-exporter-full.json
 
 generatorOptions:
   disableNameSuffixHash: true

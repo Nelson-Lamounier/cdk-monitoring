@@ -88,6 +88,13 @@ spec:
         - name: provisioning-dashboards
           configMap:
             name: grafana-provisioning
+        # Projected volume merges all dashboard ConfigMaps into one mount
         - name: dashboards
-          configMap:
-            name: grafana-dashboards
+          projected:
+            sources:
+              - configMap:
+                  name: grafana-dashboards-app
+              - configMap:
+                  name: grafana-dashboards-k8s
+              - configMap:
+                  name: grafana-dashboards-system
