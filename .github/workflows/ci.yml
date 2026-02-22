@@ -170,7 +170,7 @@ jobs:
           timeout_minutes: 5
           max_attempts: 3
           retry_wait_seconds: 10
-          command: yarn cli audit --ignore 1113296 1113371
+          command: just audit --ignore 1113296 1113371
 
   lint:
     name: Lint Code
@@ -189,7 +189,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Run ESLint
-        run: yarn cli lint
+        run: just lint
 
   deps-check:
     name: Dependency Validation
@@ -228,7 +228,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Run TypeScript Compiler
-        run: yarn cli typecheck
+        run: just typecheck
 
   # ============================================================================
   # Build (Always Run - Required for CDK Validation)
@@ -250,7 +250,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Build TypeScript
-        run: yarn cli build
+        run: just build
 
   # ============================================================================
   # Stack Tests

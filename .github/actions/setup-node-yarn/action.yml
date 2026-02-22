@@ -63,6 +63,15 @@ runs:
         corepack enable
         echo "✓ Corepack enabled"
 
+    - name: Install Just Task Runner
+      shell: bash
+      run: |
+        if ! command -v just &> /dev/null; then
+          echo "Installing just..."
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+        fi
+        echo "Just version: $(just --version)"
+
     - name: Generate Dependency Cache Key
       id: cache-key
       shell: bash
