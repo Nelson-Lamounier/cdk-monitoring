@@ -140,7 +140,7 @@ kubectl diff -k "${MANIFESTS_DIR}" 2>/dev/null || true
 echo "--- end diff ---"
 echo ""
 
-kubectl apply -k "${MANIFESTS_DIR}"
+kubectl apply --server-side --force-conflicts -k "${MANIFESTS_DIR}"
 echo ""
 echo "✓ All manifests applied"
 echo ""
