@@ -28,6 +28,8 @@
  *   1 = deployment failed
  */
 
+import { appendFileSync, existsSync } from 'fs';
+
 import {
   AutoScalingClient,
   DescribeAutoScalingGroupsCommand,
@@ -40,7 +42,6 @@ import {
   SendCommandCommand,
 } from '@aws-sdk/client-ssm';
 
-import { appendFileSync, existsSync } from 'fs';
 import logger from './logger.js';
 
 // =============================================================================

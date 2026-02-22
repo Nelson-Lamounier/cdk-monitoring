@@ -226,4 +226,7 @@ async function main(): Promise<void> {
   logger.success('All pre-flight checks passed');
 }
 
-main();
+main().catch((err) => {
+  logger.error(`Fatal: ${err.message}`);
+  process.exit(1);
+});

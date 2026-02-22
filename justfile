@@ -191,10 +191,15 @@ ci-deploy-manifests *ARGS:
 ci-verify *ARGS:
     npx tsx scripts/deployment/verify-deployment.ts {{ARGS}}
 
-# CI smoke tests (NextJS)
+# CI smoke tests (NextJS ECS)
 [group('ci')]
 ci-smoke *ARGS:
     npx tsx scripts/deployment/smoke-tests-nextjs.ts {{ARGS}}
+
+# CI smoke tests (NextJS K8s)
+[group('ci')]
+ci-smoke-k8s *ARGS:
+    npx tsx scripts/deployment/smoke-tests-nextjs-k8s.ts {{ARGS}}
 
 # CI sync S3 assets
 [group('ci')]

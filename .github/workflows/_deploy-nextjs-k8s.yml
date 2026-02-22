@@ -412,14 +412,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: "yarn"
-
-      - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+          node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
@@ -430,39 +426,6 @@ jobs:
 
       - name: Deploy Manifests
         run: just ci-deploy-manifests nextjs ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
-
-  # ===========================================================================
-  # Verify Service (K8s-specific: checks EIP health + pod readiness)
-  # ===========================================================================
-  verify-service:
-    name: Verify Service
-    needs: [setup, deploy-k8s-compute, deploy-manifests]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: ${{ inputs.environment }}
-    if: always() && needs.deploy-k8s-compute.result == 'success' && inputs.skip-verification != true
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node.js and Yarn
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        run: yarn install --frozen-lockfile
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-
-      - name: Verify K8s Stack
-        run: just ci-verify nextjs ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # Sync Static Assets to S3 + CloudFront Cache Invalidation
@@ -517,32 +480,54 @@ jobs:
           eval $SYNC_CMD
 
   # ===========================================================================
-  # Smoke Tests
+  # Verify & Smoke Tests (merged — CFN status + K8s-specific health checks)
   # ===========================================================================
-  smoke-tests:
-    name: Smoke Tests
-    needs:
-      [
-        setup,
-        deploy-k8s-compute,
-        deploy-manifests,
-        verify-service,
-        sync-static-assets,
-      ]
+  verify-and-test:
+    name: Verify & Smoke Tests
+    needs: [setup, deploy-k8s-compute, deploy-manifests, sync-static-assets]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
     if: >-
       always()
       && needs.deploy-k8s-compute.result == 'success'
-      && (needs.verify-service.result == 'success' || needs.verify-service.result == 'skipped')
       && inputs.skip-verification != true
-    uses: ./.github/workflows/_smoke-tests-nextjs.yml
-    with:
-      environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
-      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-      cloudfront-domain: ${{ needs.setup.outputs.domain-name }}
-      s3-assets-bucket: ${{ needs.sync-static-assets.outputs.s3-bucket }}
-      timeout-minutes: 10
-    secrets: inherit
+    outputs:
+      status: ${{ steps.smoke.outputs.status }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Run K8s Smoke Tests
+        id: smoke
+        run: |
+          SMOKE_CMD="just ci-smoke-k8s ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}"
+
+          if [ -n "${{ needs.setup.outputs.domain-name }}" ]; then
+            SMOKE_CMD="$SMOKE_CMD --cloudfront-domain ${{ needs.setup.outputs.domain-name }}"
+          fi
+
+          if [ -n "${{ needs.sync-static-assets.outputs.s3-bucket }}" ]; then
+            SMOKE_CMD="$SMOKE_CMD --s3-bucket ${{ needs.sync-static-assets.outputs.s3-bucket }}"
+          fi
+
+          eval $SMOKE_CMD
 
   # ===========================================================================
   # Rollback (Conditional — staging/production only)
@@ -552,14 +537,14 @@ jobs:
   # ===========================================================================
   rollback:
     name: Rollback K8s Compute
-    needs: [setup, deploy-k8s-compute, deploy-manifests, verify-service]
+    needs: [setup, deploy-k8s-compute, deploy-manifests, verify-and-test]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
     if: |
       always()
       && needs.deploy-k8s-compute.result == 'success'
-      && needs.verify-service.result == 'failure'
+      && needs.verify-and-test.result == 'failure'
       && inputs.cdk-environment != 'development'
 
     steps:
@@ -586,7 +571,7 @@ jobs:
         run: just ci-rollback "${{ needs.setup.outputs.k8s-compute-stack }}" --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
-  # Deployment Summary
+  # Deployment Summary (TypeScript)
   # ===========================================================================
   summary:
     name: Deployment Summary
@@ -600,14 +585,14 @@ jobs:
       - deploy-edge
       - deploy-manifests
       - sync-static-assets
-      - verify-service
-      - smoke-tests
+      - verify-and-test
       - rollback
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
 
     steps:
+      # Guard: if setup was cancelled/failed, write minimal fallback and skip TS
       - name: Check Prerequisites
         id: prereqs
         run: |
@@ -622,39 +607,35 @@ jobs:
 
           No stacks were deployed. Check the setup job logs for details.
           EOF
-            echo "::warning::Setup did not succeed (${{ needs.setup.result }})"
+            echo "::warning::Setup did not succeed (${{ needs.setup.result }}), skipping full summary"
           else
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Checkout
+        if: steps.prereqs.outputs.skip != 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        if: steps.prereqs.outputs.skip != 'true'
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        if: steps.prereqs.outputs.skip != 'true'
+        run: yarn install --frozen-lockfile
+
       - name: Generate Summary
         if: steps.prereqs.outputs.skip != 'true'
-        run: |
-          cat >> $GITHUB_STEP_SUMMARY << EOF
-          ## Next.js K8s Deployment Summary
-
-          | Stack / Step | Result |
-          |---|---|
-          | Setup & Synthesize | ✅ ${{ needs.setup.result }} |
-          | Security Scan | ${{ needs.security-scan.result || 'skipped' }} |
-          | Drift Detection | ${{ needs.drift-detection.result || 'skipped' }} |
-          | **Deploy Data** | ${{ needs.deploy-data.result || 'skipped' }} |
-          | **Deploy K8s Compute** | ${{ needs.deploy-k8s-compute.result || 'skipped' }} |
-          | **Deploy API** | ${{ needs.deploy-api.result || 'skipped' }} |
-          | **Deploy Edge** | ${{ needs.deploy-edge.result || 'skipped' }} |
-          | Deploy Manifests | ${{ needs.deploy-manifests.result || 'skipped' }} |
-          | Sync Static Assets | ${{ needs.sync-static-assets.result || 'skipped' }} |
-          | Verify Service | ${{ needs.verify-service.result || 'skipped' }} |
-          | Smoke Tests | ${{ needs.smoke-tests.result || 'skipped' }} |
-          | Rollback | ${{ needs.rollback.result || 'skipped' }} |
-
-          **Environment**: ${{ inputs.environment }}
-          **Commit**: \`${{ needs.setup.outputs.commit-short-sha }}\`
-          **Triggered by**: ${{ github.event_name }} (${{ github.actor }})
-
-          ### Stack Deployment Order
-          \`\`\`
-          Data → K8s-Compute ──→ Deploy Manifests → ArgoCD Sync
-               ↘ API ──────────→ Edge → Sync Assets → Smoke Tests
-          \`\`\`
-          EOF
+        env:
+          DEPLOY_DATA_RESULT: ${{ needs.deploy-data.result }}
+          DEPLOY_K8SCOMPUTE_RESULT: ${{ needs.deploy-k8s-compute.result }}
+          DEPLOY_API_RESULT: ${{ needs.deploy-api.result || 'skipped' }}
+          DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
+          SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
+          VERIFY_RESULT: ${{ needs.verify-and-test.result || 'skipped' }}
+          SMOKE_TESTS_RESULT: ${{ needs.verify-and-test.result || 'skipped' }}
+          ROLLBACK_RESULT: ${{ needs.rollback.result || 'skipped' }}
+          COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
+        run: just ci-summary nextjs ${{ inputs.cdk-environment }}
