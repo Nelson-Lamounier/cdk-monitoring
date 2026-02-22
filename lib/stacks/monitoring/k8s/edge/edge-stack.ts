@@ -271,9 +271,18 @@ export class K8sEdgeStack extends cdk.Stack {
             'ReadElasticIp', props.elasticIpSsmPath, ssmRegion, ssmReaderPolicy,
         );
 
+        // CloudFront requires a domain name, not a raw IP address.
+        // Convert EIP (e.g. "34.245.1.2") to EC2 public DNS hostname:
+        //   ec2-34-245-1-2.eu-west-1.compute.amazonaws.com
+        // Uses CFN intrinsic functions since elasticIpAddress is a deploy-time token.
+        const eipDashed = cdk.Fn.join('-', cdk.Fn.split('.', elasticIpAddress));
+        const originDomainName = cdk.Fn.join('', [
+            'ec2-', eipDashed, `.${ssmRegion}.compute.amazonaws.com`,
+        ]);
+
         // EIP origin — HTTP to avoid SSL hostname mismatch
         // Grafana runs on port 80 behind Traefik, CloudFront handles TLS at the edge
-        const eipOrigin = new origins.HttpOrigin(elasticIpAddress, {
+        const eipOrigin = new origins.HttpOrigin(originDomainName, {
             protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
             connectionAttempts: 3,
             connectionTimeout: cdk.Duration.seconds(10),
