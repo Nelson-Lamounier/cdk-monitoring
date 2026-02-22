@@ -111,20 +111,7 @@ export interface K8sSsmConfig {
     readonly maxErrors: string;
 }
 
-/**
- * Edge configuration for CloudFront + WAF + ACM
- *
- * Domain, hosted zone, and cross-account role are resolved from process.env
- * at synth time — same pattern as the NextJs edge stack. Optional so the
- * compute stack can still synth without edge env vars.
- */
 export interface K8sEdgeConfig {
-    /** Domain name for monitoring dashboard (e.g., 'monitoring.nelsonlamounier.com') */
-    readonly domainName?: string;
-    /** Route 53 Hosted Zone ID in root account */
-    readonly hostedZoneId?: string;
-    /** Cross-account IAM role ARN for Route 53 DNS validation */
-    readonly crossAccountRoleArn?: string;
     /** WAF rate limit per IP per 5 minutes @default 2000 */
     readonly rateLimitPerIp: number;
     /** Enable WAF rate limiting @default true */
@@ -195,9 +182,6 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             maxErrors: '0',
         },
         edge: {
-            domainName: process.env.MONITOR_DOMAIN_NAME || undefined,
-            hostedZoneId: process.env.HOSTED_ZONE_ID || undefined,
-            crossAccountRoleArn: process.env.CROSS_ACCOUNT_ROLE_ARN || undefined,
             rateLimitPerIp: 2000,
             enableRateLimiting: true,
             enableIpReputationList: true,
@@ -245,9 +229,6 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             maxErrors: '0',
         },
         edge: {
-            domainName: process.env.MONITOR_DOMAIN_NAME || undefined,
-            hostedZoneId: process.env.HOSTED_ZONE_ID || undefined,
-            crossAccountRoleArn: process.env.CROSS_ACCOUNT_ROLE_ARN || undefined,
             rateLimitPerIp: 2000,
             enableRateLimiting: true,
             enableIpReputationList: true,
@@ -295,9 +276,6 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             maxErrors: '0',
         },
         edge: {
-            domainName: process.env.MONITOR_DOMAIN_NAME || undefined,
-            hostedZoneId: process.env.HOSTED_ZONE_ID || undefined,
-            crossAccountRoleArn: process.env.CROSS_ACCOUNT_ROLE_ARN || undefined,
             rateLimitPerIp: 2000,
             enableRateLimiting: true,
             enableIpReputationList: true,

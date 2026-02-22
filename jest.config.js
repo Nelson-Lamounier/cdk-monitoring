@@ -1,5 +1,12 @@
 /** @format */
 
+// Skip Lambda esbuild bundling during tests.
+// Must be set HERE (not in setupFilesAfterEnv) because CDK's AssetStaging
+// reads this env var when NodejsFunction is instantiated during synthesis.
+// Setting it in jest-setup.ts is too late — Jest has already loaded the
+// test file and its imports by then.
+process.env.CDK_BUNDLING_STACKS = '[]';
+
 module.exports = {
   testEnvironment: "node",
   roots: ["<rootDir>/tests"],
@@ -56,6 +63,11 @@ module.exports = {
   globals: {
     "ts-jest": {
       useESM: false,
+      // Skip type-checking during test transpilation.
+      // Type safety is enforced separately by `just typecheck` (tsc --noEmit).
+      // Without this, ts-jest compiles CDK's massive dependency graph with
+      // full type-checking, causing edge-stack tests to hang.
+      isolatedModules: true,
     },
   },
   // Add Jest environment for better TypeScript support

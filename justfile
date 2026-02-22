@@ -3,53 +3,88 @@
 #
 # Usage:
 #   just              List all recipes
-#   just synth        CDK synth (interactive)
-#   just deploy       CDK deploy (interactive)
-#   just test         Run all tests
+#   just synth monitoring development
+#   just deploy monitoring development
+#   just test          Run all tests
 #
 # Prerequisites:
 #   brew install just
 #
-# This file wraps the existing TypeScript CLI (scripts/deployment/cli.ts)
-# and npm scripts. No infrastructure code is duplicated here.
+# This file is the single CLI entry point for local development.
+# CI/CD pipelines also use 'just' for code quality tasks (lint, build, typecheck).
 
 # Default recipe — show help
 default:
     @just --list --unsorted
 
 # =============================================================================
-# CDK COMMANDS (Interactive — delegates to yarn cli)
+# INTERNAL HELPERS
 # =============================================================================
 
-# Synthesize CDK stacks (interactive or with args)
-[group('cdk')]
-synth *ARGS:
-    yarn cli synth {{ARGS}}
+# Resolve AWS profile from environment name
+[private]
+_profile env:
+    #!/usr/bin/env bash
+    case "{{env}}" in
+      development) echo "dev-account" ;;
+      staging)     echo "staging-account" ;;
+      production)  echo "prod-account" ;;
+      *)           echo "dev-account" ;;
+    esac
 
-# Deploy CDK stacks
+# =============================================================================
+# CDK COMMANDS (call npx cdk directly — no interactive CLI layer)
+# =============================================================================
+
+# Synthesize CDK stacks (e.g., just synth monitoring development)
 [group('cdk')]
-deploy *ARGS:
-    yarn cli deploy {{ARGS}}
+synth project environment *ARGS:
+    npx cdk synth --all \
+      -c project={{project}} -c environment={{environment}} \
+      --profile $(just _profile {{environment}}) \
+      {{ARGS}}
+
+# Deploy CDK stacks (e.g., just deploy monitoring development)
+[group('cdk')]
+deploy project environment *ARGS:
+    npx cdk deploy --all \
+      -c project={{project}} -c environment={{environment}} \
+      --profile $(just _profile {{environment}}) \
+      --require-approval never \
+      {{ARGS}}
 
 # Show diff between local and deployed stacks
 [group('cdk')]
-diff *ARGS:
-    yarn cli diff {{ARGS}}
+diff project environment *ARGS:
+    npx cdk diff --all \
+      -c project={{project}} -c environment={{environment}} \
+      --profile $(just _profile {{environment}}) \
+      {{ARGS}}
 
-# Destroy CDK stacks (with safety prompts)
+# Destroy CDK stacks (with CDK's built-in confirmation)
 [group('cdk')]
-destroy *ARGS:
-    yarn cli destroy {{ARGS}}
+destroy project environment *ARGS:
+    npx cdk destroy --all \
+      -c project={{project}} -c environment={{environment}} \
+      --profile $(just _profile {{environment}}) \
+      {{ARGS}}
 
-# List all CDK stacks
+# List all CDK stacks for a project
 [group('cdk')]
-list *ARGS:
-    yarn cli list {{ARGS}}
+list project environment *ARGS:
+    npx cdk list \
+      -c project={{project}} -c environment={{environment}} \
+      --profile $(just _profile {{environment}}) \
+      {{ARGS}}
 
 # Bootstrap CDK in an AWS account
 [group('cdk')]
-bootstrap *ARGS:
-    yarn cli bootstrap {{ARGS}}
+bootstrap account profile *ARGS:
+    cdk bootstrap aws://{{account}}/eu-west-1 \
+      --profile {{profile}} \
+      --qualifier hnb659fds \
+      --toolkit-stack-name CDKToolkit \
+      {{ARGS}}
 
 # =============================================================================
 # CI SCRIPTS (Non-interactive — used by GitHub Actions)
@@ -122,7 +157,7 @@ test-unit:
 # Run a specific test file (e.g., just test-file tests/unit/stacks/k8s/edge-stack.test.ts)
 [group('test')]
 test-file path:
-    npx jest {{path}} --no-coverage
+    CDK_BUNDLING_STACKS='[]' npx jest {{path}} --no-coverage
 
 # =============================================================================
 # CODE QUALITY
@@ -163,6 +198,35 @@ find-unused:
 lint-cdk:
     yarn lint:cdk
 
+# Run security audit on dependencies
+[group('quality')]
+audit *ARGS:
+    yarn npm audit --all --recursive --no-deprecations --severity high {{ARGS}}
+
+# Validate synthesized CloudFormation templates with cfn-lint
+[group('quality')]
+validate:
+    #!/usr/bin/env bash
+    if [ ! -d "cdk.out" ]; then
+      echo "❌ cdk.out/ not found. Run 'just synth <project> <env>' first."
+      exit 1
+    fi
+    templates=$(ls cdk.out/*.template.json 2>/dev/null | wc -l)
+    echo "ℹ Found ${templates} CloudFormation templates"
+    cfn-lint "cdk.out/**/*.template.json"
+
+# Run Checkov IaC security scan against synthesized templates
+[group('quality')]
+security-scan *ARGS:
+    #!/usr/bin/env bash
+    if [ ! -d "cdk.out" ]; then
+      echo "❌ cdk.out/ not found. Run 'just synth <project> <env>' first."
+      exit 1
+    fi
+    mkdir -p security-reports
+    checkov --directory cdk.out --framework cloudformation --compact --quiet \
+      -o cli -o json --output-file-path security-reports {{ARGS}}
+
 # =============================================================================
 # KUBERNETES
 # =============================================================================
@@ -176,6 +240,38 @@ k8s-dashboards *ARGS:
 [group('k8s')]
 k8s-reconfigure *ARGS:
     npx tsx scripts/deployment/reconfigure-monitoring.ts {{ARGS}}
+
+# =============================================================================
+# CROSS-ACCOUNT & OPS (delegates to standalone scripts)
+# =============================================================================
+
+# Deploy CrossAccountDnsRoleStack to root account (one-time setup)
+[group('ops')]
+setup-dns-role profile hosted-zone-ids trusted-account-ids *ARGS:
+    npx tsx scripts/deployment/setup-dns-role.ts \
+      --profile {{profile}} \
+      --hosted-zone-ids {{hosted-zone-ids}} \
+      --trusted-account-ids {{trusted-account-ids}} \
+      {{ARGS}}
+
+# Get CrossAccountDnsRoleStack outputs (role ARN)
+[group('ops')]
+get-dns-role profile *ARGS:
+    npx tsx scripts/deployment/get-dns-role.ts \
+      --profile {{profile}} \
+      {{ARGS}}
+
+# Deploy Steampipe cross-account ReadOnly roles
+[group('ops')]
+deploy-steampipe-roles monitoring-account *ARGS:
+    npx tsx scripts/deployment/deploy-steampipe-roles.ts \
+      --monitoring-account {{monitoring-account}} \
+      {{ARGS}}
+
+# Sync monitoring configs to S3 + EC2
+[group('ops')]
+sync-configs *ARGS:
+    npx tsx scripts/deployment/sync-monitoring-configs.ts {{ARGS}}
 
 # =============================================================================
 # DOCUMENTATION
@@ -219,13 +315,3 @@ clean-backups:
 [group('util')]
 install:
     yarn install
-
-# Cross-account DNS role setup
-[group('util')]
-setup-dns-role *ARGS:
-    yarn cli setup-dns-role {{ARGS}}
-
-# Get DNS role ARN
-[group('util')]
-get-dns-role *ARGS:
-    yarn cli get-dns-role {{ARGS}}

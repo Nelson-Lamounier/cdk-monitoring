@@ -18,12 +18,14 @@ import * as cdk from 'aws-cdk-lib/core';
 import { Environment, cdkEnvironment, cdkEdgeEnvironment, getEnvironmentConfig } from '../../config/environments';
 import { getK8sConfigs } from '../../config/k8s';
 import { Project, getProjectConfig } from '../../config/projects';
+import { k8sSsmPaths } from '../../config/ssm-paths';
+import { stackId } from '../../utilities/naming';
 import {
     IProjectFactory,
     ProjectFactoryContext,
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
-import { K8sComputeStack, K8sEdgeStack } from '../../stacks/k8s';
+import { K8sComputeStack, K8sEdgeStack } from '../../stacks/monitoring/k8s';
 
 // =============================================================================
 // FACTORY CONTEXT
@@ -62,14 +64,7 @@ export class K8sProjectFactory implements IProjectFactory<K8sFactoryContext> {
         this.namespace = getProjectConfig(Project.K8S).namespace;
     }
 
-    /**
-     * Generate stack ID with project namespace and environment suffix.
-     *
-     * @example stackId('Compute') → 'K8s-Compute-development'
-     */
-    private stackId(resource: string): string {
-        return `${this.namespace}-${resource}-${this.environment}`;
-    }
+
 
     /**
      * Create all stacks for the k3s Kubernetes project.
@@ -87,7 +82,7 @@ export class K8sProjectFactory implements IProjectFactory<K8sFactoryContext> {
         // 1. COMPUTE STACK (EC2 + k3s + Security + Storage)
         // =====================================================================
 
-        const computeStack = new K8sComputeStack(scope, this.stackId('Compute'), {
+        const computeStack = new K8sComputeStack(scope, stackId(this.namespace, 'Compute', environment), {
             env,
             description: `k3s Kubernetes cluster compute resources (${environment})`,
             targetEnvironment: environment,
@@ -100,28 +95,21 @@ export class K8sProjectFactory implements IProjectFactory<K8sFactoryContext> {
         // 2. EDGE STACK (CloudFront + WAF + ACM in us-east-1)
         // =====================================================================
 
-        // Soft validation — warn if edge config is incomplete.
-        // CDK deploy --exclusively will only deploy the selected stack;
-        // missing values only matter when the Edge stack is actually deployed.
+        // Edge config values (domainName, hostedZoneId, crossAccountRoleArn)
+        // are read from SSM Parameter Store at deploy time — no process.env needed.
         const edgeConfig = configs.edge;
-        if (!edgeConfig.domainName || !edgeConfig.hostedZoneId || !edgeConfig.crossAccountRoleArn) {
-            const missing: string[] = [];
-            if (!edgeConfig.domainName) missing.push('domainName (MONITOR_DOMAIN_NAME)');
-            if (!edgeConfig.hostedZoneId) missing.push('hostedZoneId (HOSTED_ZONE_ID)');
-            if (!edgeConfig.crossAccountRoleArn) missing.push('crossAccountRoleArn (CROSS_ACCOUNT_ROLE_ARN)');
-            cdk.Annotations.of(scope).addWarning(
-                `Edge config incomplete: ${missing.join(', ')}. ` +
-                `Edge stack will fail if deployed without these values.`,
-            );
-        }
+        const ssmPaths = k8sSsmPaths(environment);
 
-        const edgeStack = new K8sEdgeStack(scope, this.stackId('Edge'), {
+        const edgeStack = new K8sEdgeStack(scope, stackId(this.namespace, 'Edge', environment), {
             env: cdkEdgeEnvironment(environment),
             description: `Edge infrastructure (ACM + WAF + CloudFront) for k8s monitoring (${environment})`,
             targetEnvironment: environment,
-            domainName: edgeConfig.domainName ?? '',
-            hostedZoneId: edgeConfig.hostedZoneId ?? '',
-            crossAccountRoleArn: edgeConfig.crossAccountRoleArn ?? '',
+            edgeSsmPaths: {
+                domainName: ssmPaths.edge.domainName,
+                hostedZoneId: ssmPaths.edge.hostedZoneId,
+                crossAccountRoleArn: ssmPaths.edge.crossAccountRoleArn,
+            },
+            edgeSsmRegion: env.region,
             elasticIpSsmPath: `${ssmPrefix}/elastic-ip`,
             elasticIpSsmRegion: env.region,
             rateLimitPerIp: edgeConfig.rateLimitPerIp,

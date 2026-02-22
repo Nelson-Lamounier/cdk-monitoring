@@ -32,9 +32,9 @@
     "clean:backups": "find . -name '*.backup' -o -name '*.bak' -o -name '*.backup.ts' | grep -v node_modules",
     "clean:backups:delete": "find . \\( -name '*.backup' -o -name '*.bak' -o -name '*.backup.ts' \\) -not -path './node_modules/*' -delete",
     "// === UNIT TESTS ===": "",
-    "test:unit": "jest tests/unit --coverage",
-    "test:vpc": "jest tests/unit/stacks/vpc",
-    "test:verbose": "VERBOSE_TESTS=1 jest --verbose",
+    "test:unit": "CDK_BUNDLING_STACKS='[]' jest tests/unit --coverage",
+    "test:vpc": "CDK_BUNDLING_STACKS='[]' jest tests/unit/stacks/vpc",
+    "test:verbose": "CDK_BUNDLING_STACKS='[]' VERBOSE_TESTS=1 jest --verbose",
     "test:validate-patterns": "bash scripts/validate-test-patterns.sh",
     "// === LINTING ===": "",
     "lint": "eslint . --max-warnings 65",
@@ -56,14 +56,7 @@
     "docs:monitoring": "typedoc --entryPoints ./lib/projects/monitoring ./lib/stacks/monitoring --out docs/monitoring --name 'Monitoring Stack'",
     "docs:compute": "typedoc --entryPoints ./lib/common/compute --out docs/compute --name 'Compute Constructs'",
     "docs:nextjs": "typedoc --entryPoints ./lib/projects/nextjs ./lib/stacks/nextjs --out docs/nextjs --name 'Next.js Stack'",
-    "// === CDK CLI (Interactive) ===": "",
-    "cli": "tsx scripts/deployment/cli.ts",
-    "cli:synth": "tsx scripts/deployment/cli.ts synth",
-    "cli:deploy": "tsx scripts/deployment/cli.ts deploy",
-    "cli:diff": "tsx scripts/deployment/cli.ts diff",
-    "cli:destroy": "tsx scripts/deployment/cli.ts destroy",
-    "cli:list": "tsx scripts/deployment/cli.ts list",
-    "cli:sync-configs": "tsx scripts/deployment/cli.ts sync-configs"
+    "// === CDK CLI (deprecated — use 'just' task runner) ===": ""
   },
   "lint-staged": {
     "**/*.test.ts": [
@@ -85,7 +78,6 @@
     "@babel/preset-typescript": "^7.28.5",
     "@jest/test-sequencer": "^30.2.0",
     "@types/aws-lambda": "^8.10.159",
-    "@types/inquirer": "^9.0.9",
     "@types/jest": "^29.5.11",
     "@types/node": "^25.2.0",
     "@types/source-map-support": "^0.5.10",
@@ -104,7 +96,6 @@
     "eslint-plugin-jest-extended": "^3.0.1",
     "eslint-plugin-jsdoc": "^46.8.0",
     "husky": "^9.1.7",
-    "inquirer": "^13.2.2",
     "jest": "^30.2.0",
     "jest-junit": "^16.0.0",
     "knip": "^5.82.1",
@@ -148,7 +139,6 @@
     "aws-cdk-lib": "^2.232.1",
     "cdk-nag": "^2.37.55",
     "chalk": "^5.6.2",
-    "commander": "^14.0.3",
     "constructs": "^10.4.4",
     "dotenv": "^16.3.1",
     "source-map-support": "^0.5.21"
@@ -156,7 +146,8 @@
   "resolutions": {
     "markdown-it": ">=14.1.1",
     "fast-xml-parser": ">=5.3.6",
-    "tar": ">=7.5.8"
+    "tar": ">=7.5.8",
+    "picomatch": "^3.0.0"
   },
   "packageManager": "yarn@4.12.0"
 }
