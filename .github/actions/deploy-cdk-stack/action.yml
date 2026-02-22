@@ -169,97 +169,13 @@ runs:
       env:
         ACCOUNT_ID: ${{ inputs.aws-account-id }}
 
-    - name: Build CDK Context
-      id: context
-      shell: bash
-      run: |
-        echo "Building CDK context..."
-
-        # CDK context is structural only: project + environment
-        # All config values (edge, email, secrets) flow via process.env
-        CDK_ENV="${{ inputs.environment }}"
-
-        CONTEXT_ARGS=""
-        CONTEXT_ARGS="$CONTEXT_ARGS --context project=${{ inputs.project }}"
-        CONTEXT_ARGS="$CONTEXT_ARGS --context environment=$CDK_ENV"
-        echo "  project=${{ inputs.project }}"
-        echo "  environment=$CDK_ENV"
-
-        # Export for next step
-        echo "$CONTEXT_ARGS" > /tmp/cdk-context-args.txt
-        echo "context_args=$CONTEXT_ARGS" >> $GITHUB_OUTPUT
-
-        echo ""
-        echo "✓ Context built successfully (structural only: project + environment)"
-
-    - name: Build TypeScript
-      shell: bash
-      run: yarn build
-
     - name: Deploy Stack
       id: deploy
       shell: bash
       run: |
-        echo "Deploying CDK stack..."
-        echo "Stack: ${{ inputs.stack-name }}"
-        echo ""
-
-        # Record start time
-        START_TIME=$(date +%s)
-
-        # Read context args
-        CONTEXT_ARGS=$(cat /tmp/cdk-context-args.txt)
-
-        # Build deploy command
-        # Use --method=direct to avoid ChangeSetNotFoundException issues in CI/CD
-        # Direct method calls UpdateStack/CreateStack API directly instead of changesets
-        # Use --exclusively to prevent CDK from deploying dependent stacks (workflow handles ordering)
-        DEPLOY_CMD="npx cdk deploy ${{ inputs.stack-name }}"
-        DEPLOY_CMD="$DEPLOY_CMD $CONTEXT_ARGS"
-        DEPLOY_CMD="$DEPLOY_CMD --require-approval ${{ inputs.require-approval }}"
-        DEPLOY_CMD="$DEPLOY_CMD --method=direct"
-        DEPLOY_CMD="$DEPLOY_CMD --exclusively"
-        DEPLOY_CMD="$DEPLOY_CMD --progress events"
-
-        # Add outputs file to capture stack outputs during deployment
-        mkdir -p /tmp/cdk-outputs
-        DEPLOY_CMD="$DEPLOY_CMD --outputs-file /tmp/cdk-outputs/stack-outputs.json"
-
-        # Deployment provenance tags (SLSA-inspired audit metadata)
-        # These tags are applied to all CloudFormation resources in the stack
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployCommit=${GITHUB_SHA:-unknown}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployRunId=${GITHUB_RUN_ID:-0}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployActor=${GITHUB_ACTOR:-local}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployRepo=${GITHUB_REPOSITORY:-local}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployWorkflow=${GITHUB_WORKFLOW:-manual}"
-
-        # Add additional args if provided
-        if [ -n "${{ inputs.additional-args }}" ]; then
-          DEPLOY_CMD="$DEPLOY_CMD ${{ inputs.additional-args }}"
-        fi
-
-        echo "Executing: $DEPLOY_CMD"
-        echo ""
-
-        # Execute deployment
-        if eval "$DEPLOY_CMD"; then
-          END_TIME=$(date +%s)
-          DURATION=$((END_TIME - START_TIME))
-          echo "status=success" >> $GITHUB_OUTPUT
-          echo "duration=$DURATION" >> $GITHUB_OUTPUT
-          echo ""
-          echo "✓ Stack deployment successful (${DURATION}s)"
-        else
-          EXIT_CODE=$?
-          END_TIME=$(date +%s)
-          DURATION=$((END_TIME - START_TIME))
-          echo "status=failure" >> $GITHUB_OUTPUT
-          echo "duration=$DURATION" >> $GITHUB_OUTPUT
-          echo ""
-          echo "ERROR: Stack deployment failed (exit code: $EXIT_CODE, duration: ${DURATION}s)"
-          exit $EXIT_CODE
-        fi
+        just ci-deploy "${{ inputs.stack-name }}" "${{ inputs.project }}" "${{ inputs.environment }}" \
+          --require-approval "${{ inputs.require-approval }}" \
+          ${{ inputs.additional-args }}
       env:
         CDK_ENVIRONMENT: ${{ inputs.environment }}
         AWS_ACCOUNT_ID: ${{ inputs.aws-account-id }}

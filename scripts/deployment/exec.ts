@@ -19,6 +19,14 @@ export interface CdkArgsOptions {
   requireApproval?: 'never' | 'broadening' | 'any-change';
   force?: boolean;
   quiet?: boolean;
+  /** Deploy method: 'direct' avoids ChangeSetNotFoundException in CI */
+  method?: 'direct' | 'change-set';
+  /** Progress display style */
+  progress?: 'events' | 'bar';
+  /** Path to write CDK stack outputs JSON */
+  outputsFile?: string;
+  /** CloudFormation tags to apply to all resources */
+  tags?: Record<string, string>;
 }
 
 export interface CdkResult {
@@ -80,6 +88,28 @@ export function buildCdkArgs(options: CdkArgsOptions): string[] {
   // Quiet mode
   if (options.quiet) {
     args.push('--quiet');
+  }
+
+  // Deploy method (direct bypasses changesets)
+  if (options.method) {
+    args.push(`--method=${options.method}`);
+  }
+
+  // Progress display
+  if (options.progress) {
+    args.push('--progress', options.progress);
+  }
+
+  // Outputs file
+  if (options.outputsFile) {
+    args.push('--outputs-file', options.outputsFile);
+  }
+
+  // CloudFormation tags
+  if (options.tags) {
+    Object.entries(options.tags).forEach(([key, value]) => {
+      args.push('--tags', `${key}=${value}`);
+    });
   }
 
   return args;
