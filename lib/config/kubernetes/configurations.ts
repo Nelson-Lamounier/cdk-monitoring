@@ -18,7 +18,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
 import {
-    K3S_DEFAULT_CHANNEL,
+    KUBERNETES_VERSION,
 } from '../defaults';
 import { Environment } from '../environments';
 
@@ -39,15 +39,19 @@ function fromEnv(key: string): string | undefined {
 // =============================================================================
 
 /**
- * k3s cluster configuration
+ * Kubernetes cluster configuration (kubeadm)
  */
-export interface K3sClusterConfig {
-    /** k3s release channel (e.g., 'v1.31') */
-    readonly channel: string;
-    /** Whether to install Traefik ingress controller (built-in to k3s) */
-    readonly enableTraefik: boolean;
-    /** k3s data directory (should be on persistent storage) */
+export interface KubernetesClusterConfig {
+    /** Kubernetes version (e.g., '1.32.0') */
+    readonly kubernetesVersion: string;
+    /** Pod network CIDR for Calico CNI @default '192.168.0.0/16' */
+    readonly podNetworkCidr: string;
+    /** Service subnet CIDR @default '10.96.0.0/12' */
+    readonly serviceSubnet: string;
+    /** Kubernetes data directory (should be on persistent storage) */
     readonly dataDir: string;
+    /** Number of worker nodes @default 1 */
+    readonly workerCount: number;
 }
 
 /**
@@ -101,7 +105,7 @@ export interface K8sImageConfig {
     readonly bakedVersions: {
         readonly dockerCompose: string;
         readonly awsCli: string;
-        readonly k3sBinary: string;
+        readonly kubeadm: string;
     };
 }
 
@@ -145,7 +149,7 @@ export interface K8sEdgeConfig {
  * Complete resource configurations for k3s/Kubernetes project
  */
 export interface K8sConfigs {
-    readonly cluster: K3sClusterConfig;
+    readonly cluster: KubernetesClusterConfig;
     readonly compute: K8sComputeConfig;
     readonly storage: K8sStorageConfig;
     readonly networking: K8sNetworkingConfig;
@@ -168,9 +172,11 @@ export interface K8sConfigs {
 export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
     [Environment.DEVELOPMENT]: {
         cluster: {
-            channel: K3S_DEFAULT_CHANNEL,
-            enableTraefik: true,
-            dataDir: '/data/k3s',
+            kubernetesVersion: KUBERNETES_VERSION,
+            podNetworkCidr: '192.168.0.0/16',
+            serviceSubnet: '10.96.0.0/12',
+            dataDir: '/data/kubernetes',
+            workerCount: 1,
         },
         compute: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
@@ -193,7 +199,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             bakedVersions: {
                 dockerCompose: 'v2.24.0',
                 awsCli: '2.x',
-                k3sBinary: K3S_DEFAULT_CHANNEL,
+                kubeadm: KUBERNETES_VERSION,
             },
         },
         ssm: {
@@ -220,9 +226,11 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
 
     [Environment.STAGING]: {
         cluster: {
-            channel: K3S_DEFAULT_CHANNEL,
-            enableTraefik: true,
-            dataDir: '/data/k3s',
+            kubernetesVersion: KUBERNETES_VERSION,
+            podNetworkCidr: '192.168.0.0/16',
+            serviceSubnet: '10.96.0.0/12',
+            dataDir: '/data/kubernetes',
+            workerCount: 1,
         },
         compute: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
@@ -245,7 +253,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             bakedVersions: {
                 dockerCompose: 'v2.24.0',
                 awsCli: '2.x',
-                k3sBinary: K3S_DEFAULT_CHANNEL,
+                kubeadm: KUBERNETES_VERSION,
             },
         },
         ssm: {
@@ -270,9 +278,11 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
 
     [Environment.PRODUCTION]: {
         cluster: {
-            channel: K3S_DEFAULT_CHANNEL,
-            enableTraefik: true,
-            dataDir: '/data/k3s',
+            kubernetesVersion: KUBERNETES_VERSION,
+            podNetworkCidr: '192.168.0.0/16',
+            serviceSubnet: '10.96.0.0/12',
+            dataDir: '/data/kubernetes',
+            workerCount: 1,
         },
         compute: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.LARGE),
@@ -295,7 +305,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             bakedVersions: {
                 dockerCompose: 'v2.24.0',
                 awsCli: '2.x',
-                k3sBinary: K3S_DEFAULT_CHANNEL,
+                kubeadm: KUBERNETES_VERSION,
             },
         },
         ssm: {

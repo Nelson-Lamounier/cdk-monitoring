@@ -94,14 +94,14 @@ export const MONITORING_PORTS = {
 } as const;
 
 // =============================================================================
-// Kubernetes (k3s) Constants
+// Kubernetes Constants
 // =============================================================================
 
-/** k3s Kubernetes API server port */
-export const K3S_API_PORT = 6443;
+/** Kubernetes API server port (standard for kubeadm) */
+export const K8S_API_PORT = 6443;
 
-/** k3s default stable channel */
-export const K3S_DEFAULT_CHANNEL = 'v1.32';
+/** Kubernetes version for kubeadm installation */
+export const KUBERNETES_VERSION = '1.32.0';
 
 /** Traefik HTTP port (k3s built-in ingress) */
 export const TRAEFIK_HTTP_PORT = 80;

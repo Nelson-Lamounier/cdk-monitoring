@@ -39,7 +39,7 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { K3sClusterConfig, K8sImageConfig } from '../../../config/kubernetes/configurations';
+import { KubernetesClusterConfig, K8sImageConfig } from '../../../config/kubernetes/configurations';
 
 // =============================================================================
 // PROPS
@@ -51,7 +51,7 @@ export interface GoldenAmiPipelineProps {
     /** Image configuration from K8sConfigs */
     readonly imageConfig: K8sImageConfig;
     /** Cluster configuration for k3s version */
-    readonly clusterConfig: K3sClusterConfig;
+    readonly clusterConfig: KubernetesClusterConfig;
     /** VPC for the Image Builder infrastructure */
     readonly vpc: ec2.IVpc;
     /** Subnet ID for Image Builder instances */
@@ -174,10 +174,10 @@ export class GoldenAmiPipelineConstruct extends Construct {
                         region: cdk.Stack.of(this).region,
                         amiDistributionConfiguration: {
                             Name: `${namePrefix}-golden-ami-{{ imagebuilder:buildDate }}`,
-                            Description: `Golden AMI for ${namePrefix} (k3s ${clusterConfig.channel})`,
+                            Description: `Golden AMI for ${namePrefix} (k3s ${clusterConfig.kubernetesVersion})`,
                             AmiTags: {
                                 'Purpose': 'GoldenAMI',
-                                'K3sChannel': clusterConfig.channel,
+                                'K3sChannel': clusterConfig.kubernetesVersion,
                                 'Component': 'ImageBuilder',
                             },
                         },
@@ -232,7 +232,7 @@ export class GoldenAmiPipelineConstruct extends Construct {
      */
     private _buildComponentDocument(
         imageConfig: K8sImageConfig,
-        clusterConfig: K3sClusterConfig,
+        clusterConfig: KubernetesClusterConfig,
     ): string {
         return `
 name: GoldenAmiInstall
@@ -278,7 +278,7 @@ phases:
               # Download k3s binary only (do NOT start k3s — that's a runtime task)
               curl -fsSL https://get.k3s.io -o /usr/local/bin/k3s-install.sh
               chmod +x /usr/local/bin/k3s-install.sh
-              INSTALL_K3S_SKIP_START=true INSTALL_K3S_CHANNEL=${clusterConfig.channel} /usr/local/bin/k3s-install.sh
+              INSTALL_K3S_SKIP_START=true INSTALL_K3S_CHANNEL=${clusterConfig.kubernetesVersion} /usr/local/bin/k3s-install.sh
               k3s --version
 
       - name: PreloadCalicoCNI

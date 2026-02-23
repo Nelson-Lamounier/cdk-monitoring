@@ -61,7 +61,7 @@ import {
     UserDataBuilder,
 } from '../../common/index';
 import {
-    K3S_API_PORT,
+    K8S_API_PORT,
     TRAEFIK_HTTP_PORT,
     TRAEFIK_HTTPS_PORT,
     PROMETHEUS_PORT,
@@ -190,7 +190,7 @@ export class KubernetesComputeStack extends cdk.Stack {
         // K8s API: Only from VPC CIDR (for SSM port-forwarding access)
         this.securityGroup.addIngressRule(
             ec2.Peer.ipv4(vpc.vpcCidrBlock),
-            ec2.Port.tcp(K3S_API_PORT),
+            ec2.Port.tcp(K8S_API_PORT),
             'Allow K8s API from VPC (SSM port-forwarding)',
         );
 
@@ -530,9 +530,9 @@ export class KubernetesComputeStack extends cdk.Stack {
             })
             .updateSystem()
             .installK3s({
-                channel: configs.cluster.channel,
+                channel: configs.cluster.kubernetesVersion,
                 dataDir: configs.cluster.dataDir,
-                disableTraefik: !configs.cluster.enableTraefik,
+                disableTraefik: false,
                 disableFlannel: true,
                 ssmPrefix: props.ssmPrefix,
             })

@@ -45,7 +45,7 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { K3sClusterConfig, K8sSsmConfig } from '../../../config/kubernetes/configurations';
+import { KubernetesClusterConfig, K8sSsmConfig } from '../../../config/kubernetes/configurations';
 
 // =============================================================================
 // PROPS
@@ -57,7 +57,7 @@ export interface SsmStateManagerProps {
     /** SSM configuration from K8sConfigs */
     readonly ssmConfig: K8sSsmConfig;
     /** Cluster configuration for k3s settings */
-    readonly clusterConfig: K3sClusterConfig;
+    readonly clusterConfig: KubernetesClusterConfig;
     /** IAM role to grant SSM permissions to */
     readonly instanceRole: iam.IRole;
     /** Tag key/value pair for targeting ASG instances */
