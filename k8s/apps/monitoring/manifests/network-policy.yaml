@@ -1,0 +1,91 @@
+# @format
+# Monitoring Network Policy
+#
+# Restricts cross-namespace traffic to/from the monitoring namespace.
+# Even if an application pod is compromised, it cannot reach Grafana's
+# admin API or Prometheus's push endpoint.
+#
+# Ingress allowed from:
+#   1. Traefik Ingress Controller (kube-system) — for Grafana HTTP
+#   2. Same namespace (monitoring) — internal scrape/query
+#
+# Egress allowed to:
+#   1. DNS resolution (kube-system)
+#   2. AWS APIs (for SSM, S3, ECR)
+#   3. Same namespace (internal communication)
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitoring-policy
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: monitoring
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  podSelector: {} # Apply to ALL pods in monitoring namespace
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Allow Traefik Ingress Controller (Grafana access via SSM port-forwarding)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 3000 # Grafana
+        - port: 9090 # Prometheus (if exposed via Traefik)
+
+    # Allow intra-namespace communication (Prometheus → Grafana, Promtail → Loki, etc.)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+
+    # Allow Next.js app to push traces to Tempo via Alloy sidecar
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nextjs-app
+          podSelector:
+            matchLabels:
+              app: nextjs
+      ports:
+        - port: 4317 # Tempo OTLP gRPC
+
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+
+    # Allow intra-namespace communication
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+
+    # Allow AWS API access (SSM, S3, ECR, CloudWatch)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.42.0.0/16
+              - 10.43.0.0/16
+      ports:
+        - port: 443
+
+    # Allow scraping nextjs-app namespace (Prometheus → Next.js metrics)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nextjs-app
+      ports:
+        - port: 3000 # Next.js metrics endpoint

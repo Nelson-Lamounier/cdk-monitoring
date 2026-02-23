@@ -27,3 +27,4 @@ resources:
   - ingress.yaml
   - hpa.yaml
   - network-policy.yaml
+  - resource-quota.yaml

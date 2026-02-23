@@ -37,13 +37,9 @@ spec:
         app.kubernetes.io/name: nextjs
         app.kubernetes.io/part-of: nextjs
     spec:
-      # Schedule on the application node (2-node architecture)
-      nodeSelector:
-        role: application
-      tolerations:
-        - key: role
-          value: application
-          effect: NoSchedule
+      # Single shared k3s node — no nodeSelector/tolerations needed.
+      # Isolation is enforced via Namespaces, NetworkPolicies,
+      # ResourceQuotas, and PriorityClasses.
 
       # Non-root user (matches ECS user: '1001')
       securityContext:

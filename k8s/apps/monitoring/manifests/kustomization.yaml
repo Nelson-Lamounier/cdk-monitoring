@@ -56,6 +56,10 @@ resources:
   # Ingress
   - traefik/ingress.yaml
 
+  # Isolation: resource limits + network policies
+  - resource-quota.yaml
+  - network-policy.yaml
+
 # Grafana dashboards — split into multiple ConfigMaps to stay under 256KB limit
 # Server-side apply (--server-side) also avoids the annotation size issue
 configMapGenerator:

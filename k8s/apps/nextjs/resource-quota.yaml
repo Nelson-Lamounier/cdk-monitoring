@@ -1,0 +1,22 @@
+# @format
+# Resource Quota for the nextjs-app namespace
+#
+# Limits the application tier to ~40% of single-node capacity.
+# Prevents the application from starving monitoring workloads.
+# Matches the tier isolation model documented in the implementation plan.
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: nextjs-quota
+  namespace: nextjs-app
+  labels:
+    app.kubernetes.io/part-of: nextjs
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 2Gi
+    limits.cpu: "2"
+    limits.memory: 3Gi
+    pods: "6"

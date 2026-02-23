@@ -12,5 +12,6 @@ kind: Kustomization
 
 # Base resources referenced by overlays
 resources:
+  - ../system/priority-classes.yaml
   - ../apps/nextjs
   - ../apps/monitoring/manifests
