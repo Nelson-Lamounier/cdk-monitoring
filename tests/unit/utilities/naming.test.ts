@@ -96,7 +96,7 @@ describe('Naming Utilities', () => {
         });
 
         it('should have expected k8s stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.k8s)).toEqual(['compute', 'edge']);
+            expect(Object.keys(STACK_REGISTRY.k8s)).toEqual(['data', 'compute', 'api', 'edge']);
         });
     });
 

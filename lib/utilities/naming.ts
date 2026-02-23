@@ -46,7 +46,9 @@ export const STACK_REGISTRY = {
         edge: 'Edge',
     },
     k8s: {
+        data: 'Data',
         compute: 'Compute',
+        api: 'Api',
         edge: 'Edge',
     },
     org: {
