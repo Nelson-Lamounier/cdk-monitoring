@@ -206,6 +206,11 @@ ci-smoke-kubernetes *ARGS:
 ci-smoke-monitoring-kubernetes *ARGS:
     npx tsx scripts/deployment/smoke-tests-monitoring-kubernetes.ts {{ARGS}}
 
+# CI smoke tests (Kubernetes Infrastructure — full kubeadm deployment)
+[group('ci')]
+ci-smoke-kubernetes-infra *ARGS:
+    npx tsx scripts/deployment/smoke-tests-kubernetes.ts {{ARGS}}
+
 # CI sync S3 assets
 [group('ci')]
 ci-sync-assets *ARGS:
