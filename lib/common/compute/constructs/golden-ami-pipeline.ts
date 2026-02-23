@@ -66,7 +66,7 @@ export interface GoldenAmiPipelineProps {
 
 export class GoldenAmiPipelineConstruct extends Construct {
     /** SSM parameter storing the latest Golden AMI ID */
-    public readonly amiSsmParameter: ssm.StringParameter;
+    public readonly amiSsmParameter: ssm.IStringParameter;
     /** The Image Builder pipeline */
     public readonly pipeline: imagebuilder.CfnImagePipeline;
     /** IAM role used by Image Builder instances */
@@ -168,13 +168,31 @@ export class GoldenAmiPipelineConstruct extends Construct {
         // as a target. Initially set to a placeholder; Image Builder
         // overwrites it with the actual AMI ID after each successful build.
         // The LaunchTemplate looks up this parameter to resolve the AMI.
+        //
+        // IMPORTANT: Uses CfnParameter (L1) instead of StringParameter (L2)
+        // because Image Builder DistributionConfiguration requires the SSM
+        // parameter to have dataType 'aws:ec2:image'. The L2 StringParameter
+        // only creates dataType 'text', causing CREATE_FAILED on the
+        // distribution config (you can't change an SSM parameter's data type
+        // after creation).
         // -----------------------------------------------------------------
-        this.amiSsmParameter = new ssm.StringParameter(this, 'AmiParameter', {
-            parameterName: imageConfig.amiSsmPath,
-            stringValue: 'PENDING_FIRST_BUILD',
+        const amiSsmCfnParameter = new ssm.CfnParameter(this, 'AmiParameter', {
+            name: imageConfig.amiSsmPath,
+            type: 'String',
+            value: 'PENDING_FIRST_BUILD',
+            dataType: 'aws:ec2:image',
             description: `Latest Golden AMI ID for ${namePrefix}`,
-            tier: ssm.ParameterTier.STANDARD,
+            tier: 'Standard',
         });
+
+        // Import the CfnParameter as an L2 IStringParameter for grantWrite()
+        this.amiSsmParameter = ssm.StringParameter.fromStringParameterName(
+            this,
+            'AmiParameterRef',
+            imageConfig.amiSsmPath,
+        );
+        // Ensure the lookup happens after the CfnParameter is created
+        this.amiSsmParameter.node.addDependency(amiSsmCfnParameter);
 
         // Grant Image Builder permission to write the AMI ID to SSM
         this.amiSsmParameter.grantWrite(this.instanceRole);
