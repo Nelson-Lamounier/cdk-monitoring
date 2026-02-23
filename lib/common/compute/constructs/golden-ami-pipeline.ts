@@ -173,9 +173,9 @@ export class GoldenAmiPipelineConstruct extends Construct {
                     {
                         region: cdk.Stack.of(this).region,
                         amiDistributionConfiguration: {
-                            name: `${namePrefix}-golden-ami-{{ imagebuilder:buildDate }}`,
-                            description: `Golden AMI for ${namePrefix} (k3s ${clusterConfig.channel})`,
-                            amiTags: {
+                            Name: `${namePrefix}-golden-ami-{{ imagebuilder:buildDate }}`,
+                            Description: `Golden AMI for ${namePrefix} (k3s ${clusterConfig.channel})`,
+                            AmiTags: {
                                 'Purpose': 'GoldenAMI',
                                 'K3sChannel': clusterConfig.channel,
                                 'Component': 'ImageBuilder',
