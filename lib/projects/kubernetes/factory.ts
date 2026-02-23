@@ -37,12 +37,12 @@ import {
     ProjectFactoryContext,
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
-import { NextJsApiStack } from '../../stacks/nextjs/networking/api-stack';
 import {
     KubernetesComputeStack,
     KubernetesDataStack,
     KubernetesEdgeStack,
 } from '../../stacks/kubernetes';
+import { NextJsApiStack } from '../../stacks/nextjs/networking/api-stack';
 import { stackId } from '../../utilities/naming';
 
 // =============================================================================

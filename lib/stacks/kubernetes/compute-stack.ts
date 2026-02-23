@@ -72,8 +72,9 @@ import {
 } from '../../config/defaults';
 import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
-import { grantMonitoringPermissions } from './monitoring';
+
 import { grantApplicationPermissions, ApplicationIamGrantsProps } from './application';
+import { grantMonitoringPermissions } from './monitoring';
 
 // =============================================================================
 // PROPS
