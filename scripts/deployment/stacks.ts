@@ -252,22 +252,36 @@ const orgProject: ProjectConfig = {
 };
 
 // =============================================================================
-// K8S PROJECT (k3s Kubernetes Cluster — Single Stack)
+// K8S PROJECT (k3s Kubernetes Cluster — 3-Stack Architecture)
 // =============================================================================
 
 const k8sStacks: StackConfig[] = [
+  {
+    id: 'data',
+    name: 'Data Stack',
+    getStackName: (env) => getStackId(Project.K8S, 'data', env),
+    description: 'DynamoDB, S3 assets, SSM parameters for K8s application',
+  },
   {
     id: 'compute',
     name: 'Compute Stack',
     getStackName: (env) => getStackId(Project.K8S, 'compute', env),
     description: 'k3s Kubernetes cluster: EC2 + ASG + EBS + Security Group + Elastic IP',
+    dependsOn: ['data'],
+  },
+  {
+    id: 'api',
+    name: 'API Stack',
+    getStackName: (env) => getStackId(Project.K8S, 'api', env),
+    description: 'API Gateway with Lambda for email subscriptions (subscribe + verify)',
+    dependsOn: ['data'],
   },
   {
     id: 'edge',
     name: 'Edge Stack',
     getStackName: (env) => getStackId(Project.K8S, 'edge', env),
-    description: 'CloudFront distribution with ACM certificate and WAF for monitoring (us-east-1)',
-    dependsOn: ['compute'],
+    description: 'CloudFront distribution with ACM certificate and WAF (us-east-1)',
+    dependsOn: ['compute', 'api'],
     region: 'us-east-1',
   },
 ];
