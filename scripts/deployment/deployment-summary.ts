@@ -84,7 +84,7 @@ function main(): void {
   const securityScan = getResult('SECURITY_SCAN_RESULT');
   const verify = getResult('VERIFY_RESULT');
   const smokeTests = getResult('SMOKE_TESTS_RESULT');
-  const rollback = getResult('ROLLBACK_RESULT');
+  const alert = getResult('ALERT_RESULT');
 
   const summary = `## ${project!.name} Infrastructure Deployment
 
@@ -103,7 +103,7 @@ ${stackRows.join('\n')}
 - **Security Scan**: ${resultEmoji(securityScan)} ${securityScan}
 - **Post-Deploy Verify**: ${resultEmoji(verify)} ${verify}
 - **Smoke Tests**: ${resultEmoji(smokeTests)} ${smokeTests}
-- **Rollback**: ${resultEmoji(rollback)} ${rollback}
+- **Failure Alert**: ${resultEmoji(alert)} ${alert}
 `;
 
   // Write to $GITHUB_STEP_SUMMARY or stdout
