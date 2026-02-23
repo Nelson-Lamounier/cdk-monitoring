@@ -19,8 +19,8 @@ on:
       - "lib/common/compute/builders/user-data-builder.ts"
       - "k8s/apps/monitoring/**"
       - "bin/app.ts"
-      - ".github/workflows/deploy-monitoring-k8s-prod.yml"
-      - ".github/workflows/_deploy-monitoring-k8s.yml"
+      - ".github/workflows/deploy-monitoring-kubernetes-prod.yml"
+      - ".github/workflows/_deploy-monitoring-kubernetes.yml"
       - ".github/workflows/_verify-stack.yml"
       - ".github/workflows/_iac-security-scan.yml"
       - ".github/actions/**"
@@ -42,7 +42,7 @@ concurrency:
 jobs:
   deploy:
     name: Deploy to Production
-    uses: ./.github/workflows/_deploy-monitoring-k8s.yml
+    uses: ./.github/workflows/_deploy-monitoring-kubernetes.yml
     with:
       environment: production
       cdk-environment: production

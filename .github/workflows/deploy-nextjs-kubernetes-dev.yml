@@ -28,8 +28,8 @@ on:
       - "k8s/base/**"
       - "k8s/overlays/**"
       - "bin/app.ts"
-      - ".github/workflows/deploy-nextjs-k8s-dev.yml"
-      - ".github/workflows/_deploy-nextjs-k8s.yml"
+      - ".github/workflows/deploy-nextjs-kubernetes-dev.yml"
+      - ".github/workflows/_deploy-nextjs-kubernetes.yml"
       - ".github/workflows/_deploy-stack.yml"
       - ".github/workflows/_verify-stack.yml"
       - ".github/workflows/_iac-security-scan.yml"
@@ -53,7 +53,7 @@ concurrency:
 jobs:
   deploy:
     name: Deploy to Development
-    uses: ./.github/workflows/_deploy-nextjs-k8s.yml
+    uses: ./.github/workflows/_deploy-nextjs-kubernetes.yml
     with:
       environment: development
       cdk-environment: development
