@@ -340,8 +340,9 @@ fi`);
 echo "=== Attaching EBS volume ==="
 
 # Get instance metadata using IMDSv2 (required for HttpTokens: required)
+# Always fetch a fresh token with max TTL (6h) to avoid expiration across methods
 IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" \\
-  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
 
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \\
   http://169.254.169.254/latest/meta-data/instance-id)
@@ -593,10 +594,8 @@ echo "=== Initializing kubeadm cluster (v${kubernetesVersion}) ==="
 # Ensure data directory exists on persistent volume
 mkdir -p ${dataDir}
 
-# Get instance metadata via IMDSv2
-if [ -z "\${IMDS_TOKEN:-}" ]; then
-    IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
-fi
+# Get instance metadata via IMDSv2 (always fetch fresh token to avoid TTL expiration)
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
 PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4 || echo "")
 PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
@@ -725,10 +724,8 @@ kubectl get nodes -o wide`);
 
 echo "=== Joining kubeadm cluster as worker node ==="
 
-# Get instance metadata
-if [ -z "\${IMDS_TOKEN:-}" ]; then
-    IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
-fi
+# Get instance metadata via IMDSv2 (always fetch fresh token to avoid TTL expiration)
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
 
@@ -1027,10 +1024,8 @@ SYSTEMD_SERVICE
 systemctl daemon-reload
 systemctl enable monitoring-stack.service
 
-# Get instance ID and private IP using IMDSv2
-if [ -z "\${IMDS_TOKEN:-}" ]; then
-    IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-fi
+# Get instance ID and private IP using IMDSv2 (always fetch fresh token to avoid TTL expiration)
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
@@ -1086,10 +1081,8 @@ set +e
 
 echo "=== Triggering SSM document: ${documentName} (best-effort) ==="
 
-# Get instance ID from IMDS v2
-if [ -z "\${IMDS_TOKEN:-}" ]; then
-    IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-fi
+# Get instance ID from IMDSv2 (always fetch fresh token to avoid TTL expiration)
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 
 # Wait for SSM Agent to register this instance (may take 15-30s after boot)
@@ -1168,10 +1161,8 @@ set -e`);
 
 echo "=== Triggering SSM document: ${documentName} ==="
 
-# Get instance ID from IMDS v2
-if [ -z "\${IMDS_TOKEN:-}" ]; then
-    IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-fi
+# Get instance ID from IMDSv2 (always fetch fresh token to avoid TTL expiration)
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 
 # Wait for SSM Agent to register this instance (may take 15-30s after boot)

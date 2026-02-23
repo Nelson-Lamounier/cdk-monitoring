@@ -236,9 +236,9 @@ fi
 # ---------------------------------------------------------------------------
 echo "=== Step 6: Registering monitoring endpoints in SSM ==="
 
-# Get instance private IP from IMDS v2
+# Get instance private IP from IMDSv2 (use max TTL to avoid expiration)
 IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" \
-    -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || echo "")
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || echo "")
 
 if [ -n "${IMDS_TOKEN}" ]; then
     PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
