@@ -99,9 +99,9 @@ if (!['development', 'production'].includes(environment)) {
  * Both projects target the same k3s server instance (where kubectl runs).
  * The ASG and SSM paths reference the k3s server, not the agent.
  *
- * SSM document naming (from CDK namePrefix):
- *   - Monitoring: k8s-{env}-deploy-manifests  (namePrefix = 'k8s-{env}')
- *   - NextJS:     nextjs-k8s-deploy-manifests  (namePrefix = 'nextjs-k8s', no env)
+ * SSM document naming (from unified CDK compute-stack, namePrefix = 'k8s-{env}'):
+ *   - Monitoring: k8s-{env}-deploy-manifests
+ *   - NextJS:     k8s-{env}-deploy-app-manifests
  */
 function getProjectConfig(project: Project, env: Environment): ProjectConfig {
   const asgName = `k8s-${env}-asg`;
@@ -116,11 +116,11 @@ function getProjectConfig(project: Project, env: Environment): ProjectConfig {
     };
   }
 
-  // NextJS: namePrefix is 'nextjs-k8s' (no env suffix — see NextJS factory.ts)
+  // NextJS: uses the dedicated app-manifests SSM document
   return {
     asgName,
     ssmInstancePath,
-    ssmDocumentName: 'nextjs-k8s-deploy-manifests',
+    ssmDocumentName: `k8s-${env}-deploy-app-manifests`,
     argoAppName: 'nextjs',
   };
 }

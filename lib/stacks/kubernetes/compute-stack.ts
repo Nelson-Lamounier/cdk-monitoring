@@ -399,7 +399,56 @@ export class KubernetesComputeStack extends cdk.Stack {
                     'export MANIFESTS_DIR=/data/k8s/manifests',
                     '',
                     '# Re-sync all manifests from S3 and run deploy script',
-                    '/data/k8s/deploy-manifests.sh',
+                    '/data/k8s/apps/monitoring/deploy-manifests.sh',
+                ],
+                timeoutSeconds: 600,
+            }],
+        });
+
+        // =====================================================================
+        // SSM Run Command Document — Next.js Application Manifests
+        //
+        // Separate from monitoring: allows independent app manifest deployment
+        // without rerunning the monitoring deploy script.
+        // Triggered by GitHub Actions pipeline or manual SSM send-command.
+        // =====================================================================
+        const appManifestDeployDoc = new SsmRunCommandDocument(this, 'AppManifestDeployDocument', {
+            documentName: `${namePrefix}-deploy-app-manifests`,
+            description: 'Deploy Next.js application k8s manifests — re-syncs from S3, resolves secrets, applies via kubectl',
+            parameters: {
+                S3Bucket: {
+                    type: 'String',
+                    description: 'S3 bucket containing k8s manifests',
+                    default: scriptsBucket.bucketName,
+                },
+                S3KeyPrefix: {
+                    type: 'String',
+                    description: 'S3 key prefix',
+                    default: 'k8s',
+                },
+                SsmPrefix: {
+                    type: 'String',
+                    description: 'SSM parameter prefix for k8s',
+                    default: props.ssmPrefix,
+                },
+                Region: {
+                    type: 'String',
+                    description: 'AWS region',
+                    default: this.region,
+                },
+            },
+            steps: [{
+                name: 'deployAppManifests',
+                commands: [
+                    'export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig',
+                    'export S3_BUCKET="{{S3Bucket}}"',
+                    'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
+                    'export SSM_PREFIX="{{SsmPrefix}}"',
+                    'export AWS_REGION="{{Region}}"',
+                    'export MANIFESTS_DIR=/data/k8s/apps/nextjs',
+                    '',
+                    '# Re-sync manifests from S3 and run Next.js deploy script',
+                    '/data/k8s/apps/nextjs/deploy-manifests.sh',
                 ],
                 timeoutSeconds: 600,
             }],
@@ -497,18 +546,23 @@ export class KubernetesComputeStack extends cdk.Stack {
                 region: this.region,
             });
 
-        // Deploy Next.js application manifests (second kustomize apply)
+        // Deploy Next.js application manifests (second deploy script)
         userDataBuilder.addCustomScript(`
 # =============================================================================
 # Deploy Application (Next.js) K8s Manifests
 # Applied after monitoring manifests — separate namespace isolation
+# Delegates to deploy-manifests.sh for secret resolution and kubectl apply
 # =============================================================================
 
-echo "=== Applying Next.js application manifests ==="
+echo "=== Deploying Next.js application manifests ==="
 K8S_DIR="/data/k8s"
 
-# Apply via kustomize to the nextjs-app namespace
-k3s kubectl apply -k $K8S_DIR/k8s/apps/nextjs/ || echo "WARNING: nextjs kubectl apply failed — will retry via SSM"
+export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig
+export SSM_PREFIX="${props.ssmPrefix}"
+export AWS_REGION="${this.region}"
+export MANIFESTS_DIR="$K8S_DIR/apps/nextjs"
+
+$K8S_DIR/apps/nextjs/deploy-manifests.sh || echo "WARNING: nextjs deploy-manifests.sh failed — will retry via SSM"
 
 echo "=== Application manifests deployment complete ==="
 `);

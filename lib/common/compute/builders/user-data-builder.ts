@@ -907,7 +907,7 @@ export AWS_REGION="${region}"
 export MANIFESTS_DIR="$K8S_DIR/manifests"
 
 echo "Running deploy-manifests.sh..."
-$K8S_DIR/deploy-manifests.sh
+$K8S_DIR/apps/monitoring/deploy-manifests.sh
 
 echo "=== k8s first-boot deployment complete ==="`);
         return this;
