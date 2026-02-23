@@ -273,10 +273,13 @@ systemctl start docker
 systemctl enable docker
 usermod -aG docker ec2-user
 
+# Detect architecture for multi-arch support (x86_64 / aarch64 Graviton)
+COMPOSE_ARCH=$(uname -m)
+
 # Install Docker Compose v2 plugin (preferred: 'docker compose' syntax)
 DOCKER_COMPOSE_VERSION="${composeVersion}"
 mkdir -p /usr/local/lib/docker/cli-plugins
-curl -SL "https://github.com/docker/compose/releases/download/\${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" \\
+curl -SL "https://github.com/docker/compose/releases/download/\${DOCKER_COMPOSE_VERSION}/docker-compose-linux-\${COMPOSE_ARCH}" \\
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
@@ -301,7 +304,9 @@ echo "Docker Compose standalone: $(docker-compose --version 2>/dev/null || echo 
 # Install AWS CLI v2
 if ! command -v aws &> /dev/null; then
     echo "Installing AWS CLI v2..."
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+    # Detect architecture for multi-arch support
+    CLI_ARCH=$(uname -m)
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-\${CLI_ARCH}.zip" -o "/tmp/awscliv2.zip"
     unzip -q /tmp/awscliv2.zip -d /tmp
     /tmp/aws/install
     rm -rf /tmp/aws /tmp/awscliv2.zip

@@ -245,10 +245,29 @@ schemaVersion: 1.0
 phases:
   - name: build
     steps:
+      - name: DetectArchitecture
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              # Detect CPU architecture for multi-arch support (x86_64 / aarch64 Graviton)
+              UNAME_ARCH=$(uname -m)
+              case $UNAME_ARCH in
+                x86_64)  ARCH=amd64; COMPOSE_ARCH=x86_64; CLI_ARCH=x86_64 ;;
+                aarch64) ARCH=arm64; COMPOSE_ARCH=aarch64; CLI_ARCH=aarch64 ;;
+                *) echo "ERROR: Unsupported architecture: $UNAME_ARCH"; exit 1 ;;
+              esac
+              # Persist for subsequent build steps
+              echo "ARCH=$ARCH" >> /etc/environment
+              echo "COMPOSE_ARCH=$COMPOSE_ARCH" >> /etc/environment
+              echo "CLI_ARCH=$CLI_ARCH" >> /etc/environment
+              echo "Detected architecture: $UNAME_ARCH → ARCH=$ARCH, COMPOSE_ARCH=$COMPOSE_ARCH, CLI_ARCH=$CLI_ARCH"
+
       - name: UpdateSystem
         action: ExecuteBash
         inputs:
           commands:
+            - source /etc/environment
             - dnf update -y
             - dnf install -y jq curl unzip tar iproute-tc conntrack-tools socat
 
@@ -256,18 +275,20 @@ phases:
         action: ExecuteBash
         inputs:
           commands:
+            - source /etc/environment
             - dnf install -y docker
             - systemctl enable docker
             - usermod -aG docker ec2-user
             - mkdir -p /usr/local/lib/docker/cli-plugins
-            - curl -fsSL "https://github.com/docker/compose/releases/download/${imageConfig.bakedVersions.dockerCompose}/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
+            - curl -fsSL "https://github.com/docker/compose/releases/download/${imageConfig.bakedVersions.dockerCompose}/docker-compose-linux-$COMPOSE_ARCH" -o /usr/local/lib/docker/cli-plugins/docker-compose
             - chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
       - name: InstallAwsCli
         action: ExecuteBash
         inputs:
           commands:
-            - curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            - source /etc/environment
+            - curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$CLI_ARCH.zip" -o /tmp/awscli.zip
             - unzip -qo /tmp/awscli.zip -d /tmp
             - /tmp/aws/install --update
             - rm -rf /tmp/awscli.zip /tmp/aws
@@ -301,9 +322,11 @@ phases:
         inputs:
           commands:
             - |
+              source /etc/environment  # ARCH set by DetectArchitecture step
+
               # Install containerd as the container runtime
               CONTAINERD_VERSION="1.7.24"
-              curl -fsSL "https://github.com/containerd/containerd/releases/download/v\${CONTAINERD_VERSION}/containerd-\${CONTAINERD_VERSION}-linux-amd64.tar.gz" \
+              curl -fsSL "https://github.com/containerd/containerd/releases/download/v\${CONTAINERD_VERSION}/containerd-\${CONTAINERD_VERSION}-linux-\${ARCH}.tar.gz" \
                 -o /tmp/containerd.tar.gz
               tar -C /usr/local -xzf /tmp/containerd.tar.gz
               rm /tmp/containerd.tar.gz
@@ -323,27 +346,27 @@ phases:
 
               # Install runc
               RUNC_VERSION="1.2.4"
-              curl -fsSL "https://github.com/opencontainers/runc/releases/download/v\${RUNC_VERSION}/runc.amd64" \
+              curl -fsSL "https://github.com/opencontainers/runc/releases/download/v\${RUNC_VERSION}/runc.\${ARCH}" \
                 -o /usr/local/sbin/runc
               chmod +x /usr/local/sbin/runc
 
               # Install CNI plugins
               CNI_VERSION="1.6.1"
               mkdir -p /opt/cni/bin
-              curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v\${CNI_VERSION}/cni-plugins-linux-amd64-v\${CNI_VERSION}.tgz" \
+              curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v\${CNI_VERSION}/cni-plugins-linux-\${ARCH}-v\${CNI_VERSION}.tgz" \
                 -o /tmp/cni-plugins.tgz
               tar -C /opt/cni/bin -xzf /tmp/cni-plugins.tgz
               rm /tmp/cni-plugins.tgz
 
               # Install crictl
               CRICTL_VERSION="1.32.0"
-              curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/v\${CRICTL_VERSION}/crictl-v\${CRICTL_VERSION}-linux-amd64.tar.gz" \
+              curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/v\${CRICTL_VERSION}/crictl-v\${CRICTL_VERSION}-linux-\${ARCH}.tar.gz" \
                 -o /tmp/crictl.tar.gz
               tar -C /usr/local/bin -xzf /tmp/crictl.tar.gz
               rm /tmp/crictl.tar.gz
               crictl config --set runtime-endpoint=unix:///run/containerd/containerd.sock
 
-              echo "containerd, runc, CNI plugins, and crictl installed"
+              echo "containerd, runc, CNI plugins, and crictl installed (arch: \${ARCH})"
 
       - name: InstallKubeadmKubeletKubectl
         action: ExecuteBash
