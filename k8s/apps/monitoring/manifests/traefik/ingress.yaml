@@ -1,5 +1,5 @@
 # @format
-# Traefik IngressRoute — exposes Grafana via the k3s built-in Traefik
+# Traefik IngressRoute — exposes Grafana via the Traefik ingress controller
 # Accessible via CloudFront (monitoring.nelsonlamounier.com) or direct EIP
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute

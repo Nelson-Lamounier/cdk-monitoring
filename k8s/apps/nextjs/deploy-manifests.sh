@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # @format
-# deploy-manifests.sh — Deploy Next.js application to k3s
+# deploy-manifests.sh — Deploy Next.js application to Kubernetes
 #
 # Deploys the Next.js K8s manifests to the nextjs-app namespace. Can be invoked:
 #   1. By UserData during first boot (after S3 sync)
@@ -17,7 +17,7 @@
 #   MANIFESTS_DIR      Path to nextjs manifests dir (default: /data/k8s/apps/nextjs)
 #   SSM_PREFIX         SSM parameter prefix (default: /k8s/development)
 #   AWS_REGION         AWS region (default: eu-west-1)
-#   KUBECONFIG         Path to kubeconfig (default: /data/k3s/server/cred/admin.kubeconfig)
+#   KUBECONFIG         Path to kubeconfig (default: /etc/kubernetes/admin.conf)
 #   S3_BUCKET          S3 bucket to re-sync from (optional — set by CI/CD)
 #   S3_KEY_PREFIX      S3 key prefix (default: k8s)
 #   FRONTEND_SSM_PREFIX  SSM prefix for frontend params (default: /frontend/development)
@@ -31,7 +31,7 @@ set -euo pipefail
 MANIFESTS_DIR="${MANIFESTS_DIR:-/data/k8s/apps/nextjs}"
 SSM_PREFIX="${SSM_PREFIX:-/k8s/development}"
 AWS_REGION="${AWS_REGION:-eu-west-1}"
-KUBECONFIG="${KUBECONFIG:-/data/k3s/server/cred/admin.kubeconfig}"
+KUBECONFIG="${KUBECONFIG:-/etc/kubernetes/admin.conf}"
 S3_BUCKET="${S3_BUCKET:-}"
 S3_KEY_PREFIX="${S3_KEY_PREFIX:-k8s}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-300}"

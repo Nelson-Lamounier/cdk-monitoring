@@ -4,7 +4,7 @@
 # Uses kubernetes_sd_configs for automatic pod labeling.
 # Promtail runs as a DaemonSet on every node, collecting:
 #   1. Pod logs (via K8s SD — automatic app/namespace/pod labels)
-#   2. System logs (syslog, user-data, k3s)
+#   2. System logs (syslog, user-data, kubelet)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -90,10 +90,10 @@ data:
               job: "user-data"
               __path__: /var/log/user-data.log
 
-      - job_name: k3s
+      - job_name: kubelet
         static_configs:
           - targets:
               - localhost
             labels:
-              job: "k3s"
-              __path__: /var/log/k3s*.log
+              job: "kubelet"
+              __path__: /var/log/kubelet*.log

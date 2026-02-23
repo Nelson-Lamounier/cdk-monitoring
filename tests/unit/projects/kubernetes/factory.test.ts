@@ -2,7 +2,7 @@
  * @format
  * KubernetesProjectFactory Unit Tests
  *
- * Tests for the factory that creates shared k3s Kubernetes infrastructure.
+ * Tests for the factory that creates shared kubeadm Kubernetes infrastructure.
  * Creates 4 stacks: Data, Compute, API, and Edge.
  *
  * IMPORTANT: Edge config env vars MUST be set before the config module is
@@ -71,7 +71,7 @@ describe('KubernetesProjectFactory', () => {
 
             const { stacks, stackMap } = factory.createAllStacks(app, context);
 
-            // Shared k3s project has 4 stacks: Data, Compute, API, Edge
+            // Shared kubeadm project has 4 stacks: Data, Compute, API, Edge
             expect(stacks).toHaveLength(4);
             expect(stackMap).toHaveProperty('data');
             expect(stackMap).toHaveProperty('compute');

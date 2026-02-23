@@ -10,7 +10,7 @@
  * Architecture (Layer 3 of hybrid bootstrap):
  * - Layer 1: Golden AMI (pre-baked software)
  * - Layer 2: Light User Data (EBS attach, EIP, cfn-signal)
- * - Layer 3: SSM State Manager (THIS) — k3s bootstrap, CNI, manifests
+ * - Layer 3: SSM State Manager (THIS) — kubeadm bootstrap, CNI, manifests
  * - Layer 4: SSM Documents (on-demand runbooks)
  *
  * The association targets instances by tag (matching the ASG tag) and
@@ -56,7 +56,7 @@ export interface SsmStateManagerProps {
     readonly namePrefix: string;
     /** SSM configuration from K8sConfigs */
     readonly ssmConfig: K8sSsmConfig;
-    /** Cluster configuration for k3s settings */
+    /** Cluster configuration for Kubernetes settings */
     readonly clusterConfig: KubernetesClusterConfig;
     /** IAM role to grant SSM permissions to */
     readonly instanceRole: iam.IRole;
@@ -110,10 +110,10 @@ export class SsmStateManagerConstruct extends Construct {
                 schemaVersion: '2.2',
                 description: `Post-boot k8s configuration for ${namePrefix}. Installs Calico CNI, configures kubeconfig, and deploys manifests. Designed for idempotent re-execution via State Manager.`,
                 parameters: {
-                    K3sDataDir: {
+                    KubeConfigPath: {
                         type: 'String',
-                        default: clusterConfig.dataDir,
-                        description: 'k3s data directory',
+                        default: '/etc/kubernetes/admin.conf',
+                        description: 'Path to kubeconfig file',
                     },
                     S3Bucket: {
                         type: 'String',
@@ -134,7 +134,7 @@ export class SsmStateManagerConstruct extends Construct {
                 mainSteps: [
                     {
                         action: 'aws:runShellScript',
-                        name: 'WaitForK3s',
+                        name: 'WaitForKubernetes',
                         precondition: {
                             StringEquals: ['platformType', 'Linux'],
                         },
@@ -143,22 +143,22 @@ export class SsmStateManagerConstruct extends Construct {
                                 '#!/bin/bash',
                                 'set -euo pipefail',
                                 '',
-                                '# Wait for k3s to be ready (user-data starts it)',
-                                'echo "Waiting for k3s API server..."',
+                                '# Wait for Kubernetes API to be ready (kubeadm init starts it)',
+                                'echo "Waiting for Kubernetes API server..."',
                                 'TIMEOUT=120',
                                 'WAITED=0',
-                                'export KUBECONFIG={{ K3sDataDir }}/server/cred/admin.kubeconfig',
+                                'export KUBECONFIG={{ KubeConfigPath }}/server/cred/admin.kubeconfig',
                                 '',
                                 'while ! kubectl get nodes &>/dev/null; do',
                                 '  if [ $WAITED -ge $TIMEOUT ]; then',
-                                '    echo "ERROR: k3s not ready after ${TIMEOUT}s"',
+                                '    echo "ERROR: Kubernetes API not ready after ${TIMEOUT}s"',
                                 '    exit 1',
                                 '  fi',
                                 '  sleep 5',
                                 '  WAITED=$((WAITED + 5))',
                                 '  echo "  Waiting... (${WAITED}s/${TIMEOUT}s)"',
                                 'done',
-                                'echo "✓ k3s API server is ready"',
+                                'echo "✓ Kubernetes API server is ready"',
                             ],
                         },
                     },
@@ -169,7 +169,7 @@ export class SsmStateManagerConstruct extends Construct {
                             runCommand: [
                                 '#!/bin/bash',
                                 'set -euo pipefail',
-                                'export KUBECONFIG={{ K3sDataDir }}/server/cred/admin.kubeconfig',
+                                'export KUBECONFIG={{ KubeConfigPath }}/server/cred/admin.kubeconfig',
                                 '',
                                 '# Check if Calico is already applied',
                                 'if kubectl get daemonset calico-node -n kube-system &>/dev/null; then',
@@ -200,16 +200,16 @@ export class SsmStateManagerConstruct extends Construct {
                                 'set -euo pipefail',
                                 '',
                                 '# Setup kubeconfig for root and ec2-user',
-                                'K3S_KUBECONFIG="{{ K3sDataDir }}/server/cred/admin.kubeconfig"',
+                                'K3S_KUBECONFIG="{{ KubeConfigPath }}/server/cred/admin.kubeconfig"',
                                 '',
                                 '# Root',
                                 'mkdir -p /root/.kube',
-                                'cp -f "${K3S_KUBECONFIG}" /root/.kube/config',
+                                'cp -f "${KUBECONFIG_SRC}" /root/.kube/config',
                                 'chmod 600 /root/.kube/config',
                                 '',
                                 '# ec2-user',
                                 'mkdir -p /home/ec2-user/.kube',
-                                'cp -f "${K3S_KUBECONFIG}" /home/ec2-user/.kube/config',
+                                'cp -f "${KUBECONFIG_SRC}" /home/ec2-user/.kube/config',
                                 'chown ec2-user:ec2-user /home/ec2-user/.kube/config',
                                 'chmod 600 /home/ec2-user/.kube/config',
                                 '',
@@ -224,7 +224,7 @@ export class SsmStateManagerConstruct extends Construct {
                             runCommand: [
                                 '#!/bin/bash',
                                 'set -euo pipefail',
-                                'export KUBECONFIG={{ K3sDataDir }}/server/cred/admin.kubeconfig',
+                                'export KUBECONFIG={{ KubeConfigPath }}/server/cred/admin.kubeconfig',
                                 'export S3_BUCKET={{ S3Bucket }}',
                                 'export SSM_PREFIX={{ SsmPrefix }}',
                                 'export AWS_REGION={{ AwsRegion }}',

@@ -37,7 +37,7 @@ spec:
         app.kubernetes.io/name: nextjs
         app.kubernetes.io/part-of: nextjs
     spec:
-      # Single shared k3s node — no nodeSelector/tolerations needed.
+      # Single shared Kubernetes node — no nodeSelector/tolerations needed.
       # Isolation is enforced via Namespaces, NetworkPolicies,
       # ResourceQuotas, and PriorityClasses.
 

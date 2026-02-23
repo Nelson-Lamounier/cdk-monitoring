@@ -137,14 +137,14 @@ const nextjsStacks: StackConfig[] = [
   },
 
   // -------------------------------------------------------------------------
-  // Phase 4b: K8s Compute Layer (EC2 k3s agent + EIP + EBS)
+  // Phase 4b: K8s Compute Layer (EC2 kubeadm worker + EIP + EBS)
   // Replaces: ECS Compute + Networking + Application stacks
   // -------------------------------------------------------------------------
   {
     id: 'k8sCompute',
     name: 'K8s Compute Stack',
     getStackName: (env) => getStackId(Project.NEXTJS, 'k8sCompute', env),
-    description: 'k3s Kubernetes agent node: EC2 + ASG + EBS + EIP for NextJS workloads',
+    description: 'kubeadm Kubernetes worker node: EC2 + ASG + EBS + EIP for NextJS workloads',
     dependsOn: ['data'],
   },
 
@@ -252,7 +252,7 @@ const orgProject: ProjectConfig = {
 };
 
 // =============================================================================
-// K8S PROJECT (k3s Kubernetes Cluster — 4-Stack Architecture)
+// K8S PROJECT (kubeadm Kubernetes Cluster — 4-Stack Architecture)
 // Synth outputs all 4 stacks. Infra pipeline deploys Data/Compute/Edge (3).
 // API stack is deployed by the Next.js thin wrapper pipeline.
 // =============================================================================
@@ -268,7 +268,7 @@ const k8sStacks: StackConfig[] = [
     id: 'compute',
     name: 'Compute Stack',
     getStackName: (env) => getStackId(Project.KUBERNETES, 'compute', env),
-    description: 'k3s Kubernetes cluster: EC2 + ASG + EBS + Security Group + Elastic IP',
+    description: 'kubeadm Kubernetes cluster: EC2 + ASG + EBS + Security Group + Elastic IP',
     dependsOn: ['data'],
   },
   {
@@ -291,7 +291,7 @@ const k8sStacks: StackConfig[] = [
 const k8sProject: ProjectConfig = {
   id: 'kubernetes',
   name: 'Monitoring-K8s',
-  description: 'Self-managed k3s Kubernetes cluster for unified workloads (requires Shared VPC)',
+  description: 'Self-managed kubeadm Kubernetes cluster for unified workloads (requires Shared VPC)',
   stacks: k8sStacks,
   cdkContext: (env) => ({
     project: 'kubernetes',

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # @format
-# deploy-manifests.sh — Deploy monitoring stack to k3s
+# deploy-manifests.sh — Deploy monitoring stack to Kubernetes
 #
-# Deploys the k8s monitoring manifests to the k3s cluster. Can be invoked:
+# Deploys the k8s monitoring manifests to the kubeadm cluster. Can be invoked:
 #   1. By UserData during first boot (after S3 sync)
 #   2. By SSM Run Command from CI/CD pipeline (re-syncs from S3)
 #
@@ -17,7 +17,7 @@
 #   MANIFESTS_DIR      Path to manifests directory (default: /data/k8s/manifests)
 #   SSM_PREFIX         SSM parameter prefix (default: /k8s/development)
 #   AWS_REGION         AWS region (default: eu-west-1)
-#   KUBECONFIG         Path to kubeconfig (default: /data/k3s/server/cred/admin.kubeconfig)
+#   KUBECONFIG         Path to kubeconfig (default: /etc/kubernetes/admin.conf)
 #   S3_BUCKET          S3 bucket to re-sync from (optional — set by CI/CD)
 #   S3_KEY_PREFIX      S3 key prefix (default: k8s)
 #   GRAFANA_ADMIN_PASSWORD   Override Grafana admin password (skips SSM lookup)
@@ -32,7 +32,7 @@ set -euo pipefail
 MANIFESTS_DIR="${MANIFESTS_DIR:-/data/k8s/manifests}"
 SSM_PREFIX="${SSM_PREFIX:-/k8s/development}"
 AWS_REGION="${AWS_REGION:-eu-west-1}"
-KUBECONFIG="${KUBECONFIG:-/data/k3s/server/cred/admin.kubeconfig}"
+KUBECONFIG="${KUBECONFIG:-/etc/kubernetes/admin.conf}"
 S3_BUCKET="${S3_BUCKET:-}"
 S3_KEY_PREFIX="${S3_KEY_PREFIX:-k8s}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-300}"
@@ -61,8 +61,8 @@ fi
 # ---------------------------------------------------------------------------
 # 1b. Clean stale nodes from previous instances
 #
-# k3s stores cluster state on the persistent EBS volume (/data/k3s).
-# When a new instance boots, the old ETCD data still contains node
+# kubeadm stores cluster state on the persistent EBS volume (/data/kubernetes).
+# When a new instance boots, the old etcd data still contains node
 # registrations from terminated instances. These stale NotReady nodes
 # cause DaemonSets to schedule pods on dead nodes and block PVC binding.
 # ---------------------------------------------------------------------------

@@ -237,7 +237,7 @@ async function checkCloudFormationStacks(): Promise<CheckResult> {
 }
 
 // ==========================================================================
-// CHECK 2: EIP HTTP Health (Traefik/k3s ingress)
+// CHECK 2: EIP HTTP Health (Traefik ingress)
 // ==========================================================================
 async function checkEipHealth(): Promise<CheckResult> {
   if (!eipAddress) {
@@ -252,7 +252,7 @@ async function checkEipHealth(): Promise<CheckResult> {
   if (rootCode > 0 && rootCode < 500) {
     logger.success(`EIP root: HTTP ${rootCode}`);
   } else {
-    logger.error(`EIP root: HTTP ${rootCode} (Traefik/k3s not responding)`);
+    logger.error(`EIP root: HTTP ${rootCode} (Traefik not responding)`);
     return {
       name: 'EIP HTTP Health',
       status: 'unhealthy',

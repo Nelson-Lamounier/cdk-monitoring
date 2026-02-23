@@ -1,6 +1,6 @@
 # @format
 # Promtail DaemonSet — runs on every node to ship logs to Loki
-# On a single-node k3s cluster this means 1 pod
+# On a single-node Kubernetes cluster this means 1 pod
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:

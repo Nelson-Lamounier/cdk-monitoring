@@ -77,7 +77,7 @@ data:
       # 3. Kubelet (pod lifecycle, volume stats)
       #
       # Every node runs kubelet at :10250/metrics.
-      # k3s uses self-signed certs → insecure_skip_verify.
+      # kubeadm uses self-signed certs → insecure_skip_verify.
       # -----------------------------------------------------------------
       - job_name: "kubelet"
         kubernetes_sd_configs:
@@ -140,7 +140,7 @@ data:
       # -----------------------------------------------------------------
       # 7. CoreDNS (DNS resolution health)
       #
-      # k3s bundles CoreDNS in kube-system namespace.
+      # CoreDNS runs in kube-system namespace.
       # Exposes Prometheus metrics on :9153 by default.
       # -----------------------------------------------------------------
       - job_name: "coredns"
@@ -175,7 +175,7 @@ data:
       # -----------------------------------------------------------------
       # 9. Traefik Ingress (L7 traffic metrics)
       #
-      # k3s deploys Traefik as default ingress controller.
+      # Traefik deployed as ingress controller.
       # Metrics are exposed on port 9100 of the traefik service.
       # -----------------------------------------------------------------
       - job_name: "traefik"

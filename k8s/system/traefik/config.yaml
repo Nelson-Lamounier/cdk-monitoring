@@ -1,19 +1,19 @@
 # @format
 # Traefik OTLP Tracing Configuration
 #
-# Enables distributed tracing on the k3s Traefik ingress controller.
+# Enables distributed tracing on the Traefik ingress controller.
 # Traces are exported to Tempo via OTLP gRPC (in-cluster DNS).
 #
-# This is a k3s HelmChartConfig — k3s watches this resource and
+# This is a HelmChartConfig — the cluster watches this resource and
 # applies the values to the bundled Traefik Helm chart automatically.
 #
-# See: https://docs.k3s.io/helm#customizing-packaged-components-with-helmchartconfig
+# See: Traefik Helm chart documentation
 apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
 metadata:
   name: traefik
   annotations:
-    kubernetes.io/description: "k3s Traefik overrides: Prometheus metrics on 9100 and OTLP tracing to Tempo"
+    kubernetes.io/description: "Traefik overrides: Prometheus metrics on 9100 and OTLP tracing to Tempo"
   namespace: kube-system
 spec:
   valuesContent: |-

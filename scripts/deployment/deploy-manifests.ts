@@ -2,11 +2,11 @@
 /**
  * Deploy K8s Manifests via SSM
  *
- * Shared script for deploying Kubernetes manifests to the k3s cluster
+ * Shared script for deploying Kubernetes manifests to the kubeadm cluster
  * via SSM Run Command. Used by both monitoring and NextJS K8s pipelines.
  *
  * Steps:
- *   1. Find the k3s server instance (ASG query → SSM fallback)
+ *   1. Find the Kubernetes control plane instance (ASG query → SSM fallback)
  *   2. Wait for SSM Agent to be online
  *   3. Show boot diagnostics (user-data.log tail)
  *   4. Send the project-specific SSM deploy-manifests document
@@ -96,8 +96,8 @@ if (!['development', 'production'].includes(environment)) {
 /**
  * Build project-specific configuration.
  *
- * Both projects target the same k3s server instance (where kubectl runs).
- * The ASG and SSM paths reference the k3s server, not the agent.
+ * Both projects target the same Kubernetes control plane instance (where kubectl runs).
+ * The ASG and SSM paths reference the control plane node.
  *
  * SSM document naming (from unified CDK compute-stack, namePrefix = 'k8s-{env}'):
  *   - Monitoring: k8s-{env}-deploy-manifests
@@ -147,11 +147,11 @@ const BOOT_LOG_TIMEOUT = 30;      // seconds to wait for boot log command
 // =============================================================================
 
 /**
- * Find the k3s server instance ID.
+ * Find the Kubernetes control plane instance ID.
  * Strategy: ASG query first (always up-to-date), SSM fallback second.
  */
 async function findInstance(config: ProjectConfig): Promise<string | null> {
-  logger.task('Finding k3s server instance...');
+  logger.task('Finding Kubernetes control plane instance...');
   logger.keyValue('ASG', config.asgName);
 
   // 1. ASG query — get the InService instance
@@ -498,7 +498,7 @@ async function main(): Promise<void> {
   const instanceId = await findInstance(config);
 
   if (!instanceId) {
-    logger.warn('No k3s server instance found — skipping manifest deployment');
+    logger.warn('No Kubernetes control plane instance found — skipping manifest deployment');
     logger.info('First boot will apply manifests automatically via UserData');
     setOutput('skip', 'true');
     return;

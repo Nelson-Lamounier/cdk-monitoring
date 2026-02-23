@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # @format
-# bootstrap-argocd.sh — Bootstrap ArgoCD on k3s
+# bootstrap-argocd.sh — Bootstrap ArgoCD on Kubernetes
 #
 # Installs ArgoCD and configures it to watch the private GitHub repo.
-# Run once during first boot (via user-data) after k3s is ready.
+# Run once during first boot (via user-data) after kubeadm cluster is ready.
 #
 # Prerequisites:
-#   - k3s running with KUBECONFIG available
+#   - Kubernetes cluster running with KUBECONFIG available
 #   - Manifests synced from S3 to /data/k8s/
 #   - SSM parameters available for GitHub token
 #
@@ -21,7 +21,7 @@
 # Environment variables:
 #   SSM_PREFIX     SSM parameter prefix (default: /k8s/development)
 #   AWS_REGION     AWS region (default: eu-west-1)
-#   KUBECONFIG     Path to kubeconfig (default: /data/k3s/server/cred/admin.kubeconfig)
+#   KUBECONFIG     Path to kubeconfig (default: /etc/kubernetes/admin.conf)
 #   ARGOCD_DIR     Path to ArgoCD manifests (default: /data/k8s/system/argocd)
 
 set -euo pipefail
@@ -31,7 +31,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 SSM_PREFIX="${SSM_PREFIX:-/k8s/development}"
 AWS_REGION="${AWS_REGION:-eu-west-1}"
-KUBECONFIG="${KUBECONFIG:-/data/k3s/server/cred/admin.kubeconfig}"
+KUBECONFIG="${KUBECONFIG:-/etc/kubernetes/admin.conf}"
 ARGOCD_DIR="${ARGOCD_DIR:-/data/k8s/system/argocd}"
 
 export KUBECONFIG
