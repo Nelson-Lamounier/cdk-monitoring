@@ -43,7 +43,7 @@ concurrency:
 jobs:
   deploy:
     name: Deploy to Development
-    uses: ./.github/workflows/_deploy-monitoring-k8s.yml
+    uses: ./.github/workflows/_deploy-monitoring-kubernetes.yml
     with:
       environment: development
       cdk-environment: development
