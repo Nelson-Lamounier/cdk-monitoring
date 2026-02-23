@@ -1,0 +1,59 @@
+# @format
+# @description Deploy K8s Infrastructure to Production
+#
+# Deploys the centralized k3s Kubernetes infrastructure to the production account.
+# Includes: Data (DynamoDB/S3), Compute (EC2 k3s), Edge (CloudFront/WAF).
+# Post-deploy: monitoring manifests, app manifests, static assets, smoke tests.
+#
+# Prerequisites:
+#   - Shared VPC from deploy-shared workflow
+
+name: Deploy K8s to Production
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "lib/config/k8s/**"
+      - "lib/config/nextjs/**"
+      - "lib/config/projects.ts"
+      - "lib/config/defaults.ts"
+      - "lib/projects/k8s/**"
+      - "lib/stacks/kubernetes/**"
+      - "lib/common/compute/builders/user-data-builder.ts"
+      - "k8s/**"
+      - "lambda/**"
+      - "bin/app.ts"
+      - ".github/workflows/deploy-k8s-prod.yml"
+      - ".github/workflows/_deploy-k8s.yml"
+      - ".github/workflows/_deploy-stack.yml"
+      - ".github/workflows/_iac-security-scan.yml"
+      - ".github/actions/**"
+  workflow_dispatch:
+    inputs:
+      skip_verification:
+        description: "Skip post-deployment verification"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-k8s-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    uses: ./.github/workflows/_deploy-kubernetes.yml
+    with:
+      environment: production
+      cdk-environment: production
+      require-approval: broadening
+      enable-security-scan: true
+      security-scan-blocking: true
+      skip-verification: ${{ inputs.skip_verification || false }}
+    secrets: inherit

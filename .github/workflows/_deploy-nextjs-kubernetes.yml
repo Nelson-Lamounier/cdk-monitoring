@@ -517,7 +517,7 @@ jobs:
       - name: Run K8s Smoke Tests
         id: smoke
         run: |
-          SMOKE_CMD="just ci-smoke-k8s ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}"
+          SMOKE_CMD="just ci-smoke-kubernetes ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}"
 
           if [ -n "${{ needs.setup.outputs.domain-name }}" ]; then
             SMOKE_CMD="$SMOKE_CMD --cloudfront-domain ${{ needs.setup.outputs.domain-name }}"

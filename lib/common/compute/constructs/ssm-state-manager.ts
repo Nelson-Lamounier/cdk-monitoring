@@ -45,7 +45,7 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { K3sClusterConfig, K8sSsmConfig } from '../../../config/k8s/configurations';
+import { K3sClusterConfig, K8sSsmConfig } from '../../../config/kubernetes/configurations';
 
 // =============================================================================
 // PROPS

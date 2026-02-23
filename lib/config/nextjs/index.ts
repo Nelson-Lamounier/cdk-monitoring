@@ -26,4 +26,4 @@ export * from './configurations';
 export * from './resource-names';
 
 // Export K8s deployment configurations
-export * from './k8s-configurations';
+export * from './kubernetes-configurations';

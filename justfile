@@ -97,7 +97,7 @@ bootstrap account profile *ARGS:
 # CI synth-validate: synthesize all projects for CI validation
 # Validates that all CDK stacks synthesize correctly without AWS API calls.
 # Uses --no-lookups to rely on cached cdk.context.json instead of live AWS lookups.
-# Covers: monitoring (3 stacks), k8s (2 stacks), nextjs (multi-stack).
+# Covers: monitoring (3 stacks), k8s (4 stacks), nextjs (multi-stack).
 # Called by: .github/workflows/ci.yml → validate-cdk job
 [group('ci')]
 ci-synth-validate:
@@ -198,13 +198,13 @@ ci-smoke *ARGS:
 
 # CI smoke tests (NextJS K8s)
 [group('ci')]
-ci-smoke-k8s *ARGS:
-    npx tsx scripts/deployment/smoke-tests-nextjs-k8s.ts {{ARGS}}
+ci-smoke-kubernetes *ARGS:
+    npx tsx scripts/deployment/smoke-tests-nextjs-kubernetes.ts {{ARGS}}
 
 # CI smoke tests (Monitoring K8s)
 [group('ci')]
-ci-smoke-monitoring-k8s *ARGS:
-    npx tsx scripts/deployment/smoke-tests-monitoring-k8s.ts {{ARGS}}
+ci-smoke-monitoring-kubernetes *ARGS:
+    npx tsx scripts/deployment/smoke-tests-monitoring-kubernetes.ts {{ARGS}}
 
 # CI sync S3 assets
 [group('ci')]

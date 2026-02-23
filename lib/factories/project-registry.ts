@@ -8,7 +8,7 @@
 
 import { Environment, isValidEnvironment, resolveEnvironment } from '../config/environments';
 import { Project, isValidProject, getAvailableProjects } from '../config/projects';
-import { K8sProjectFactory } from '../projects/k8s';
+import { KubernetesProjectFactory } from '../projects/kubernetes';
 import { MonitoringProjectFactory } from '../projects/monitoring';
 import { NextJSProjectFactory } from '../projects/nextjs';
 import { OrgProjectFactory } from '../projects/org';
@@ -24,7 +24,7 @@ const projectFactoryRegistry: Record<Project, ProjectFactoryConstructor> = {
     [Project.MONITORING]: MonitoringProjectFactory,
     [Project.NEXTJS]: NextJSProjectFactory,
     [Project.ORG]: OrgProjectFactory,
-    [Project.K8S]: K8sProjectFactory,
+    [Project.K8S]: KubernetesProjectFactory,
 };
 
 /**
