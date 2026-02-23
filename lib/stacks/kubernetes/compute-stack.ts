@@ -498,14 +498,13 @@ export class KubernetesComputeStack extends cdk.Stack {
         }
 
         // =====================================================================
-        // User Data (kubeadm control plane bootstrap)
+        // User Data — slim bootstrap stub
         //
-        // ORDERING: cfn-signal fires after critical infra (AWS CLI, EBS)
-        // but BEFORE dnf update.
-        //
-        //   installAwsCli → attachEbs → sendCfnSignal → updateSystem → kubeadm
-        //                                             → deployMonitoringManifests
-        //                                             → deployApplicationManifests
+        // Heavy logic lives in k8s/boot/boot-k8s.sh (uploaded to S3 via
+        // BucketDeployment). Inline user data just installs AWS CLI,
+        // exports env vars with CDK token values, then downloads & executes
+        // the boot script. This keeps user data well under CloudFormation's
+        // 16 KB limit (~1 KB vs 18 KB previously).
         // =====================================================================
         userData.addCommands(
             'set -euxo pipefail',
@@ -514,113 +513,29 @@ export class KubernetesComputeStack extends cdk.Stack {
             'echo "=== kubeadm user data script started at $(date) ==="',
         );
 
-        const userDataBuilder = new UserDataBuilder(userData, { skipPreamble: true })
+        new UserDataBuilder(userData, { skipPreamble: true })
             .installAwsCli()
-            .attachEbsVolume({
-                volumeId: ebsVolume.volumeId,
-                mountPoint: configs.storage.mountPoint,
-            })
-            // Signal after EBS attach (critical infra confirmed) but
-            // BEFORE dnf update (the 10-15 min cold-boot bottleneck).
-            .sendCfnSignal({
-                stackName: this.stackName,
-                asgLogicalId,
-                region: this.region,
-            })
-            .updateSystem()
-            .initKubeadmCluster({
-                kubernetesVersion: configs.cluster.kubernetesVersion,
-                dataDir: configs.cluster.dataDir,
-                podNetworkCidr: configs.cluster.podNetworkCidr,
-                serviceSubnet: configs.cluster.serviceSubnet,
-                ssmPrefix: props.ssmPrefix,
-            })
-            .installCalicoCNI(configs.cluster.podNetworkCidr, configs.image.bakedVersions.calico)
-            .configureKubeconfig()
-            .deployK8sManifests({
-                s3BucketName: scriptsBucket.bucketName,
-                s3KeyPrefix: 'k8s',
-                manifestsDir: '/data/k8s',
-                ssmPrefix: props.ssmPrefix,
-                region: this.region,
-            });
-
-        // Pre-seed Next.js secrets (ArgoCD manages manifests but can't resolve SSM)
-        /* eslint-disable no-useless-escape -- \$ escapes are intentional: produce literal $ in shell script */
-        userDataBuilder.addCustomScript(`
-# =============================================================================
-# Pre-seed Next.js Secrets (before ArgoCD bootstrap)
-# ArgoCD manages declarative manifests but can't resolve SSM secrets.
-# We create the K8s secrets here so they exist when ArgoCD syncs.
-# =============================================================================
-
-echo "=== Pre-seeding Next.js secrets ==="
-K8S_DIR="/data/k8s"
-
-export KUBECONFIG=/etc/kubernetes/admin.conf
-export SSM_PREFIX="${props.ssmPrefix}"
+            .addCustomScript(`
+# Export runtime values (CDK tokens resolved at synth time)
+export VOLUME_ID="${ebsVolume.volumeId}"
+export MOUNT_POINT="${configs.storage.mountPoint}"
+export STACK_NAME="${this.stackName}"
+export ASG_LOGICAL_ID="${asgLogicalId}"
 export AWS_REGION="${this.region}"
-
-# Derive frontend SSM prefix: /k8s/development → /frontend/development
-K8S_ENV="\${SSM_PREFIX##*/}"
-FRONTEND_SSM_PREFIX="/frontend/\${K8S_ENV}"
-
-# Create nextjs-app namespace (if not exists)
-kubectl create namespace nextjs-app --dry-run=client -o yaml | kubectl apply -f -
-
-# Resolve secrets from SSM
-resolve_frontend_secret() {
-    local param_name="\$1"
-    local ssm_path="\${FRONTEND_SSM_PREFIX}/\${param_name}"
-    aws ssm get-parameter --name "\${ssm_path}" --with-decryption \
-        --query 'Parameter.Value' --output text \
-        --region "\${AWS_REGION}" 2>/dev/null || echo ""
-}
-
-DYNAMODB_TABLE_NAME=\$(resolve_frontend_secret "dynamodb/table-name")
-ASSETS_BUCKET_NAME=\$(resolve_frontend_secret "s3/assets-bucket-name")
-NEXT_PUBLIC_API_URL=\$(resolve_frontend_secret "api/gateway-url")
-
-SECRET_ARGS=""
-[ -n "\${DYNAMODB_TABLE_NAME}" ] && SECRET_ARGS="\${SECRET_ARGS} --from-literal=DYNAMODB_TABLE_NAME=\${DYNAMODB_TABLE_NAME}"
-[ -n "\${ASSETS_BUCKET_NAME}" ] && SECRET_ARGS="\${SECRET_ARGS} --from-literal=ASSETS_BUCKET_NAME=\${ASSETS_BUCKET_NAME}"
-[ -n "\${NEXT_PUBLIC_API_URL}" ] && SECRET_ARGS="\${SECRET_ARGS} --from-literal=NEXT_PUBLIC_API_URL=\${NEXT_PUBLIC_API_URL}"
-
-if [ -n "\${SECRET_ARGS}" ]; then
-    kubectl create secret generic nextjs-secrets \
-        \${SECRET_ARGS} \
-        --namespace nextjs-app \
-        --dry-run=client -o yaml | kubectl apply -f -
-    echo "✓ nextjs-secrets pre-seeded"
-else
-    echo "⚠ No Next.js secrets resolved — skipping"
-fi
-
-echo "=== Next.js secret pre-seeding complete ==="
-`);
-        /* eslint-enable no-useless-escape */
-        // Bootstrap ArgoCD (GitOps — replaces push-based manifest deployment)
-        userDataBuilder.addCustomScript(`
-# =============================================================================
-# Bootstrap ArgoCD (GitOps Controller)
-# ArgoCD watches the Git repo and auto-syncs manifest changes.
-# Replaces the SSM Run Command push-based deployment model.
-# =============================================================================
-
-echo "=== Bootstrapping ArgoCD ==="
-K8S_DIR="/data/k8s"
-
-export KUBECONFIG=/etc/kubernetes/admin.conf
+export K8S_VERSION="${configs.cluster.kubernetesVersion}"
+export DATA_DIR="${configs.cluster.dataDir}"
+export POD_CIDR="${configs.cluster.podNetworkCidr}"
+export SERVICE_CIDR="${configs.cluster.serviceSubnet}"
 export SSM_PREFIX="${props.ssmPrefix}"
-export AWS_REGION="${this.region}"
-export ARGOCD_DIR="$K8S_DIR/system/argocd"
+export S3_BUCKET="${scriptsBucket.bucketName}"
+export CALICO_VERSION="${configs.image.bakedVersions.calico}"
 
-$K8S_DIR/system/argocd/bootstrap-argocd.sh || echo "WARNING: ArgoCD bootstrap failed — manifests still applied via deploy scripts above"
-
-echo "=== ArgoCD bootstrap complete ==="
+# Download and execute the boot script from S3
+BOOT_SCRIPT="/tmp/boot-k8s.sh"
+aws s3 cp s3://${scriptsBucket.bucketName}/k8s/boot/boot-k8s.sh "$BOOT_SCRIPT" --region ${this.region}
+chmod +x "$BOOT_SCRIPT"
+exec "$BOOT_SCRIPT"
 `);
-
-        userDataBuilder.addCompletionMarker();
 
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
         this.instanceRole = launchTemplateConstruct.instanceRole;
