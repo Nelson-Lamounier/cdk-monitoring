@@ -252,7 +252,8 @@ const orgProject: ProjectConfig = {
 };
 
 // =============================================================================
-// K8S PROJECT (k3s Kubernetes Cluster — 3-Stack Architecture)
+// K8S PROJECT (k3s Kubernetes Cluster — 3-Stack Infra Architecture)
+// API stack excluded — deployed by Next.js K8s pipeline
 // =============================================================================
 
 const k8sStacks: StackConfig[] = [
@@ -270,18 +271,11 @@ const k8sStacks: StackConfig[] = [
     dependsOn: ['data'],
   },
   {
-    id: 'api',
-    name: 'API Stack',
-    getStackName: (env) => getStackId(Project.K8S, 'api', env),
-    description: 'API Gateway with Lambda for email subscriptions (subscribe + verify)',
-    dependsOn: ['data'],
-  },
-  {
     id: 'edge',
     name: 'Edge Stack',
     getStackName: (env) => getStackId(Project.K8S, 'edge', env),
     description: 'CloudFront distribution with ACM certificate and WAF (us-east-1)',
-    dependsOn: ['compute', 'api'],
+    dependsOn: ['compute'],
     region: 'us-east-1',
   },
 ];

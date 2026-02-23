@@ -1,8 +1,8 @@
 # @format
 # @description Reusable Kubernetes Deployment Workflow (Centralized)
 #
-# Unified pipeline for the K8s (k3s) infrastructure — replaces separate
-# _deploy-nextjs-k8s.yml and _deploy-monitoring-k8s.yml workflows.
+# Infra-only pipeline for the K8s (k3s) infrastructure.
+# API stack is excluded — deployed by the Next.js K8s pipeline.
 #
 # 3-Stack Deployment Order:
 #   1. Data      (DynamoDB + S3 + SSM Parameters)
@@ -69,8 +69,6 @@ on:
       AWS_OIDC_ROLE:
         description: "AWS OIDC role ARN"
         required: false
-      VERIFICATION_SECRET:
-        required: false
 
 env:
   NODE_VERSION: "22"
@@ -95,10 +93,9 @@ jobs:
       domain-name: ${{ steps.resolve-edge.outputs.domain-name }}
       hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
       cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
-      # Stack names from synthesize-ci.ts (4-stack architecture)
+      # Stack names from synthesize-ci.ts (3-stack infra architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       compute-stack: ${{ steps.synth.outputs.compute }}
-      api-stack: ${{ steps.synth.outputs.api }}
       edge-stack: ${{ steps.synth.outputs.edge }}
 
     steps:
@@ -351,34 +348,13 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Deploy API Stack (3/4) — API Gateway + Lambda (email subscriptions)
-  # ===========================================================================
-  deploy-api:
-    name: Deploy API
-    needs: [setup, deploy-data]
-    if: always() && needs.deploy-data.result == 'success'
-    uses: ./.github/workflows/_deploy-stack.yml
-    with:
-      stack-name: ${{ needs.setup.outputs.api-stack }}
-      project: k8s
-      environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
-      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-      require-approval: ${{ inputs.require-approval }}
-      outputs-directory: "deployment-outputs"
-      notification-email: ${{ vars.NOTIFICATION_EMAIL }}
-      ses-from-email: ${{ vars.SES_FROM_EMAIL }}
-      verification-base-url: ${{ vars.VERIFICATION_BASE_URL }}
-    secrets: inherit
-
-  # ===========================================================================
-  # Deploy Edge Stack (4/4) — CloudFront + ACM + WAF (us-east-1)
+  # Deploy Edge Stack (3/3) — CloudFront + ACM + WAF (us-east-1)
   # Origin: Elastic IP → Traefik
   # ===========================================================================
   deploy-edge:
     name: Deploy Edge
-    needs: [setup, deploy-compute, deploy-api, deploy-data]
-    if: always() && needs.deploy-compute.result == 'success' && needs.deploy-api.result == 'success' && needs.deploy-data.result == 'success'
+    needs: [setup, deploy-compute, deploy-data]
+    if: always() && needs.deploy-compute.result == 'success' && needs.deploy-data.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.edge-stack }}
@@ -514,7 +490,6 @@ jobs:
       [
         setup,
         deploy-compute,
-        deploy-api,
         deploy-edge,
         deploy-monitoring-manifests,
         deploy-app-manifests,
@@ -578,7 +553,6 @@ jobs:
       [
         setup,
         deploy-compute,
-        deploy-api,
         deploy-monitoring-manifests,
         deploy-app-manifests,
         verify-and-test,
@@ -626,7 +600,6 @@ jobs:
       - drift-detection
       - deploy-data
       - deploy-compute
-      - deploy-api
       - deploy-edge
       - deploy-monitoring-manifests
       - deploy-app-manifests
@@ -677,7 +650,6 @@ jobs:
         env:
           DEPLOY_DATA_RESULT: ${{ needs.deploy-data.result }}
           DEPLOY_COMPUTE_RESULT: ${{ needs.deploy-compute.result }}
-          DEPLOY_API_RESULT: ${{ needs.deploy-api.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
           VERIFY_RESULT: ${{ needs.verify-and-test.result || 'skipped' }}
