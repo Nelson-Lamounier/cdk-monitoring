@@ -1,18 +1,17 @@
 # @format
 # @description Reusable Kubernetes Deployment Workflow (Centralized)
 #
-# Infra-only pipeline for the K8s (k3s) infrastructure.
+# Infra-only pipeline for the K8s (kubeadm) infrastructure.
 # API stack is excluded — deployed by the Next.js K8s pipeline.
 #
 # 3-Stack Deployment Order:
 #   1. Data      (DynamoDB + S3 + SSM Parameters)
-#   2. Compute   (EC2 k3s + EIP + EBS + S3 manifests)
+#   2. Compute   (EC2 kubeadm + EIP + EBS)
 #   3. Edge      (CloudFront + ACM + WAF in us-east-1)
 #
-# Post-Deploy:
-#   4. Deploy Monitoring Manifests (via SSM Run Command)
-#   5. Deploy App Manifests        (via SSM Run Command)
-#   6. Sync Static Assets          (S3 + CloudFront invalidation)
+# Post-Deploy (manifests managed by ArgoCD GitOps):
+#   4. Sync Static Assets          (S3 + CloudFront invalidation)
+#   5. Deploy Next.js App Layer    (API stack + smoke tests)
 #   7. Verify & Smoke Tests
 #   8. Rollback (conditional)
 #   9. Summary
@@ -337,7 +336,7 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Deploy Compute Stack (2/4) — EC2 k3s + EIP + EBS + S3 manifests
+  # Deploy Compute Stack (2/3) — EC2 kubeadm + EIP + EBS
   # ===========================================================================
   deploy-compute:
     name: Deploy Compute
@@ -380,7 +379,7 @@ jobs:
   # K8s Manifest Deployment — ArgoCD (GitOps)
   #
   # Monitoring and application manifests are deployed by ArgoCD running
-  # on the k3s node. ArgoCD watches this Git repo and auto-syncs changes
+  # on the kubeadm node. ArgoCD watches this Git repo and auto-syncs changes
   # within ~3 minutes. No CI pipeline jobs needed.
   #
   # See: k8s/system/argocd/ for ArgoCD config and Application CRDs.
