@@ -399,7 +399,7 @@ phases:
               gpgkey=https://pkgs.k8s.io/core:/stable:/v${k8sMinorVersion}/rpm/repodata/repomd.xml.key
               EOF
 
-              dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+              dnf install -y kubelet-${clusterConfig.kubernetesVersion} kubeadm-${clusterConfig.kubernetesVersion} kubectl-${clusterConfig.kubernetesVersion} --disableexcludes=kubernetes
               systemctl enable kubelet
 
               echo "kubeadm $(kubeadm version -o short) installed"
