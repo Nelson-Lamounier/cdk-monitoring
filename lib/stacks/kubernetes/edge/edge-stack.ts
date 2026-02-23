@@ -74,7 +74,7 @@ import { nextjsSsmPaths } from '../../../config/ssm-paths';
  *     domainName: 'dev.example.com',
  *     hostedZoneId: 'Z123ABC',
  *     crossAccountRoleArn: 'arn:aws:iam::ROOT:role/Route53Role',
- *     eipSsmPath: '/k8s/development/eip-public-ip',
+ *     eipSsmPath: '/k8s/development/elastic-ip',
  *     assetsBucketSsmPath: '/nextjs/development/assets-bucket-name',
  *     env: { region: 'us-east-1' }, // Required!
  * });

@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - develop
+      - feature/k8s-kubernetes-migration
     paths:
       - "lib/config/k8s/**"
       - "lib/config/nextjs/**"

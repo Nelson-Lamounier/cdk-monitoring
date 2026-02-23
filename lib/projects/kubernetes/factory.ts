@@ -257,7 +257,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         const edgeEnv = cdkEdgeEnvironment(environment);
 
         // EIP SSM path is written by the compute stack
-        const eipSsmPath = `${ssmPrefix}/eip-public-ip`;
+        const eipSsmPath = `${ssmPrefix}/elastic-ip`;
 
         const edgeStack = new KubernetesEdgeStack(
             scope,
