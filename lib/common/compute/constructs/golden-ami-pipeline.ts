@@ -175,6 +175,7 @@ export class GoldenAmiPipelineConstruct extends Construct {
         // distribution config (you can't change an SSM parameter's data type
         // after creation).
         // -----------------------------------------------------------------
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const amiSsmCfnParameter = new ssm.CfnParameter(this, 'AmiParameter', {
             name: imageConfig.amiSsmPath,
             type: 'String',
