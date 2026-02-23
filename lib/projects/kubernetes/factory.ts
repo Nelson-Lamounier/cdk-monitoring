@@ -3,7 +3,7 @@
  * Kubernetes Project Factory
  *
  * Creates shared Kubernetes infrastructure hosting both monitoring and
- * application workloads on a single k3s server node.
+ * application workloads on a kubeadm Kubernetes cluster.
  *
  * Stack Architecture (4 stacks):
  *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
@@ -85,7 +85,7 @@ export interface KubernetesFactoryContext extends ProjectFactoryContext {
 
 /**
  * Kubernetes project factory.
- * Creates Data, Compute, API, and Edge stacks for a shared k3s cluster.
+ * Creates Data, Compute, API, and Edge stacks for a shared kubeadm cluster.
  *
  * @example
  * ```typescript
@@ -119,7 +119,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // =================================================================
         // Resolve Next.js application config
         //
-        // The shared k3s server hosts the Next.js application, so we need
+        // The shared Kubernetes cluster hosts the Next.js application, so we need
         // the Next.js resource names, SSM paths, and edge configuration.
         // =================================================================
         const nextjsNamePrefix = getProjectConfig(Project.NEXTJS).namespace.toLowerCase();
@@ -171,7 +171,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // =================================================================
         // Stack 1: DATA STACK (DynamoDB + S3 + SSM)
         //
-        // Data layer for the Next.js application running on k3s.
+        // Data layer for the Next.js application running on Kubernetes.
         // Rarely changes — deployed once per environment.
         // =================================================================
         const dataStack = new KubernetesDataStack(
@@ -187,9 +187,9 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stackMap.data = dataStack;
 
         // =================================================================
-        // Stack 2: COMPUTE STACK (EC2 + k3s + Security + Storage)
+        // Stack 2: COMPUTE STACK (EC2 + kubeadm + Security + Storage)
         //
-        // Single k3s server hosting both monitoring and app workloads.
+        // kubeadm cluster hosting both monitoring and app workloads.
         // Application-tier IAM grants are passed as optional props.
         // =================================================================
         const computeStack = new KubernetesComputeStack(
@@ -197,7 +197,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             stackId(this.namespace, 'Compute', environment),
             {
                 env,
-                description: `Shared k3s Kubernetes cluster (monitoring + application) — ${environment}`,
+                description: `Shared kubeadm Kubernetes cluster (monitoring + application) — ${environment}`,
                 targetEnvironment: environment,
                 configs,
                 namePrefix,

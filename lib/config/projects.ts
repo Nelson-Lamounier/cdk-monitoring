@@ -18,7 +18,7 @@ export enum Project {
     NEXTJS = 'nextjs',
     /** AWS Organization and root account resources */
     ORG = 'org',
-    /** k3s Kubernetes cluster for unified workloads */
+    /** Kubernetes cluster for unified workloads */
     KUBERNETES = 'kubernetes',
 }
 
@@ -66,7 +66,7 @@ export const PROJECT_CONFIGS: Record<Project, ProjectConfig> = {
     },
     [Project.KUBERNETES]: {
         displayName: 'Kubernetes',
-        description: 'k3s Kubernetes cluster for unified workloads',
+        description: 'Kubernetes cluster for unified workloads',
         namespace: 'Monitoring-K8s',
         requiresSharedVpc: true,
     },

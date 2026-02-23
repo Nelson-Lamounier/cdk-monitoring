@@ -1250,15 +1250,15 @@ done`);
      * Build a "light" user data script for the hybrid bootstrap strategy.
      *
      * Layer 2 of the 4-layer architecture:
-     * - Layer 1: Golden AMI (pre-baked Docker, AWS CLI, k3s binary, Calico)
-     * - **Layer 2: Light User Data (THIS)** — EBS attach, EIP, k3s start, cfn-signal
+     * - Layer 1: Golden AMI (pre-baked Docker, AWS CLI, kubeadm toolchain, Calico)
+     * - **Layer 2: Light User Data (THIS)** — EBS attach, EIP, kubeadm start, cfn-signal
      * - Layer 3: SSM State Manager (post-boot config, CNI, manifests)
      * - Layer 4: SSM Documents (on-demand runbooks)
      *
      * This method creates a minimal script that:
      * 1. Attaches and mounts the EBS data volume
      * 2. Associates the Elastic IP for stable CloudFront origin
-     * 3. Starts k3s (binary pre-installed in Golden AMI)
+     * 3. Starts kubeadm (toolchain pre-installed in Golden AMI)
      * 4. Sends cfn-signal to the ASG
      *
      * Total boot time target: ~2 minutes (vs ~10-15 min with full user-data)
@@ -1275,11 +1275,11 @@ done`);
         stackName: string;
         /** ASG logical ID for cfn-signal (CDK Token) */
         asgLogicalId: string;
-        /** k3s configuration */
+        /** kubeadm configuration */
         k3s: {
-            /** k3s release channel */
+            /** Kubernetes version */
             channel: string;
-            /** k3s data directory */
+            /** Kubernetes data directory */
             dataDir: string;
             /** Whether to disable Flannel (for Calico) */
             disableFlannel: boolean;
@@ -1290,15 +1290,15 @@ done`);
         const userData = ec2.UserData.forLinux();
         const builder = new UserDataBuilder(userData);
 
-        // Step 1: Attach EBS volume (critical for k3s data persistence)
+        // Step 1: Attach EBS volume (critical for Kubernetes data persistence)
         builder.attachEbsVolume(config.ebsVolume);
 
         // Step 2: Associate Elastic IP for stable CloudFront origin
         builder.addCustomScript(`
 # ============================================================
 # LIGHT USER DATA — Layer 2 (Hybrid Bootstrap)
-# Golden AMI provides: Docker, AWS CLI, k3s binary, Calico manifests
-# This script only does: EBS + EIP + k3s start + cfn-signal
+# Golden AMI provides: Docker, AWS CLI, kubeadm toolchain, Calico manifests
+# This script only does: EBS + EIP + kubeadm start + cfn-signal
 # ============================================================
 
 # --- Associate Elastic IP ---
@@ -1312,7 +1312,7 @@ aws ec2 associate-address \\
 echo "✓ Elastic IP associated"
 `);
 
-        // Step 3: Start k3s (binary is pre-installed in Golden AMI)
+        // Step 3: Start kubeadm (toolchain pre-installed in Golden AMI)
         const flannelFlags = config.k3s.disableFlannel
             ? '--flannel-backend=none --disable-network-policy'
             : '';

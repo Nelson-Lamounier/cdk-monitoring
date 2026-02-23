@@ -103,10 +103,10 @@ export const K8S_API_PORT = 6443;
 /** Kubernetes version for kubeadm installation */
 export const KUBERNETES_VERSION = '1.35.1';
 
-/** Traefik HTTP port (k3s built-in ingress) */
+/** Traefik HTTP port (deployed via manifests) */
 export const TRAEFIK_HTTP_PORT = 80;
 
-/** Traefik HTTPS port (k3s built-in ingress) */
+/** Traefik HTTPS port (deployed via manifests) */
 export const TRAEFIK_HTTPS_PORT = 443;
 
 /**

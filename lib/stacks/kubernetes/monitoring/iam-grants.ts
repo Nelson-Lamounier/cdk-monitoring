@@ -7,7 +7,7 @@
  *
  * Permissions granted:
  *   - EBS volume management (attach/detach/describe)
- *   - ECR pull (deploy container images to k3s)
+ *   - ECR pull (deploy container images to Kubernetes)
  *   - Elastic IP association
  *   - SSM parameter write (cluster discovery)
  */
@@ -36,7 +36,7 @@ export interface MonitoringIamGrantsProps {
 /**
  * Grant monitoring-tier IAM permissions to the instance role.
  *
- * These permissions are required for the k3s server to manage:
+ * These permissions are required for the Kubernetes cluster to manage:
  * - EBS persistent volumes (attach on boot, detach on terminate)
  * - ECR images (pull for pod scheduling)
  * - Elastic IP (stable external endpoint)
@@ -61,7 +61,7 @@ export function grantMonitoringPermissions(
         resources: ['*'],
     }));
 
-    // ECR pull (for deploying container images to k3s)
+    // ECR pull (for deploying container images to Kubernetes)
     role.addToPrincipalPolicy(new iam.PolicyStatement({
         sid: 'EcrPull',
         effect: iam.Effect.ALLOW,
@@ -74,7 +74,7 @@ export function grantMonitoringPermissions(
         resources: ['*'],
     }));
 
-    // SSM parameter write (k3s stores instance ID, elastic IP in SSM)
+    // SSM parameter write (kubeadm stores instance ID, elastic IP in SSM)
     role.addToPrincipalPolicy(new iam.PolicyStatement({
         sid: 'SsmParameterWrite',
         effect: iam.Effect.ALLOW,

@@ -22,7 +22,7 @@
  *
  * ## Cross-Region Architecture
  * - Edge Stack: us-east-1 (CloudFront, WAF, ACM edge cert)
- * - Compute Stack: eu-west-1 (EC2 k3s + Elastic IP)
+ * - Compute Stack: eu-west-1 (EC2 kubeadm + Elastic IP)
  *
  * ## Differences from NextJs Edge Stack
  * - EIP origin instead of ALB origin (Traefik Ingress handles routing)
@@ -324,7 +324,7 @@ export class KubernetesEdgeStack extends cdk.Stack {
         // S3 origin for static assets (OAC)
         const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(staticAssetsBucket);
 
-        // EIP origin — Traefik Ingress on the k3s node
+        // EIP origin — Traefik Ingress on the Kubernetes node
         // Uses HTTP_ONLY since Traefik's self-signed cert doesn't match our domain
         const eipOrigin = new origins.HttpOrigin(eipAddress, {
             protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,

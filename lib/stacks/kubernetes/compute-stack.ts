@@ -1,11 +1,9 @@
 /**
  * @format
- * Kubernetes Compute Stack — Shared k3s Server
+ * Kubernetes Compute Stack — kubeadm Cluster
  *
- * Single-node k3s server hosting both monitoring (Grafana, Prometheus, Loki,
- * Tempo) and application (Next.js) workloads. Merges the functionality of:
- *   - K8sComputeStack (monitoring k3s server)
- *   - NextJsK8sComputeStack (application k3s agent)
+ * kubeadm Kubernetes cluster hosting both monitoring (Grafana, Prometheus, Loki,
+ * Tempo) and application (Next.js) workloads on a control plane + worker nodes.
  *
  * Workload isolation is enforced at the Kubernetes layer via:
  *   1. Namespaces (monitoring / nextjs-app)
@@ -17,7 +15,7 @@
  * Resources Created:
  *   - Security Group (unified: HTTP/HTTPS, K8s API, monitoring ports)
  *   - IAM Role (monitoring grants + optional application grants)
- *   - EBS Volume (persistent storage for k3s data + PVCs)
+ *   - EBS Volume (persistent storage for Kubernetes data + PVCs)
  *   - Launch Template (Amazon Linux 2023, IMDSv2)
  *   - ASG (min=1, max=1, single-node cluster)
  *   - Elastic IP (shared by Next.js CloudFront and SSM access)
@@ -132,19 +130,19 @@ export interface KubernetesComputeStackProps extends cdk.StackProps {
 /**
  * Shared Kubernetes Compute Stack.
  *
- * Runs a single k3s server node hosting both monitoring and application
+ * Runs a kubeadm Kubernetes cluster hosting both monitoring and application
  * workloads. Security and resource isolation between tiers is enforced
  * at the Kubernetes layer (Namespaces, NetworkPolicies, ResourceQuotas,
  * PriorityClasses).
  */
 export class KubernetesComputeStack extends cdk.Stack {
-    /** The security group for the k3s node */
+    /** The security group for the Kubernetes cluster */
     public readonly securityGroup: ec2.SecurityGroup;
 
     /** The Auto Scaling Group */
     public readonly autoScalingGroup: autoscaling.AutoScalingGroup;
 
-    /** The IAM role for the k3s node */
+    /** The IAM role for the Kubernetes nodes */
     public readonly instanceRole: iam.IRole;
 
     /** CloudWatch log group for instance logs */
@@ -170,8 +168,8 @@ export class KubernetesComputeStack extends cdk.Stack {
         // =====================================================================
         this.securityGroup = new ec2.SecurityGroup(this, 'K8sSecurityGroup', {
             vpc,
-            description: `Shared k3s Kubernetes node security group (${targetEnvironment})`,
-            securityGroupName: `${namePrefix}-k3s-node`,
+            description: `Shared Kubernetes cluster security group (${targetEnvironment})`,
+            securityGroupName: `${namePrefix}-k8s-cluster`,
             allowAllOutbound: true,
         });
 
@@ -246,7 +244,7 @@ export class KubernetesComputeStack extends cdk.Stack {
         }));
 
         // =====================================================================
-        // EBS Volume (persistent storage for k3s data)
+        // EBS Volume (persistent storage for Kubernetes data)
         // =====================================================================
         const ebsVolume = new ec2.Volume(this, 'K8sDataVolume', {
             availabilityZone: `${this.region}a`,
@@ -265,7 +263,7 @@ export class KubernetesComputeStack extends cdk.Stack {
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup: this.securityGroup,
             instanceType: configs.compute.instanceType,
-            volumeSizeGb: 20, // Root volume (k3s data lives on separate EBS)
+            volumeSizeGb: 20, // Root volume (k8s data lives on separate EBS)
             detailedMonitoring: configs.compute.detailedMonitoring,
             userData,
             namePrefix,
@@ -458,7 +456,7 @@ export class KubernetesComputeStack extends cdk.Stack {
         // Golden AMI Pipeline (Layer 1 — pre-baked software)
         //
         // Creates an EC2 Image Builder pipeline that bakes Docker, AWS CLI,
-        // k3s binary, and Calico manifests into a Golden AMI.
+        // kubeadm toolchain, and Calico manifests into a Golden AMI.
         // Gated by imageConfig.enableImageBuilder flag.
         // =====================================================================
         let goldenAmiPipeline: GoldenAmiPipelineConstruct | undefined;
@@ -499,12 +497,12 @@ export class KubernetesComputeStack extends cdk.Stack {
         }
 
         // =====================================================================
-        // User Data (k3s server bootstrap)
+        // User Data (kubeadm control plane bootstrap)
         //
         // ORDERING: cfn-signal fires after critical infra (AWS CLI, EBS)
         // but BEFORE dnf update.
         //
-        //   installAwsCli → attachEbs → sendCfnSignal → updateSystem → k3s
+        //   installAwsCli → attachEbs → sendCfnSignal → updateSystem → kubeadm
         //                                             → deployMonitoringManifests
         //                                             → deployApplicationManifests
         // =====================================================================
@@ -512,7 +510,7 @@ export class KubernetesComputeStack extends cdk.Stack {
             'set -euxo pipefail',
             '',
             'exec > >(tee /var/log/user-data.log) 2>&1',
-            'echo "=== Shared k3s user data script started at $(date) ==="',
+            'echo "=== kubeadm user data script started at $(date) ==="',
         );
 
         const userDataBuilder = new UserDataBuilder(userData, { skipPreamble: true })
@@ -659,7 +657,7 @@ echo "=== ArgoCD bootstrap complete ==="
             domain: 'vpc',
             tags: [{
                 key: 'Name',
-                value: `${namePrefix}-k3s-eip`,
+                value: `${namePrefix}-k8s-eip`,
             }],
         });
 
@@ -669,14 +667,14 @@ echo "=== ArgoCD bootstrap complete ==="
         new ssm.StringParameter(this, 'SecurityGroupIdParam', {
             parameterName: `${props.ssmPrefix}/security-group-id`,
             stringValue: this.securityGroup.securityGroupId,
-            description: 'Shared k3s node security group ID',
+            description: 'Kubernetes cluster security group ID',
             tier: ssm.ParameterTier.STANDARD,
         });
 
         new ssm.StringParameter(this, 'ElasticIpParam', {
             parameterName: `${props.ssmPrefix}/elastic-ip`,
             stringValue: this.elasticIp.ref,
-            description: 'Shared k3s Elastic IP address (used by Edge stack as CloudFront origin)',
+            description: 'Kubernetes cluster Elastic IP address (used by Edge stack as CloudFront origin)',
             tier: ssm.ParameterTier.STANDARD,
         });
 
@@ -691,33 +689,33 @@ echo "=== ArgoCD bootstrap complete ==="
         // =====================================================================
         new cdk.CfnOutput(this, 'InstanceRoleArn', {
             value: this.instanceRole.roleArn,
-            description: 'Shared k3s node IAM Role ARN',
+            description: 'Kubernetes cluster IAM Role ARN',
         });
 
         new cdk.CfnOutput(this, 'AutoScalingGroupName', {
             value: this.autoScalingGroup.autoScalingGroupName,
-            description: 'Shared k3s ASG Name',
+            description: 'Kubernetes cluster ASG Name',
         });
 
         new cdk.CfnOutput(this, 'ElasticIpAddress', {
             value: this.elasticIp.ref,
-            description: 'Shared k3s Elastic IP address',
+            description: 'Kubernetes cluster Elastic IP address',
         });
 
         new cdk.CfnOutput(this, 'EbsVolumeId', {
             value: ebsVolume.volumeId,
-            description: 'k3s data EBS volume ID',
+            description: 'Kubernetes data EBS volume ID',
         });
 
         new cdk.CfnOutput(this, 'SecurityGroupId', {
             value: this.securityGroup.securityGroupId,
-            description: 'Shared k3s node security group ID',
+            description: 'Kubernetes cluster security group ID',
         });
 
         if (this.logGroup) {
             new cdk.CfnOutput(this, 'LogGroupName', {
                 value: this.logGroup.logGroupName,
-                description: 'CloudWatch Log Group for k3s node',
+                description: 'CloudWatch Log Group for Kubernetes nodes',
             });
         }
 
@@ -761,7 +759,7 @@ echo "=== ArgoCD bootstrap complete ==="
         if (stateManager) {
             new cdk.CfnOutput(this, 'SsmDocumentName', {
                 value: stateManager.document.name!,
-                description: 'SSM Document name for post-boot k8s configuration',
+                description: 'SSM Document name for post-boot Kubernetes configuration',
             });
 
             new cdk.CfnOutput(this, 'SsmAssociationName', {

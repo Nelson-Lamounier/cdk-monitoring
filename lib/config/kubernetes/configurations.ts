@@ -1,6 +1,6 @@
 /**
  * @format
- * Kubernetes (k3s) Project - Resource Configurations
+ * Kubernetes (kubeadm) Project - Resource Configurations
  *
  * Centralized resource configurations (policies, retention, instance sizing) by environment.
  * Configurations are "how it behaves" - policies, limits, settings.
@@ -55,7 +55,7 @@ export interface KubernetesClusterConfig {
 }
 
 /**
- * EC2 compute configuration for k3s node
+ * EC2 compute configuration for Kubernetes nodes
  */
 export interface K8sComputeConfig {
     /** EC2 instance type */
@@ -69,7 +69,7 @@ export interface K8sComputeConfig {
 }
 
 /**
- * Storage configuration for k3s data (EBS volume)
+ * Storage configuration for Kubernetes data (EBS volume)
  */
 export interface K8sStorageConfig {
     /** EBS volume size in GB */
@@ -92,7 +92,7 @@ export interface K8sNetworkingConfig {
  * Golden AMI configuration (EC2 Image Builder)
  *
  * Controls the AMI baking pipeline that pre-installs Docker, AWS CLI,
- * k3s binary, and Calico manifests to reduce instance boot time.
+ * kubeadm toolchain, and Calico manifests to reduce instance boot time.
  */
 export interface K8sImageConfig {
     /** SSM parameter path storing the latest Golden AMI ID */
@@ -113,7 +113,7 @@ export interface K8sImageConfig {
  * SSM State Manager configuration
  *
  * Controls post-boot configuration management via SSM associations.
- * State Manager handles tasks like k3s bootstrap, CNI installation,
+ * State Manager handles tasks like kubeadm bootstrap, CNI installation,
  * manifest deployment, and drift remediation.
  */
 export interface K8sSsmConfig {
@@ -146,7 +146,7 @@ export interface K8sEdgeConfig {
 }
 
 /**
- * Complete resource configurations for k3s/Kubernetes project
+ * Complete resource configurations for kubeadm Kubernetes project
  */
 export interface K8sConfigs {
     readonly cluster: KubernetesClusterConfig;

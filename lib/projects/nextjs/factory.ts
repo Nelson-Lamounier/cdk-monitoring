@@ -13,7 +13,7 @@
  * 5. ApiStack: API Gateway + Lambda (separate lifecycle)
  * 6. EdgeStack: ACM + WAF + CloudFront (us-east-1)
  *
- * NOTE: K8s compute (k3s agent) has been consolidated into the shared
+ * NOTE: K8s compute (kubeadm worker) has been consolidated into the shared
  * Kubernetes project (lib/stacks/kubernetes/compute-stack.ts).
  *
  * Benefits over legacy factory:

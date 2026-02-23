@@ -273,7 +273,7 @@ export function monitoringSsmPaths(environment: Environment): MonitoringSsmPaths
 }
 
 // =============================================================================
-// K8S (k3s) SSM PATHS
+// K8S (kubeadm) SSM PATHS
 // =============================================================================
 
 /** k8s SSM prefix: /k8s/{environment} */
@@ -282,16 +282,16 @@ export function k8sSsmPrefix(environment: Environment): string {
 }
 
 /**
- * SSM parameter paths for the k3s Kubernetes cluster.
+ * SSM parameter paths for the kubeadm Kubernetes cluster.
  */
 export interface K8sSsmPaths {
     /** The prefix itself: /k8s/{environment} */
     readonly prefix: string;
-    /** k3s node EC2 instance ID */
+    /** Kubernetes node EC2 instance ID */
     readonly instanceId: string;
     /** Elastic IP address for stable CloudFront origin */
     readonly elasticIp: string;
-    /** Security group ID for the k3s node */
+    /** Security group ID for the Kubernetes cluster */
     readonly securityGroupId: string;
 
     /** Wildcard path for IAM: /k8s/{environment}/* */

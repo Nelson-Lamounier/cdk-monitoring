@@ -3,12 +3,12 @@
  * Golden AMI Pipeline Construct
  *
  * Creates an EC2 Image Builder pipeline that pre-bakes Docker, AWS CLI,
- * k3s binary, and Calico manifests into a Golden AMI. This reduces
+ * kubeadm toolchain, and Calico manifests into a Golden AMI. This reduces
  * instance boot time from ~10-15 minutes to ~2 minutes by moving
  * software installation from user-data to AMI build time.
  *
  * Architecture:
- * 1. Component: Shell commands to install Docker, AWS CLI, k3s, Calico
+ * 1. Component: Shell commands to install Docker, AWS CLI, kubeadm, kubelet, kubectl, containerd, Calico
  * 2. Recipe: Combines components with parent Amazon Linux 2023 AMI
  * 3. Infrastructure Config: Defines instance type, subnet, security group
  * 4. Pipeline: Orchestrates the build (on-demand trigger)
@@ -50,7 +50,7 @@ export interface GoldenAmiPipelineProps {
     readonly namePrefix: string;
     /** Image configuration from K8sConfigs */
     readonly imageConfig: K8sImageConfig;
-    /** Cluster configuration for k3s version */
+    /** Cluster configuration for Kubernetes version */
     readonly clusterConfig: KubernetesClusterConfig;
     /** VPC for the Image Builder infrastructure */
     readonly vpc: ec2.IVpc;
@@ -109,13 +109,13 @@ export class GoldenAmiPipelineConstruct extends Construct {
         });
 
         // -----------------------------------------------------------------
-        // 2. Image Builder Component — installs Docker, AWS CLI, k3s, Calico
+        // 2. Image Builder Component — installs Docker, AWS CLI, kubeadm toolchain, Calico
         // -----------------------------------------------------------------
         const installComponent = new imagebuilder.CfnComponent(this, 'InstallComponent', {
             name: `${namePrefix}-golden-ami-install`,
             platform: 'Linux',
             version: '1.0.0',
-            description: 'Installs Docker, AWS CLI, k3s binary, and Calico CNI manifests',
+            description: 'Installs Docker, AWS CLI, kubeadm toolchain, and Calico CNI manifests',
             data: this._buildComponentDocument(imageConfig, clusterConfig),
         });
 
