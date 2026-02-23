@@ -17,9 +17,9 @@
  * - `addCustomScript()` - Add any custom script section
  * - `addCompletionMarker()` - Add final success banner
  *
- * ## Kubernetes (k3s) Methods
- * - `installK3s()` - Install k3s lightweight Kubernetes (server mode)
- * - `installK3sAgent()` - Install k3s as agent node (joins existing cluster)
+ * ## Kubernetes (kubeadm) Methods
+ * - `initKubeadmCluster()` - Initialize kubeadm control plane
+ * - `joinKubeadmCluster()` - Join a node to an existing kubeadm cluster
  * - `configureKubeconfig()` - Set up kubectl access
  *
  * ## Monitoring-Specific Methods
@@ -140,23 +140,18 @@ export interface UserDataBuilderOptions {
 }
 
 /**
- * Configuration for k3s installation.
- * Used by `installK3s()` method.
+ * Configuration for kubeadm cluster initialization.
+ * Used by `initKubeadmCluster()` method.
  */
-export interface K3sInstallConfig {
-    /** k3s release channel (e.g., 'v1.32') @default 'v1.32' */
-    channel?: string;
-    /** k3s data directory (should be on persistent volume) @default '/data/k3s' */
+export interface KubeadmInitConfig {
+    /** Kubernetes version (e.g., '1.35.1') @default '1.35.1' */
+    kubernetesVersion?: string;
+    /** Kubernetes data directory (etcd, kubelet) @default '/data/kubernetes' */
     dataDir?: string;
-    /** Whether to disable the built-in Traefik ingress @default false */
-    disableTraefik?: boolean;
-    /**
-     * Disable the built-in Flannel CNI to use an external CNI (e.g., Calico).
-     * When true, passes `--flannel-backend=none --disable-network-policy` to k3s.
-     * Requires calling `installCalicoCNI()` after k3s is ready.
-     * @default false
-     */
-    disableFlannel?: boolean;
+    /** Pod network CIDR for Calico CNI @default '192.168.0.0/16' */
+    podNetworkCidr?: string;
+    /** Service subnet CIDR @default '10.96.0.0/12' */
+    serviceSubnet?: string;
     /** SSM parameter prefix for storing cluster info @default '/k8s/development' */
     ssmPrefix?: string;
 }
@@ -179,23 +174,23 @@ export interface K8sManifestsS3Config {
 }
 
 /**
- * Configuration for k3s agent installation.
- * Used by `installK3sAgent()` method.
+ * Configuration for kubeadm join (worker node).
+ * Used by `joinKubeadmCluster()` method.
  *
- * The agent joins an existing k3s server cluster and applies
- * node labels and taints for workload isolation.
+ * The worker joins an existing kubeadm cluster using the bootstrap
+ * token and CA certificate hash published to SSM by the control plane.
  */
-export interface K3sAgentConfig {
-    /** URL of the k3s server to join (e.g., 'https://10.0.0.1:6443') */
-    readonly serverUrl: string;
-    /** SSM parameter path where the k3s join token is stored */
+export interface KubeadmJoinConfig {
+    /** Control plane endpoint (e.g., '10.0.0.10:6443') */
+    readonly controlPlaneEndpoint: string;
+    /** SSM parameter path where the join token is stored */
     readonly tokenSsmPath: string;
+    /** SSM parameter path where the CA certificate hash is stored */
+    readonly caHashSsmPath: string;
     /** Kubernetes node label for workload isolation (e.g., 'role=application') */
     readonly nodeLabel: string;
     /** Kubernetes node taint for workload isolation (e.g., 'role=application:NoSchedule') */
     readonly nodeTaint: string;
-    /** k3s release channel @default 'v1.32' */
-    readonly channel?: string;
     /** AWS region for SSM lookups @default 'eu-west-1' */
     readonly region?: string;
 }
@@ -562,47 +557,43 @@ echo "=============================================="`);
     }
 
     // =========================================================================
-    // KUBERNETES (k3s) METHODS
+    // KUBERNETES (kubeadm) METHODS
     // =========================================================================
 
     /**
-     * Install k3s lightweight Kubernetes.
+     * Initialize a kubeadm Kubernetes control plane.
      *
-     * Installs k3s via the official install script with configurable:
-     * - Release channel (pinned version)
-     * - Data directory (persistent volume)
-     * - TLS SAN (Elastic IP for external access)
-     * - Traefik ingress (built-in, can be disabled)
+     * Runs `kubeadm init` to bootstrap the control plane with:
+     * - Configurable Kubernetes version
+     * - Pod network CIDR (for Calico)
+     * - Service subnet CIDR
+     * - TLS SAN (Elastic IP for external kubectl access)
      *
-     * Also stores the instance ID in SSM for CI/CD pipeline access.
+     * Also publishes the join token and CA certificate hash to SSM
+     * so worker nodes can join the cluster.
      *
-     * @param config - k3s installation configuration
+     * @param config - kubeadm init configuration
      * @remarks **k8s project** - For other projects, use `addCustomScript()`.
      * @returns this - for method chaining
      */
-    installK3s(config: K3sInstallConfig = {}): this {
-        const channel = config.channel ?? 'v1.32';
-        const dataDir = config.dataDir ?? '/data/k3s';
-        const disableTraefik = config.disableTraefik ?? false;
-        const disableFlannel = config.disableFlannel ?? false;
+    initKubeadmCluster(config: KubeadmInitConfig = {}): this {
+        const kubernetesVersion = config.kubernetesVersion ?? '1.35.1';
+        const dataDir = config.dataDir ?? '/data/kubernetes';
+        const podNetworkCidr = config.podNetworkCidr ?? '192.168.0.0/16';
+        const serviceSubnet = config.serviceSubnet ?? '10.96.0.0/12';
         const ssmPrefix = config.ssmPrefix ?? '/k8s/development';
-
-        const traefikFlag = disableTraefik ? '--disable traefik' : '';
-        const flannelFlags = disableFlannel
-            ? '--flannel-backend=none --disable-network-policy'
-            : '';
 
         this.userData.addCommands(`
 # =============================================================================
-# Install k3s Kubernetes
+# Initialize kubeadm Kubernetes Control Plane
 # =============================================================================
 
-echo "=== Installing k3s (channel: ${channel}) ==="
+echo "=== Initializing kubeadm cluster (v${kubernetesVersion}) ==="
 
 # Ensure data directory exists on persistent volume
 mkdir -p ${dataDir}
 
-# Get public IP for TLS SAN (so kubectl works from outside)
+# Get instance metadata via IMDSv2
 if [ -z "\${IMDS_TOKEN:-}" ]; then
     IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
 fi
@@ -611,36 +602,85 @@ PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.1
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
 
-# Build TLS SAN from public and private IPs
-TLS_SAN="--tls-san $PRIVATE_IP"
+# Start containerd (required before kubeadm init)
+systemctl start containerd
+echo "containerd started"
+
+# Build apiserver cert SANs
+CERT_SANS="--apiserver-cert-extra-sans=$PRIVATE_IP"
 if [ -n "$PUBLIC_IP" ]; then
-    TLS_SAN="$TLS_SAN --tls-san $PUBLIC_IP"
+    CERT_SANS="$CERT_SANS,$PUBLIC_IP"
 fi
 
-# Install k3s server
-export INSTALL_K3S_CHANNEL="${channel}"
-curl -sfL https://get.k3s.io | sh -s - server \\
-    --data-dir ${dataDir} \\
-    --write-kubeconfig-mode 644 \\
-    $TLS_SAN \\
-    ${traefikFlag} \\
-    ${flannelFlags}
+# Run kubeadm init
+echo "Running kubeadm init..."
+kubeadm init \\
+    --kubernetes-version="${kubernetesVersion}" \\
+    --pod-network-cidr="${podNetworkCidr}" \\
+    --service-cidr="${serviceSubnet}" \\
+    --control-plane-endpoint="$PRIVATE_IP:6443" \\
+    $CERT_SANS \\
+    --upload-certs \\
+    2>&1 | tee /tmp/kubeadm-init.log
 
-# Wait for k3s to be ready
-echo "Waiting for k3s to be ready..."
-for i in {1..60}; do
-    if k3s kubectl --kubeconfig ${dataDir}/server/cred/admin.kubeconfig get nodes &>/dev/null; then
-        echo "k3s is ready (waited \${i} seconds)"
+if [ \${PIPESTATUS[0]} -ne 0 ]; then
+    echo "ERROR: kubeadm init failed"
+    cat /tmp/kubeadm-init.log
+    exit 1
+fi
+
+# Set up kubeconfig for root (immediate use)
+export KUBECONFIG=/etc/kubernetes/admin.conf
+mkdir -p /root/.kube
+cp -f /etc/kubernetes/admin.conf /root/.kube/config
+chmod 600 /root/.kube/config
+
+# Wait for control plane components to be ready
+echo "Waiting for control plane to be ready..."
+for i in {1..90}; do
+    if kubectl get nodes &>/dev/null; then
+        echo "Control plane is ready (waited \${i} seconds)"
         break
     fi
-    if [ $i -eq 60 ]; then
-        echo "WARNING: k3s did not become ready in 60s"
+    if [ $i -eq 90 ]; then
+        echo "WARNING: Control plane did not become ready in 90s"
     fi
     sleep 1
 done
 
-# Store instance info in SSM for CI/CD access
+# Remove control plane taint so pods can schedule on this node
+# (needed during bootstrap before worker nodes join)
+kubectl taint nodes --all node-role.kubernetes.io/control-plane- 2>/dev/null || true
+
+# Generate and publish join token + CA hash to SSM for worker nodes
 SSM_PREFIX="${ssmPrefix}"
+JOIN_TOKEN=$(kubeadm token create --ttl 24h)
+CA_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | \\
+    openssl rsa -pubin -outform der 2>/dev/null | \\
+    openssl dgst -sha256 -hex | awk '{print $2}')
+
+aws ssm put-parameter \\
+    --name "$SSM_PREFIX/join-token" \\
+    --value "$JOIN_TOKEN" \\
+    --type "SecureString" \\
+    --overwrite \\
+    --region "$REGION" || echo "WARNING: Failed to store join-token in SSM"
+
+aws ssm put-parameter \\
+    --name "$SSM_PREFIX/ca-hash" \\
+    --value "sha256:$CA_HASH" \\
+    --type "String" \\
+    --overwrite \\
+    --region "$REGION" || echo "WARNING: Failed to store ca-hash in SSM"
+
+aws ssm put-parameter \\
+    --name "$SSM_PREFIX/control-plane-endpoint" \\
+    --value "$PRIVATE_IP:6443" \\
+    --type "String" \\
+    --overwrite \\
+    --region "$REGION" || echo "WARNING: Failed to store control-plane-endpoint in SSM"
+
+# Store instance info in SSM for CI/CD access
 aws ssm put-parameter \\
     --name "$SSM_PREFIX/instance-id" \\
     --value "$INSTANCE_ID" \\
@@ -657,34 +697,33 @@ if [ -n "$PUBLIC_IP" ]; then
         --region "$REGION" || echo "WARNING: Failed to store elastic-ip in SSM"
 fi
 
-echo "k3s installed successfully"
-echo "k3s version: $(k3s --version)"
+echo "kubeadm cluster initialized successfully"
+echo "Kubernetes version: $(kubectl version --short 2>/dev/null || kubectl version)"
 echo "Node status:"
-k3s kubectl get nodes -o wide`);
+kubectl get nodes -o wide`);
         return this;
     }
 
     /**
-     * Install k3s in agent mode — joins an existing k3s server cluster.
+     * Join a worker node to an existing kubeadm cluster.
      *
-     * Retrieves the join token from SSM (published by the k3s server node),
-     * installs k3s in agent mode, and applies node labels + taints for
-     * workload isolation.
+     * Retrieves the join token and CA certificate hash from SSM
+     * (published by the control plane node), then runs `kubeadm join`.
+     * Applies node labels and taints for workload isolation.
      *
-     * @param config - k3s agent configuration (server URL, token SSM path, labels)
-     * @remarks **k8s project** - Requires a running k3s server.
+     * @param config - kubeadm join configuration
+     * @remarks **k8s project** - Requires a running kubeadm control plane.
      * @returns this - for method chaining
      */
-    installK3sAgent(config: K3sAgentConfig): this {
-        const channel = config.channel ?? 'v1.32';
+    joinKubeadmCluster(config: KubeadmJoinConfig): this {
         const region = config.region ?? 'eu-west-1';
 
         this.userData.addCommands(`
 # =============================================================================
-# Install k3s Agent (joins existing cluster)
+# Join kubeadm Cluster (Worker Node)
 # =============================================================================
 
-echo "=== Installing k3s agent (channel: ${channel}) ==="
+echo "=== Joining kubeadm cluster as worker node ==="
 
 # Get instance metadata
 if [ -z "\${IMDS_TOKEN:-}" ]; then
@@ -695,70 +734,85 @@ PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.1
 
 echo "Instance: $INSTANCE_ID, Private IP: $PRIVATE_IP"
 
-# Retrieve join token from SSM (published by k3s server at boot)
-echo "Retrieving k3s join token from SSM: ${config.tokenSsmPath}"
-K3S_TOKEN=$(aws ssm get-parameter \\
+# Start containerd
+systemctl start containerd
+echo "containerd started"
+
+# Retrieve join token from SSM (published by control plane at boot)
+echo "Retrieving join token from SSM: ${config.tokenSsmPath}"
+JOIN_TOKEN=$(aws ssm get-parameter \\
     --name "${config.tokenSsmPath}" \\
+    --with-decryption \\
     --query "Parameter.Value" \\
     --output text \\
     --region "${region}" 2>/dev/null || echo "")
 
-if [ -z "$K3S_TOKEN" ]; then
-    echo "ERROR: Failed to retrieve k3s join token from SSM"
-    echo "Ensure the k3s server has started and published its token to ${config.tokenSsmPath}"
+if [ -z "$JOIN_TOKEN" ]; then
+    echo "ERROR: Failed to retrieve join token from SSM"
+    echo "Ensure the control plane has started and published its token to ${config.tokenSsmPath}"
     exit 1
 fi
 echo "Join token retrieved successfully"
 
-# Install k3s in agent mode
-export INSTALL_K3S_CHANNEL="${channel}"
-export K3S_URL="${config.serverUrl}"
-export K3S_TOKEN="$K3S_TOKEN"
+# Retrieve CA certificate hash from SSM
+echo "Retrieving CA hash from SSM: ${config.caHashSsmPath}"
+CA_HASH=$(aws ssm get-parameter \\
+    --name "${config.caHashSsmPath}" \\
+    --query "Parameter.Value" \\
+    --output text \\
+    --region "${region}" 2>/dev/null || echo "")
 
-curl -sfL https://get.k3s.io | sh -s - agent \\
-    --node-label "${config.nodeLabel}" \\
-    --node-taint "${config.nodeTaint}"
+if [ -z "$CA_HASH" ]; then
+    echo "ERROR: Failed to retrieve CA hash from SSM"
+    exit 1
+fi
+echo "CA hash retrieved successfully"
 
-# Wait for agent to register with the server
-echo "Waiting for k3s agent to register..."
+# Join the cluster
+echo "Running kubeadm join..."
+kubeadm join "${config.controlPlaneEndpoint}" \\
+    --token "$JOIN_TOKEN" \\
+    --discovery-token-ca-cert-hash "$CA_HASH" \\
+    2>&1 | tee /tmp/kubeadm-join.log
+
+if [ \${PIPESTATUS[0]} -ne 0 ]; then
+    echo "ERROR: kubeadm join failed"
+    cat /tmp/kubeadm-join.log
+    exit 1
+fi
+
+# Wait for kubelet to be active
+echo "Waiting for kubelet to become active..."
 for i in {1..60}; do
-    if systemctl is-active --quiet k3s-agent; then
-        echo "k3s agent is active (waited \${i} seconds)"
+    if systemctl is-active --quiet kubelet; then
+        echo "kubelet is active (waited \${i} seconds)"
         break
     fi
     if [ $i -eq 60 ]; then
-        echo "WARNING: k3s agent did not become active in 60s"
-        journalctl -u k3s-agent --no-pager -n 20
+        echo "WARNING: kubelet did not become active in 60s"
+        journalctl -u kubelet --no-pager -n 20
     fi
     sleep 1
 done
 
-# Store agent instance info in SSM
-aws ssm put-parameter \\
-    --name "${config.tokenSsmPath}/../agent-instance-id" \\
-    --value "$INSTANCE_ID" \\
-    --type "String" \\
-    --overwrite \\
-    --region "${region}" || echo "WARNING: Failed to store agent instance-id in SSM"
-
-echo "k3s agent installed successfully"
-echo "k3s version: $(k3s --version)"
-echo "Agent service status: $(systemctl is-active k3s-agent)"`);
+echo "Worker node joined cluster successfully"
+echo "kubelet version: $(kubelet --version)"
+echo "Service status: $(systemctl is-active kubelet)"`);
         return this;
     }
 
     /**
-     * Install Calico CNI — replaces the default Flannel CNI for NetworkPolicy enforcement.
+     * Install Calico CNI for pod networking and NetworkPolicy enforcement.
      *
-     * Must be called AFTER `installK3s({ disableFlannel: true })`.
+     * Must be called AFTER `initKubeadmCluster()`.
      * Applies the Calico operator and custom resource, then waits for
      * the CNI to become healthy before proceeding.
      *
-     * @param dataDir - k3s data directory for kubectl access @default '/data/k3s'
-     * @remarks **k8s project** - Requires k3s installed with `--flannel-backend=none`.
+     * @param podNetworkCidr - Pod network CIDR to use @default '192.168.0.0/16'
+     * @remarks **k8s project** - Requires kubeadm cluster initialized.
      * @returns this - for method chaining
      */
-    installCalicoCNI(dataDir = '/data/k3s'): this {
+    installCalicoCNI(podNetworkCidr = '192.168.0.0/16'): this {
         this.userData.addCommands(`
 # =============================================================================
 # Install Calico CNI (NetworkPolicy enforcement)
@@ -766,21 +820,20 @@ echo "Agent service status: $(systemctl is-active k3s-agent)"`);
 
 echo "=== Installing Calico CNI ==="
 
-export KUBECONFIG=${dataDir}/server/cred/admin.kubeconfig
-KUBECTL="k3s kubectl"
+export KUBECONFIG=/etc/kubernetes/admin.conf
 
 # Install Calico operator
 echo "Applying Calico operator..."
-$KUBECTL create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.2/manifests/tigera-operator.yaml 2>/dev/null || \\
-$KUBECTL apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.2/manifests/tigera-operator.yaml
+kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.2/manifests/tigera-operator.yaml 2>/dev/null || \\
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.2/manifests/tigera-operator.yaml
 
 # Wait for operator to be available
 echo "Waiting for Calico operator..."
-$KUBECTL wait --for=condition=Available deployment/tigera-operator \\
+kubectl wait --for=condition=Available deployment/tigera-operator \\
     -n tigera-operator --timeout=120s || echo "WARNING: Operator not ready in 120s"
 
-# Apply Calico custom resource (default CIDR 10.42.0.0/16 matches k3s default)
-cat <<CALICO_EOF | $KUBECTL apply -f -
+# Apply Calico custom resource with the configured pod CIDR
+cat <<CALICO_EOF | kubectl apply -f -
 apiVersion: operator.tigera.io/v1
 kind: Installation
 metadata:
@@ -788,7 +841,7 @@ metadata:
 spec:
   calicoNetwork:
     ipPools:
-      - cidr: 10.42.0.0/16
+      - cidr: ${podNetworkCidr}
         encapsulation: VXLANCrossSubnet
         natOutgoing: Enabled
         nodeSelector: all()
@@ -798,22 +851,22 @@ CALICO_EOF
 # Wait for Calico pods to be ready
 echo "Waiting for Calico pods to become ready..."
 for i in {1..120}; do
-    READY=$($KUBECTL get pods -n calico-system --no-headers 2>/dev/null | grep -c "Running" || echo "0")
-    TOTAL=$($KUBECTL get pods -n calico-system --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    READY=$(kubectl get pods -n calico-system --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+    TOTAL=$(kubectl get pods -n calico-system --no-headers 2>/dev/null | wc -l | tr -d ' ')
     if [ "$TOTAL" -gt 0 ] && [ "$READY" -eq "$TOTAL" ]; then
         echo "Calico pods ready (\${READY}/\${TOTAL}, waited \${i} seconds)"
         break
     fi
     if [ $i -eq 120 ]; then
         echo "WARNING: Calico pods not fully ready after 120s (\${READY}/\${TOTAL})"
-        $KUBECTL get pods -n calico-system
+        kubectl get pods -n calico-system
     fi
     sleep 1
 done
 
 echo "Calico CNI installed successfully"
-$KUBECTL get pods -n calico-system
-$KUBECTL get nodes -o wide`);
+kubectl get pods -n calico-system
+kubectl get nodes -o wide`);
         return this;
     }
 
@@ -823,11 +876,10 @@ $KUBECTL get nodes -o wide`);
      * Sets up KUBECONFIG environment variable and copies the kubeconfig
      * to standard locations for both root and ec2-user.
      *
-     * @param config - Optional k3s data directory @default '/data/k3s'
-     * @remarks **k8s project** - Requires k3s to be installed first.
+     * @remarks **k8s project** - Requires kubeadm cluster initialized.
      * @returns this - for method chaining
      */
-    configureKubeconfig(dataDir = '/data/k3s'): this {
+    configureKubeconfig(): this {
         this.userData.addCommands(`
 # =============================================================================
 # Configure kubectl Access
@@ -835,36 +887,33 @@ $KUBECTL get nodes -o wide`);
 
 echo "=== Configuring kubectl access ==="
 
-K3S_KUBECONFIG="${dataDir}/server/cred/admin.kubeconfig"
+KUBECONFIG_SRC="/etc/kubernetes/admin.conf"
 
 # Set up for root
 mkdir -p /root/.kube
-cp $K3S_KUBECONFIG /root/.kube/config
+cp -f $KUBECONFIG_SRC /root/.kube/config
 chmod 600 /root/.kube/config
 
 # Set up for ec2-user
 mkdir -p /home/ec2-user/.kube
-cp $K3S_KUBECONFIG /home/ec2-user/.kube/config
+cp -f $KUBECONFIG_SRC /home/ec2-user/.kube/config
 chown ec2-user:ec2-user /home/ec2-user/.kube/config
 chmod 600 /home/ec2-user/.kube/config
 
 # Add KUBECONFIG to shell profiles for both users
-echo "export KUBECONFIG=$K3S_KUBECONFIG" > /etc/profile.d/k3s.sh
-chmod 644 /etc/profile.d/k3s.sh
-
-# Add kubectl alias
-echo "alias kubectl='k3s kubectl'" >> /etc/profile.d/k3s.sh
+echo "export KUBECONFIG=$KUBECONFIG_SRC" > /etc/profile.d/kubernetes.sh
+chmod 644 /etc/profile.d/kubernetes.sh
 
 # Verify kubectl works
-export KUBECONFIG=$K3S_KUBECONFIG
+export KUBECONFIG=$KUBECONFIG_SRC
 echo "kubectl configured. Cluster info:"
-k3s kubectl cluster-info
-k3s kubectl get namespaces`);
+kubectl cluster-info
+kubectl get namespaces`);
         return this;
     }
 
     /**
-     * Download k8s manifests from S3 and deploy to k3s.
+     * Download k8s manifests from S3 and deploy to the cluster.
      *
      * Downloads the k8s bundle from S3 (synced via CDK BucketDeployment)
      * and delegates to `deploy-manifests.sh` for secret resolution,
@@ -874,7 +923,7 @@ k3s kubectl get namespaces`);
      * script which can also be triggered via SSM Run Command from CI/CD.
      *
      * @param config - S3 bucket and manifest configuration
-     * @remarks **k8s project** - Requires k3s and kubectl to be configured.
+     * @remarks **k8s project** - Requires kubectl to be configured.
      * @returns this - for method chaining
      */
     deployK8sManifests(config: K8sManifestsS3Config): this {
@@ -901,7 +950,7 @@ echo "k8s bundle downloaded to $K8S_DIR"
 find $K8S_DIR -name '*.sh' -exec chmod +x {} +
 
 # Run the deploy script (handles secrets, kubectl apply, SSM endpoints)
-export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig
+export KUBECONFIG=/etc/kubernetes/admin.conf
 export SSM_PREFIX="${ssmPrefix}"
 export AWS_REGION="${region}"
 export MANIFESTS_DIR="$K8S_DIR/manifests"
@@ -912,6 +961,7 @@ $K8S_DIR/apps/monitoring/deploy-manifests.sh
 echo "=== k8s first-boot deployment complete ==="`);
         return this;
     }
+
 
     // =========================================================================
     // MONITORING-SPECIFIC METHODS

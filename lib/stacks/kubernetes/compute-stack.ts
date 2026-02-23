@@ -391,7 +391,7 @@ export class KubernetesComputeStack extends cdk.Stack {
             steps: [{
                 name: 'deployManifests',
                 commands: [
-                    'export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig',
+                    'export KUBECONFIG=/etc/kubernetes/admin.conf',
                     'export S3_BUCKET="{{S3Bucket}}"',
                     'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
                     'export SSM_PREFIX="{{SsmPrefix}}"',
@@ -440,7 +440,7 @@ export class KubernetesComputeStack extends cdk.Stack {
             steps: [{
                 name: 'deployAppManifests',
                 commands: [
-                    'export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig',
+                    'export KUBECONFIG=/etc/kubernetes/admin.conf',
                     'export S3_BUCKET="{{S3Bucket}}"',
                     'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
                     'export SSM_PREFIX="{{SsmPrefix}}"',
@@ -529,15 +529,15 @@ export class KubernetesComputeStack extends cdk.Stack {
                 region: this.region,
             })
             .updateSystem()
-            .installK3s({
-                channel: configs.cluster.kubernetesVersion,
+            .initKubeadmCluster({
+                kubernetesVersion: configs.cluster.kubernetesVersion,
                 dataDir: configs.cluster.dataDir,
-                disableTraefik: false,
-                disableFlannel: true,
+                podNetworkCidr: configs.cluster.podNetworkCidr,
+                serviceSubnet: configs.cluster.serviceSubnet,
                 ssmPrefix: props.ssmPrefix,
             })
-            .installCalicoCNI(configs.cluster.dataDir)
-            .configureKubeconfig(configs.cluster.dataDir)
+            .installCalicoCNI(configs.cluster.podNetworkCidr)
+            .configureKubeconfig()
             .deployK8sManifests({
                 s3BucketName: scriptsBucket.bucketName,
                 s3KeyPrefix: 'k8s',
@@ -557,7 +557,7 @@ export class KubernetesComputeStack extends cdk.Stack {
 echo "=== Pre-seeding Next.js secrets ==="
 K8S_DIR="/data/k8s"
 
-export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig
+export KUBECONFIG=/etc/kubernetes/admin.conf
 export SSM_PREFIX="${props.ssmPrefix}"
 export AWS_REGION="${this.region}"
 
@@ -610,7 +610,7 @@ echo "=== Next.js secret pre-seeding complete ==="
 echo "=== Bootstrapping ArgoCD ==="
 K8S_DIR="/data/k8s"
 
-export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig
+export KUBECONFIG=/etc/kubernetes/admin.conf
 export SSM_PREFIX="${props.ssmPrefix}"
 export AWS_REGION="${this.region}"
 export ARGOCD_DIR="$K8S_DIR/system/argocd"
