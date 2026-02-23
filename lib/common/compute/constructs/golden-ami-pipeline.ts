@@ -395,12 +395,13 @@ phases:
         inputs:
           commands:
             - |
-              # Pre-download Calico manifests to /opt/calico
+              # Pre-download Calico manifests to /opt/calico (avoids GitHub fetch at boot)
               mkdir -p /opt/calico
               CALICO_VERSION="v3.29.3"
+              curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/\${CALICO_VERSION}/manifests/tigera-operator.yaml" -o /opt/calico/tigera-operator.yaml
               curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/\${CALICO_VERSION}/manifests/calico.yaml" -o /opt/calico/calico.yaml
               echo "\${CALICO_VERSION}" > /opt/calico/version.txt
-              echo "Calico \${CALICO_VERSION} manifests cached"
+              echo "Calico \${CALICO_VERSION} manifests cached (operator + standalone)"
 
       - name: CreateDataDirectory
         action: ExecuteBash

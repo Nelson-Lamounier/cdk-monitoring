@@ -824,10 +824,19 @@ echo "=== Installing Calico CNI ==="
 
 export KUBECONFIG=/etc/kubernetes/admin.conf
 
-# Install Calico operator
+# Install Calico operator (prefer pre-cached from Golden AMI, fallback to GitHub)
+CALICO_VERSION="v3.29.3"
+OPERATOR_YAML="/opt/calico/tigera-operator.yaml"
 echo "Applying Calico operator..."
-kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.2/manifests/tigera-operator.yaml 2>/dev/null || \\
-kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.2/manifests/tigera-operator.yaml
+if [ -f "$OPERATOR_YAML" ]; then
+    echo "  Using pre-cached operator from Golden AMI"
+    kubectl create -f "$OPERATOR_YAML" 2>/dev/null || \\
+    kubectl apply -f "$OPERATOR_YAML"
+else
+    echo "  WARNING: Pre-cached operator not found, downloading from GitHub"
+    kubectl create -f "https://raw.githubusercontent.com/projectcalico/calico/$CALICO_VERSION/manifests/tigera-operator.yaml" 2>/dev/null || \\
+    kubectl apply -f "https://raw.githubusercontent.com/projectcalico/calico/$CALICO_VERSION/manifests/tigera-operator.yaml"
+fi
 
 # Wait for operator to be available
 echo "Waiting for Calico operator..."
