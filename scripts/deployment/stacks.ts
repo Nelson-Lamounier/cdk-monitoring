@@ -252,8 +252,9 @@ const orgProject: ProjectConfig = {
 };
 
 // =============================================================================
-// K8S PROJECT (k3s Kubernetes Cluster — 3-Stack Infra Architecture)
-// API stack excluded — deployed by Next.js K8s pipeline
+// K8S PROJECT (k3s Kubernetes Cluster — 4-Stack Architecture)
+// Synth outputs all 4 stacks. Infra pipeline deploys Data/Compute/Edge (3).
+// API stack is deployed by the Next.js thin wrapper pipeline.
 // =============================================================================
 
 const k8sStacks: StackConfig[] = [
@@ -268,6 +269,13 @@ const k8sStacks: StackConfig[] = [
     name: 'Compute Stack',
     getStackName: (env) => getStackId(Project.K8S, 'compute', env),
     description: 'k3s Kubernetes cluster: EC2 + ASG + EBS + Security Group + Elastic IP',
+    dependsOn: ['data'],
+  },
+  {
+    id: 'api',
+    name: 'API Stack',
+    getStackName: (env) => getStackId(Project.K8S, 'api', env),
+    description: 'API Gateway with Lambda for email subscriptions (subscribe + verify)',
     dependsOn: ['data'],
   },
   {

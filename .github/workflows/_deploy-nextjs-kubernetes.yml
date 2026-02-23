@@ -1,26 +1,19 @@
 # @format
-# @description Reusable Next.js K8s Deployment Workflow (Self-Contained)
+# @description Next.js App Layer Pipeline (Thin Wrapper)
 #
-# Deploys the complete Next.js application via K8s (k3s agent node).
-# This pipeline is self-contained — it deploys ALL stacks needed for
-# the full application to run, not just the K8s compute layer. // Test
+# Deploys only the application-layer resources for Next.js on K8s:
+#   1. API Stack (API Gateway + Lambda for email subscriptions)
+#   2. Sync Static Assets (S3 + CloudFront invalidation)
+#   3. Verify & Smoke Tests
 #
-# Stack Deployment Order:
-#   1. Data    (ECR + DynamoDB + S3 + SSM Secrets)
-#   2. K8s-Compute (EC2 k3s agent + EIP + S3 manifests)
-#   3. API     (API Gateway + Lambda — independent of compute path)
-#   4. Edge    (CloudFront + ACM + WAF — origin = EIP via Traefik)
+# Can be triggered two ways:
+#   - Chained from _deploy-kubernetes.yml after infra deploy (full deploy)
+#   - Standalone via deploy-nextjs-kubernetes-dev.yml (API-only changes)
 #
-# Post-Deploy:
-#   5. Deploy Manifests (via SSM Run Command)
-#   6. ArgoCD Sync (best-effort)
-#   7. Sync Static Assets (S3 + CloudFront invalidation)
-#   8. Verify + Smoke Tests
-#
-# Parallels _deploy-nextjs.yml (ECS) but replaces Compute/Networking/Application
-# stacks with a single K8s-Compute stack + K8s manifest deployment.
+# When called from the K8s pipeline, api-stack-name is provided as input
+# (skipping synth). When standalone, it runs its own synth to resolve it.
 
-name: Deploy Next.js K8s (Reusable)
+name: Deploy Next.js App Layer (Reusable)
 
 on:
   workflow_call:
@@ -33,41 +26,21 @@ on:
         description: "CDK environment name"
         required: true
         type: string
-      require-approval:
-        description: "CDK deployment approval mode"
+      api-stack-name:
+        description: "Pre-resolved API stack name (skip synth if provided)"
         required: false
-        default: "never"
         type: string
-      enable-security-scan:
-        description: "Run IaC security scan"
+        default: ""
+      domain-name:
+        description: "Domain name for CloudFront (needed for sync + smoke tests)"
         required: false
-        default: false
-        type: boolean
-      security-scan-blocking:
-        description: "Fail pipeline on security scan findings"
-        required: false
-        default: false
-        type: boolean
+        type: string
+        default: ""
       skip-verification:
         description: "Skip post-deployment verification"
         required: false
         default: false
         type: boolean
-      domain-name:
-        description: "Domain name for CloudFront Edge stack (optional — falls back to vars.DOMAIN_NAME)"
-        required: false
-        type: string
-        default: ""
-      hosted-zone-id:
-        description: "Route53 Hosted Zone ID (optional — falls back to vars.HOSTED_ZONE_ID)"
-        required: false
-        type: string
-        default: ""
-      cross-account-role-arn:
-        description: "Cross-account IAM role for Route53 (optional — falls back to vars.DNS_VALIDATION_ROLE)"
-        required: false
-        type: string
-        default: ""
     secrets:
       AWS_OIDC_ROLE:
         description: "AWS OIDC role ARN"
@@ -82,27 +55,17 @@ env:
 
 jobs:
   # ===========================================================================
-  # Setup, Build & Synthesize
+  # Setup (only if api-stack-name not provided — standalone mode)
   # ===========================================================================
   setup:
-    name: Setup & Synthesize
+    name: Setup & Resolve Stack
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     environment: ${{ inputs.environment }}
+    if: inputs.api-stack-name == ''
     outputs:
-      aws-account-id: ${{ steps.account-id.outputs.account_id }}
-      commit-sha: ${{ github.sha }}
-      commit-short-sha: ${{ steps.commit-info.outputs.short_sha }}
-      node-version: ${{ steps.setup-tools.outputs.node-version }}
-      # Resolved edge configuration
-      domain-name: ${{ steps.resolve-edge.outputs.domain-name }}
-      hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
-      cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
-      # Stack names from synthesize-ci.ts
-      data-stack: ${{ steps.synth.outputs.data }}
-      k8s-compute-stack: ${{ steps.synth.outputs.k8sCompute }}
       api-stack: ${{ steps.synth.outputs.api }}
-      edge-stack: ${{ steps.synth.outputs.edge }}
+      commit-short-sha: ${{ steps.commit-info.outputs.short_sha }}
 
     steps:
       - name: Checkout
@@ -113,28 +76,12 @@ jobs:
         run: echo "short_sha=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js and Yarn
-        id: setup-tools
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Validate AWS Account ID
-        id: account-id
-        run: |
-          ACCOUNT_ID="${{ vars.AWS_ACCOUNT_ID }}"
-          if [ -z "$ACCOUNT_ID" ]; then
-            echo "ERROR: AWS_ACCOUNT_ID variable not configured"
-            exit 1
-          fi
-          if ! [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
-            echo "ERROR: Invalid AWS account ID format"
-            exit 1
-          fi
-          echo "::add-mask::$ACCOUNT_ID"
-          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
-
       - name: Build TypeScript
-        run: yarn build
+        run: just build
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
@@ -143,232 +90,35 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Resolve Edge Configuration
-        id: resolve-edge
-        run: |
-          DOMAIN="${{ inputs.domain-name }}"
-          if [ -z "$DOMAIN" ]; then DOMAIN="${{ vars.DOMAIN_NAME }}"; fi
-          if [ -z "$DOMAIN" ]; then
-            echo "ERROR: No domain name. Set DOMAIN_NAME in environment '${{ inputs.environment }}'"
-            exit 1
-          fi
-
-          HZ_ID="${{ inputs.hosted-zone-id }}"
-          if [ -z "$HZ_ID" ]; then HZ_ID="${{ vars.HOSTED_ZONE_ID }}"; fi
-          if [ -z "$HZ_ID" ]; then
-            echo "ERROR: No hosted zone ID. Set HOSTED_ZONE_ID in environment '${{ inputs.environment }}'"
-            exit 1
-          fi
-
-          ROLE_ARN="${{ inputs.cross-account-role-arn }}"
-          if [ -z "$ROLE_ARN" ]; then ROLE_ARN="${{ vars.DNS_VALIDATION_ROLE }}"; fi
-          if [ -z "$ROLE_ARN" ]; then
-            echo "ERROR: No cross-account role. Set DNS_VALIDATION_ROLE in environment '${{ inputs.environment }}'"
-            exit 1
-          fi
-
-          echo "domain-name=$DOMAIN" >> $GITHUB_OUTPUT
-          echo "hosted-zone-id=$HZ_ID" >> $GITHUB_OUTPUT
-          echo "cross-account-role-arn=$ROLE_ARN" >> $GITHUB_OUTPUT
-          echo "✓ Edge config: $DOMAIN (Zone: $HZ_ID)"
-
-      - name: Synthesize & Determine Stack Names
+      - name: Synthesize & Resolve API Stack Name
         id: synth
         env:
-          DOMAIN_NAME: ${{ steps.resolve-edge.outputs.domain-name }}
-          HOSTED_ZONE_ID: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
-          CROSS_ACCOUNT_ROLE_ARN: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
+          DOMAIN_NAME: ${{ inputs.domain-name || vars.DOMAIN_NAME }}
+          HOSTED_ZONE_ID: ${{ vars.HOSTED_ZONE_ID }}
+          CROSS_ACCOUNT_ROLE_ARN: ${{ vars.DNS_VALIDATION_ROLE }}
           NOTIFICATION_EMAIL: ${{ vars.NOTIFICATION_EMAIL }}
           SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
           VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL }}
-        run: just ci-synth nextjs ${{ inputs.cdk-environment }}
-
-      - name: Get AWS Account ID
-        id: account-id-step
-        run: echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
-
-      - name: Upload Synthesized Templates
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: cdk-out-nextjs-k8s-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
-          path: cdk.out/
-          retention-days: 30
-
-      - name: Upload for Security Scan
-        if: inputs.enable-security-scan
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: cdk-synthesis
-          path: cdk.out/
-          retention-days: 7
+        run: just ci-synth k8s ${{ inputs.cdk-environment }}
 
   # ===========================================================================
-  # IaC Security Scan (Conditional)
-  # ===========================================================================
-  security-scan:
-    name: Security Scan
-    needs: setup
-    if: inputs.enable-security-scan
-    uses: ./.github/workflows/_iac-security-scan.yml
-    with:
-      environment: ${{ inputs.environment }}
-      enforce-blocking: ${{ inputs.security-scan-blocking }}
-      cdk-output-path: "cdk.out"
-      skip-checks: ""
-      soft-fail-on: ${{ inputs.security-scan-blocking && '' || 'LOW' }}
-    secrets: inherit
-
-  # ===========================================================================
-  # Drift Detection
-  # ===========================================================================
-  drift-detection:
-    name: Drift Detection
-    needs: [setup]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: ${{ inputs.environment }}
-    continue-on-error: true
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node.js and Yarn
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        run: yarn install --frozen-lockfile
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-
-      - name: Run Drift Detection
-        run: just ci-drift nextjs ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
-        env:
-          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-
-  # ===========================================================================
-  # Template Validation (cfn-lint)
-  # ===========================================================================
-  validate-templates:
-    name: Validate Templates
-    needs: [setup]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout Config
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          sparse-checkout: .cfnlintrc
-          sparse-checkout-cone-mode: false
-
-      - name: Download Synthesized Templates
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: cdk-out-nextjs-k8s-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
-          path: cdk.out/
-
-      - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.11"
-
-      - name: Install cfn-lint
-        run: pip install cfn-lint
-
-      - name: Validate CloudFormation Templates
-        shell: python3 {0}
-        run: |
-          import sys, glob
-          sys.setrecursionlimit(10000)
-          from cfnlint import decode, runner
-          from cfnlint.config import ConfigMixIn
-
-          templates = sorted(glob.glob("cdk.out/**/*.template.json", recursive=True))
-          print(f"Validating {len(templates)} templates...")
-          total_errors = 0
-          for tpl in templates:
-              print(f"\n--- {tpl} ---")
-              try:
-                  config = ConfigMixIn(["--template", tpl])
-                  matches = list(runner.Runner(config).run())
-                  if matches:
-                      total_errors += len(matches)
-                      for match in matches:
-                          print(f"  {match}")
-                  else:
-                      print("  ✅ passed")
-              except RecursionError:
-                  print(f"  ⚠️  skipped (template too deeply nested)")
-              except Exception as e:
-                  print(f"  ⚠️  skipped ({type(e).__name__}: {e})")
-
-          if total_errors > 0:
-              print(f"\n{total_errors} validation errors found")
-              sys.exit(1)
-          else:
-              print(f"\nAll {len(templates)} templates passed validation")
-
-  # ===========================================================================
-  # Deploy Data Stack (1/4) — ECR + DynamoDB + S3 + SSM Secrets
-  # ===========================================================================
-  deploy-data:
-    name: Deploy Data
-    needs: [setup, validate-templates, security-scan, drift-detection]
-    if: always() && needs.setup.result == 'success' && needs.validate-templates.result == 'success'
-    uses: ./.github/workflows/_deploy-stack.yml
-    with:
-      stack-name: ${{ needs.setup.outputs.data-stack }}
-      project: nextjs
-      environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
-      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-      require-approval: ${{ inputs.require-approval }}
-      outputs-directory: "deployment-outputs"
-    secrets: inherit
-
-  # ===========================================================================
-  # Deploy K8s Compute Stack (2/4) — EC2 k3s agent + EIP + S3 manifests
-  # Replaces: ECS Compute + Networking + Application stacks
-  # ===========================================================================
-  deploy-k8s-compute:
-    name: Deploy K8s Compute
-    needs: [setup, deploy-data]
-    if: always() && needs.deploy-data.result == 'success'
-    uses: ./.github/workflows/_deploy-stack.yml
-    with:
-      stack-name: ${{ needs.setup.outputs.k8s-compute-stack }}
-      project: nextjs
-      environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
-      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-      require-approval: ${{ inputs.require-approval }}
-      outputs-directory: "deployment-outputs"
-    secrets: inherit
-
-  # ===========================================================================
-  # Deploy API Stack (3/4) — API Gateway + Lambda (independent lifecycle)
+  # Deploy API Stack — API Gateway + Lambda (email subscriptions)
   # ===========================================================================
   deploy-api:
     name: Deploy API
-    needs: [setup, deploy-data]
-    if: always() && needs.deploy-data.result == 'success'
+    needs: [setup]
+    if: >-
+      always()
+      && (needs.setup.result == 'success' || needs.setup.result == 'skipped')
     uses: ./.github/workflows/_deploy-stack.yml
     with:
-      stack-name: ${{ needs.setup.outputs.api-stack }}
-      project: nextjs
+      stack-name: ${{ inputs.api-stack-name || needs.setup.outputs.api-stack }}
+      project: k8s
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-      require-approval: ${{ inputs.require-approval }}
+      require-approval: never
       outputs-directory: "deployment-outputs"
       notification-email: ${{ vars.NOTIFICATION_EMAIL }}
       ses-from-email: ${{ vars.SES_FROM_EMAIL }}
@@ -376,67 +126,15 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Deploy Edge Stack (4/4) — CloudFront + ACM + WAF (us-east-1)
-  # Origin: Elastic IP (via Traefik) — replaces ALB origin from ECS path
-  # ===========================================================================
-  deploy-edge:
-    name: Deploy Edge
-    needs: [setup, deploy-k8s-compute, deploy-api]
-    if: always() && needs.deploy-k8s-compute.result == 'success' && needs.deploy-api.result == 'success'
-    uses: ./.github/workflows/_deploy-stack.yml
-    with:
-      stack-name: ${{ needs.setup.outputs.edge-stack }}
-      project: nextjs
-      environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
-      aws-region: ${{ vars.ROUTE53_REGION || 'us-east-1' }}
-      require-approval: ${{ inputs.require-approval }}
-      outputs-directory: "deployment-outputs"
-      domain-name: ${{ needs.setup.outputs.domain-name }}
-      hosted-zone-id: ${{ needs.setup.outputs.hosted-zone-id }}
-      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
-    secrets: inherit
-
-  # ===========================================================================
-  # Deploy K8s Manifests via SSM Run Command
-  # ===========================================================================
-  deploy-manifests:
-    name: Deploy Manifests
-    needs: [setup, deploy-k8s-compute]
-    if: always() && needs.deploy-k8s-compute.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: ${{ inputs.environment }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node.js and Yarn
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-
-      - name: Deploy Manifests
-        run: just ci-deploy-manifests nextjs ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
-
-  # ===========================================================================
   # Sync Static Assets to S3 + CloudFront Cache Invalidation
   # ===========================================================================
   sync-static-assets:
     name: Sync Static Assets
-    needs: [setup, deploy-data, deploy-edge]
+    needs: [setup, deploy-api]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ inputs.environment }}
-    if: always() && needs.deploy-data.result == 'success' && (needs.deploy-edge.result == 'success' || needs.deploy-edge.result == 'skipped')
+    if: always() && needs.deploy-api.result == 'success'
     outputs:
       s3-bucket: ${{ steps.sync.outputs.bucket }}
       files-synced: ${{ steps.sync.outputs.files_synced }}
@@ -449,7 +147,7 @@ jobs:
       - name: Setup Node.js and Yarn
         uses: ./.github/actions/setup-node-yarn
         with:
-          node-version: ${{ needs.setup.outputs.node-version }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install Dependencies
         run: yarn install --frozen-lockfile
@@ -461,39 +159,33 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Download Build Artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: cdk-out-nextjs-k8s-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
-          path: cdk.out/
-
       - name: Sync Assets & Invalidate Cache
         id: sync
         run: |
           SYNC_CMD="just ci-sync-assets ${{ inputs.cdk-environment }}"
           SYNC_CMD="$SYNC_CMD --region ${{ env.AWS_REGION }}"
 
-          if [ -n "${{ needs.setup.outputs.domain-name }}" ]; then
-            SYNC_CMD="$SYNC_CMD --domain ${{ needs.setup.outputs.domain-name }}"
+          DOMAIN="${{ inputs.domain-name }}"
+          if [ -z "$DOMAIN" ]; then DOMAIN="${{ vars.DOMAIN_NAME }}"; fi
+          if [ -n "$DOMAIN" ]; then
+            SYNC_CMD="$SYNC_CMD --domain $DOMAIN"
           fi
 
           eval $SYNC_CMD
 
   # ===========================================================================
-  # Verify & Smoke Tests (merged — CFN status + K8s-specific health checks)
+  # Verify & Smoke Tests
   # ===========================================================================
   verify-and-test:
     name: Verify & Smoke Tests
-    needs: [setup, deploy-k8s-compute, deploy-manifests, sync-static-assets]
+    needs: [setup, deploy-api, sync-static-assets]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
     if: >-
       always()
-      && needs.deploy-k8s-compute.result == 'success'
+      && needs.deploy-api.result == 'success'
       && inputs.skip-verification != true
-    outputs:
-      status: ${{ steps.smoke.outputs.status }}
 
     steps:
       - name: Checkout
@@ -502,7 +194,7 @@ jobs:
       - name: Setup Node.js and Yarn
         uses: ./.github/actions/setup-node-yarn
         with:
-          node-version: ${{ needs.setup.outputs.node-version }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install Dependencies
         run: yarn install --frozen-lockfile
@@ -519,8 +211,10 @@ jobs:
         run: |
           SMOKE_CMD="just ci-smoke-kubernetes ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}"
 
-          if [ -n "${{ needs.setup.outputs.domain-name }}" ]; then
-            SMOKE_CMD="$SMOKE_CMD --cloudfront-domain ${{ needs.setup.outputs.domain-name }}"
+          DOMAIN="${{ inputs.domain-name }}"
+          if [ -z "$DOMAIN" ]; then DOMAIN="${{ vars.DOMAIN_NAME }}"; fi
+          if [ -n "$DOMAIN" ]; then
+            SMOKE_CMD="$SMOKE_CMD --cloudfront-domain $DOMAIN"
           fi
 
           if [ -n "${{ needs.sync-static-assets.outputs.s3-bucket }}" ]; then
@@ -528,114 +222,3 @@ jobs:
           fi
 
           eval $SMOKE_CMD
-
-  # ===========================================================================
-  # Rollback (Conditional — staging/production only)
-  #
-  # Triggers when K8s Compute deployed successfully but verification failed.
-  # Rolls back CloudFormation to the previous known-good template.
-  # ===========================================================================
-  rollback:
-    name: Rollback K8s Compute
-    needs: [setup, deploy-k8s-compute, deploy-manifests, verify-and-test]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: ${{ inputs.environment }}
-    if: |
-      always()
-      && needs.deploy-k8s-compute.result == 'success'
-      && needs.verify-and-test.result == 'failure'
-      && inputs.cdk-environment != 'development'
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node.js and Yarn
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        run: yarn install --frozen-lockfile
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-
-      - name: Rollback K8s Compute Stack
-        id: rollback
-        run: just ci-rollback "${{ needs.setup.outputs.k8s-compute-stack }}" --region ${{ env.AWS_REGION }}
-
-  # ===========================================================================
-  # Deployment Summary (TypeScript)
-  # ===========================================================================
-  summary:
-    name: Deployment Summary
-    needs:
-      - setup
-      - security-scan
-      - drift-detection
-      - deploy-data
-      - deploy-k8s-compute
-      - deploy-api
-      - deploy-edge
-      - deploy-manifests
-      - sync-static-assets
-      - verify-and-test
-      - rollback
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    if: always()
-
-    steps:
-      # Guard: if setup was cancelled/failed, write minimal fallback and skip TS
-      - name: Check Prerequisites
-        id: prereqs
-        run: |
-          if [ "${{ needs.setup.result }}" != "success" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            cat >> $GITHUB_STEP_SUMMARY << 'EOF'
-          ## ⚠️ Pipeline Aborted
-
-          **Reason**: Setup job did not complete successfully (`${{ needs.setup.result }}`)
-          **Commit**: `${{ github.sha }}`
-          **Environment**: ${{ inputs.environment }}
-
-          No stacks were deployed. Check the setup job logs for details.
-          EOF
-            echo "::warning::Setup did not succeed (${{ needs.setup.result }}), skipping full summary"
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Checkout
-        if: steps.prereqs.outputs.skip != 'true'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node.js and Yarn
-        if: steps.prereqs.outputs.skip != 'true'
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        if: steps.prereqs.outputs.skip != 'true'
-        run: yarn install --frozen-lockfile
-
-      - name: Generate Summary
-        if: steps.prereqs.outputs.skip != 'true'
-        env:
-          DEPLOY_DATA_RESULT: ${{ needs.deploy-data.result }}
-          DEPLOY_K8SCOMPUTE_RESULT: ${{ needs.deploy-k8s-compute.result }}
-          DEPLOY_API_RESULT: ${{ needs.deploy-api.result || 'skipped' }}
-          DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
-          SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
-          VERIFY_RESULT: ${{ needs.verify-and-test.result || 'skipped' }}
-          SMOKE_TESTS_RESULT: ${{ needs.verify-and-test.result || 'skipped' }}
-          ROLLBACK_RESULT: ${{ needs.rollback.result || 'skipped' }}
-          COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
-        run: just ci-summary nextjs ${{ inputs.cdk-environment }}

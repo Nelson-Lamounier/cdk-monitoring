@@ -69,6 +69,8 @@ on:
       AWS_OIDC_ROLE:
         description: "AWS OIDC role ARN"
         required: false
+      VERIFICATION_SECRET:
+        required: false
 
 env:
   NODE_VERSION: "22"
@@ -93,9 +95,10 @@ jobs:
       domain-name: ${{ steps.resolve-edge.outputs.domain-name }}
       hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
       cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
-      # Stack names from synthesize-ci.ts (3-stack infra architecture)
+      # Stack names from synthesize-ci.ts (4-stack architecture, 3 deployed here)
       data-stack: ${{ steps.synth.outputs.data }}
       compute-stack: ${{ steps.synth.outputs.compute }}
+      api-stack: ${{ steps.synth.outputs.api }}
       edge-stack: ${{ steps.synth.outputs.edge }}
 
     steps:
@@ -175,6 +178,10 @@ jobs:
           DOMAIN_NAME: ${{ steps.resolve-edge.outputs.domain-name }}
           HOSTED_ZONE_ID: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
           CROSS_ACCOUNT_ROLE_ARN: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
+          NOTIFICATION_EMAIL: ${{ vars.NOTIFICATION_EMAIL }}
+          SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL }}
+          VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
+          VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL }}
         run: just ci-synth k8s ${{ inputs.cdk-environment }}
 
       - name: Upload Synthesized Templates
@@ -590,6 +597,23 @@ jobs:
         run: just ci-rollback "${{ needs.setup.outputs.compute-stack }}" --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
+  # Deploy Next.js App Layer (API + sync + verify)
+  # Chains the thin wrapper pipeline after infra is ready.
+  # ===========================================================================
+  deploy-nextjs-app:
+    name: Deploy Next.js App Layer
+    needs: [setup, deploy-data, deploy-edge]
+    if: always() && needs.deploy-data.result == 'success'
+    uses: ./.github/workflows/_deploy-nextjs-kubernetes.yml
+    with:
+      environment: ${{ inputs.environment }}
+      cdk-environment: ${{ inputs.cdk-environment }}
+      api-stack-name: ${{ needs.setup.outputs.api-stack }}
+      domain-name: ${{ needs.setup.outputs.domain-name }}
+      skip-verification: ${{ inputs.skip-verification }}
+    secrets: inherit
+
+  # ===========================================================================
   # Deployment Summary (TypeScript)
   # ===========================================================================
   summary:
@@ -606,6 +630,7 @@ jobs:
       - sync-static-assets
       - verify-and-test
       - rollback
+      - deploy-nextjs-app
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -650,6 +675,7 @@ jobs:
         env:
           DEPLOY_DATA_RESULT: ${{ needs.deploy-data.result }}
           DEPLOY_COMPUTE_RESULT: ${{ needs.deploy-compute.result }}
+          DEPLOY_API_RESULT: ${{ needs.deploy-nextjs-app.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
           VERIFY_RESULT: ${{ needs.verify-and-test.result || 'skipped' }}
