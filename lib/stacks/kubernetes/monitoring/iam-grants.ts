@@ -96,4 +96,23 @@ export function grantMonitoringPermissions(
         actions: ['ec2:AssociateAddress', 'ec2:DescribeAddresses'],
         resources: ['*'],
     }));
+
+    // Secrets Manager write (ArgoCD CI bot token — pushed during bootstrap)
+    // The bootstrap-argocd.sh script generates an API token for the ci-bot
+    // account and stores it in Secrets Manager so the CI pipeline can
+    // retrieve it for ArgoCD application health verification.
+    const k8sEnv = ssmPrefix.split('/').pop() || 'development';
+    role.addToPrincipalPolicy(new iam.PolicyStatement({
+        sid: 'SecretsManagerArgoCdWrite',
+        effect: iam.Effect.ALLOW,
+        actions: [
+            'secretsmanager:CreateSecret',
+            'secretsmanager:PutSecretValue',
+            'secretsmanager:UpdateSecret',
+            'secretsmanager:DescribeSecret',
+        ],
+        resources: [
+            `arn:aws:secretsmanager:${region}:${account}:secret:k8s/${k8sEnv}/*`,
+        ],
+    }));
 }

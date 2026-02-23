@@ -153,7 +153,119 @@ kubectl rollout status statefulset/argocd-application-controller \
 echo ""
 
 # ---------------------------------------------------------------------------
-# 7. Summary
+# 7. Install ArgoCD CLI
+#
+# The CLI is required for account management and token generation.
+# Using --core flag allows direct Kubernetes access without API login.
+# Downloaded at runtime (not baked into AMI) to avoid version drift.
+# ---------------------------------------------------------------------------
+echo "=== Step 7: Installing ArgoCD CLI ==="
+
+ARGOCD_CLI_VERSION="${ARGOCD_CLI_VERSION:-v2.14.11}"
+ARCH=$(uname -m)
+case "${ARCH}" in
+    x86_64)  CLI_ARCH="amd64" ;;
+    aarch64) CLI_ARCH="arm64" ;;
+    *)       CLI_ARCH="amd64" ;;
+esac
+
+ARGOCD_CLI_URL="https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_CLI_VERSION}/argocd-linux-${CLI_ARCH}"
+echo "  → Downloading ArgoCD CLI ${ARGOCD_CLI_VERSION} (${CLI_ARCH})..."
+
+if curl -sSL -o /usr/local/bin/argocd "${ARGOCD_CLI_URL}" && chmod +x /usr/local/bin/argocd; then
+    echo "  ✓ ArgoCD CLI installed: $(argocd version --client --short 2>/dev/null || echo "${ARGOCD_CLI_VERSION}")"
+else
+    echo "  ⚠ ArgoCD CLI install failed — skipping CI bot token generation"
+    SKIP_CI_BOT="true"
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# 8. Create CI bot account
+#
+# ArgoCD accounts are configured via the argocd-cm ConfigMap.
+# The ci-bot account has apiKey capability (token generation only).
+# RBAC grants read-only access to applications for CI verification.
+#
+# Using --core flag: direct Kubernetes access via KUBECONFIG,
+# no need to authenticate to the ArgoCD API server.
+# ---------------------------------------------------------------------------
+echo "=== Step 8: Creating CI bot account ==="
+
+if [ "${SKIP_CI_BOT:-}" != "true" ]; then
+    # Register ci-bot account in argocd-cm (idempotent patch)
+    kubectl patch configmap argocd-cm -n argocd --type merge -p '{
+      "data": {
+        "accounts.ci-bot": "apiKey"
+      }
+    }' 2>/dev/null && echo "  ✓ ci-bot account registered in argocd-cm" \
+                   || echo "  ⚠ Failed to patch argocd-cm"
+
+    # Grant ci-bot read-only RBAC (view applications, read logs)
+    kubectl patch configmap argocd-rbac-cm -n argocd --type merge -p '{
+      "data": {
+        "policy.csv": "p, role:ci-readonly, applications, get, */*, allow\np, role:ci-readonly, applications, list, */*, allow\ng, ci-bot, role:ci-readonly"
+      }
+    }' 2>/dev/null && echo "  ✓ ci-bot RBAC policy applied (read-only)" \
+                   || echo "  ⚠ Failed to patch argocd-rbac-cm"
+
+    # Wait briefly for ArgoCD to pick up ConfigMap changes
+    sleep 5
+else
+    echo "  ⚠ Skipping — ArgoCD CLI not available"
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# 9. Generate API token & push to Secrets Manager
+#
+# Generates a long-lived API token for ci-bot and stores it in
+# AWS Secrets Manager. The CI pipeline polls for this secret on Day 0
+# and retrieves it instantly on Day 1+.
+#
+# Secret name: k8s/{env}/argocd-ci-token
+# ---------------------------------------------------------------------------
+echo "=== Step 9: Generating CI bot token ==="
+
+if [ "${SKIP_CI_BOT:-}" != "true" ]; then
+    K8S_ENV="${SSM_PREFIX##*/}"
+    SECRET_NAME="k8s/${K8S_ENV}/argocd-ci-token"
+
+    echo "  → Generating API token for ci-bot..."
+    CI_TOKEN=$(argocd account generate-token \
+        --account ci-bot \
+        --core \
+        --grpc-web 2>/dev/null || echo "")
+
+    if [ -n "${CI_TOKEN}" ]; then
+        echo "  ✓ API token generated"
+
+        echo "  → Pushing token to Secrets Manager: ${SECRET_NAME}"
+        # Try create first, fall back to update (idempotent)
+        if aws secretsmanager create-secret \
+            --name "${SECRET_NAME}" \
+            --description "ArgoCD CI bot API token for pipeline verification" \
+            --secret-string "${CI_TOKEN}" \
+            --region "${AWS_REGION}" 2>/dev/null; then
+            echo "  ✓ Secret created in Secrets Manager"
+        elif aws secretsmanager update-secret \
+            --secret-id "${SECRET_NAME}" \
+            --secret-string "${CI_TOKEN}" \
+            --region "${AWS_REGION}" 2>/dev/null; then
+            echo "  ✓ Secret updated in Secrets Manager"
+        else
+            echo "  ⚠ Failed to store token in Secrets Manager"
+        fi
+    else
+        echo "  ⚠ Token generation failed — CI pipeline will skip ArgoCD verification"
+    fi
+else
+    echo "  ⚠ Skipping — ArgoCD CLI not available"
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# 10. Summary
 # ---------------------------------------------------------------------------
 echo "=== ArgoCD Bootstrap Summary ==="
 echo ""

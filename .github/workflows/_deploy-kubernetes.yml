@@ -473,8 +473,83 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Run Monitoring Smoke Tests
-        run: just ci-smoke-monitoring-kubernetes ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+      - name: Run K8s Infrastructure Smoke Tests
+        run: just ci-smoke-kubernetes-infra ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+
+      - name: Wait for ArgoCD Token
+        id: argocd-token
+        continue-on-error: true
+        run: |
+          SECRET_NAME="k8s/${{ inputs.cdk-environment }}/argocd-ci-token"
+          MAX_ATTEMPTS=20
+          INTERVAL=30
+
+          echo "Polling Secrets Manager for ArgoCD CI token..."
+          echo "  Secret: ${SECRET_NAME}"
+          echo "  Max wait: $(( MAX_ATTEMPTS * INTERVAL ))s"
+          echo ""
+
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            TOKEN=$(aws secretsmanager get-secret-value \
+              --secret-id "$SECRET_NAME" \
+              --query SecretString --output text 2>/dev/null || echo "")
+
+            if [ -n "$TOKEN" ]; then
+              echo "::add-mask::$TOKEN"
+              echo "token=$TOKEN" >> $GITHUB_OUTPUT
+              echo "✓ ArgoCD token retrieved (attempt $i/${MAX_ATTEMPTS})"
+              exit 0
+            fi
+
+            echo "⏳ Attempt $i/${MAX_ATTEMPTS} — token not ready, waiting ${INTERVAL}s..."
+            sleep $INTERVAL
+          done
+
+          echo "::warning::ArgoCD token not found after ${MAX_ATTEMPTS} attempts — skipping ArgoCD verification"
+
+      - name: Verify ArgoCD App Health
+        if: steps.argocd-token.outputs.token != ''
+        continue-on-error: true
+        env:
+          ARGOCD_TOKEN: ${{ steps.argocd-token.outputs.token }}
+        run: |
+          # Discover ArgoCD server via EIP from SSM
+          SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}"
+          EIP=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/elastic-ip" \
+            --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+
+          if [ -z "$EIP" ]; then
+            echo "::warning::Could not resolve EIP from SSM — skipping ArgoCD check"
+            exit 0
+          fi
+
+          ARGOCD_SERVER="https://${EIP}/argocd"
+          echo "ArgoCD server: ${ARGOCD_SERVER}"
+          echo ""
+
+          OVERALL_OK=true
+          for APP in monitoring nextjs; do
+            RESPONSE=$(curl -sk --max-time 10 \
+              -H "Authorization: Bearer ${ARGOCD_TOKEN}" \
+              "${ARGOCD_SERVER}/api/v1/applications/${APP}" 2>/dev/null || echo "{}")
+
+            SYNC=$(echo "$RESPONSE" | jq -r '.status.sync.status // "Unknown"')
+            HEALTH=$(echo "$RESPONSE" | jq -r '.status.health.status // "Unknown"')
+            echo "  ${APP}: sync=${SYNC} health=${HEALTH}"
+
+            if [ "$SYNC" = "Unknown" ] && [ "$HEALTH" = "Unknown" ]; then
+              echo "    ⚠ Could not reach ArgoCD API for ${APP}"
+              OVERALL_OK=false
+            fi
+          done
+
+          echo ""
+          if [ "$OVERALL_OK" = true ]; then
+            echo "✓ ArgoCD app health verification complete"
+          else
+            echo "⚠ Some ArgoCD apps could not be verified (may still be syncing on Day 0)"
+          fi
 
       - name: Run K8s App Smoke Tests
         id: smoke
