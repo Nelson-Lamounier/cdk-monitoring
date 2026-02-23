@@ -6,7 +6,7 @@
 # Post-deploy: monitoring manifests, app manifests, static assets, smoke tests.
 #
 # Prerequisites:
-#   - Shared VPC from deploy-shared workflow
+#   - Shared VPC from deploy-shared workflow/ Test
 
 name: Deploy K8s to Development
 
@@ -26,8 +26,8 @@ on:
       - "k8s/**"
       - "lambda/**"
       - "bin/app.ts"
-      - ".github/workflows/deploy-k8s-dev.yml"
-      - ".github/workflows/_deploy-k8s.yml"
+      - ".github/workflows/deploy-kubernetes-dev.yml"
+      - ".github/workflows/_deploy-kubernetes.yml"
       - ".github/workflows/_deploy-stack.yml"
       - ".github/workflows/_iac-security-scan.yml"
       - ".github/actions/**"
