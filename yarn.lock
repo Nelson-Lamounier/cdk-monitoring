@@ -6259,6 +6259,7 @@ __metadata:
     typedoc-plugin-markdown: "npm:^4.9.0"
     typescript: "npm:^5.9.3"
     typescript-eslint: "npm:^8.18.1"
+    undici: "npm:^7.22.0"
   languageName: unknown
   linkType: soft
 
@@ -11386,6 +11387,13 @@ __metadata:
   version: 7.18.2
   resolution: "undici-types@npm:7.18.2"
   checksum: 10c0/85a79189113a238959d7a647368e4f7c5559c3a404ebdb8fc4488145ce9426fcd82252a844a302798dfc0e37e6fb178ff481ed03bc4caf634c5757d9ef43521d
+  languageName: node
+  linkType: hard
+
+"undici@npm:^7.22.0":
+  version: 7.22.0
+  resolution: "undici@npm:7.22.0"
+  checksum: 10c0/09777c06f3f18f761f03e3a4c9c04fd9fcca8ad02ccea43602ee4adf73fcba082806f1afb637f6ea714ef6279c5323c25b16d435814c63db720f63bfc20d316b
   languageName: node
   linkType: hard
 
