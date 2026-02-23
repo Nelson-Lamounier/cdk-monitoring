@@ -19,7 +19,7 @@ export enum Project {
     /** AWS Organization and root account resources */
     ORG = 'org',
     /** k3s Kubernetes cluster for unified workloads */
-    K8S = 'k8s',
+    KUBERNETES = 'kubernetes',
 }
 
 /**
@@ -64,7 +64,7 @@ export const PROJECT_CONFIGS: Record<Project, ProjectConfig> = {
         namespace: 'Org',
         requiresSharedVpc: false,
     },
-    [Project.K8S]: {
+    [Project.KUBERNETES]: {
         displayName: 'Kubernetes',
         description: 'k3s Kubernetes cluster for unified workloads',
         namespace: 'Monitoring-K8s',

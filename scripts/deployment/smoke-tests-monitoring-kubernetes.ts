@@ -74,7 +74,7 @@ if (!environment) {
 // ---------------------------------------------------------------------------
 // Project Configuration
 // ---------------------------------------------------------------------------
-const project = getProject('k8s');
+const project = getProject('kubernetes');
 if (!project) {
   console.error('K8s project not found in stacks configuration');
   process.exit(1);

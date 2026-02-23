@@ -118,10 +118,10 @@ ci-synth-validate:
     echo "Validating K8s Project (dev)"
     echo "==========================================="
     # k8s stacks: Compute (EC2/ASG/EBS) + Edge (CloudFront/WAF/ACM)
-    npx cdk list -c project=k8s -c environment=dev --no-lookups || {
+    npx cdk list -c project=kubernetes -c environment=dev --no-lookups || {
       echo "Note: Some stacks may require cached context in cdk.context.json"
     }
-    npx cdk synth -c project=k8s -c environment=dev --no-lookups --quiet || {
+    npx cdk synth -c project=kubernetes -c environment=dev --no-lookups --quiet || {
       echo "⚠ K8s synth requires cached context — run locally to update cdk.context.json"
     }
 
@@ -137,7 +137,7 @@ ci-synth-validate:
     echo ""
     echo "✓ CDK synthesis validation complete (all projects)"
 
-# CI synth: synthesize + output stack names (e.g., just ci-synth k8s development)
+# CI synth: synthesize + output stack names (e.g., just ci-synth kubernetes development)
 # Used by deployment pipelines to get ordered stack names for targeted deploys.
 # Called by: .github/workflows/_deploy-monitoring.yml, _deploy-nextjs.yml
 [group('ci')]

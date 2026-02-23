@@ -94,13 +94,13 @@ export interface KubernetesFactoryContext extends ProjectFactoryContext {
  * ```
  */
 export class KubernetesProjectFactory implements IProjectFactory<KubernetesFactoryContext> {
-    readonly project = Project.K8S;
+    readonly project = Project.KUBERNETES;
     readonly environment: Environment;
     readonly namespace: string;
 
     constructor(environment: Environment) {
         this.environment = environment;
-        this.namespace = getProjectConfig(Project.K8S).namespace;
+        this.namespace = getProjectConfig(Project.KUBERNETES).namespace;
     }
 
     /**

@@ -45,7 +45,7 @@ export const STACK_REGISTRY = {
         api: 'Api',
         edge: 'Edge',
     },
-    k8s: {
+    kubernetes: {
         data: 'Data',
         compute: 'Compute',
         api: 'Api',
@@ -100,7 +100,7 @@ const PROJECT_TO_REGISTRY: Record<Project, RegistryProject> = {
     [Project.SHARED]: 'shared',
     [Project.MONITORING]: 'monitoring',
     [Project.NEXTJS]: 'nextjs',
-    [Project.K8S]: 'k8s',
+    [Project.KUBERNETES]: 'kubernetes',
     [Project.ORG]: 'org',
 };
 

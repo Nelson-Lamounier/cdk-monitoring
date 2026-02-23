@@ -261,27 +261,27 @@ const k8sStacks: StackConfig[] = [
   {
     id: 'data',
     name: 'Data Stack',
-    getStackName: (env) => getStackId(Project.K8S, 'data', env),
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'data', env),
     description: 'DynamoDB, S3 assets, SSM parameters for K8s application',
   },
   {
     id: 'compute',
     name: 'Compute Stack',
-    getStackName: (env) => getStackId(Project.K8S, 'compute', env),
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'compute', env),
     description: 'k3s Kubernetes cluster: EC2 + ASG + EBS + Security Group + Elastic IP',
     dependsOn: ['data'],
   },
   {
     id: 'api',
     name: 'API Stack',
-    getStackName: (env) => getStackId(Project.K8S, 'api', env),
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'api', env),
     description: 'API Gateway with Lambda for email subscriptions (subscribe + verify)',
     dependsOn: ['data'],
   },
   {
     id: 'edge',
     name: 'Edge Stack',
-    getStackName: (env) => getStackId(Project.K8S, 'edge', env),
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'edge', env),
     description: 'CloudFront distribution with ACM certificate and WAF (us-east-1)',
     dependsOn: ['compute'],
     region: 'us-east-1',
@@ -289,12 +289,12 @@ const k8sStacks: StackConfig[] = [
 ];
 
 const k8sProject: ProjectConfig = {
-  id: 'k8s',
+  id: 'kubernetes',
   name: 'Monitoring-K8s',
   description: 'Self-managed k3s Kubernetes cluster for unified workloads (requires Shared VPC)',
   stacks: k8sStacks,
   cdkContext: (env) => ({
-    project: 'k8s',
+    project: 'kubernetes',
     environment: env,
   }),
 };

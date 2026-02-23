@@ -56,8 +56,8 @@ describe('Naming Utilities', () => {
         });
 
         it('should resolve K8s project stacks', () => {
-            expect(getStackId(Project.K8S, 'compute', 'development')).toBe('Monitoring-K8s-Compute-development');
-            expect(getStackId(Project.K8S, 'edge', 'production')).toBe('Monitoring-K8s-Edge-production');
+            expect(getStackId(Project.KUBERNETES, 'compute', 'development')).toBe('Monitoring-K8s-Compute-development');
+            expect(getStackId(Project.KUBERNETES, 'edge', 'production')).toBe('Monitoring-K8s-Edge-production');
         });
 
         it('should resolve Shared project stacks', () => {
@@ -81,7 +81,7 @@ describe('Naming Utilities', () => {
     describe('STACK_REGISTRY', () => {
         it('should contain all project entries', () => {
             expect(Object.keys(STACK_REGISTRY)).toEqual(
-                expect.arrayContaining(['shared', 'monitoring', 'nextjs', 'k8s', 'org'])
+                expect.arrayContaining(['shared', 'monitoring', 'nextjs', 'kubernetes', 'org'])
             );
         });
 
@@ -96,7 +96,7 @@ describe('Naming Utilities', () => {
         });
 
         it('should have expected k8s stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.k8s)).toEqual(['data', 'compute', 'api', 'edge']);
+            expect(Object.keys(STACK_REGISTRY.kubernetes)).toEqual(['data', 'compute', 'api', 'edge']);
         });
     });
 

@@ -44,7 +44,7 @@ describe('KubernetesProjectFactory', () => {
     describe('Factory Properties', () => {
         it('should have correct project type', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
-            expect(factory.project).toBe(Project.K8S);
+            expect(factory.project).toBe(Project.KUBERNETES);
         });
 
         it('should have correct environment', () => {

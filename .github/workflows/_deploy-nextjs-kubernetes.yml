@@ -100,7 +100,7 @@ jobs:
           SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
           VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL }}
-        run: just ci-synth k8s ${{ inputs.cdk-environment }}
+        run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
 
   # ===========================================================================
   # Deploy API Stack — API Gateway + Lambda (email subscriptions)
@@ -114,7 +114,7 @@ jobs:
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ inputs.api-stack-name || needs.setup.outputs.api-stack }}
-      project: k8s
+      project: kubernetes
       environment: ${{ inputs.environment }}
       aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}

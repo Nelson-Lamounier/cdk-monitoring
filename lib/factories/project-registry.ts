@@ -24,7 +24,7 @@ const projectFactoryRegistry: Record<Project, ProjectFactoryConstructor> = {
     [Project.MONITORING]: MonitoringProjectFactory,
     [Project.NEXTJS]: NextJSProjectFactory,
     [Project.ORG]: OrgProjectFactory,
-    [Project.K8S]: KubernetesProjectFactory,
+    [Project.KUBERNETES]: KubernetesProjectFactory,
 };
 
 /**

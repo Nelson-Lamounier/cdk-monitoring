@@ -182,12 +182,12 @@ jobs:
           SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
           VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL }}
-        run: just ci-synth k8s ${{ inputs.cdk-environment }}
+        run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
 
       - name: Upload Synthesized Templates
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: cdk-out-k8s-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
+          name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
           path: cdk.out/
           retention-days: 30
 
@@ -246,7 +246,7 @@ jobs:
           audience: sts.amazonaws.com
 
       - name: Run Drift Detection
-        run: just ci-drift k8s ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+        run: just ci-drift kubernetes ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
         env:
           AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 
@@ -269,7 +269,7 @@ jobs:
       - name: Download Synthesized Templates
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: cdk-out-k8s-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
+          name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
           path: cdk.out/
 
       - name: Setup Python
@@ -328,7 +328,7 @@ jobs:
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.data-stack }}
-      project: k8s
+      project: kubernetes
       environment: ${{ inputs.environment }}
       aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
@@ -346,7 +346,7 @@ jobs:
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.compute-stack }}
-      project: k8s
+      project: kubernetes
       environment: ${{ inputs.environment }}
       aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
@@ -365,7 +365,7 @@ jobs:
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.edge-stack }}
-      project: k8s
+      project: kubernetes
       environment: ${{ inputs.environment }}
       aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
       aws-region: ${{ vars.ROUTE53_REGION || 'us-east-1' }}
@@ -473,7 +473,7 @@ jobs:
       - name: Download Build Artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: cdk-out-k8s-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
+          name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
           path: cdk.out/
 
       - name: Sync Assets & Invalidate Cache
@@ -682,4 +682,4 @@ jobs:
           SMOKE_TESTS_RESULT: ${{ needs.verify-and-test.result || 'skipped' }}
           ROLLBACK_RESULT: ${{ needs.rollback.result || 'skipped' }}
           COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
-        run: just ci-summary k8s ${{ inputs.cdk-environment }}
+        run: just ci-summary kubernetes ${{ inputs.cdk-environment }}
