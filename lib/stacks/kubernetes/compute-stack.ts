@@ -410,6 +410,7 @@ export class KubernetesComputeStack extends cdk.Stack {
         // without rerunning the monitoring deploy script.
         // Triggered by GitHub Actions pipeline or manual SSM send-command.
         // =====================================================================
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const appManifestDeployDoc = new SsmRunCommandDocument(this, 'AppManifestDeployDocument', {
             documentName: `${namePrefix}-deploy-app-manifests`,
             description: 'Deploy Next.js application k8s manifests — re-syncs from S3, resolves secrets, applies via kubectl',
@@ -545,6 +546,7 @@ export class KubernetesComputeStack extends cdk.Stack {
             });
 
         // Pre-seed Next.js secrets (ArgoCD manages manifests but can't resolve SSM)
+        /* eslint-disable no-useless-escape -- \$ escapes are intentional: produce literal $ in shell script */
         userDataBuilder.addCustomScript(`
 # =============================================================================
 # Pre-seed Next.js Secrets (before ArgoCD bootstrap)
@@ -596,7 +598,7 @@ fi
 
 echo "=== Next.js secret pre-seeding complete ==="
 `);
-
+        /* eslint-enable no-useless-escape */
         // Bootstrap ArgoCD (GitOps — replaces push-based manifest deployment)
         userDataBuilder.addCustomScript(`
 # =============================================================================

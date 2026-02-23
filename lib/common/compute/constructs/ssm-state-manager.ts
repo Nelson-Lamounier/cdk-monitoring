@@ -86,7 +86,7 @@ export class SsmStateManagerConstruct extends Construct {
         const {
             namePrefix,
             ssmConfig,
-            clusterConfig,
+            clusterConfig: _clusterConfig,
             instanceRole,
             targetTag,
             s3BucketName,
