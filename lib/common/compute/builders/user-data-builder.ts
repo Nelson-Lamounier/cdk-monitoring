@@ -425,21 +425,34 @@ while true; do
     EBS_WAITED=$((EBS_WAITED + EBS_POLL_INTERVAL))
 done
 
-# Wait for device to appear
+# Wait for device to appear (NVMe instances remap /dev/xvdf → /dev/nvmeXn1)
 DEVICE="${deviceName}"
 NVME_DEVICE=""
 
 for i in {1..30}; do
+    # Check if the expected block device name exists directly
     if [ -b "$DEVICE" ]; then
         echo "Device $DEVICE is ready"
         break
     fi
-    NVME_DEVICE=$(lsblk -o NAME,SERIAL -d | grep $(echo $VOLUME_ID | tr -d '-') | awk '{print "/dev/"$1}' | head -1)
+
+    # On NVMe instances, use ebsnvme-id (Amazon Linux built-in) to map volume → device
+    # This is more reliable than parsing lsblk serial numbers which can change format
+    for nvme_dev in /dev/nvme*n1; do
+        [ -b "$nvme_dev" ] || continue
+        MAPPED_VOL=$(ebsnvme-id -v "$nvme_dev" 2>/dev/null || echo "")
+        if [ "$MAPPED_VOL" = "$VOLUME_ID" ]; then
+            echo "Found NVMe device via ebsnvme-id: $nvme_dev → $VOLUME_ID"
+            NVME_DEVICE="$nvme_dev"
+            break
+        fi
+    done
+
     if [ -n "$NVME_DEVICE" ] && [ -b "$NVME_DEVICE" ]; then
-        echo "Found NVMe device: $NVME_DEVICE"
         DEVICE="$NVME_DEVICE"
         break
     fi
+
     echo "Waiting for device... ($i/30)"
     sleep 2
 done
