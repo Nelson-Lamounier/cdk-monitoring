@@ -1,8 +1,12 @@
 # @format
 # ArgoCD Application: Monitoring Stack
 #
-# Points ArgoCD at the existing monitoring manifests.
+# Points ArgoCD at the monitoring manifests directory.
+# ArgoCD watches this path in Git and auto-syncs changes.
 # This replaces the SSM Run Command deployment for monitoring.
+#
+# Secrets (Grafana password, GitHub token) are pre-seeded by user-data
+# on first boot. ArgoCD manages all declarative manifests.
 
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -35,6 +39,7 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - PruneLast=true
+      - ServerSideApply=true
     retry:
       limit: 3
       backoff:

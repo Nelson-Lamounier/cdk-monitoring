@@ -7,9 +7,8 @@
 # Bootstrap:
 #   kubectl apply -k k8s/system/argocd/
 #
-# Note: install.yaml should be downloaded from:
+# Note: install.yaml downloaded from:
 #   https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-# and committed to this directory for GitOps reproducibility.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -17,8 +16,9 @@ kind: Kustomization
 namespace: argocd
 
 resources:
-  # ArgoCD core installation (download and commit this file)
-  # - install.yaml
+  - namespace.yaml
+  # ArgoCD core installation (non-HA, single node)
+  - install.yaml
   - ingress.yaml
   - applications/nextjs.yaml
   - applications/monitoring.yaml

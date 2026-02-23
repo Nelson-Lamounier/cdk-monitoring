@@ -546,25 +546,78 @@ export class KubernetesComputeStack extends cdk.Stack {
                 region: this.region,
             });
 
-        // Deploy Next.js application manifests (second deploy script)
+        // Pre-seed Next.js secrets (ArgoCD manages manifests but can't resolve SSM)
         userDataBuilder.addCustomScript(`
 # =============================================================================
-# Deploy Application (Next.js) K8s Manifests
-# Applied after monitoring manifests — separate namespace isolation
-# Delegates to deploy-manifests.sh for secret resolution and kubectl apply
+# Pre-seed Next.js Secrets (before ArgoCD bootstrap)
+# ArgoCD manages declarative manifests but can't resolve SSM secrets.
+# We create the K8s secrets here so they exist when ArgoCD syncs.
 # =============================================================================
 
-echo "=== Deploying Next.js application manifests ==="
+echo "=== Pre-seeding Next.js secrets ==="
 K8S_DIR="/data/k8s"
 
 export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig
 export SSM_PREFIX="${props.ssmPrefix}"
 export AWS_REGION="${this.region}"
-export MANIFESTS_DIR="$K8S_DIR/apps/nextjs"
 
-$K8S_DIR/apps/nextjs/deploy-manifests.sh || echo "WARNING: nextjs deploy-manifests.sh failed — will retry via SSM"
+# Derive frontend SSM prefix: /k8s/development → /frontend/development
+K8S_ENV="\${SSM_PREFIX##*/}"
+FRONTEND_SSM_PREFIX="/frontend/\${K8S_ENV}"
 
-echo "=== Application manifests deployment complete ==="
+# Create nextjs-app namespace (if not exists)
+kubectl create namespace nextjs-app --dry-run=client -o yaml | kubectl apply -f -
+
+# Resolve secrets from SSM
+resolve_frontend_secret() {
+    local param_name="\$1"
+    local ssm_path="\${FRONTEND_SSM_PREFIX}/\${param_name}"
+    aws ssm get-parameter --name "\${ssm_path}" --with-decryption \
+        --query 'Parameter.Value' --output text \
+        --region "\${AWS_REGION}" 2>/dev/null || echo ""
+}
+
+DYNAMODB_TABLE_NAME=\$(resolve_frontend_secret "dynamodb/table-name")
+ASSETS_BUCKET_NAME=\$(resolve_frontend_secret "s3/assets-bucket-name")
+NEXT_PUBLIC_API_URL=\$(resolve_frontend_secret "api/gateway-url")
+
+SECRET_ARGS=""
+[ -n "\${DYNAMODB_TABLE_NAME}" ] && SECRET_ARGS="\${SECRET_ARGS} --from-literal=DYNAMODB_TABLE_NAME=\${DYNAMODB_TABLE_NAME}"
+[ -n "\${ASSETS_BUCKET_NAME}" ] && SECRET_ARGS="\${SECRET_ARGS} --from-literal=ASSETS_BUCKET_NAME=\${ASSETS_BUCKET_NAME}"
+[ -n "\${NEXT_PUBLIC_API_URL}" ] && SECRET_ARGS="\${SECRET_ARGS} --from-literal=NEXT_PUBLIC_API_URL=\${NEXT_PUBLIC_API_URL}"
+
+if [ -n "\${SECRET_ARGS}" ]; then
+    kubectl create secret generic nextjs-secrets \
+        \${SECRET_ARGS} \
+        --namespace nextjs-app \
+        --dry-run=client -o yaml | kubectl apply -f -
+    echo "✓ nextjs-secrets pre-seeded"
+else
+    echo "⚠ No Next.js secrets resolved — skipping"
+fi
+
+echo "=== Next.js secret pre-seeding complete ==="
+`);
+
+        // Bootstrap ArgoCD (GitOps — replaces push-based manifest deployment)
+        userDataBuilder.addCustomScript(`
+# =============================================================================
+# Bootstrap ArgoCD (GitOps Controller)
+# ArgoCD watches the Git repo and auto-syncs manifest changes.
+# Replaces the SSM Run Command push-based deployment model.
+# =============================================================================
+
+echo "=== Bootstrapping ArgoCD ==="
+K8S_DIR="/data/k8s"
+
+export KUBECONFIG=/data/k3s/server/cred/admin.kubeconfig
+export SSM_PREFIX="${props.ssmPrefix}"
+export AWS_REGION="${this.region}"
+export ARGOCD_DIR="$K8S_DIR/system/argocd"
+
+$K8S_DIR/system/argocd/bootstrap-argocd.sh || echo "WARNING: ArgoCD bootstrap failed — manifests still applied via deploy scripts above"
+
+echo "=== ArgoCD bootstrap complete ==="
 `);
 
         userDataBuilder.addCompletionMarker();
