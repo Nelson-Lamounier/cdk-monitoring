@@ -174,10 +174,10 @@ export class GoldenAmiPipelineConstruct extends Construct {
                         region: cdk.Stack.of(this).region,
                         amiDistributionConfiguration: {
                             Name: `${namePrefix}-golden-ami-{{ imagebuilder:buildDate }}`,
-                            Description: `Golden AMI for ${namePrefix} (k3s ${clusterConfig.kubernetesVersion})`,
+                            Description: `Golden AMI for ${namePrefix} (kubeadm ${clusterConfig.kubernetesVersion})`,
                             AmiTags: {
                                 'Purpose': 'GoldenAMI',
-                                'K3sChannel': clusterConfig.kubernetesVersion,
+                                'KubernetesVersion': clusterConfig.kubernetesVersion,
                                 'Component': 'ImageBuilder',
                             },
                         },
@@ -227,16 +227,19 @@ export class GoldenAmiPipelineConstruct extends Construct {
     /**
      * Builds the EC2 Image Builder component YAML document.
      *
-     * This installs Docker, AWS CLI, and k3s binary (but does NOT start k3s).
-     * k3s initialization happens at runtime via user-data or SSM State Manager.
+     * This installs containerd, kubeadm, kubelet, kubectl, and pre-downloads
+     * Calico CNI manifests. Kubernetes components are installed but NOT started.
+     * Cluster initialization happens at runtime via user-data (kubeadm init/join).
      */
     private _buildComponentDocument(
         imageConfig: K8sImageConfig,
         clusterConfig: KubernetesClusterConfig,
     ): string {
+        // Extract major.minor for Kubernetes apt repo (e.g., '1.35')
+        const k8sMinorVersion = clusterConfig.kubernetesVersion.split('.').slice(0, 2).join('.');
         return `
 name: GoldenAmiInstall
-description: Install Docker, AWS CLI, k3s binary, and Calico manifests
+description: Install containerd, kubeadm, kubelet, kubectl, and Calico manifests
 schemaVersion: 1.0
 
 phases:
@@ -247,7 +250,7 @@ phases:
         inputs:
           commands:
             - dnf update -y
-            - dnf install -y jq curl unzip tar
+            - dnf install -y jq curl unzip tar iproute-tc conntrack-tools socat
 
       - name: InstallDocker
         action: ExecuteBash
@@ -270,16 +273,99 @@ phases:
             - rm -rf /tmp/awscli.zip /tmp/aws
             - aws --version
 
-      - name: InstallK3sBinary
+      - name: KernelModulesAndSysctl
         action: ExecuteBash
         inputs:
           commands:
             - |
-              # Download k3s binary only (do NOT start k3s — that's a runtime task)
-              curl -fsSL https://get.k3s.io -o /usr/local/bin/k3s-install.sh
-              chmod +x /usr/local/bin/k3s-install.sh
-              INSTALL_K3S_SKIP_START=true INSTALL_K3S_CHANNEL=${clusterConfig.kubernetesVersion} /usr/local/bin/k3s-install.sh
-              k3s --version
+              # Load required kernel modules for Kubernetes networking
+              cat > /etc/modules-load.d/k8s.conf <<EOF
+              overlay
+              br_netfilter
+              EOF
+              modprobe overlay
+              modprobe br_netfilter
+
+              # Set required sysctl parameters (persist across reboots)
+              cat > /etc/sysctl.d/k8s.conf <<EOF
+              net.bridge.bridge-nf-call-iptables  = 1
+              net.bridge.bridge-nf-call-ip6tables = 1
+              net.ipv4.ip_forward                 = 1
+              EOF
+              sysctl --system
+
+              echo "Kernel modules and sysctl configured for Kubernetes"
+
+      - name: InstallContainerd
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              # Install containerd as the container runtime
+              CONTAINERD_VERSION="1.7.24"
+              curl -fsSL "https://github.com/containerd/containerd/releases/download/v\${CONTAINERD_VERSION}/containerd-\${CONTAINERD_VERSION}-linux-amd64.tar.gz" \
+                -o /tmp/containerd.tar.gz
+              tar -C /usr/local -xzf /tmp/containerd.tar.gz
+              rm /tmp/containerd.tar.gz
+
+              # Install containerd systemd service
+              mkdir -p /usr/local/lib/systemd/system
+              curl -fsSL "https://raw.githubusercontent.com/containerd/containerd/main/containerd.service" \
+                -o /usr/local/lib/systemd/system/containerd.service
+
+              # Configure containerd with SystemdCgroup
+              mkdir -p /etc/containerd
+              containerd config default > /etc/containerd/config.toml
+              sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+
+              systemctl daemon-reload
+              systemctl enable containerd
+
+              # Install runc
+              RUNC_VERSION="1.2.4"
+              curl -fsSL "https://github.com/opencontainers/runc/releases/download/v\${RUNC_VERSION}/runc.amd64" \
+                -o /usr/local/sbin/runc
+              chmod +x /usr/local/sbin/runc
+
+              # Install CNI plugins
+              CNI_VERSION="1.6.1"
+              mkdir -p /opt/cni/bin
+              curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v\${CNI_VERSION}/cni-plugins-linux-amd64-v\${CNI_VERSION}.tgz" \
+                -o /tmp/cni-plugins.tgz
+              tar -C /opt/cni/bin -xzf /tmp/cni-plugins.tgz
+              rm /tmp/cni-plugins.tgz
+
+              # Install crictl
+              CRICTL_VERSION="1.32.0"
+              curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/v\${CRICTL_VERSION}/crictl-v\${CRICTL_VERSION}-linux-amd64.tar.gz" \
+                -o /tmp/crictl.tar.gz
+              tar -C /usr/local/bin -xzf /tmp/crictl.tar.gz
+              rm /tmp/crictl.tar.gz
+              crictl config --set runtime-endpoint=unix:///run/containerd/containerd.sock
+
+              echo "containerd, runc, CNI plugins, and crictl installed"
+
+      - name: InstallKubeadmKubeletKubectl
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              # Install kubeadm, kubelet, kubectl via Kubernetes yum repo
+              cat > /etc/yum.repos.d/kubernetes.repo <<EOF
+              [kubernetes]
+              name=Kubernetes
+              baseurl=https://pkgs.k8s.io/core:/stable:/v${k8sMinorVersion}/rpm/
+              enabled=1
+              gpgcheck=1
+              gpgkey=https://pkgs.k8s.io/core:/stable:/v${k8sMinorVersion}/rpm/repodata/repomd.xml.key
+              EOF
+
+              dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+              systemctl enable kubelet
+
+              echo "kubeadm $(kubeadm version -o short) installed"
+              echo "kubelet  — enabled (will start after kubeadm init/join)"
+              echo "kubectl $(kubectl version --client -o yaml | grep gitVersion)"
 
       - name: PreloadCalicoCNI
         action: ExecuteBash
@@ -297,7 +383,7 @@ phases:
         action: ExecuteBash
         inputs:
           commands:
-            - mkdir -p /data/k3s /data/k8s/manifests
+            - mkdir -p /data/kubernetes /data/k8s/manifests
 
   - name: validate
     steps:
@@ -307,9 +393,16 @@ phases:
           commands:
             - docker --version
             - aws --version
-            - k3s --version
+            - containerd --version
+            - runc --version
+            - crictl --version
+            - kubeadm version -o short
+            - kubelet --version
+            - kubectl version --client -o yaml | grep gitVersion
             - test -f /opt/calico/calico.yaml
-            - echo "All components verified"
+            - test -f /etc/containerd/config.toml
+            - test -f /etc/sysctl.d/k8s.conf
+            - echo "All kubeadm components verified"
 `;
     }
 }

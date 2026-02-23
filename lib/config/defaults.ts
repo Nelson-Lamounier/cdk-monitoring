@@ -101,7 +101,7 @@ export const MONITORING_PORTS = {
 export const K8S_API_PORT = 6443;
 
 /** Kubernetes version for kubeadm installation */
-export const KUBERNETES_VERSION = '1.32.0';
+export const KUBERNETES_VERSION = '1.35.1';
 
 /** Traefik HTTP port (k3s built-in ingress) */
 export const TRAEFIK_HTTP_PORT = 80;
