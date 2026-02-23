@@ -105,7 +105,18 @@ export interface K8sImageConfig {
     readonly bakedVersions: {
         readonly dockerCompose: string;
         readonly awsCli: string;
+        /** kubeadm/kubelet/kubectl version (matches kubernetesVersion) */
         readonly kubeadm: string;
+        /** Container runtime version (tightly coupled to k8s release) */
+        readonly containerd: string;
+        /** OCI runtime version */
+        readonly runc: string;
+        /** CNI plugins version */
+        readonly cniPlugins: string;
+        /** CRI tools version (crictl — should match k8s minor version) */
+        readonly crictl: string;
+        /** Calico CNI version (with 'v' prefix, e.g. 'v3.29.3') */
+        readonly calico: string;
     };
 }
 
@@ -200,6 +211,11 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
                 dockerCompose: 'v2.24.0',
                 awsCli: '2.x',
                 kubeadm: KUBERNETES_VERSION,
+                containerd: '1.7.24',
+                runc: '1.2.4',
+                cniPlugins: '1.6.1',
+                crictl: '1.32.0',
+                calico: 'v3.29.3',
             },
         },
         ssm: {
@@ -254,6 +270,11 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
                 dockerCompose: 'v2.24.0',
                 awsCli: '2.x',
                 kubeadm: KUBERNETES_VERSION,
+                containerd: '1.7.24',
+                runc: '1.2.4',
+                cniPlugins: '1.6.1',
+                crictl: '1.32.0',
+                calico: 'v3.29.3',
             },
         },
         ssm: {
@@ -306,6 +327,11 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
                 dockerCompose: 'v2.24.0',
                 awsCli: '2.x',
                 kubeadm: KUBERNETES_VERSION,
+                containerd: '1.7.24',
+                runc: '1.2.4',
+                cniPlugins: '1.6.1',
+                crictl: '1.32.0',
+                calico: 'v3.29.3',
             },
         },
         ssm: {

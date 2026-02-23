@@ -341,7 +341,7 @@ phases:
               source /etc/environment  # ARCH set by DetectArchitecture step
 
               # Install containerd as the container runtime
-              CONTAINERD_VERSION="1.7.24"
+              CONTAINERD_VERSION="${imageConfig.bakedVersions.containerd}"
               curl -fsSL "https://github.com/containerd/containerd/releases/download/v\${CONTAINERD_VERSION}/containerd-\${CONTAINERD_VERSION}-linux-\${ARCH}.tar.gz" \
                 -o /tmp/containerd.tar.gz
               tar -C /usr/local -xzf /tmp/containerd.tar.gz
@@ -361,13 +361,13 @@ phases:
               systemctl enable containerd
 
               # Install runc
-              RUNC_VERSION="1.2.4"
+              RUNC_VERSION="${imageConfig.bakedVersions.runc}"
               curl -fsSL "https://github.com/opencontainers/runc/releases/download/v\${RUNC_VERSION}/runc.\${ARCH}" \
                 -o /usr/local/sbin/runc
               chmod +x /usr/local/sbin/runc
 
               # Install CNI plugins
-              CNI_VERSION="1.6.1"
+              CNI_VERSION="${imageConfig.bakedVersions.cniPlugins}"
               mkdir -p /opt/cni/bin
               curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v\${CNI_VERSION}/cni-plugins-linux-\${ARCH}-v\${CNI_VERSION}.tgz" \
                 -o /tmp/cni-plugins.tgz
@@ -375,7 +375,7 @@ phases:
               rm /tmp/cni-plugins.tgz
 
               # Install crictl
-              CRICTL_VERSION="1.32.0"
+              CRICTL_VERSION="${imageConfig.bakedVersions.crictl}"
               curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/v\${CRICTL_VERSION}/crictl-v\${CRICTL_VERSION}-linux-\${ARCH}.tar.gz" \
                 -o /tmp/crictl.tar.gz
               tar -C /usr/local/bin -xzf /tmp/crictl.tar.gz
@@ -413,7 +413,7 @@ phases:
             - |
               # Pre-download Calico manifests to /opt/calico (avoids GitHub fetch at boot)
               mkdir -p /opt/calico
-              CALICO_VERSION="v3.29.3"
+              CALICO_VERSION="${imageConfig.bakedVersions.calico}"
               curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/\${CALICO_VERSION}/manifests/tigera-operator.yaml" -o /opt/calico/tigera-operator.yaml
               curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/\${CALICO_VERSION}/manifests/calico.yaml" -o /opt/calico/calico.yaml
               echo "\${CALICO_VERSION}" > /opt/calico/version.txt

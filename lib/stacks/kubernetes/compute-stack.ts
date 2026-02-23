@@ -534,7 +534,7 @@ export class KubernetesComputeStack extends cdk.Stack {
                 serviceSubnet: configs.cluster.serviceSubnet,
                 ssmPrefix: props.ssmPrefix,
             })
-            .installCalicoCNI(configs.cluster.podNetworkCidr)
+            .installCalicoCNI(configs.cluster.podNetworkCidr, configs.image.bakedVersions.calico)
             .configureKubeconfig()
             .deployK8sManifests({
                 s3BucketName: scriptsBucket.bucketName,

@@ -824,10 +824,11 @@ echo "Service status: $(systemctl is-active kubelet)"`);
      * the CNI to become healthy before proceeding.
      *
      * @param podNetworkCidr - Pod network CIDR to use @default '192.168.0.0/16'
+     * @param calicoVersion - Calico CNI version (with 'v' prefix) @default 'v3.29.3'
      * @remarks **k8s project** - Requires kubeadm cluster initialized.
      * @returns this - for method chaining
      */
-    installCalicoCNI(podNetworkCidr = '192.168.0.0/16'): this {
+    installCalicoCNI(podNetworkCidr = '192.168.0.0/16', calicoVersion = 'v3.29.3'): this {
         this.userData.addCommands(`
 # =============================================================================
 # Install Calico CNI (NetworkPolicy enforcement)
@@ -838,7 +839,7 @@ echo "=== Installing Calico CNI ==="
 export KUBECONFIG=/etc/kubernetes/admin.conf
 
 # Install Calico operator (prefer pre-cached from Golden AMI, fallback to GitHub)
-CALICO_VERSION="v3.29.3"
+CALICO_VERSION="${calicoVersion}"
 OPERATOR_YAML="/opt/calico/tigera-operator.yaml"
 echo "Applying Calico operator..."
 if [ -f "$OPERATOR_YAML" ]; then
