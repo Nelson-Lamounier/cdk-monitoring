@@ -162,7 +162,29 @@ export class GoldenAmiPipelineConstruct extends Construct {
         infraConfig.addDependency(this.instanceProfile);
 
         // -----------------------------------------------------------------
-        // 5. Distribution Configuration — outputs AMI ID to SSM
+        // 5. SSM Parameter — stores latest AMI ID
+        //
+        // Created before the distribution config so it can be referenced
+        // as a target. Initially set to a placeholder; Image Builder
+        // overwrites it with the actual AMI ID after each successful build.
+        // The LaunchTemplate looks up this parameter to resolve the AMI.
+        // -----------------------------------------------------------------
+        this.amiSsmParameter = new ssm.StringParameter(this, 'AmiParameter', {
+            parameterName: imageConfig.amiSsmPath,
+            stringValue: 'PENDING_FIRST_BUILD',
+            description: `Latest Golden AMI ID for ${namePrefix}`,
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
+        // Grant Image Builder permission to write the AMI ID to SSM
+        this.amiSsmParameter.grantWrite(this.instanceRole);
+
+        // -----------------------------------------------------------------
+        // 6. Distribution Configuration — outputs AMI ID to SSM
+        //
+        // NOTE: amiDistributionConfiguration uses PascalCase raw JSON due to
+        // a known CDK/CloudFormation binding issue where camelCase properties
+        // fail CloudFormation validation.
         // -----------------------------------------------------------------
         const distribution = new imagebuilder.CfnDistributionConfiguration(
             this,
@@ -181,13 +203,21 @@ export class GoldenAmiPipelineConstruct extends Construct {
                                 'Component': 'ImageBuilder',
                             },
                         },
+                        // Write the built AMI ID to the SSM parameter so the
+                        // LaunchTemplate can resolve it at deploy time
+                        ssmParameterConfigurations: [
+                            {
+                                parameterName: this.amiSsmParameter.parameterName,
+                                dataType: 'aws:ec2:image',
+                            },
+                        ],
                     },
                 ],
             },
         );
 
         // -----------------------------------------------------------------
-        // 6. Image Pipeline (on-demand — no schedule)
+        // 7. Image Pipeline (on-demand — no schedule)
         // -----------------------------------------------------------------
         this.pipeline = new imagebuilder.CfnImagePipeline(this, 'Pipeline', {
             name: `${namePrefix}-golden-ami-pipeline`,
@@ -200,20 +230,6 @@ export class GoldenAmiPipelineConstruct extends Construct {
                 timeoutMinutes: 60,
             },
             // No schedule — on-demand builds only
-        });
-
-        // -----------------------------------------------------------------
-        // 7. SSM Parameter — stores latest AMI ID
-        //
-        // Initially set to a placeholder. Image Builder updates this
-        // after each successful build. The LaunchTemplate looks up this
-        // parameter to resolve the AMI at deploy time.
-        // -----------------------------------------------------------------
-        this.amiSsmParameter = new ssm.StringParameter(this, 'AmiParameter', {
-            parameterName: imageConfig.amiSsmPath,
-            stringValue: 'PENDING_FIRST_BUILD',
-            description: `Latest Golden AMI ID for ${namePrefix}`,
-            tier: ssm.ParameterTier.STANDARD,
         });
 
         // Tag for identification
