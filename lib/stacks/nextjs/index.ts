@@ -8,6 +8,8 @@
  * - NextJsComputeStack (ECS Cluster + IAM Roles)
  * - NextJsApplicationStack (Task Definition + Service + AutoDeploy)
  * - NextJsEdgeStack (ACM + WAF + CloudFront) - us-east-1 only
+ *
+ * NOTE: K8s compute moved to lib/stacks/kubernetes/compute-stack.ts
  */
 
 // ============================================================================
@@ -29,13 +31,6 @@ export * from './networking';
 // Edge Domain (ACM + WAF + CloudFront) - MUST be deployed in us-east-1
 export * from './edge';
 
-// K8s Domain (k3s agent node + manifests) - K8s migration target
-export * from './k8s';
-
 // ============================================================================
-// REMAINING INDEPENDENT STACKS
+// API Stack
 // ============================================================================
-
-// Security (legacy WAF stacks - use EdgeStack instead for new deployments)
-
-
