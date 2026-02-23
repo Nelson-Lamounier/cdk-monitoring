@@ -65,8 +65,7 @@ export interface GoldenAmiPipelineProps {
 // =============================================================================
 
 export class GoldenAmiPipelineConstruct extends Construct {
-    /** SSM parameter storing the latest Golden AMI ID */
-    public readonly amiSsmParameter: ssm.IStringParameter;
+
     /** The Image Builder pipeline */
     public readonly pipeline: imagebuilder.CfnImagePipeline;
     /** IAM role used by Image Builder instances */
@@ -185,17 +184,28 @@ export class GoldenAmiPipelineConstruct extends Construct {
             tier: 'Standard',
         });
 
-        // Import the CfnParameter as an L2 IStringParameter for grantWrite()
-        this.amiSsmParameter = ssm.StringParameter.fromStringParameterName(
-            this,
-            'AmiParameterRef',
-            imageConfig.amiSsmPath,
-        );
-        // Ensure the lookup happens after the CfnParameter is created
-        this.amiSsmParameter.node.addDependency(amiSsmCfnParameter);
-
-        // Grant Image Builder permission to write the AMI ID to SSM
-        this.amiSsmParameter.grantWrite(this.instanceRole);
+        // Grant Image Builder permission to write the AMI ID to SSM.
+        // NOTE: We build the ARN manually instead of using
+        // ssm.StringParameter.fromStringParameterName() + grantWrite() because
+        // the import creates a {{resolve:ssm:...}} token that CloudFormation
+        // tries to resolve at deploy time — failing if the parameter doesn't
+        // exist yet (Day-0 or after parameter deletion).
+        this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SsmWriteGoldenAmi',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:PutParameter',
+                'ssm:AddTagsToResource',
+                'ssm:GetParameters',
+            ],
+            resources: [
+                cdk.Arn.format({
+                    service: 'ssm',
+                    resource: 'parameter',
+                    resourceName: imageConfig.amiSsmPath.replace(/^\//, ''),
+                }, cdk.Stack.of(this)),
+            ],
+        }));
 
         // -----------------------------------------------------------------
         // 6. Distribution Configuration — outputs AMI ID to SSM
@@ -225,7 +235,7 @@ export class GoldenAmiPipelineConstruct extends Construct {
                         // LaunchTemplate can resolve it at deploy time
                         ssmParameterConfigurations: [
                             {
-                                parameterName: this.amiSsmParameter.parameterName,
+                                parameterName: imageConfig.amiSsmPath,
                                 dataType: 'aws:ec2:image',
                             },
                         ],
