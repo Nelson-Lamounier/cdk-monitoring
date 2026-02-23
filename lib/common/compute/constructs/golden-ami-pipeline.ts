@@ -273,7 +273,8 @@ phases:
                 aarch64) ARCH=arm64; COMPOSE_ARCH=aarch64; CLI_ARCH=aarch64 ;;
                 *) echo "ERROR: Unsupported architecture: $UNAME_ARCH"; exit 1 ;;
               esac
-              # Persist for subsequent build steps
+              # Persist for subsequent build steps (idempotent: strip old values first)
+              sed -i '/^ARCH=/d; /^COMPOSE_ARCH=/d; /^CLI_ARCH=/d' /etc/environment
               echo "ARCH=$ARCH" >> /etc/environment
               echo "COMPOSE_ARCH=$COMPOSE_ARCH" >> /etc/environment
               echo "CLI_ARCH=$CLI_ARCH" >> /etc/environment
