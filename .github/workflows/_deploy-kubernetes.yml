@@ -515,7 +515,7 @@ jobs:
               exit 0
             fi
 
-            echo "⏳ Attempt $i/${MAX_ATTEMPTS} — token not ready, waiting ${INTERVAL}s..."
+            echo "Attempt $i/${MAX_ATTEMPTS} — token not ready, waiting ${INTERVAL}s..."
             sleep $INTERVAL
           done
 
@@ -527,7 +527,7 @@ jobs:
       # After Day-0, this is a BLOCKING check — pipeline fails if apps
       # are not Synced+Healthy within the timeout.
       # -----------------------------------------------------------------------
-      - name: "🔒 ArgoCD Health Gate"
+      - name: "ArgoCD Health Gate"
         if: steps.argocd-token.outputs.token != '' && steps.argocd-token.outcome == 'success'
         env:
           ARGOCD_TOKEN: ${{ steps.argocd-token.outputs.token }}
@@ -587,7 +587,7 @@ jobs:
 
           # Timeout — fail with diagnostic output
           echo ""
-          echo "## ❌ ArgoCD Health Gate Failed" >> $GITHUB_STEP_SUMMARY
+          echo "## ArgoCD Health Gate Failed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Apps did not reach Synced+Healthy within $(( MAX_POLL * POLL_INTERVAL ))s:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -714,10 +714,10 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: "📋 Collect CloudFormation Diagnostics"
+      - name: "Collect CloudFormation Diagnostics"
         continue-on-error: true
         run: |
-          echo "## 🚨 Deployment Failure Report" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Failure Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
@@ -754,7 +754,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
           done
 
-      - name: "📋 Collect K8s Diagnostics via SSM"
+      - name: "Collect K8s Diagnostics via SSM"
         continue-on-error: true
         run: |
           INSTANCE_ID=$(aws ssm get-parameter \
@@ -787,7 +787,7 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: "🔗 Post Failure Context"
+      - name: "Post Failure Context"
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
