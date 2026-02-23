@@ -134,7 +134,7 @@
     "@aws-sdk/client-ecs": "^3.985.0",
     "@aws-sdk/client-efs": "^3.943.0",
     "@aws-sdk/client-elastic-load-balancing-v2": "^3.943.0",
-    "@aws-sdk/client-eventbridge": "^3.943.0",
+    "@aws-sdk/client-eventbridge": "^3.995.0",
     "@aws-sdk/client-lambda": "^3.943.0",
     "@aws-sdk/client-pricing": "^3.943.0",
     "@aws-sdk/client-s3": "^3.943.0",
