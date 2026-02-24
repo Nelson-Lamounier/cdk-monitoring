@@ -269,6 +269,25 @@ REPO_EOF
     echo "Day-0 software installation complete"
 fi
 
+# =============================================================================
+# Second-Run Guard — Idempotency for SSM State Manager / Reboots
+#
+# If kubeadm has already initialized (admin.conf exists), skip sections 4-6
+# and jump directly to manifest deployment (section 7).
+# This prevents crashes from running `kubeadm init` on an already-initialized
+# cluster (e.g., ASG instance reboot or SSM re-invocation).
+# =============================================================================
+if [ -f /etc/kubernetes/admin.conf ]; then
+    echo "=== Cluster already initialized — skipping kubeadm init, Calico, kubectl setup ==="
+    echo "  (This is a second-run via SSM State Manager or instance reboot)"
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+    SKIP_CLUSTER_INIT=true
+else
+    SKIP_CLUSTER_INIT=false
+fi
+
+if [ "$SKIP_CLUSTER_INIT" = "false" ]; then
+
 # Start containerd
 systemctl start containerd
 echo "containerd started"
@@ -427,6 +446,8 @@ export KUBECONFIG=$KUBECONFIG_SRC
 echo "kubectl configured. Cluster info:"
 kubectl cluster-info
 kubectl get namespaces
+
+fi # End SKIP_CLUSTER_INIT guard (sections 4-6)
 
 # =============================================================================
 # 7. Deploy k8s Monitoring Manifests
