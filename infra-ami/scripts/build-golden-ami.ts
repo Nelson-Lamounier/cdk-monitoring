@@ -7,8 +7,8 @@
  * Used by: justfile recipe `k8s-build-golden-ami`
  *
  * Usage:
- *   npx tsx scripts/deployment/build-golden-ami.ts development
- *   npx tsx scripts/deployment/build-golden-ami.ts development --region eu-west-1
+ *   npx tsx infra-ami/scripts/build-golden-ami.ts development
+ *   npx tsx infra-ami/scripts/build-golden-ami.ts development --region eu-west-1
  *
  * Exit codes:
  *   0 = AMI built (or already exists)
@@ -27,7 +27,7 @@ import {
     GetParameterCommand,
 } from '@aws-sdk/client-ssm';
 
-import logger from './logger.js';
+import logger from './logger.js';  // ./logger.ts — resolved by tsx
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
