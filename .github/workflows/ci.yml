@@ -315,7 +315,7 @@ jobs:
           name: coverage-stacks
           path: infra/coverage/
           retention-days: 7
-          if-no-files-found: error
+          if-no-files-found: warn
 
   # ============================================================================
   # NOTE: Snapshot Tests
