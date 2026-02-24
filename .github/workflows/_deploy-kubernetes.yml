@@ -2,25 +2,22 @@
 # @description Reusable Kubernetes Deployment Workflow (Centralized)
 #
 # Infra-only pipeline for the K8s (kubeadm) infrastructure.
-# API stack is excluded — deployed by the Next.js K8s pipeline.
 # Bootstrap/app manifests synced by independent S3 pipelines.
 #
-# 6-Stack Deployment Order:
+# 5-Stack Deployment Order:
 #   1. Data      (DynamoDB + S3 + SSM Parameters)
 #   2. Base      (VPC networking + Security Group + KMS + EBS + EIP + S3 Scripts)
 #   2b. Sync     (Seed boot scripts to S3 — Day-1 safety)
 #   3. Compute   (EC2 kubeadm + ASG + SSM Docs)
 #   4. AppIam    (Application-tier IAM grants)
 #   5. Edge      (CloudFront + ACM + WAF in us-east-1)
-#   (API deployed by Next.js thin wrapper pipeline)
 #
 # Post-Deploy (manifests managed by ArgoCD GitOps):
-#   4. Sync Static Assets          (S3 + CloudFront invalidation)
-#   5. Deploy Next.js App Layer    (API stack + smoke tests)
-#   6. ArgoCD Health Gate          (wait for GitOps sync)
-#   7. Verify & Smoke Tests
-#   8. Deployment Failure Alert    (halt + preserve + alert)
-#   9. Summary // test
+#   6. Sync Static Assets          (S3 + CloudFront invalidation)
+#   7. ArgoCD Health Gate          (wait for GitOps sync)
+#   8. Verify & Smoke Tests
+#   9. Deployment Failure Alert    (halt + preserve + alert)
+#  10. Summary
 #
 # Concurrency:
 #   This is a workflow_call (reusable) workflow — concurrency MUST be set
@@ -110,12 +107,11 @@ jobs:
       domain-name: ${{ steps.resolve-edge.outputs.domain-name }}
       hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
       cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
-      # Stack names from synthesize-ci.ts (6-stack architecture)
+      # Stack names from synthesize-ci.ts (5-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
       compute-stack: ${{ steps.synth.outputs.compute }}
       appiam-stack: ${{ steps.synth.outputs.appIam }}
-      api-stack: ${{ steps.synth.outputs.api }}
       edge-stack: ${{ steps.synth.outputs.edge }}
 
     steps:
@@ -561,21 +557,13 @@ jobs:
   # ===========================================================================
   verify-and-test:
     name: Verify & Smoke Tests
-    needs:
-      [
-        setup,
-        deploy-compute,
-        deploy-edge,
-        sync-static-assets,
-        deploy-nextjs-app,
-      ]
+    needs: [setup, deploy-compute, deploy-edge, sync-static-assets]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
     if: >-
       always()
       && needs.deploy-compute.result == 'success'
-      && (needs.deploy-nextjs-app.result == 'success' || needs.deploy-nextjs-app.result == 'skipped')
       && inputs.skip-verification != true
     outputs:
       status: ${{ steps.smoke.outputs.status }}
@@ -598,9 +586,6 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
-
-      - name: Run K8s Infrastructure Smoke Tests
-        run: just ci-smoke-kubernetes-infra ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
 
       - name: Wait for ArgoCD Token
         id: argocd-token
@@ -746,7 +731,6 @@ jobs:
             "${{ needs.setup.outputs.compute-stack }}"
             "${{ needs.setup.outputs.appiam-stack }}"
             "${{ needs.setup.outputs.edge-stack }}"
-            "${{ needs.setup.outputs.api-stack }}"
           )
 
           for STACK in "${STACKS[@]}"; do
@@ -814,8 +798,7 @@ jobs:
   # ===========================================================================
   deployment-failure-alert:
     name: "Deployment Failed — Alert"
-    needs:
-      [setup, deploy-compute, deploy-edge, deploy-nextjs-app, verify-and-test]
+    needs: [setup, deploy-compute, deploy-edge, verify-and-test]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ inputs.environment }}
@@ -843,7 +826,6 @@ jobs:
           echo "| **Commit** | \`${{ needs.setup.outputs.commit-sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Compute** | ${{ needs.deploy-compute.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Edge** | ${{ needs.deploy-edge.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Next.js App** | ${{ needs.deploy-nextjs-app.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Verification** | ${{ needs.verify-and-test.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -854,7 +836,6 @@ jobs:
             "${{ needs.setup.outputs.compute-stack }}"
             "${{ needs.setup.outputs.appiam-stack }}"
             "${{ needs.setup.outputs.edge-stack }}"
-            "${{ needs.setup.outputs.api-stack }}"
           )
 
           for STACK in "${STACKS[@]}"; do
@@ -943,23 +924,6 @@ jobs:
           echo "::error::Deployment verification failed for ${{ inputs.environment }}. Check the Deployment Failure Report in the job summary for diagnostics."
 
   # ===========================================================================
-  # Deploy Next.js App Layer (API + sync + verify)
-  # Chains the thin wrapper pipeline after infra is ready.
-  # ===========================================================================
-  deploy-nextjs-app:
-    name: Deploy Next.js App Layer
-    needs: [setup, deploy-data, deploy-edge]
-    if: always() && needs.deploy-data.result == 'success'
-    uses: ./.github/workflows/_deploy-nextjs-kubernetes.yml
-    with:
-      environment: ${{ inputs.environment }}
-      cdk-environment: ${{ inputs.cdk-environment }}
-      api-stack-name: ${{ needs.setup.outputs.api-stack }}
-      domain-name: ${{ needs.setup.outputs.domain-name }}
-      skip-verification: ${{ inputs.skip-verification }}
-    secrets: inherit
-
-  # ===========================================================================
   # Deployment Summary (TypeScript)
   # ===========================================================================
   summary:
@@ -974,7 +938,6 @@ jobs:
       - sync-static-assets
       - verify-and-test
       - deployment-failure-alert
-      - deploy-nextjs-app
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -1019,7 +982,6 @@ jobs:
         env:
           DEPLOY_DATA_RESULT: ${{ needs.deploy-data.result }}
           DEPLOY_COMPUTE_RESULT: ${{ needs.deploy-compute.result }}
-          DEPLOY_API_RESULT: ${{ needs.deploy-nextjs-app.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
           VERIFY_RESULT: ${{ needs.verify-and-test.result || 'skipped' }}

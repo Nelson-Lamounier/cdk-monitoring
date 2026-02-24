@@ -361,7 +361,7 @@ jobs:
         env:
           AWS_REGION: eu-west-1
           # Required by NextJS API stack validation (actual values come from
-          # GitHub environment vars during deploy — see _deploy-nextjs.yml)
+          # GitHub environment vars during deploy — see deployment pipelines)
           NOTIFICATION_EMAIL: ci-validation@placeholder.local
           SES_FROM_EMAIL: ci-validation@placeholder.local
           VERIFICATION_SECRET: ci-placeholder-secret
@@ -390,7 +390,7 @@ jobs:
   #     • Staging: Blocking on HIGH/CRITICAL
   #     • Production: Blocking on all findings
   #
-  # See: .github/workflows/_deploy-monitoring.yml for deployment security scan
+  # See: .github/workflows/_deploy-kubernetes.yml for deployment security scan
   # ============================================================================
 
   # ============================================================================
