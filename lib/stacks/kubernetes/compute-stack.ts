@@ -1,34 +1,29 @@
 /**
  * @format
- * Kubernetes Compute Stack — kubeadm Cluster
+ * Kubernetes Compute Stack — Runtime Layer
  *
- * kubeadm Kubernetes cluster hosting both monitoring (Grafana, Prometheus, Loki,
- * Tempo) and application (Next.js) workloads on a control plane + worker nodes.
- *
- * Workload isolation is enforced at the Kubernetes layer via:
- *   1. Namespaces (monitoring / nextjs-app)
- *   2. NetworkPolicies (restrict cross-namespace traffic)
- *   3. ResourceQuotas (prevent resource starvation)
- *   4. Container resource limits (requests + limits on every container)
- *   5. PriorityClasses (monitoring pods preempt application pods)
+ * Runtime compute resources for the kubeadm Kubernetes cluster.
+ * Consumes long-lived base infrastructure (VPC, Security Group, KMS,
+ * EBS, Elastic IP) from KubernetesBaseStack via cross-stack reference.
  *
  * Resources Created:
- *   - Security Group (unified: HTTP/HTTPS, K8s API, monitoring ports)
- *   - IAM Role (monitoring grants + optional application grants)
- *   - EBS Volume (persistent storage for Kubernetes data + PVCs)
  *   - Launch Template (Amazon Linux 2023, IMDSv2)
  *   - ASG (min=1, max=1, single-node cluster)
- *   - Elastic IP (shared by Next.js CloudFront and SSM access)
+ *   - IAM Role (monitoring grants + optional application grants)
  *   - S3 Bucket (syncs all k8s manifests: monitoring + application)
  *   - SSM Run Command Document (manifest re-deploy)
  *   - Golden AMI Pipeline (optional, Image Builder)
  *   - SSM State Manager (optional, post-boot configuration)
+ *
+ * Resources from KubernetesBaseStack (consumed, not created):
+ *   - VPC, Security Group, KMS Key, EBS Volume, Elastic IP
  *
  * @example
  * ```typescript
  * const computeStack = new KubernetesComputeStack(app, 'K8s-Compute-dev', {
  *     env: cdkEnvironment(Environment.DEVELOPMENT),
  *     targetEnvironment: Environment.DEVELOPMENT,
+ *     baseStack: kubernetesBaseStack,
  *     configs: getK8sConfigs(Environment.DEVELOPMENT),
  *     namePrefix: 'k8s-development',
  *     ssmPrefix: '/k8s/development',
@@ -41,10 +36,8 @@ import { NagSuppressions } from 'cdk-nag';
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -60,19 +53,13 @@ import {
 } from '../../common/index';
 import { S3BucketConstruct } from '../../common/storage';
 import {
-    K8S_API_PORT,
-    TRAEFIK_HTTP_PORT,
-    TRAEFIK_HTTPS_PORT,
-    PROMETHEUS_PORT,
-    NODE_EXPORTER_PORT,
-    LOKI_NODEPORT,
-    TEMPO_NODEPORT,
     MONITORING_APP_TAG,
 } from '../../config/defaults';
 import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
 
-import { grantApplicationPermissions, ApplicationIamGrantsProps } from './application';
+import { KubernetesBaseStack } from './base-stack';
+
 import { grantMonitoringPermissions } from './monitoring';
 
 // =============================================================================
@@ -86,6 +73,9 @@ import { grantMonitoringPermissions } from './monitoring';
  * are optional — when omitted, the stack runs monitoring workloads only.
  */
 export interface KubernetesComputeStackProps extends cdk.StackProps {
+    /** Reference to the base infrastructure stack (VPC, SG, KMS, EBS, EIP) */
+    readonly baseStack: KubernetesBaseStack;
+
     /** Target deployment environment */
     readonly targetEnvironment: Environment;
 
@@ -97,31 +87,6 @@ export interface KubernetesComputeStackProps extends cdk.StackProps {
 
     /** SSM parameter prefix for storing cluster info */
     readonly ssmPrefix: string;
-
-    /**
-     * VPC Name tag for synth-time lookup via Vpc.fromLookup().
-     * @default 'shared-vpc-{environment}'
-     */
-    readonly vpcName?: string;
-
-    // =========================================================================
-    // Application-tier grants (optional — for Next.js workload)
-    // =========================================================================
-
-    /** DynamoDB table ARNs to grant read access (SSR queries) */
-    readonly dynamoTableArns?: string[];
-
-    /** SSM path for DynamoDB KMS key ARN (customer-managed key) */
-    readonly dynamoKmsKeySsmPath?: string;
-
-    /** S3 bucket ARNs to grant read access (static assets) */
-    readonly s3ReadBucketArns?: string[];
-
-    /** SSM parameter path wildcard for Next.js env vars */
-    readonly ssmParameterPath?: string;
-
-    /** Secrets Manager path pattern for Next.js auth secrets */
-    readonly secretsManagerPathPattern?: string;
 }
 
 // =============================================================================
@@ -129,17 +94,17 @@ export interface KubernetesComputeStackProps extends cdk.StackProps {
 // =============================================================================
 
 /**
- * Shared Kubernetes Compute Stack.
+ * Kubernetes Compute Stack — Runtime Layer.
  *
  * Runs a kubeadm Kubernetes cluster hosting both monitoring and application
- * workloads. Security and resource isolation between tiers is enforced
+ * workloads. Consumes base infrastructure (VPC, Security Group, KMS, EBS,
+ * Elastic IP) from KubernetesBaseStack.
+ *
+ * Security and resource isolation between tiers is enforced
  * at the Kubernetes layer (Namespaces, NetworkPolicies, ResourceQuotas,
  * PriorityClasses).
  */
 export class KubernetesComputeStack extends cdk.Stack {
-    /** The security group for the Kubernetes cluster */
-    public readonly securityGroup: ec2.SecurityGroup;
-
     /** The Auto Scaling Group */
     public readonly autoScalingGroup: autoscaling.AutoScalingGroup;
 
@@ -149,112 +114,16 @@ export class KubernetesComputeStack extends cdk.Stack {
     /** CloudWatch log group for instance logs */
     public readonly logGroup?: logs.LogGroup;
 
-    /** Elastic IP for stable external access */
-    public readonly elasticIp: ec2.CfnEIP;
-
     constructor(scope: Construct, id: string, props: KubernetesComputeStackProps) {
         super(scope, id, props);
 
-        const { configs, targetEnvironment } = props;
+        const { configs, targetEnvironment, baseStack } = props;
         const namePrefix = props.namePrefix ?? 'k8s';
 
         // =====================================================================
-        // VPC Lookup
+        // Consume base infrastructure (from KubernetesBaseStack)
         // =====================================================================
-        const vpcName = props.vpcName ?? `shared-vpc-${targetEnvironment}`;
-        const vpc = ec2.Vpc.fromLookup(this, 'SharedVpc', { vpcName });
-
-        // =====================================================================
-        // Security Group (unified — superset of monitoring + application ports)
-        // =====================================================================
-        this.securityGroup = new ec2.SecurityGroup(this, 'K8sSecurityGroup', {
-            vpc,
-            description: `Shared Kubernetes cluster security group (${targetEnvironment})`,
-            securityGroupName: `${namePrefix}-k8s-cluster`,
-            allowAllOutbound: true,
-        });
-
-        // Traefik Ingress: HTTP/HTTPS from anywhere (CloudFront → Traefik)
-        this.securityGroup.addIngressRule(
-            ec2.Peer.anyIpv4(),
-            ec2.Port.tcp(TRAEFIK_HTTP_PORT),
-            'Allow HTTP traffic (Traefik Ingress)',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.anyIpv4(),
-            ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
-            'Allow HTTPS traffic (Traefik Ingress)',
-        );
-
-        // K8s API: Only from VPC CIDR (for SSM port-forwarding access)
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(vpc.vpcCidrBlock),
-            ec2.Port.tcp(K8S_API_PORT),
-            'Allow K8s API from VPC (SSM port-forwarding)',
-        );
-
-        // Monitoring ports from VPC: Prometheus and Node Exporter
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(vpc.vpcCidrBlock),
-            ec2.Port.tcp(PROMETHEUS_PORT),
-            'Allow Prometheus metrics from VPC',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(vpc.vpcCidrBlock),
-            ec2.Port.tcp(NODE_EXPORTER_PORT),
-            'Allow Node Exporter metrics from VPC',
-        );
-
-        // Loki/Tempo NodePorts: accessible from VPC (ECS tasks → k8s monitoring)
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(vpc.vpcCidrBlock),
-            ec2.Port.tcp(LOKI_NODEPORT),
-            'Allow Loki push API from VPC (cross-stack log shipping)',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(vpc.vpcCidrBlock),
-            ec2.Port.tcp(TEMPO_NODEPORT),
-            'Allow Tempo OTLP gRPC from VPC (cross-stack trace shipping)',
-        );
-
-        // =====================================================================
-        // KMS Key for CloudWatch Log Group Encryption
-        // =====================================================================
-        const logGroupKmsKey = new kms.Key(this, 'LogGroupKey', {
-            alias: `${namePrefix}-log-group`,
-            description: `KMS key for ${namePrefix} CloudWatch log group encryption`,
-            enableKeyRotation: true,
-            removalPolicy: configs.removalPolicy,
-        });
-
-        logGroupKmsKey.addToResourcePolicy(new iam.PolicyStatement({
-            actions: [
-                'kms:Encrypt*',
-                'kms:Decrypt*',
-                'kms:ReEncrypt*',
-                'kms:GenerateDataKey*',
-                'kms:Describe*',
-            ],
-            principals: [new iam.ServicePrincipal(`logs.${this.region}.amazonaws.com`)],
-            resources: ['*'],
-            conditions: {
-                ArnLike: {
-                    'kms:EncryptionContext:aws:logs:arn': `arn:aws:logs:${this.region}:${this.account}:log-group:/ec2/${namePrefix}/*`,
-                },
-            },
-        }));
-
-        // =====================================================================
-        // EBS Volume (persistent storage for Kubernetes data)
-        // =====================================================================
-        const ebsVolume = new ec2.Volume(this, 'K8sDataVolume', {
-            availabilityZone: `${this.region}a`,
-            size: cdk.Size.gibibytes(configs.storage.volumeSizeGb),
-            volumeType: ec2.EbsDeviceVolumeType.GP3,
-            encrypted: true,
-            removalPolicy: configs.removalPolicy,
-            volumeName: `${namePrefix}-data`,
-        });
+        const { vpc, securityGroup, logGroupKmsKey, ebsVolume } = baseStack;
 
         // =====================================================================
         // Launch Template + ASG
@@ -262,7 +131,7 @@ export class KubernetesComputeStack extends cdk.Stack {
         const userData = ec2.UserData.forLinux();
 
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
-            securityGroup: this.securityGroup,
+            securityGroup,
             instanceType: configs.compute.instanceType,
             volumeSizeGb: 20, // Root volume (k8s data lives on separate EBS)
             detailedMonitoring: configs.compute.detailedMonitoring,
@@ -343,34 +212,19 @@ export class KubernetesComputeStack extends cdk.Stack {
         });
         const scriptsBucket = scriptsBucketConstruct.bucket;
 
-        // Sync platform bootstrap (boot scripts, ArgoCD, Traefik, overlays)
-        new s3deploy.BucketDeployment(this, 'K8sBootstrapDeployment', {
-            sources: [s3deploy.Source.asset('./k8s-bootstrap')],
-            destinationBucket: scriptsBucket,
-            destinationKeyPrefix: 'k8s-bootstrap',
-            prune: false,
-        });
+        // =====================================================================
+        // NOTE: Content sync (k8s-bootstrap/, app-deploy/) is handled by CI
+        // via `aws s3 sync`, NOT by CDK BucketDeployment. This decouples
+        // manifest/script changes from infrastructure deployments.
+        // =====================================================================
 
-        // Sync application manifests (monitoring + nextjs)
-        new s3deploy.BucketDeployment(this, 'K8sAppDeployment', {
-            sources: [s3deploy.Source.asset('./app-deploy')],
-            destinationBucket: scriptsBucket,
-            destinationKeyPrefix: 'app-deploy',
-            prune: false,
+        // Publish bucket name to SSM for CI discovery
+        new ssm.StringParameter(this, 'ScriptsBucketParam', {
+            parameterName: `${props.ssmPrefix}/scripts-bucket`,
+            stringValue: scriptsBucket.bucketName,
+            description: 'S3 bucket for k8s scripts and manifests (used by CI for aws s3 sync)',
+            tier: ssm.ParameterTier.STANDARD,
         });
-
-        try {
-            NagSuppressions.addResourceSuppressionsByPath(
-                this,
-                `/${this.stackName}/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/Resource`,
-                [{
-                    id: 'AwsSolutions-L1',
-                    reason: 'BucketDeployment Lambda runtime is managed by CDK singleton — cannot override',
-                }],
-            );
-        } catch {
-            // Suppression path may not exist in test environments — this is expected
-        }
 
         // =====================================================================
         // SSM Run Command Document (unified manifest deployment)
@@ -402,6 +256,16 @@ export class KubernetesComputeStack extends cdk.Stack {
                     description: 'AWS region',
                     default: this.region,
                 },
+                ManifestsDir: {
+                    type: 'String',
+                    description: 'Local path to manifests directory',
+                    default: '/data/app-deploy/monitoring/manifests',
+                },
+                DeployScript: {
+                    type: 'String',
+                    description: 'Local path to the deploy script',
+                    default: '/data/app-deploy/monitoring/deploy-manifests.sh',
+                },
             },
             steps: [{
                 name: 'deployManifests',
@@ -411,10 +275,10 @@ export class KubernetesComputeStack extends cdk.Stack {
                     'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
                     'export SSM_PREFIX="{{SsmPrefix}}"',
                     'export AWS_REGION="{{Region}}"',
-                    'export MANIFESTS_DIR=/data/app-deploy/monitoring/manifests',
+                    'export MANIFESTS_DIR="{{ManifestsDir}}"',
                     '',
                     '# Re-sync all manifests from S3 and run deploy script',
-                    '/data/app-deploy/monitoring/deploy-manifests.sh',
+                    '"{{DeployScript}}"',
                 ],
                 timeoutSeconds: 600,
             }],
@@ -452,6 +316,16 @@ export class KubernetesComputeStack extends cdk.Stack {
                     description: 'AWS region',
                     default: this.region,
                 },
+                ManifestsDir: {
+                    type: 'String',
+                    description: 'Local path to manifests directory',
+                    default: '/data/app-deploy/nextjs',
+                },
+                DeployScript: {
+                    type: 'String',
+                    description: 'Local path to the deploy script',
+                    default: '/data/app-deploy/nextjs/deploy-manifests.sh',
+                },
             },
             steps: [{
                 name: 'deployAppManifests',
@@ -461,10 +335,10 @@ export class KubernetesComputeStack extends cdk.Stack {
                     'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
                     'export SSM_PREFIX="{{SsmPrefix}}"',
                     'export AWS_REGION="{{Region}}"',
-                    'export MANIFESTS_DIR=/data/app-deploy/nextjs',
+                    'export MANIFESTS_DIR="{{ManifestsDir}}"',
                     '',
                     '# Re-sync manifests from S3 and run Next.js deploy script',
-                    '/data/app-deploy/nextjs/deploy-manifests.sh',
+                    '"{{DeployScript}}"',
                 ],
                 timeoutSeconds: 600,
             }],
@@ -485,7 +359,7 @@ export class KubernetesComputeStack extends cdk.Stack {
                 clusterConfig: configs.cluster,
                 vpc,
                 subnetId: vpc.publicSubnets[0].subnetId,
-                securityGroupId: this.securityGroup.securityGroupId,
+                securityGroupId: securityGroup.securityGroupId,
             });
         }
 
@@ -548,11 +422,26 @@ export S3_BUCKET="${scriptsBucket.bucketName}"
 export CALICO_VERSION="${configs.image.bakedVersions.calico}"
 export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
 
-# Download and execute the boot script from S3
+# Download boot script from S3 — "Patient" retry for Day-1 coordination
+# On first-ever deploy, the Sync pipeline may not have uploaded boot-k8s.sh
+# yet. Retry for up to 10 minutes (30 × 20s) before giving up.
 BOOT_SCRIPT="/tmp/boot-k8s.sh"
-aws s3 cp s3://${scriptsBucket.bucketName}/k8s-bootstrap/boot/boot-k8s.sh "$BOOT_SCRIPT" --region ${this.region}
-chmod +x "$BOOT_SCRIPT"
-exec "$BOOT_SCRIPT"
+S3_BOOT_PATH="s3://${scriptsBucket.bucketName}/k8s-bootstrap/boot/boot-k8s.sh"
+MAX_RETRIES=30
+RETRY_INTERVAL=20
+
+for i in $(seq 1 $MAX_RETRIES); do
+  if aws s3 cp "$S3_BOOT_PATH" "$BOOT_SCRIPT" --region ${this.region} 2>/dev/null; then
+    echo "✓ Boot script downloaded (attempt $i/$MAX_RETRIES)"
+    chmod +x "$BOOT_SCRIPT"
+    exec "$BOOT_SCRIPT"
+  fi
+  echo "Boot script not in S3 yet (attempt $i/$MAX_RETRIES). Retrying in \${RETRY_INTERVAL}s..."
+  sleep $RETRY_INTERVAL
+done
+
+echo "ERROR: Boot script not found at $S3_BOOT_PATH after $((MAX_RETRIES * RETRY_INTERVAL))s"
+exit 1
 `);
 
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
@@ -564,6 +453,9 @@ exec "$BOOT_SCRIPT"
 
         // =====================================================================
         // IAM Grants — Monitoring tier (always applied)
+        //
+        // Application-tier grants (DynamoDB, S3, Secrets Manager) live in the
+        // separate KubernetesAppIamStack — decoupled from compute lifecycle.
         // =====================================================================
         grantMonitoringPermissions(this.instanceRole, {
             ssmPrefix: props.ssmPrefix,
@@ -571,45 +463,11 @@ exec "$BOOT_SCRIPT"
             account: this.account,
         });
 
-        // =====================================================================
-        // IAM Grants — Application tier (conditional)
-        // =====================================================================
-        const appGrantProps: ApplicationIamGrantsProps = {
-            region: this.region,
-            account: this.account,
-            dynamoTableArns: props.dynamoTableArns,
-            dynamoKmsKeySsmPath: props.dynamoKmsKeySsmPath,
-            s3ReadBucketArns: props.s3ReadBucketArns,
-            ssmParameterPath: props.ssmParameterPath,
-            secretsManagerPathPattern: props.secretsManagerPathPattern,
-        };
-        grantApplicationPermissions(this.instanceRole, appGrantProps);
-
-        // =====================================================================
-        // Elastic IP (shared endpoint for Next.js CloudFront + SSM access)
-        // =====================================================================
-        this.elasticIp = new ec2.CfnEIP(this, 'K8sElasticIp', {
-            domain: 'vpc',
-            tags: [{
-                key: 'Name',
-                value: `${namePrefix}-k8s-eip`,
-            }],
-        });
-
-        // =====================================================================
-        // SSM Parameters (for cross-project discovery)
-        // =====================================================================
-        new ssm.StringParameter(this, 'SecurityGroupIdParam', {
-            parameterName: `${props.ssmPrefix}/security-group-id`,
-            stringValue: this.securityGroup.securityGroupId,
-            description: 'Kubernetes cluster security group ID',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'ElasticIpParam', {
-            parameterName: `${props.ssmPrefix}/elastic-ip`,
-            stringValue: this.elasticIp.ref,
-            description: 'Kubernetes cluster Elastic IP address (used by Edge stack as CloudFront origin)',
+        // Publish instance role ARN to SSM for cross-stack import (AppIamStack)
+        new ssm.StringParameter(this, 'InstanceRoleArnParam', {
+            parameterName: `${props.ssmPrefix}/instance-role-arn`,
+            stringValue: this.instanceRole.roleArn,
+            description: 'Kubernetes instance role ARN (used by AppIamStack for app-tier grants)',
             tier: ssm.ParameterTier.STANDARD,
         });
 
@@ -630,21 +488,6 @@ exec "$BOOT_SCRIPT"
         new cdk.CfnOutput(this, 'AutoScalingGroupName', {
             value: this.autoScalingGroup.autoScalingGroupName,
             description: 'Kubernetes cluster ASG Name',
-        });
-
-        new cdk.CfnOutput(this, 'ElasticIpAddress', {
-            value: this.elasticIp.ref,
-            description: 'Kubernetes cluster Elastic IP address',
-        });
-
-        new cdk.CfnOutput(this, 'EbsVolumeId', {
-            value: ebsVolume.volumeId,
-            description: 'Kubernetes data EBS volume ID',
-        });
-
-        new cdk.CfnOutput(this, 'SecurityGroupId', {
-            value: this.securityGroup.securityGroupId,
-            description: 'Kubernetes cluster security group ID',
         });
 
         if (this.logGroup) {

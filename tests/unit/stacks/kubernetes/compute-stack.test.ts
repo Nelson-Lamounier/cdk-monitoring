@@ -2,11 +2,7 @@
  * @format
  * Kubernetes Compute Stack Unit Tests
  *
- * Tests for the KubernetesComputeStack:
- * - VPC Lookup
- * - Security Group (ingress rules for K8s, Traefik, monitoring, Loki/Tempo)
- * - KMS Key for CloudWatch Logs
- * - EBS Volume (persistent Kubernetes data)
+ * Tests for the KubernetesComputeStack (Runtime Layer):
  * - Launch Template + Auto Scaling Group
  * - S3 Buckets (scripts + access logs via S3BucketConstruct)
  * - S3 Bucket Deployment (k8s manifests sync)
@@ -15,9 +11,10 @@
  * - SSM State Manager (conditional — gated by ssmConfig.enableStateManager)
  * - User Data (slim bootstrap stub)
  * - IAM Grants (monitoring + application tiers)
- * - Elastic IP
- * - SSM Parameters (cross-stack discovery)
  * - Stack Outputs
+ *
+ * Resources tested in base-stack.test.ts (not here):
+ * - VPC Lookup, Security Group, KMS Key, EBS Volume, Elastic IP, SSM Parameters
  *
  * NOTE: This file scaffolds the test structure. Individual test cases
  * will be implemented in upcoming iterations using `it.todo()`.
@@ -35,6 +32,7 @@ import { Construct } from 'constructs';
 
 import { Environment } from '../../../../lib/config';
 import { getK8sConfigs } from '../../../../lib/config/kubernetes';
+import { KubernetesBaseStack } from '../../../../lib/stacks/kubernetes/base-stack';
 import {
     KubernetesComputeStack,
     KubernetesComputeStackProps,
@@ -89,22 +87,30 @@ function extractUserDataParts(template: Template): string[] {
  *
  * Override any prop via the `overrides` parameter.
  *
- * NOTE: The compute stack uses `Vpc.fromLookup()` internally, which requires
- * concrete (non-Token) env values. CDK creates a dummy VPC context during
- * synthesis, so no separate VPC stack is needed for unit tests.
+ * Creates a KubernetesBaseStack first (for VPC, SG, KMS, EBS, EIP),
+ * then passes it as a prop to KubernetesComputeStack.
  */
 function createComputeStack(
     overrides?: Partial<KubernetesComputeStackProps>,
 ): { stack: KubernetesComputeStack; template: Template; app: cdk.App } {
     const app = createTestApp();
 
-    const stack = new KubernetesComputeStack(app, 'TestK8sComputeStack', {
+    const baseStack = new KubernetesBaseStack(app, 'TestK8sBaseStack', {
         env: TEST_ENV_EU,
         targetEnvironment: Environment.DEVELOPMENT,
         configs: TEST_CONFIGS,
         namePrefix: 'k8s-dev',
         ssmPrefix: '/k8s/development',
         vpcName: 'shared-vpc-development',
+    });
+
+    const stack = new KubernetesComputeStack(app, 'TestK8sComputeStack', {
+        baseStack,
+        env: TEST_ENV_EU,
+        targetEnvironment: Environment.DEVELOPMENT,
+        configs: TEST_CONFIGS,
+        namePrefix: 'k8s-dev',
+        ssmPrefix: '/k8s/development',
         ...overrides,
     });
 
@@ -119,54 +125,9 @@ function createComputeStack(
 describe('KubernetesComputeStack', () => {
 
     // =========================================================================
-    // Security Group
-    // =========================================================================
-    describe('Security Group', () => {
-        it.todo('should create a security group for the K8s cluster');
-
-        it.todo('should allow inbound HTTP traffic on Traefik port (80)');
-
-        it.todo('should allow inbound HTTPS traffic on Traefik port (443)');
-
-        it.todo('should allow K8s API (6443) only from VPC CIDR');
-
-        it.todo('should allow Prometheus metrics (9090) from VPC CIDR');
-
-        it.todo('should allow Node Exporter metrics (9100) from VPC CIDR');
-
-        it.todo('should allow Loki NodePort from VPC CIDR');
-
-        it.todo('should allow Tempo NodePort from VPC CIDR');
-
-        it.todo('should allow all outbound traffic');
-    });
-
-    // =========================================================================
-    // KMS Key
-    // =========================================================================
-    describe('KMS Key', () => {
-        it.todo('should create a KMS key for CloudWatch log group encryption');
-
-        it.todo('should enable key rotation');
-
-        it.todo('should grant CloudWatch Logs service principal encrypt/decrypt permissions');
-    });
-
-    // =========================================================================
-    // EBS Volume
-    // =========================================================================
-    describe('EBS Volume', () => {
-        it.todo('should create a GP3 EBS volume');
-
-        it.todo('should encrypt the EBS volume');
-
-        it.todo('should set the volume size from config');
-
-        it.todo('should set the removal policy from config');
-    });
-
-    // =========================================================================
     // Launch Template + Auto Scaling Group
+    //
+    // NOTE: Security Group, KMS Key, EBS Volume tests are in base-stack.test.ts
     // =========================================================================
     describe('Launch Template', () => {
         it.todo('should create a launch template');
@@ -285,48 +246,18 @@ describe('KubernetesComputeStack', () => {
     });
 
     // =========================================================================
-    // S3 BucketDeployment — k8s/ directory sync
+    // S3 Content Sync
     //
-    // The full k8s/ directory (boot scripts + monitoring manifests +
-    // application manifests + system components) is synced to S3.
-    // This is essential because the boot script, SSM documents, and
-    // manifest deploy scripts all reference files from this bundle.
+    // NOTE: BucketDeployment was removed — content sync (k8s-bootstrap/,
+    // app-deploy/) is now handled by CI via `aws s3 sync`.
+    // The compute stack only creates the empty S3 bucket.
     // =========================================================================
-    describe('BucketDeployment', () => {
+    describe('S3 Content Sync (CI-driven)', () => {
         const { template } = createComputeStack();
 
-        it('should create a BucketDeployment custom resource', () => {
-            // CDK BucketDeployment creates a Custom::CDKBucketDeployment resource
+        it('should NOT create any BucketDeployment custom resources', () => {
             const resources = template.findResources('Custom::CDKBucketDeployment');
-            expect(Object.keys(resources).length).toBeGreaterThanOrEqual(1);
-        });
-
-        it('should set the destination key prefix to k8s', () => {
-            template.hasResourceProperties(
-                'Custom::CDKBucketDeployment',
-                Match.objectLike({
-                    DestinationBucketKeyPrefix: 'k8s',
-                }),
-            );
-        });
-
-        it('should enable pruning to remove stale files', () => {
-            template.hasResourceProperties(
-                'Custom::CDKBucketDeployment',
-                Match.objectLike({
-                    Prune: true,
-                }),
-            );
-        });
-
-        it('should include at least one source bundle (the k8s/ directory)', () => {
-            template.hasResourceProperties(
-                'Custom::CDKBucketDeployment',
-                Match.objectLike({
-                    SourceBucketNames: Match.anyValue(),
-                    SourceObjectKeys: Match.anyValue(),
-                }),
-            );
+            expect(Object.keys(resources).length).toBe(0);
         });
     });
 
@@ -350,6 +281,10 @@ describe('KubernetesComputeStack', () => {
         it.todo('should configure default S3 bucket parameter in manifest deploy document');
 
         it.todo('should configure default SSM prefix parameter in manifest deploy document');
+
+        it.todo('should accept ManifestsDir parameter for path-agnostic deployment');
+
+        it.todo('should accept DeployScript parameter for path-agnostic deployment');
     });
 
     // =========================================================================
@@ -502,40 +437,16 @@ describe('KubernetesComputeStack', () => {
 
         it.todo('should grant monitoring IAM permissions (SSM, CloudWatch, EBS)');
 
-        it.todo('should grant application IAM permissions when app props are provided');
-
-        it.todo('should NOT grant application IAM permissions when app props are omitted');
-    });
-
-    // =========================================================================
-    // Elastic IP
-    // =========================================================================
-    describe('Elastic IP', () => {
-        it.todo('should create an Elastic IP');
-
-        it.todo('should tag the Elastic IP with the name prefix');
-    });
-
-    // =========================================================================
-    // SSM Parameters
-    // =========================================================================
-    describe('SSM Parameters', () => {
-        it.todo('should create an SSM parameter for the security group ID');
-
-        it.todo('should create an SSM parameter for the Elastic IP address');
+        // NOTE: Application IAM grants are now tested in app-iam-stack.test.ts
     });
 
     // =========================================================================
     // Stack Properties
     // =========================================================================
     describe('Stack Properties', () => {
-        it.todo('should expose securityGroup');
-
         it.todo('should expose autoScalingGroup');
 
         it.todo('should expose instanceRole');
-
-        it.todo('should expose elasticIp');
     });
 
     // =========================================================================
@@ -546,12 +457,6 @@ describe('KubernetesComputeStack', () => {
 
         it.todo('should export AutoScalingGroupName');
 
-        it.todo('should export ElasticIpAddress');
-
-        it.todo('should export EbsVolumeId');
-
-        it.todo('should export SecurityGroupId');
-
         it.todo('should export SsmConnectCommand');
 
         it.todo('should export GrafanaPortForward');
@@ -561,6 +466,15 @@ describe('KubernetesComputeStack', () => {
         it.todo('should export ManifestDeployDocumentName');
 
         it.todo('should export ScriptsBucketName');
+    });
+
+    // =========================================================================
+    // SSM Parameters (CI discovery)
+    // =========================================================================
+    describe('SSM Parameters', () => {
+        it.todo('should create SSM parameter for scripts bucket name');
+
+        it.todo('should create SSM parameter for instance role ARN');
     });
 
     // =========================================================================
