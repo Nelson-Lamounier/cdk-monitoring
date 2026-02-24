@@ -211,6 +211,11 @@ ci-smoke-monitoring-kubernetes *ARGS:
 ci-smoke-kubernetes-infra *ARGS:
     npx tsx scripts/deployment/smoke-tests-kubernetes.ts {{ARGS}}
 
+# CI fetch boot logs from CloudWatch (failure diagnostics)
+[group('ci')]
+ci-fetch-boot-logs *ARGS:
+    npx tsx scripts/deployment/fetch-boot-logs.ts {{ARGS}}
+
 # CI sync S3 assets
 [group('ci')]
 ci-sync-assets *ARGS:
