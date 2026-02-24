@@ -56,7 +56,6 @@ import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
 
 import { KubernetesBaseStack } from './base-stack';
-
 import { grantMonitoringPermissions } from './monitoring';
 
 // =============================================================================
@@ -114,7 +113,7 @@ export class KubernetesComputeStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props: KubernetesComputeStackProps) {
         super(scope, id, props);
 
-        const { configs, targetEnvironment, baseStack } = props;
+        const { configs, targetEnvironment: _targetEnvironment, baseStack } = props;
         const namePrefix = props.namePrefix ?? 'k8s';
 
         // =====================================================================

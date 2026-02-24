@@ -23,11 +23,11 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Environment } from '../../../../lib/config';
 import { getK8sConfigs } from '../../../../lib/config/kubernetes';
-import { KubernetesBaseStack } from '../../../../lib/stacks/kubernetes/base-stack';
 import {
     KubernetesAppIamStack,
     KubernetesAppIamStackProps,
 } from '../../../../lib/stacks/kubernetes/app-iam-stack';
+import { KubernetesBaseStack } from '../../../../lib/stacks/kubernetes/base-stack';
 import {
     KubernetesComputeStack,
 } from '../../../../lib/stacks/kubernetes/compute-stack';

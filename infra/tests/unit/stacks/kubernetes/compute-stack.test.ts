@@ -257,7 +257,7 @@ describe('KubernetesComputeStack', () => {
 
         it('should NOT create any BucketDeployment custom resources', () => {
             const resources = template.findResources('Custom::CDKBucketDeployment');
-            expect(Object.keys(resources).length).toBe(0);
+            expect(Object.keys(resources)).toHaveLength(0);
         });
     });
 

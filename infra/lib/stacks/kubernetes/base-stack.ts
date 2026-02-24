@@ -42,6 +42,7 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
+import { S3BucketConstruct } from '../../common/storage';
 import {
     K8S_API_PORT,
     TRAEFIK_HTTP_PORT,
@@ -51,7 +52,6 @@ import {
     LOKI_NODEPORT,
     TEMPO_NODEPORT,
 } from '../../config/defaults';
-import { S3BucketConstruct } from '../../common/storage';
 import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
 
