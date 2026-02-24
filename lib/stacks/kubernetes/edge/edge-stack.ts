@@ -212,6 +212,13 @@ export class KubernetesEdgeStack extends cdk.Stack {
         const allDomains = [props.domainName, ...(props.subjectAlternativeNames ?? [])];
         const loggingEnabled = props.enableLogging ?? cfConfig.loggingEnabled;
 
+        // Environment-aware removal policy for log groups.
+        // Development: DESTROY — prevent orphaned log groups on stack deletion.
+        // Staging/Production: RETAIN — preserve logs for audit trail.
+        const logRemovalPolicy = envName === Environment.DEVELOPMENT
+            ? cdk.RemovalPolicy.DESTROY
+            : cdk.RemovalPolicy.RETAIN;
+
         // =====================================================================
         // ACM CERTIFICATE (Cross-account DNS validation)
         // =====================================================================
@@ -472,7 +479,7 @@ export class KubernetesEdgeStack extends cdk.Stack {
         const dnsAliasLogGroup = new logs.LogGroup(this, 'DnsAliasProviderLogGroup', {
             logGroupName: `/aws/lambda/${namePrefix}-dns-alias-provider-${envName}`,
             retention: logs.RetentionDays.TWO_WEEKS,
-            removalPolicy: cdk.RemovalPolicy.DESTROY,
+            removalPolicy: logRemovalPolicy,
         });
 
         const dnsAliasProvider = new cr.Provider(this, 'DnsAliasProvider', {
@@ -490,7 +497,7 @@ export class KubernetesEdgeStack extends cdk.Stack {
                 CloudFrontDomainName: this.distribution.distribution.distributionDomainName,
                 SkipCertificateCreation: 'true',
             },
-            removalPolicy: cdk.RemovalPolicy.DESTROY,
+            removalPolicy: logRemovalPolicy,
         });
 
         dnsAliasRecord.node.addDependency(this.distribution);
