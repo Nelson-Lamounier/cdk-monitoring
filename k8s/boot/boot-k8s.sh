@@ -19,6 +19,7 @@
 #   SSM_PREFIX       — SSM parameter prefix (e.g. /k8s/development)
 #   S3_BUCKET        — S3 bucket name for k8s manifests
 #   CALICO_VERSION   — Calico CNI version (default: v3.29.3)
+#   LOG_GROUP_NAME   — CloudWatch log group for boot log streaming
 #   AWS_REGION       — AWS region
 # =============================================================================
 
@@ -35,6 +36,31 @@ SERVICE_CIDR="${SERVICE_CIDR:-10.96.0.0/12}"
 SSM_PREFIX="${SSM_PREFIX:-/k8s/development}"
 CALICO_VERSION="${CALICO_VERSION:-v3.29.3}"
 AWS_REGION="${AWS_REGION:-eu-west-1}"
+LOG_GROUP_NAME="${LOG_GROUP_NAME:-/ec2/monitoring-k8s/instances}"
+
+# =============================================================================
+# 0. Start CloudWatch Agent (FIRST — streams logs from this point onward)
+#
+# The Golden AMI bakes the agent + config with placeholder __LOG_GROUP_NAME__.
+# We patch the config with the real log group name and start the agent BEFORE
+# any other work, so if the instance crashes mid-boot, we still have logs up
+# until the exact millisecond it died.
+# =============================================================================
+
+CW_CONFIG="/opt/aws/amazon-cloudwatch-agent/etc/boot-logs.json"
+
+if [ -f "$CW_CONFIG" ]; then
+    echo "=== Starting CloudWatch Agent ==="
+    # Patch placeholder with actual log group name
+    sed -i "s|__LOG_GROUP_NAME__|${LOG_GROUP_NAME}|g" "$CW_CONFIG"
+
+    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+        -a fetch-config -m ec2 -s -c "file:${CW_CONFIG}" || \
+        echo "WARNING: CloudWatch Agent failed to start — boot continues without log streaming"
+    echo "CloudWatch Agent started — streaming boot logs to ${LOG_GROUP_NAME}"
+else
+    echo "WARNING: CloudWatch Agent config not found at ${CW_CONFIG} — boot logs NOT streamed"
+fi
 
 # =============================================================================
 # 1. Attach and Mount EBS Volume

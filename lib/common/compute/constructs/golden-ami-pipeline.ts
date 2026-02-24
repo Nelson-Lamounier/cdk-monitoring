@@ -340,6 +340,57 @@ phases:
             - rm -rf /tmp/awscli.zip /tmp/aws
             - aws --version
 
+      - name: InstallCloudWatchAgent
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              source /etc/environment
+              # Install CloudWatch Agent (streams boot logs to CloudWatch in real-time)
+              dnf install -y amazon-cloudwatch-agent
+
+              # Bake agent config — the boot script replaces __LOG_GROUP_NAME__ and
+              # __AWS_REGION__ at runtime before starting the agent
+              mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
+              cat > /opt/aws/amazon-cloudwatch-agent/etc/boot-logs.json <<'CWAGENT_EOF'
+              {
+                "agent": {
+                  "run_as_user": "root",
+                  "logfile": "/opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log"
+                },
+                "logs": {
+                  "logs_collected": {
+                    "files": {
+                      "collect_list": [
+                        {
+                          "file_path": "/var/log/user-data.log",
+                          "log_group_name": "__LOG_GROUP_NAME__",
+                          "log_stream_name": "{instance_id}/user-data",
+                          "timestamp_format": "%Y-%m-%d %H:%M:%S",
+                          "retention_in_days": 30
+                        },
+                        {
+                          "file_path": "/var/log/cloud-init-output.log",
+                          "log_group_name": "__LOG_GROUP_NAME__",
+                          "log_stream_name": "{instance_id}/cloud-init-output",
+                          "timestamp_format": "%Y-%m-%d %H:%M:%S",
+                          "retention_in_days": 30
+                        },
+                        {
+                          "file_path": "/var/log/messages",
+                          "log_group_name": "__LOG_GROUP_NAME__",
+                          "log_stream_name": "{instance_id}/syslog",
+                          "timestamp_format": "%b %d %H:%M:%S",
+                          "retention_in_days": 30
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+              CWAGENT_EOF
+              echo "CloudWatch Agent installed and config baked"
+
       - name: KernelModulesAndSysctl
         action: ExecuteBash
         inputs:
@@ -463,6 +514,8 @@ phases:
           commands:
             - docker --version
             - aws --version
+            - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a status || echo "CloudWatch Agent installed (not running — starts at boot)"
+            - test -f /opt/aws/amazon-cloudwatch-agent/etc/boot-logs.json
             - containerd --version
             - runc --version
             - crictl --version

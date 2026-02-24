@@ -58,6 +58,7 @@ import {
     SsmStateManagerConstruct,
     UserDataBuilder,
 } from '../../common/index';
+import { S3BucketConstruct } from '../../common/storage';
 import {
     K8S_API_PORT,
     TRAEFIK_HTTP_PORT,
@@ -299,19 +300,21 @@ export class KubernetesComputeStack extends cdk.Stack {
         // =====================================================================
         // S3 Access Logs Bucket (AwsSolutions-S1)
         // =====================================================================
-        const accessLogsBucket = new s3.Bucket(this, 'K8sScriptsAccessLogsBucket', {
-            bucketName: `${namePrefix}-k8s-scripts-logs-${this.account}-${this.region}`,
-            encryption: s3.BucketEncryption.S3_MANAGED,
-            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-            removalPolicy: configs.removalPolicy,
-            autoDeleteObjects: !configs.isProduction,
-            enforceSSL: true,
-            lifecycleRules: [{
-                expiration: cdk.Duration.days(90),
-            }],
+        const accessLogsBucketConstruct = new S3BucketConstruct(this, 'K8sScriptsAccessLogsBucket', {
+            environment: targetEnvironment,
+            config: {
+                bucketName: `${namePrefix}-k8s-scripts-logs-${this.account}-${this.region}`,
+                purpose: 'k8s-scripts-access-logs',
+                encryption: s3.BucketEncryption.S3_MANAGED,
+                removalPolicy: configs.removalPolicy,
+                autoDeleteObjects: !configs.isProduction,
+                lifecycleRules: [{
+                    expiration: cdk.Duration.days(90),
+                }],
+            },
         });
 
-        NagSuppressions.addResourceSuppressions(accessLogsBucket, [{
+        NagSuppressions.addResourceSuppressions(accessLogsBucketConstruct.bucket, [{
             id: 'AwsSolutions-S1',
             reason: 'Access logs bucket cannot log to itself — this is the terminal logging destination',
         }]);
@@ -322,17 +325,19 @@ export class KubernetesComputeStack extends cdk.Stack {
         // Syncs the ENTIRE k8s/ directory (monitoring + application manifests).
         // This replaces both the monitoring-only and nextjs-only buckets.
         // =====================================================================
-        const scriptsBucket = new s3.Bucket(this, 'K8sScriptsBucket', {
-            bucketName: `${namePrefix}-k8s-scripts-${this.account}`,
-            removalPolicy: configs.removalPolicy,
-            autoDeleteObjects: !configs.isProduction,
-            encryption: s3.BucketEncryption.S3_MANAGED,
-            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-            enforceSSL: true,
-            versioned: configs.isProduction,
-            serverAccessLogsBucket: accessLogsBucket,
-            serverAccessLogsPrefix: 'k8s-scripts-bucket/',
+        const scriptsBucketConstruct = new S3BucketConstruct(this, 'K8sScriptsBucket', {
+            environment: targetEnvironment,
+            config: {
+                bucketName: `${namePrefix}-k8s-scripts-${this.account}`,
+                purpose: 'k8s-scripts-and-manifests',
+                versioned: configs.isProduction,
+                removalPolicy: configs.removalPolicy,
+                autoDeleteObjects: !configs.isProduction,
+                accessLogsBucket: accessLogsBucketConstruct.bucket,
+                accessLogsPrefix: 'k8s-scripts-bucket/',
+            },
         });
+        const scriptsBucket = scriptsBucketConstruct.bucket;
 
         // Sync all k8s manifests (monitoring + application + system)
         new s3deploy.BucketDeployment(this, 'K8sManifestsDeployment', {
@@ -529,6 +534,7 @@ export SERVICE_CIDR="${configs.cluster.serviceSubnet}"
 export SSM_PREFIX="${props.ssmPrefix}"
 export S3_BUCKET="${scriptsBucket.bucketName}"
 export CALICO_VERSION="${configs.image.bakedVersions.calico}"
+export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
 
 # Download and execute the boot script from S3
 BOOT_SCRIPT="/tmp/boot-k8s.sh"
