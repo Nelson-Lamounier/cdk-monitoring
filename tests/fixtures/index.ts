@@ -55,4 +55,10 @@ export {
     StackAssertions,
     findIngressRulesByPort,
     Match,
+    // S3 construct enforcement
+    enforceNoInlineS3Buckets,
+    collectTsFiles,
+    findInlineBucketCreations,
+    type EnforceS3ConstructOptions,
+    type InlineBucketViolation,
 } from './assertions';

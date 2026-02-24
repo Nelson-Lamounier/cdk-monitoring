@@ -6,6 +6,12 @@
  * and standard CDK resource validation.
  */
 
+/* eslint-disable jest/no-export */
+// This file exports test helpers, not tests — jest/no-export does not apply.
+
+import * as fs from 'fs';
+import * as path from 'path';
+
 import { Template, Match } from 'aws-cdk-lib/assertions';
 
 import { DEFAULT_TAGS } from './constants';
@@ -161,3 +167,137 @@ export function findIngressRulesByPort(
  * Re-export Match for convenience in test files
  */
 export { Match } from 'aws-cdk-lib/assertions';
+
+// =============================================================================
+// S3 Construct Enforcement Helpers
+// =============================================================================
+
+/** Violation detail from a source file scan */
+export interface InlineBucketViolation {
+    /** 1-indexed line number */
+    line: number;
+    /** Trimmed line content */
+    content: string;
+}
+
+/**
+ * Recursively collect all `.ts` source files under a directory.
+ * Excludes `.d.ts` declaration files.
+ */
+export function collectTsFiles(dir: string): string[] {
+    const results: string[] = [];
+
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = path.join(dir, entry.name);
+
+        if (entry.isDirectory()) {
+            results.push(...collectTsFiles(fullPath));
+        } else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
+            results.push(fullPath);
+        }
+    }
+
+    return results;
+}
+
+/**
+ * Scan a single file for inline `new s3.Bucket(` usage.
+ * Skips comment lines (single-line `//`, block `*`, `/*`).
+ *
+ * @returns Array of violations with line numbers and content.
+ */
+export function findInlineBucketCreations(filePath: string): InlineBucketViolation[] {
+    const source = fs.readFileSync(filePath, 'utf-8');
+    const lines = source.split('\n');
+    const violations: InlineBucketViolation[] = [];
+
+    const pattern = /new\s+s3\.Bucket\s*\(/;
+
+    for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+
+        // Skip comments
+        if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) {
+            continue;
+        }
+
+        if (pattern.test(lines[i])) {
+            violations.push({ line: i + 1, content: trimmed });
+        }
+    }
+
+    return violations;
+}
+
+/**
+ * Options for `enforceNoInlineS3Buckets`.
+ */
+export interface EnforceS3ConstructOptions {
+    /**
+     * Absolute path to the source directory to scan.
+     */
+    sourceDir: string;
+
+    /**
+     * Relative paths (from `sourceDir`) of files that are allowed to use
+     * `new s3.Bucket(`. Document the reason for each exception.
+     *
+     * @default empty (no exceptions)
+     */
+    allowedExceptions?: Set<string>;
+}
+
+/**
+ * Registers enforcement tests that ensure no `.ts` file under `sourceDir`
+ * contains raw `new s3.Bucket(` calls — forcing use of `S3BucketConstruct`.
+ *
+ * Call this inside a `describe()` block. It dynamically generates `it()` cases
+ * for each source file found.
+ *
+ * @example
+ * ```typescript
+ * describe('S3 Construct Enforcement', () => {
+ *     enforceNoInlineS3Buckets({
+ *         sourceDir: path.resolve(__dirname, '../../../../lib/stacks/kubernetes'),
+ *     });
+ * });
+ * ```
+ */
+export function enforceNoInlineS3Buckets(options: EnforceS3ConstructOptions): void {
+    /* eslint-disable jest/require-top-level-describe */
+    // This function generates it() calls intended to run inside the caller's describe().
+
+    const { sourceDir, allowedExceptions = new Set() } = options;
+    const tsFiles = collectTsFiles(sourceDir);
+
+    // Sanity: make sure we actually found source files to scan
+    it('should find TypeScript source files to scan', () => {
+        expect(tsFiles.length).toBeGreaterThan(0);
+    });
+
+    // Filter out allowed exceptions
+    const filesToTest = tsFiles.filter((file) => {
+        const relativePath = path.relative(sourceDir, file);
+        return !allowedExceptions.has(relativePath);
+    });
+
+    // Main enforcement: one test per source file
+    it.each(filesToTest.map((f) => [path.relative(sourceDir, f), f]))(
+        'should not use inline new s3.Bucket() in %s — use S3BucketConstruct instead',
+        (_relativePath, absolutePath) => {
+            const violations = findInlineBucketCreations(absolutePath as string);
+
+            expect(violations).toStrictEqual([]);
+        },
+    );
+
+    // Guard: ensure allowedExceptions only contains files that actually exist
+    it('should not contain stale exception paths', () => {
+        for (const exception of allowedExceptions) {
+            const fullPath = path.join(sourceDir, exception);
+            expect(fs.existsSync(fullPath)).toBe(true);
+        }
+    });
+
+    /* eslint-enable jest/require-top-level-describe */
+}
