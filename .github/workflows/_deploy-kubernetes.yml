@@ -250,6 +250,7 @@ jobs:
 
       - name: Install Dependencies
         run: yarn install --frozen-lockfile
+        working-directory: infra
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
@@ -526,6 +527,7 @@ jobs:
 
       - name: Install Dependencies
         run: yarn install --frozen-lockfile
+        working-directory: infra
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
@@ -579,6 +581,7 @@ jobs:
 
       - name: Install Dependencies
         run: yarn install --frozen-lockfile
+        working-directory: infra
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
@@ -976,6 +979,7 @@ jobs:
       - name: Install Dependencies
         if: steps.prereqs.outputs.skip != 'true'
         run: yarn install --frozen-lockfile
+        working-directory: infra
 
       - name: Generate Summary
         if: steps.prereqs.outputs.skip != 'true'
