@@ -253,7 +253,7 @@ test *ARGS:
 # Called by: .github/workflows/ci.yml → test-stacks job
 [group('test')]
 test-stacks:
-    cd infra && yarn test tests/unit/stacks
+    cd infra && yarn test tests/unit/stacks --coverage
 
 # Run tests in watch mode
 [group('test')]
