@@ -5,12 +5,14 @@
  * Creates shared Kubernetes infrastructure hosting both monitoring and
  * application workloads on a kubeadm Kubernetes cluster.
  *
- * Stack Architecture (4 stacks):
+ * Stack Architecture (6 stacks):
  *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
- *   2. Kubernetes-Compute: EC2 instance, ASG, Security Group, IAM, EBS,
- *      Elastic IP, S3 manifests, SSM doc, Golden AMI, State Manager
- *   3. Kubernetes-API: API Gateway + Lambda (email subscriptions)
- *   4. Kubernetes-Edge: ACM + WAF + CloudFront (us-east-1)
+ *   2. Kubernetes-Base: VPC, Security Group, KMS, EBS, Elastic IP
+ *   3. Kubernetes-Compute: EC2 instance, ASG, IAM, S3 manifests bucket,
+ *      SSM docs, Golden AMI, State Manager
+ *   4. Kubernetes-AppIam: Application-tier IAM grants (DynamoDB, S3, Secrets)
+ *   5. Kubernetes-API: API Gateway + Lambda (email subscriptions)
+ *   6. Kubernetes-Edge: ACM + WAF + CloudFront (us-east-1)
  *
  * Workload isolation is enforced at the Kubernetes layer via Namespaces,
  * NetworkPolicies, ResourceQuotas, and PriorityClasses.
@@ -38,6 +40,8 @@ import {
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import {
+    KubernetesAppIamStack,
+    KubernetesBaseStack,
     KubernetesComputeStack,
     KubernetesDataStack,
     KubernetesEdgeStack,
@@ -187,20 +191,67 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stackMap.data = dataStack;
 
         // =================================================================
-        // Stack 2: COMPUTE STACK (EC2 + kubeadm + Security + Storage)
+        // Stack 2: BASE STACK (VPC, SG, KMS, EBS, EIP — "The Base")
+        //
+        // Long-lived infrastructure that rarely changes. Decoupled from
+        // the runtime compute stack to avoid unnecessary deployments.
+        // =================================================================
+        const baseStack = new KubernetesBaseStack(
+            scope,
+            stackId(this.namespace, 'Base', environment),
+            {
+                env,
+                description: `Kubernetes base infrastructure (VPC, SG, EBS, EIP) — ${environment}`,
+                targetEnvironment: environment,
+                configs,
+                namePrefix,
+                ssmPrefix,
+            },
+        );
+        stacks.push(baseStack);
+        stackMap.base = baseStack;
+
+        // =================================================================
+        // Stack 3: COMPUTE STACK (ASG + Launch Template + Runtime)
         //
         // kubeadm cluster hosting both monitoring and app workloads.
-        // Application-tier IAM grants are passed as optional props.
+        // Consumes base infrastructure from KubernetesBaseStack.
+        // Does NOT contain application-specific IAM — see AppIamStack.
         // =================================================================
         const computeStack = new KubernetesComputeStack(
             scope,
             stackId(this.namespace, 'Compute', environment),
             {
+                baseStack,
                 env,
                 description: `Shared kubeadm Kubernetes cluster (monitoring + application) — ${environment}`,
                 targetEnvironment: environment,
                 configs,
                 namePrefix,
+                ssmPrefix,
+            },
+        );
+        computeStack.addDependency(baseStack);
+        stacks.push(computeStack);
+        stackMap.compute = computeStack;
+
+        // =================================================================
+        // Stack 4: APP IAM STACK (Application-Tier Grants)
+        //
+        // Attaches application-specific IAM policies (DynamoDB, S3,
+        // Secrets Manager, SSM) to the compute instance role.
+        // Decoupled from compute — adding a DynamoDB table only redeploys
+        // this stack, not the ASG or Launch Template.
+        // =================================================================
+        const appIamStack = new KubernetesAppIamStack(
+            scope,
+            stackId(this.namespace, 'AppIam', environment),
+            {
+                computeStack,
+                env,
+                description: `Application-tier IAM grants for Kubernetes cluster — ${environment}`,
+                targetEnvironment: environment,
+                configs,
                 ssmPrefix,
 
                 // Application-tier IAM grants (Next.js)
@@ -213,12 +264,12 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
             },
         );
-        computeStack.addDependency(dataStack);
-        stacks.push(computeStack);
-        stackMap.compute = computeStack;
+        appIamStack.addDependency(computeStack);
+        stacks.push(appIamStack);
+        stackMap.appIam = appIamStack;
 
         // =================================================================
-        // Stack 3: API STACK (API Gateway + Lambda)
+        // Stack 5: API STACK (API Gateway + Lambda)
         //
         // Serverless email subscription API (subscribe + verify).
         // Independent lifecycle — depends only on Data stack (SSM discovery).
@@ -249,7 +300,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stackMap.api = apiStack;
 
         // =================================================================
-        // Stack 4: EDGE STACK (ACM + WAF + CloudFront)
+        // Stack 6: EDGE STACK (ACM + WAF + CloudFront)
         //
         // MUST be deployed in us-east-1 (CloudFront requirement).
         // Routes traffic: CloudFront → EIP → Traefik → Next.js pod
@@ -289,7 +340,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
 
         cdk.Annotations.of(scope).addInfo(
             `K8s factory created ${stacks.length} stacks for ${environment}: ` +
-            `Data → Compute → Edge (domain: ${edgeConfig.domainName ?? 'not configured'})`,
+            `Data → Base → Compute → Edge (domain: ${edgeConfig.domainName ?? 'not configured'})`,
         );
 
         return {
