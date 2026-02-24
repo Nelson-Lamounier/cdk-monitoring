@@ -18,10 +18,11 @@
  */
 
 import { writeFileSync, appendFileSync } from 'fs';
+import { join } from 'path';
 
 import * as dotenv from 'dotenv';
 
-import { buildCdkArgs, runCdk } from './exec.js';
+import { buildCdkArgs, runCdk, getCdkProjectRoot } from './exec.js';
 import logger from './logger.js';
 import {
   getProject,
@@ -109,7 +110,8 @@ async function main(): Promise<void> {
     architecture: `consolidated-${project!.stacks.length}-stack`,
   };
 
-  writeFileSync('cdk.out/synthesis-metadata.json', JSON.stringify(metadata, null, 2));
+  const cdkOutPath = join(getCdkProjectRoot(), 'cdk.out', 'synthesis-metadata.json');
+  writeFileSync(cdkOutPath, JSON.stringify(metadata, null, 2));
   logger.success('Wrote synthesis-metadata.json');
   logger.debug(`Metadata: ${JSON.stringify(metadata)}`);
 
