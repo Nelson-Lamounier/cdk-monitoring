@@ -7,8 +7,9 @@
 #
 # 6-Stack Deployment Order:
 #   1. Data      (DynamoDB + S3 + SSM Parameters)
-#   2. Base      (VPC networking + Security Group + KMS + EBS + EIP)
-#   3. Compute   (EC2 kubeadm + ASG + SSM Docs + S3 Scripts)
+#   2. Base      (VPC networking + Security Group + KMS + EBS + EIP + S3 Scripts)
+#   2b. Sync     (Seed boot scripts to S3 — Day-1 safety)
+#   3. Compute   (EC2 kubeadm + ASG + SSM Docs)
 #   4. AppIam    (Application-tier IAM grants)
 #   5. Edge      (CloudFront + ACM + WAF in us-east-1)
 #   (API deployed by Next.js thin wrapper pipeline)
@@ -393,12 +394,54 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Deploy Compute Stack (3/6) — EC2 kubeadm + ASG + SSM Docs + S3 Scripts
+  # Seed Bootstrap Scripts to S3 (2b/6) — Day-1 Safety
+  #
+  # Syncs k8s-bootstrap/ scripts into the S3 bucket created by BaseStack.
+  # Runs BEFORE the Compute stack so boot-k8s.sh is waiting in S3
+  # by the time the EC2 instance launches — zero race condition.
+  # ===========================================================================
+  sync-bootstrap-content:
+    name: Seed Bootstrap Scripts
+    needs: [setup, deploy-base]
+    if: always() && needs.deploy-base.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Sync Bootstrap Scripts to S3
+        run: |
+          SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}"
+          REGION="${{ vars.AWS_REGION || 'eu-west-1' }}"
+
+          BUCKET=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/scripts-bucket" \
+            --query 'Parameter.Value' --output text \
+            --region "${REGION}")
+
+          echo "Seeding bootstrap scripts to s3://${BUCKET}/k8s-bootstrap/"
+          aws s3 sync ./k8s-bootstrap "s3://${BUCKET}/k8s-bootstrap/" \
+            --delete --region "${REGION}"
+
+          echo "✓ Bootstrap scripts seeded — EC2 instances can now boot safely"
+
+  # ===========================================================================
+  # Deploy Compute Stack (3/6) — EC2 kubeadm + ASG + SSM Docs
   # ===========================================================================
   deploy-compute:
     name: Deploy Compute
-    needs: [setup, deploy-base]
-    if: always() && needs.deploy-base.result == 'success'
+    needs: [setup, deploy-base, sync-bootstrap-content]
+    if: always() && needs.sync-bootstrap-content.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.compute-stack }}
