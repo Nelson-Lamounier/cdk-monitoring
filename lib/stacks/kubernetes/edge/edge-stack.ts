@@ -24,6 +24,19 @@
  * - Edge Stack: us-east-1 (CloudFront, WAF, ACM edge cert)
  * - Compute Stack: eu-west-1 (EC2 kubeadm + Elastic IP)
  *
+ * ## Deployment Ordering (Day-1 Safety)
+ * EdgeStack reads EIP and bucket-name SSM parameters from eu-west-1.
+ * The CI/CD pipeline guarantees these exist before EdgeStack deploys via
+ * a transitive dependency chain:
+ *
+ *   deploy-data → deploy-base (writes EIP + bucket SSM)
+ *               → sync-bootstrap → deploy-compute
+ *                                → deploy-appiam
+ *                                → deploy-edge  ← reads SSM here
+ *
+ * If this ordering is ever broken (e.g. parallelising edge with base),
+ * the AwsCustomResource SSM readers will fail with ParameterNotFound.
+ *
  * ## Differences from NextJs Edge Stack
  * - EIP origin instead of ALB origin (Traefik Ingress handles routing)
  * - No ALB DNS SSM path — reads EIP from SSM instead
@@ -338,12 +351,28 @@ export class KubernetesEdgeStack extends cdk.Stack {
         // Convert the EIP to its AWS EC2 public DNS hostname:
         //   1.2.3.4 → ec2-1-2-3-4.eu-west-1.compute.amazonaws.com
         // This hostname is auto-assigned by AWS and resolves to the same IP.
+        //
+        // PREREQUISITE: The VPC in eu-west-1 MUST have "DNS Hostnames" enabled
+        // (enableDnsHostnames = true). Without it, AWS does not assign the
+        // ec2-x-x-x-x.region.compute.amazonaws.com hostname and CloudFront
+        // will fail to resolve the origin. This is a VPC-level setting managed
+        // outside CDK (the VPC is imported via Vpc.fromLookup in BaseStack).
         const eipDnsName = cdk.Fn.join('', [
             'ec2-',
             cdk.Fn.join('-', cdk.Fn.split('.', eipAddress)),
             `.${ssmRegion}.compute.amazonaws.com`,
         ]);
 
+        // SECURITY — Origin Bypass Mitigation
+        // The X-CloudFront-Origin custom header prevents direct access to the
+        // EIP on port 80 (bypassing WAF + CloudFront). Traefik IngressRoute
+        // should reject requests missing this header.
+        //
+        // For defense-in-depth, consider restricting the EC2 security group:
+        //   - Allow port 80 ONLY from CloudFront managed prefix list
+        //     (com.amazonaws.global.cloudfront.origin-facing)
+        //   - This ensures even without the header check, only CloudFront
+        //     edge nodes can reach the origin.
         const eipOrigin = new origins.HttpOrigin(eipDnsName, {
             protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
             connectionAttempts: cfConfig.albOriginTimeouts.connectionAttempts,
@@ -367,6 +396,14 @@ export class KubernetesEdgeStack extends cdk.Stack {
             enableAcceptEncodingBrotli: true,
         });
 
+        // ISR Cache-Control Caveat:
+        // This policy defines a default TTL, but CloudFront always honours the
+        // origin's Cache-Control header when present. If Next.js sends
+        //   Cache-Control: private, no-cache
+        // then CloudFront will NOT cache the response at the edge regardless
+        // of the TTL configured here. Ensure Next.js ISR routes send
+        //   Cache-Control: s-maxage=<revalidate>, stale-while-revalidate
+        // and that Traefik does NOT strip or override these headers.
         const dynamicContentCachePolicy = new cloudfront.CachePolicy(this, 'DynamicContentCachePolicy', {
             cachePolicyName: `${envName}-${namePrefix}-dynamic-content`,
             comment: 'Cache policy for ISR pages with revalidation',

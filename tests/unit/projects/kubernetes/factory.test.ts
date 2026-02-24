@@ -65,21 +65,23 @@ describe('KubernetesProjectFactory', () => {
             app = new cdk.App();
         });
 
-        it('should create 4 stacks: Data, Compute, API, and Edge', () => {
+        it('should create 6 stacks: Data, Base, Compute, AppIam, API, and Edge', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
             const { stacks, stackMap } = factory.createAllStacks(app, context);
 
-            // Shared kubeadm project has 4 stacks: Data, Compute, API, Edge
-            expect(stacks).toHaveLength(4);
+            // Shared kubeadm project has 6 stacks: Data, Base, Compute, AppIam, API, Edge
+            expect(stacks).toHaveLength(6);
             expect(stackMap).toHaveProperty('data');
+            expect(stackMap).toHaveProperty('base');
             expect(stackMap).toHaveProperty('compute');
+            expect(stackMap).toHaveProperty('appIam');
             expect(stackMap).toHaveProperty('api');
             expect(stackMap).toHaveProperty('edge');
         });
 
-        it('should order stacks as Data → Compute → API → Edge', () => {
+        it('should order stacks as Data → Base → Compute → AppIam → Api → Edge', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
@@ -87,9 +89,11 @@ describe('KubernetesProjectFactory', () => {
 
             const stackNames = stacks.map((s: cdk.Stack) => s.stackName);
             expect(stackNames[0]).toContain('Data');
-            expect(stackNames[1]).toContain('Compute');
-            expect(stackNames[2]).toContain('Api');
-            expect(stackNames[3]).toContain('Edge');
+            expect(stackNames[1]).toContain('Base');
+            expect(stackNames[2]).toContain('Compute');
+            expect(stackNames[3]).toContain('AppIam');
+            expect(stackNames[4]).toContain('Api');
+            expect(stackNames[5]).toContain('Edge');
         });
 
         it('should name stacks correctly with namespace and environment', () => {

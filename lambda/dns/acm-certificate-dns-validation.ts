@@ -384,8 +384,20 @@ async function handleDelete(
         credentials,
       );
       console.log("CloudFront alias record deleted");
-    } catch (_error) {
-      console.log("CloudFront alias record may already be deleted");
+    } catch (error: unknown) {
+      // Classify the failure to aid debugging during stack deletions.
+      // If the cross-account role was deleted before this stack, STS will
+      // return AccessDenied or the identity won't be found.
+      const errName = (error as { name?: string })?.name ?? 'Unknown';
+      const errMsg = (error as { message?: string })?.message ?? String(error);
+      if (errName === 'AccessDeniedException' || errName === 'AccessDenied') {
+        console.warn(`Cross-account role may have been deleted: ${errMsg}`);
+      } else if (errName === 'NoSuchHostedZone' || errName === 'HostedZoneNotFound') {
+        console.warn(`Hosted zone no longer exists: ${errMsg}`);
+      } else {
+        console.warn(`CloudFront alias deletion failed (${errName}): ${errMsg}`);
+      }
+      console.log("Continuing — alias record may already be deleted");
     }
 
     return {
@@ -437,8 +449,18 @@ async function handleDelete(
           );
           console.log("CloudFront alias record deleted");
         }
-      } catch (error) {
-        console.error("Failed to delete DNS validation records:", error);
+      } catch (error: unknown) {
+        // Classify cross-account failure to prevent confusion during
+        // stack teardowns where the cross-account role is deleted first.
+        const errName = (error as { name?: string })?.name ?? 'Unknown';
+        const errMsg = (error as { message?: string })?.message ?? String(error);
+        if (errName === 'AccessDeniedException' || errName === 'AccessDenied') {
+          console.warn(`Cross-account role may have been deleted: ${errMsg}`);
+        } else if (errName === 'NoSuchHostedZone' || errName === 'HostedZoneNotFound') {
+          console.warn(`Hosted zone no longer exists: ${errMsg}`);
+        } else {
+          console.error(`DNS record deletion failed (${errName}): ${errMsg}`);
+        }
         console.log("Continuing with certificate deletion");
       }
     }

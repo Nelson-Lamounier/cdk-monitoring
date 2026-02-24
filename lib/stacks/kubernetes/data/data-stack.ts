@@ -33,7 +33,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as cr from 'aws-cdk-lib/custom-resources';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 import { Construct } from 'constructs';
 
@@ -97,6 +97,21 @@ export interface KubernetesDataStackProps extends cdk.StackProps {
  * - Versioning enabled for content recovery
  * - Block public access (serve via CloudFront only)
  * - Lifecycle policies for cost optimisation
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * ⚠️ DAY-0 DATA SAFETY — MIGRATION RISK
+ *
+ * Even with removalPolicy: RETAIN, renaming a construct ID in CDK
+ * (e.g., 'PortfolioTable' → 'UserTable') will ORPHAN the old
+ * resource and CREATE a new, empty one.
+ *
+ * Mitigations:
+ * 1. Never change DynamoDB/S3 construct IDs without a migration plan
+ * 2. Pre-deploy verification: confirm table exists before cdk deploy
+ * 3. Use CloudFormation ChangeSets to review resource replacements
+ * 4. K8s integration: pods discover values via SSM → ExternalSecret
+ *    → process.env.DYNAMODB_TABLE_NAME
+ * ═══════════════════════════════════════════════════════════════════
  */
 export class KubernetesDataStack extends cdk.Stack {
     // DynamoDB
@@ -245,6 +260,11 @@ export class KubernetesDataStack extends cdk.Stack {
         this.assetsBucket = assetsBucketConstruct.bucket;
 
         // Grant CloudFront read access to S3 bucket (OAC style - service principal)
+        //
+        // ⚠️ DEPLOYMENT NOTE: This OAC policy uses the CloudFront service principal
+        // with SourceAccount condition. If the CloudFront distribution ever moves
+        // to a stack that cannot reference this Data Stack (circular export lock),
+        // move this bucket policy to the CloudFront/Edge stack instead.
         this.assetsBucket.addToResourcePolicy(
             new iam.PolicyStatement({
                 sid: 'AllowCloudFrontOACAccess',
@@ -320,44 +340,35 @@ export class KubernetesDataStack extends cdk.Stack {
 
         // =================================================================
         // SSM PARAMETERS FOR CROSS-STACK REFERENCES
+        //
+        // Native StringParameter — no backing Lambda required.
+        // Consumer stacks discover these via nextjsSsmPaths().
         // =================================================================
 
-        const ssmParameterArn = `arn:aws:ssm:${this.region}:${this.account}:parameter${paths.prefix}/*`;
-        const ssmPolicy = cr.AwsCustomResourcePolicy.fromStatements([
-            new iam.PolicyStatement({
-                actions: ['ssm:PutParameter', 'ssm:DeleteParameter'],
-                resources: [ssmParameterArn],
-            }),
-        ]);
+        new ssm.StringParameter(this, 'SsmPortfolioTableName', {
+            parameterName: paths.dynamodbTableName,
+            stringValue: this.portfolioTable.tableName,
+            description: 'DynamoDB personal portfolio table name for K8s application',
+        });
 
-        this.createSsmParameter(
-            'SsmPortfolioTableName', paths.dynamodbTableName,
-            this.portfolioTable.tableName,
-            'DynamoDB personal portfolio table name for K8s application',
-            ssmPolicy,
-        );
+        new ssm.StringParameter(this, 'SsmAssetsBucketName', {
+            parameterName: paths.assetsBucketName,
+            stringValue: this.assetsBucket.bucketName,
+            description: 'S3 assets bucket name for K8s application',
+        });
 
-        this.createSsmParameter(
-            'SsmAssetsBucketName', paths.assetsBucketName,
-            this.assetsBucket.bucketName,
-            'S3 assets bucket name for K8s application',
-            ssmPolicy,
-        );
-
-        this.createSsmParameter(
-            'SsmAwsRegion', paths.awsRegion,
-            cdk.Stack.of(this).region,
-            'AWS region for K8s application',
-            ssmPolicy,
-        );
+        new ssm.StringParameter(this, 'SsmAwsRegion', {
+            parameterName: paths.awsRegion,
+            stringValue: cdk.Stack.of(this).region,
+            description: 'AWS region for K8s application',
+        });
 
         if (dynamoEncryptionKey) {
-            this.createSsmParameter(
-                'SsmDynamoDbKmsKeyArn', paths.dynamodbKmsKeyArn,
-                dynamoEncryptionKey.keyArn,
-                'KMS key ARN for DynamoDB encryption (cross-stack discovery)',
-                ssmPolicy,
-            );
+            new ssm.StringParameter(this, 'SsmDynamoDbKmsKeyArn', {
+                parameterName: paths.dynamodbKmsKeyArn,
+                stringValue: dynamoEncryptionKey.keyArn,
+                description: 'KMS key ARN for DynamoDB encryption (cross-stack discovery)',
+            });
         }
 
         // =================================================================
@@ -387,17 +398,7 @@ export class KubernetesDataStack extends cdk.Stack {
             },
         ]);
 
-        NagSuppressions.addResourceSuppressionsByPath(
-            this,
-            `/${this.stackName}/AWS679f53fac002430cb0da5b7982bd2287/Resource`,
-            [
-                {
-                    id: 'AwsSolutions-L1',
-                    reason: 'CDK-managed Lambda runtime for AwsCustomResource SSM parameters, not customizable',
-                },
-            ],
-            true
-        );
+        // NOTE: AwsCustomResource Lambda suppression removed — SSM now uses native StringParameter
 
         // Stack tags
         cdk.Tags.of(this).add('Stack', 'KubernetesData');
@@ -458,38 +459,33 @@ export class KubernetesDataStack extends cdk.Stack {
     }
 
     // =========================================================================
-    // PRIVATE HELPERS
+    // CROSS-STACK GRANT HELPERS
     // =========================================================================
 
     /**
-     * Creates an SSM parameter via AwsCustomResource with idempotent put/delete.
+     * Grant DynamoDB read access (GetItem, Query, Scan, BatchGetItem)
+     * to the given principal, including all GSI indexes.
+     *
+     * Prefer this over manually constructing IAM statements with raw ARNs.
+     *
+     * @example
+     * ```typescript
+     * dataStack.grantTableRead(computeRole);
+     * ```
      */
-    private createSsmParameter(
-        id: string,
-        parameterName: string,
-        value: string,
-        description: string,
-        policy: cr.AwsCustomResourcePolicy,
-    ): void {
-        new cr.AwsCustomResource(this, id, {
-            onUpdate: {
-                service: 'SSM',
-                action: 'putParameter',
-                parameters: {
-                    Name: parameterName,
-                    Value: value,
-                    Type: 'String',
-                    Description: description,
-                    Overwrite: true,
-                },
-                physicalResourceId: cr.PhysicalResourceId.of(parameterName),
-            },
-            onDelete: {
-                service: 'SSM',
-                action: 'deleteParameter',
-                parameters: { Name: parameterName },
-            },
-            policy,
-        });
+    public grantTableRead(grantee: iam.IGrantable): iam.Grant {
+        return this.portfolioTable.grantReadData(grantee);
+    }
+
+    /**
+     * Grant S3 read access to the assets bucket.
+     *
+     * @example
+     * ```typescript
+     * dataStack.grantAssetsBucketRead(computeRole);
+     * ```
+     */
+    public grantAssetsBucketRead(grantee: iam.IGrantable): iam.Grant {
+        return this.assetsBucket.grantRead(grantee);
     }
 }
