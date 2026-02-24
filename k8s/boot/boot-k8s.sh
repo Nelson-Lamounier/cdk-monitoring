@@ -236,6 +236,39 @@ IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec
 PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4 || echo "")
 PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
 
+# =====================================================================
+# Day-0 Resilience: Install missing K8s toolchain if not pre-baked
+# On Golden AMI (Day-1+), this block is a no-op (~0 seconds).
+# On parent AMI (Day-0), installs containerd + kubeadm (~2-3 minutes).
+# =====================================================================
+if ! command -v containerd &>/dev/null; then
+    echo "WARNING: containerd not found — Day-0 bootstrap from parent AMI"
+    echo "Installing containerd, kubeadm, kubelet, kubectl..."
+
+    # Install containerd from Amazon Linux repo
+    dnf install -y containerd
+    mkdir -p /etc/containerd
+    containerd config default > /etc/containerd/config.toml
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+    systemctl daemon-reload
+    systemctl enable containerd
+
+    # Install kubeadm toolchain from Kubernetes repo
+    K8S_MINOR=$(echo "${K8S_VERSION}" | cut -d. -f1,2)
+    cat > /etc/yum.repos.d/kubernetes.repo <<REPO_EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v${K8S_MINOR}/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v${K8S_MINOR}/rpm/repodata/repomd.xml.key
+REPO_EOF
+    dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+    systemctl enable kubelet
+
+    echo "Day-0 software installation complete"
+fi
+
 # Start containerd
 systemctl start containerd
 echo "containerd started"

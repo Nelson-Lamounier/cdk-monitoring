@@ -269,6 +269,10 @@ export class KubernetesComputeStack extends cdk.Stack {
             userData,
             namePrefix,
             logGroupKmsKey,
+            // Resolve AMI from SSM parameter written by Image Builder pipeline.
+            // On Day-0, this points to the parent AL2023 AMI (boot script handles
+            // missing software). On Day-1+, it resolves to the baked Golden AMI.
+            machineImage: ec2.MachineImage.fromSsmParameter(configs.image.amiSsmPath),
         });
 
         // Single-node cluster: max=1 (EBS can only attach to one instance)

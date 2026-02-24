@@ -368,6 +368,11 @@ k8s-dashboards *ARGS:
 k8s-reconfigure *ARGS:
     npx tsx scripts/deployment/reconfigure-monitoring.ts {{ARGS}}
 
+# Trigger Golden AMI build (Image Builder)
+[group('k8s')]
+k8s-build-golden-ami env="development" region="eu-west-1":
+    npx tsx scripts/deployment/build-golden-ami.ts {{env}} --region {{region}}
+
 # =============================================================================
 # CROSS-ACCOUNT & OPS (delegates to standalone scripts)
 # =============================================================================

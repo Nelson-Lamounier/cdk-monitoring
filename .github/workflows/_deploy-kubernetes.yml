@@ -70,6 +70,11 @@ on:
         required: false
         type: string
         default: ""
+      enable-golden-ami-build:
+        description: "Trigger Golden AMI build after Data stack deploys"
+        required: false
+        default: true
+        type: boolean
     secrets:
       AWS_OIDC_ROLE:
         description: "AWS OIDC role ARN"
@@ -342,6 +347,28 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Build Golden AMI (parallel with Compute)
+  #
+  # Triggers Image Builder to bake containerd + kubeadm into a Golden AMI.
+  # Runs in parallel with deploy-compute — does NOT block the deployment.
+  # On Day-0: AMI matches parent → build triggered (first bake).
+  # On Day-1+: AMI differs from parent → skipped (already baked).
+  # ===========================================================================
+  build-golden-ami:
+    name: Build Golden AMI
+    needs: [setup, deploy-data]
+    if: >-
+      always()
+      && needs.deploy-data.result == 'success'
+      && inputs.enable-golden-ami-build
+    uses: ./.github/workflows/_build-golden-ami.yml
+    with:
+      environment: ${{ inputs.environment }}
+      cdk-environment: ${{ inputs.cdk-environment }}
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
   # Deploy Compute Stack (2/3) — EC2 kubeadm + EIP + EBS
   # ===========================================================================
   deploy-compute:
@@ -607,14 +634,10 @@ jobs:
       - name: Run K8s App Smoke Tests
         id: smoke
         run: |
-          SMOKE_CMD="just ci-smoke-kubernetes ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}"
+          SMOKE_CMD="just ci-smoke-kubernetes-infra ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}"
 
           if [ -n "${{ needs.setup.outputs.domain-name }}" ]; then
             SMOKE_CMD="$SMOKE_CMD --cloudfront-domain ${{ needs.setup.outputs.domain-name }}"
-          fi
-
-          if [ -n "${{ needs.sync-static-assets.outputs.s3-bucket }}" ]; then
-            SMOKE_CMD="$SMOKE_CMD --s3-bucket ${{ needs.sync-static-assets.outputs.s3-bucket }}"
           fi
 
           eval $SMOKE_CMD
