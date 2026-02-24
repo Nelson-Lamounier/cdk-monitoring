@@ -1,0 +1,256 @@
+# @format
+# @description Day-1 Orchestration Pipeline — Release Coordinator
+#
+# Single-trigger workflow that deploys the entire K8s platform from scratch.
+# Chains all existing reusable workflows in dependency order:
+#
+#   Phase 1: Foundation     →  Shared VPC + ECR          (_deploy-stack.yml)
+#   Phase 2: K8s Infra      →  5-stack K8s deployment    (_deploy-kubernetes.yml)
+#   Phase 3: Content Sync   →  Bootstrap + App manifests (_sync-k8s-content.yml)
+#   Phase 4: Summary        →  Aggregated results        (inline)
+#
+# Each phase is gated on the previous phase's success.
+# Each phase is independently toggleable via workflow_dispatch inputs.
+#
+# Safety:
+#   - Manual-only trigger (no push/schedule)
+#   - Requires typing "DEPLOY-DAY1" to confirm
+#   - Concurrency group prevents parallel Day-1 runs per environment
+
+name: "Day-1 Orchestration"
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+        default: development
+      confirm:
+        description: "Type DEPLOY-DAY1 to confirm"
+        required: true
+        type: string
+      deploy-shared:
+        description: "Phase 1: Deploy Shared VPC + ECR"
+        required: false
+        type: boolean
+        default: true
+      deploy-kubernetes:
+        description: "Phase 2: Deploy K8s Infrastructure (5-stack)"
+        required: false
+        type: boolean
+        default: true
+      sync-content:
+        description: "Phase 3: Sync bootstrap + app manifests to S3"
+        required: false
+        type: boolean
+        default: true
+      skip-verification:
+        description: "Skip post-deployment smoke tests"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: day-1-orchestration-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # Gate — Confirmation + Environment Resolution
+  # ===========================================================================
+  gate:
+    name: "Confirm & Resolve"
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      cdk-environment: ${{ steps.resolve.outputs.cdk-environment }}
+      require-approval: ${{ steps.resolve.outputs.require-approval }}
+      enable-security-scan: ${{ steps.resolve.outputs.enable-security-scan }}
+      security-scan-blocking: ${{ steps.resolve.outputs.security-scan-blocking }}
+      shared-stack-name: ${{ steps.resolve.outputs.shared-stack-name }}
+
+    steps:
+      - name: Validate Confirmation
+        if: inputs.confirm != 'DEPLOY-DAY1'
+        run: |
+          echo "::error::Confirmation failed. You must type 'DEPLOY-DAY1' to proceed."
+          echo "  Received: '${{ inputs.confirm }}'"
+          exit 1
+
+      - name: Resolve Environment Settings
+        id: resolve
+        run: |
+          ENV="${{ inputs.environment }}"
+
+          case "$ENV" in
+            development)
+              echo "cdk-environment=development" >> $GITHUB_OUTPUT
+              echo "require-approval=never" >> $GITHUB_OUTPUT
+              echo "enable-security-scan=true" >> $GITHUB_OUTPUT
+              echo "security-scan-blocking=false" >> $GITHUB_OUTPUT
+              echo "shared-stack-name=Shared-Infra-development" >> $GITHUB_OUTPUT
+              ;;
+            staging)
+              echo "cdk-environment=staging" >> $GITHUB_OUTPUT
+              echo "require-approval=broadening" >> $GITHUB_OUTPUT
+              echo "enable-security-scan=true" >> $GITHUB_OUTPUT
+              echo "security-scan-blocking=true" >> $GITHUB_OUTPUT
+              echo "shared-stack-name=Shared-Infra-staging" >> $GITHUB_OUTPUT
+              ;;
+            production)
+              echo "cdk-environment=production" >> $GITHUB_OUTPUT
+              echo "require-approval=broadening" >> $GITHUB_OUTPUT
+              echo "enable-security-scan=true" >> $GITHUB_OUTPUT
+              echo "security-scan-blocking=true" >> $GITHUB_OUTPUT
+              echo "shared-stack-name=Shared-Infra-production" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+          echo ""
+          echo "## Day-1 Orchestration" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Environment** | $ENV |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Deploy Shared** | ${{ inputs.deploy-shared }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Deploy K8s** | ${{ inputs.deploy-kubernetes }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Sync Content** | ${{ inputs.sync-content }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Skip Verification** | ${{ inputs.skip-verification }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Phase 1: Foundation — Shared VPC + ECR
+  # ===========================================================================
+  deploy-shared:
+    name: "Phase 1: Shared VPC"
+    needs: gate
+    if: inputs.deploy-shared
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.gate.outputs.shared-stack-name }}
+      project: shared
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ needs.gate.outputs.require-approval }}
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Phase 2: K8s Infrastructure — 5-Stack Deployment
+  #
+  # Internally orchestrates: Data → Base → sync-bootstrap → Compute → AppIam → Edge
+  # See _deploy-kubernetes.yml for the full internal graph.
+  # ===========================================================================
+  deploy-kubernetes:
+    name: "Phase 2: K8s Infra"
+    needs: [gate, deploy-shared]
+    if: >-
+      always()
+      && inputs.deploy-kubernetes
+      && (needs.deploy-shared.result == 'success' || needs.deploy-shared.result == 'skipped')
+    uses: ./.github/workflows/_deploy-kubernetes.yml
+    with:
+      environment: ${{ inputs.environment }}
+      cdk-environment: ${{ needs.gate.outputs.cdk-environment }}
+      require-approval: ${{ needs.gate.outputs.require-approval }}
+      enable-security-scan: ${{ fromJSON(needs.gate.outputs.enable-security-scan) }}
+      security-scan-blocking: ${{ fromJSON(needs.gate.outputs.security-scan-blocking) }}
+      skip-verification: ${{ inputs.skip-verification }}
+    secrets: inherit
+
+  # ===========================================================================
+  # Phase 3a: Sync Bootstrap Scripts to S3
+  #
+  # Ensures latest k8s-bootstrap/ content is in S3.
+  # The K8s infra pipeline already seeds these at step 2b, but this sync
+  # guarantees the latest scripts are present after a full orchestration.
+  # ===========================================================================
+  sync-bootstrap:
+    name: "Phase 3a: Bootstrap Sync"
+    needs: [gate, deploy-kubernetes]
+    if: >-
+      always()
+      && inputs.sync-content
+      && (needs.deploy-kubernetes.result == 'success' || needs.deploy-kubernetes.result == 'skipped')
+    uses: ./.github/workflows/_sync-k8s-content.yml
+    with:
+      environment: ${{ inputs.environment }}
+      cdk-environment: ${{ needs.gate.outputs.cdk-environment }}
+      content-type: bootstrap
+      source-dir: ./k8s-bootstrap
+      s3-prefix: k8s-bootstrap
+      ssm-document: k8s-${{ needs.gate.outputs.cdk-environment }}-deploy-manifests
+      association-name: k8s-${{ needs.gate.outputs.cdk-environment }}-bootstrap-sync
+    secrets: inherit
+
+  # ===========================================================================
+  # Phase 3b: Sync App Manifests to S3 (parallel with 3a)
+  # ===========================================================================
+  sync-app-deploy:
+    name: "Phase 3b: App Manifest Sync"
+    needs: [gate, deploy-kubernetes]
+    if: >-
+      always()
+      && inputs.sync-content
+      && (needs.deploy-kubernetes.result == 'success' || needs.deploy-kubernetes.result == 'skipped')
+    uses: ./.github/workflows/_sync-k8s-content.yml
+    with:
+      environment: ${{ inputs.environment }}
+      cdk-environment: ${{ needs.gate.outputs.cdk-environment }}
+      content-type: app
+      source-dir: ./app-deploy
+      s3-prefix: app-deploy
+      ssm-document: k8s-${{ needs.gate.outputs.cdk-environment }}-deploy-app-manifests
+      association-name: k8s-${{ needs.gate.outputs.cdk-environment }}-app-deploy-sync
+    secrets: inherit
+
+  # ===========================================================================
+  # Phase 4: Orchestration Summary
+  # ===========================================================================
+  summary:
+    name: "Orchestration Summary"
+    needs:
+      [gate, deploy-shared, deploy-kubernetes, sync-bootstrap, sync-app-deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: always()
+
+    steps:
+      - name: Generate Summary
+        run: |
+          echo "## Day-1 Orchestration — Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Phase | Job | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Gate | Confirm & Resolve | \`${{ needs.gate.result }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 1. Foundation | Shared VPC + ECR | \`${{ needs.deploy-shared.result }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2. K8s Infra | 5-Stack Deploy | \`${{ needs.deploy-kubernetes.result }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3a. Content | Bootstrap Sync | \`${{ needs.sync-bootstrap.result }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3b. Content | App Manifest Sync | \`${{ needs.sync-app-deploy.result }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Overall verdict
+          if [[ "${{ needs.gate.result }}" == "success" ]] \
+            && [[ "${{ needs.deploy-shared.result }}" =~ ^(success|skipped)$ ]] \
+            && [[ "${{ needs.deploy-kubernetes.result }}" =~ ^(success|skipped)$ ]] \
+            && [[ "${{ needs.sync-bootstrap.result }}" =~ ^(success|skipped)$ ]] \
+            && [[ "${{ needs.sync-app-deploy.result }}" =~ ^(success|skipped)$ ]]; then
+            echo "### ✅ Day-1 Orchestration Complete" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All phases completed successfully for **${{ inputs.environment }}**." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Day-1 Orchestration Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "One or more phases failed for **${{ inputs.environment }}**. Review the job logs above." >> $GITHUB_STEP_SUMMARY
+            echo "::error::Day-1 orchestration did not complete successfully"
+          fi
