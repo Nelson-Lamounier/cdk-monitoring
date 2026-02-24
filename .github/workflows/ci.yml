@@ -33,7 +33,7 @@ env:
   NODE_VERSION: "22" # Fallback - prefer .nvmrc
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ============================================================================
@@ -237,7 +237,6 @@ jobs:
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
     steps:
@@ -282,7 +281,6 @@ jobs:
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
     if: |
       (github.event_name == 'pull_request' || 
        (github.event_name == 'push' && 
@@ -317,7 +315,7 @@ jobs:
           name: coverage-stacks
           path: coverage/
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   # ============================================================================
   # NOTE: Snapshot Tests
@@ -374,7 +372,7 @@ jobs:
           name: cdk-synthesis
           path: cdk.out/
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   # ============================================================================
   # NOTE: IaC Security Scanning Strategy
@@ -403,6 +401,7 @@ jobs:
     needs:
       - detect-changes
       - lint-workflows
+      - audit
       - lint
       - deps-check
       - typecheck
@@ -443,13 +442,29 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "ℹ️ IaC Security Scan runs in deployment pipelines (not CI)" >> $GITHUB_STEP_SUMMARY
 
-          # Critical failures
-          if [[ "${{ needs.build.result }}" == "failure" ]] || \
-             [[ "${{ needs.validate-cdk.result }}" == "failure" ]]; then
+          # Fail if ANY upstream job failed (skipped jobs are acceptable)
+          FAILED_JOBS=""
+          for job_result in \
+            "lint-workflows:${{ needs.lint-workflows.result }}" \
+            "audit:${{ needs.audit.result }}" \
+            "lint:${{ needs.lint.result }}" \
+            "deps-check:${{ needs.deps-check.result }}" \
+            "typecheck:${{ needs.typecheck.result }}" \
+            "test-stacks:${{ needs.test-stacks.result }}" \
+            "build:${{ needs.build.result }}" \
+            "validate-cdk:${{ needs.validate-cdk.result }}"; do
+            JOB_NAME="${job_result%%:*}"
+            JOB_STATUS="${job_result##*:}"
+            if [[ "$JOB_STATUS" == "failure" ]]; then
+              FAILED_JOBS="$FAILED_JOBS $JOB_NAME"
+            fi
+          done
+
+          if [[ -n "$FAILED_JOBS" ]]; then
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "❌ CI failed due to critical job failures" >> $GITHUB_STEP_SUMMARY
+            echo "❌ CI failed — failing jobs:$FAILED_JOBS" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ All critical CI checks passed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All CI checks passed" >> $GITHUB_STEP_SUMMARY
