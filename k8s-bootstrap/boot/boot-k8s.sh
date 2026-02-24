@@ -436,18 +436,43 @@ echo "=== Downloading k8s manifests from S3 ==="
 K8S_DIR="${MOUNT_POINT}/k8s"
 mkdir -p $K8S_DIR
 
-aws s3 sync s3://${S3_BUCKET}/k8s/ $K8S_DIR/ --region ${AWS_REGION}
-echo "k8s bundle downloaded to $K8S_DIR"
+# "Patient" retry for Day-1 coordination — Sync pipeline may not have
+# uploaded manifests yet. Wait up to 5 minutes (15 × 20s) before
+# gracefully skipping (SSM State Manager or ArgoCD will handle it later).
+S3_MANIFEST_PREFIX="s3://${S3_BUCKET}/k8s/"
+MANIFEST_MAX_RETRIES=15
+MANIFEST_RETRY_INTERVAL=20
+MANIFESTS_FOUND=false
 
-# Restore execute permissions lost during S3 sync
-find $K8S_DIR -name '*.sh' -exec chmod +x {} +
+for i in $(seq 1 $MANIFEST_MAX_RETRIES); do
+  # Check if any objects exist under the prefix
+  OBJ_COUNT=$(aws s3 ls "${S3_MANIFEST_PREFIX}" --recursive --region ${AWS_REGION} 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$OBJ_COUNT" -gt 0 ]; then
+    echo "✓ Found ${OBJ_COUNT} objects in S3 (attempt $i/$MANIFEST_MAX_RETRIES)"
+    aws s3 sync "${S3_MANIFEST_PREFIX}" $K8S_DIR/ --region ${AWS_REGION}
+    MANIFESTS_FOUND=true
+    break
+  fi
+  echo "No manifests in S3 yet (attempt $i/$MANIFEST_MAX_RETRIES). Retrying in ${MANIFEST_RETRY_INTERVAL}s..."
+  sleep $MANIFEST_RETRY_INTERVAL
+done
 
-# Run the deploy script
-export KUBECONFIG=/etc/kubernetes/admin.conf
-export MANIFESTS_DIR="$K8S_DIR/manifests"
+if [ "$MANIFESTS_FOUND" = "true" ]; then
+  echo "k8s bundle downloaded to $K8S_DIR"
 
-echo "Running deploy-manifests.sh..."
-$K8S_DIR/apps/monitoring/deploy-manifests.sh
+  # Restore execute permissions lost during S3 sync
+  find $K8S_DIR -name '*.sh' -exec chmod +x {} +
+
+  # Run the deploy script
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+  export MANIFESTS_DIR="$K8S_DIR/manifests"
+
+  echo "Running deploy-manifests.sh..."
+  $K8S_DIR/apps/monitoring/deploy-manifests.sh
+else
+  echo "WARNING: No manifests found in S3 after $((MANIFEST_MAX_RETRIES * MANIFEST_RETRY_INTERVAL))s"
+  echo "Skipping manifest deployment — SSM State Manager will handle it on next schedule"
+fi
 
 echo "=== k8s first-boot deployment complete ==="
 
