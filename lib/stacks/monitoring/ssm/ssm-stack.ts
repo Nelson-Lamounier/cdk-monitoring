@@ -28,6 +28,8 @@ import * as cdk from 'aws-cdk-lib/core';
 import { Construct } from 'constructs';
 
 import { SsmRunCommandDocument } from '../../../common/index';
+import { S3BucketConstruct } from '../../../common/storage';
+import { Environment } from '../../../config';
 
 // =================================================================
 // Props
@@ -90,19 +92,21 @@ export class MonitoringSsmStack extends cdk.Stack {
         // =================================================================
         // S3 Access Logs Bucket (CKV_AWS_18)
         // =================================================================
-        const accessLogsBucket = new s3.Bucket(this, 'ScriptsAccessLogsBucket', {
-            bucketName: `${namePrefix}-scripts-logs-${this.account}-${this.region}`,
-            encryption: s3.BucketEncryption.S3_MANAGED,
-            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-            removalPolicy: cdk.RemovalPolicy.DESTROY,
-            autoDeleteObjects: true,
-            enforceSSL: true,
-            lifecycleRules: [{
-                expiration: cdk.Duration.days(90),
-            }],
+        const accessLogsBucketConstruct = new S3BucketConstruct(this, 'ScriptsAccessLogsBucket', {
+            environment: Environment.DEVELOPMENT,
+            config: {
+                bucketName: `${namePrefix}-scripts-logs-${this.account}-${this.region}`,
+                purpose: 'monitoring-scripts-access-logs',
+                encryption: s3.BucketEncryption.S3_MANAGED,
+                removalPolicy: cdk.RemovalPolicy.DESTROY,
+                autoDeleteObjects: true,
+                lifecycleRules: [{
+                    expiration: cdk.Duration.days(90),
+                }],
+            },
         });
 
-        NagSuppressions.addResourceSuppressions(accessLogsBucket, [
+        NagSuppressions.addResourceSuppressions(accessLogsBucketConstruct.bucket, [
             {
                 id: 'AwsSolutions-S1',
                 reason: 'Access logs bucket cannot log to itself — this is the terminal logging destination',
@@ -112,17 +116,19 @@ export class MonitoringSsmStack extends cdk.Stack {
         // =================================================================
         // S3 Bucket for Scripts (to bypass 16KB user data limit)
         // =================================================================
-        this.scriptsBucket = new s3.Bucket(this, 'ScriptsBucket', {
-            bucketName: `${namePrefix}-scripts-${this.account}-${this.region}`,
-            encryption: s3.BucketEncryption.S3_MANAGED,
-            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-            versioned: true,                             // CKV_AWS_21
-            serverAccessLogsBucket: accessLogsBucket,    // CKV_AWS_18
-            serverAccessLogsPrefix: 'scripts-bucket/',
-            removalPolicy: cdk.RemovalPolicy.DESTROY,
-            autoDeleteObjects: true,
-            enforceSSL: true,
+        const scriptsBucketConstruct = new S3BucketConstruct(this, 'ScriptsBucket', {
+            environment: Environment.DEVELOPMENT,
+            config: {
+                bucketName: `${namePrefix}-scripts-${this.account}-${this.region}`,
+                purpose: 'monitoring-scripts',
+                versioned: true,
+                removalPolicy: cdk.RemovalPolicy.DESTROY,
+                autoDeleteObjects: true,
+                accessLogsBucket: accessLogsBucketConstruct.bucket,
+                accessLogsPrefix: 'scripts-bucket/',
+            },
         });
+        this.scriptsBucket = scriptsBucketConstruct.bucket;
 
         // Deploy monitoring stack bundle (docker-compose + configs) to S3
         new s3deploy.BucketDeployment(this, 'ScriptsDeployment', {

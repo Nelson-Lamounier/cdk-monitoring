@@ -157,23 +157,26 @@ export class KubernetesDataStack extends cdk.Stack {
         // S3 ACCESS LOGS BUCKET
         // =================================================================
 
-        this.accessLogsBucket = new s3.Bucket(this, 'AccessLogsBucket', {
-            bucketName: `${projectName}-access-logs-${targetEnvironment}`,
-            encryption: s3.BucketEncryption.S3_MANAGED,
-            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-            enforceSSL: true,
-            removalPolicy,
-            autoDeleteObjects: !isProduction,
-            versioned: true,
-            lifecycleRules: [
-                {
-                    id: 'delete-old-logs',
-                    enabled: true,
-                    expiration: cdk.Duration.days(90),
-                    noncurrentVersionExpiration: cdk.Duration.days(30),
-                },
-            ],
+        const accessLogsBucketConstruct = new S3BucketConstruct(this, 'AccessLogsBucket', {
+            environment: targetEnvironment,
+            config: {
+                bucketName: `${projectName}-access-logs-${targetEnvironment}`,
+                purpose: 'access-logs',
+                encryption: s3.BucketEncryption.S3_MANAGED,
+                removalPolicy,
+                autoDeleteObjects: !isProduction,
+                versioned: true,
+                lifecycleRules: [
+                    {
+                        id: 'delete-old-logs',
+                        enabled: true,
+                        expiration: cdk.Duration.days(90),
+                        noncurrentVersionExpiration: cdk.Duration.days(30),
+                    },
+                ],
+            },
         });
+        this.accessLogsBucket = accessLogsBucketConstruct.bucket;
 
         const cfnAccessLogsBucket = this.accessLogsBucket.node.defaultChild as cdk.CfnResource;
         cfnAccessLogsBucket.addMetadata('checkov', {
