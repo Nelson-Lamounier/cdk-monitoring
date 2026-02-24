@@ -336,7 +336,7 @@ jobs:
   # ArgoCD watches this Git repo and auto-syncs changes within ~3 minutes.
   # No CI pipeline jobs needed.
   #
-  # See: k8s/system/argocd/ for ArgoCD config and Application CRDs.
+  # See: k8s-bootstrap/system/argocd/ for ArgoCD config and Application CRDs.
   # ===========================================================================
 
   # ===========================================================================

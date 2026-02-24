@@ -17,7 +17,7 @@ on:
       - "lib/projects/k8s/**"
       - "lib/stacks/k8s/**"
       - "lib/common/compute/builders/user-data-builder.ts"
-      - "k8s/apps/monitoring/**"
+      - "app-deploy/monitoring/**"
       - "bin/app.ts"
       - ".github/workflows/deploy-monitoring-kubernetes-dev.yml"
       - ".github/workflows/_deploy-monitoring-kubernetes.yml"

@@ -326,8 +326,8 @@ export class KubernetesComputeStack extends cdk.Stack {
         // =====================================================================
         // S3 Bucket for K8s Scripts & Manifests
         //
-        // Syncs the ENTIRE k8s/ directory (monitoring + application manifests).
-        // This replaces both the monitoring-only and nextjs-only buckets.
+        // Syncs from k8s-bootstrap/ and app-deploy/ into the S3 bucket.
+        // Runtime paths on EC2 remain /data/k8s/... for backward compat.
         // =====================================================================
         const scriptsBucketConstruct = new S3BucketConstruct(this, 'K8sScriptsBucket', {
             environment: targetEnvironment,
@@ -343,12 +343,20 @@ export class KubernetesComputeStack extends cdk.Stack {
         });
         const scriptsBucket = scriptsBucketConstruct.bucket;
 
-        // Sync all k8s manifests (monitoring + application + system)
-        new s3deploy.BucketDeployment(this, 'K8sManifestsDeployment', {
-            sources: [s3deploy.Source.asset('./k8s')],
+        // Sync platform bootstrap (boot scripts, ArgoCD, Traefik, overlays)
+        new s3deploy.BucketDeployment(this, 'K8sBootstrapDeployment', {
+            sources: [s3deploy.Source.asset('./k8s-bootstrap')],
             destinationBucket: scriptsBucket,
-            destinationKeyPrefix: 'k8s',
-            prune: true,
+            destinationKeyPrefix: 'k8s-bootstrap',
+            prune: false,
+        });
+
+        // Sync application manifests (monitoring + nextjs)
+        new s3deploy.BucketDeployment(this, 'K8sAppDeployment', {
+            sources: [s3deploy.Source.asset('./app-deploy')],
+            destinationBucket: scriptsBucket,
+            destinationKeyPrefix: 'app-deploy',
+            prune: false,
         });
 
         try {
@@ -403,10 +411,10 @@ export class KubernetesComputeStack extends cdk.Stack {
                     'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
                     'export SSM_PREFIX="{{SsmPrefix}}"',
                     'export AWS_REGION="{{Region}}"',
-                    'export MANIFESTS_DIR=/data/k8s/manifests',
+                    'export MANIFESTS_DIR=/data/app-deploy/monitoring/manifests',
                     '',
                     '# Re-sync all manifests from S3 and run deploy script',
-                    '/data/k8s/apps/monitoring/deploy-manifests.sh',
+                    '/data/app-deploy/monitoring/deploy-manifests.sh',
                 ],
                 timeoutSeconds: 600,
             }],
@@ -453,10 +461,10 @@ export class KubernetesComputeStack extends cdk.Stack {
                     'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
                     'export SSM_PREFIX="{{SsmPrefix}}"',
                     'export AWS_REGION="{{Region}}"',
-                    'export MANIFESTS_DIR=/data/k8s/apps/nextjs',
+                    'export MANIFESTS_DIR=/data/app-deploy/nextjs',
                     '',
                     '# Re-sync manifests from S3 and run Next.js deploy script',
-                    '/data/k8s/apps/nextjs/deploy-manifests.sh',
+                    '/data/app-deploy/nextjs/deploy-manifests.sh',
                 ],
                 timeoutSeconds: 600,
             }],
@@ -509,7 +517,7 @@ export class KubernetesComputeStack extends cdk.Stack {
         // =====================================================================
         // User Data — slim bootstrap stub
         //
-        // Heavy logic lives in k8s/boot/boot-k8s.sh (uploaded to S3 via
+        // Heavy logic lives in k8s-bootstrap/boot/boot-k8s.sh (uploaded to S3 via
         // BucketDeployment). Inline user data just installs AWS CLI,
         // exports env vars with CDK token values, then downloads & executes
         // the boot script. This keeps user data well under CloudFormation's
@@ -542,7 +550,7 @@ export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2
 
 # Download and execute the boot script from S3
 BOOT_SCRIPT="/tmp/boot-k8s.sh"
-aws s3 cp s3://${scriptsBucket.bucketName}/k8s/boot/boot-k8s.sh "$BOOT_SCRIPT" --region ${this.region}
+aws s3 cp s3://${scriptsBucket.bucketName}/k8s-bootstrap/boot/boot-k8s.sh "$BOOT_SCRIPT" --region ${this.region}
 chmod +x "$BOOT_SCRIPT"
 exec "$BOOT_SCRIPT"
 `);
