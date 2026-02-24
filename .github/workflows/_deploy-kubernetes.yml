@@ -3,11 +3,15 @@
 #
 # Infra-only pipeline for the K8s (kubeadm) infrastructure.
 # API stack is excluded — deployed by the Next.js K8s pipeline.
+# Bootstrap/app manifests synced by independent S3 pipelines.
 #
-# 3-Stack Deployment Order:
+# 6-Stack Deployment Order:
 #   1. Data      (DynamoDB + S3 + SSM Parameters)
-#   2. Compute   (EC2 kubeadm + EIP + EBS)
-#   3. Edge      (CloudFront + ACM + WAF in us-east-1)
+#   2. Base      (VPC networking + Security Group + KMS + EBS + EIP)
+#   3. Compute   (EC2 kubeadm + ASG + SSM Docs + S3 Scripts)
+#   4. AppIam    (Application-tier IAM grants)
+#   5. Edge      (CloudFront + ACM + WAF in us-east-1)
+#   (API deployed by Next.js thin wrapper pipeline)
 #
 # Post-Deploy (manifests managed by ArgoCD GitOps):
 #   4. Sync Static Assets          (S3 + CloudFront invalidation)
@@ -105,9 +109,11 @@ jobs:
       domain-name: ${{ steps.resolve-edge.outputs.domain-name }}
       hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
       cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
-      # Stack names from synthesize-ci.ts (4-stack architecture, 3 deployed here)
+      # Stack names from synthesize-ci.ts (6-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
+      base-stack: ${{ steps.synth.outputs.base }}
       compute-stack: ${{ steps.synth.outputs.compute }}
+      appiam-stack: ${{ steps.synth.outputs.appIam }}
       api-stack: ${{ steps.synth.outputs.api }}
       edge-stack: ${{ steps.synth.outputs.edge }}
 
@@ -324,7 +330,7 @@ jobs:
               print(f"\nAll {len(templates)} templates passed validation")
 
   # ===========================================================================
-  # Deploy Data Stack (1/3) — DynamoDB + S3 + SSM Parameters
+  # Deploy Data Stack (1/6) — DynamoDB + S3 + SSM Parameters
   # ===========================================================================
   deploy-data:
     name: Deploy Data
@@ -369,12 +375,30 @@ jobs:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # ===========================================================================
-  # Deploy Compute Stack (2/3) — EC2 kubeadm + EIP + EBS
+  # Deploy Base Stack (2/6) — VPC networking + SG + KMS + EBS + EIP
+  # ===========================================================================
+  deploy-base:
+    name: Deploy Base
+    needs: [setup, deploy-data]
+    if: always() && needs.deploy-data.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.base-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy Compute Stack (3/6) — EC2 kubeadm + ASG + SSM Docs + S3 Scripts
   # ===========================================================================
   deploy-compute:
     name: Deploy Compute
-    needs: [setup, deploy-data]
-    if: always() && needs.deploy-data.result == 'success'
+    needs: [setup, deploy-base]
+    if: always() && needs.deploy-base.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.compute-stack }}
@@ -387,13 +411,31 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Deploy Edge Stack (3/3) — CloudFront + ACM + WAF (us-east-1)
+  # Deploy AppIam Stack (4/6) — Application-tier IAM grants
+  # ===========================================================================
+  deploy-appiam:
+    name: Deploy App IAM
+    needs: [setup, deploy-compute]
+    if: always() && needs.deploy-compute.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.appiam-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy Edge Stack (5/6) — CloudFront + ACM + WAF (us-east-1)
   # Origin: Elastic IP → Traefik
   # ===========================================================================
   deploy-edge:
     name: Deploy Edge
-    needs: [setup, deploy-compute, deploy-data]
-    if: always() && needs.deploy-compute.result == 'success' && needs.deploy-data.result == 'success'
+    needs: [setup, deploy-appiam, deploy-data]
+    if: always() && needs.deploy-appiam.result == 'success' && needs.deploy-data.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.edge-stack }}
@@ -657,7 +699,9 @@ jobs:
           # CloudFormation failed events for each stack
           STACKS=(
             "${{ needs.setup.outputs.data-stack }}"
+            "${{ needs.setup.outputs.base-stack }}"
             "${{ needs.setup.outputs.compute-stack }}"
+            "${{ needs.setup.outputs.appiam-stack }}"
             "${{ needs.setup.outputs.edge-stack }}"
             "${{ needs.setup.outputs.api-stack }}"
           )
@@ -763,7 +807,9 @@ jobs:
           echo "### CloudFormation Failed Events" >> $GITHUB_STEP_SUMMARY
           STACKS=(
             "${{ needs.setup.outputs.data-stack }}"
+            "${{ needs.setup.outputs.base-stack }}"
             "${{ needs.setup.outputs.compute-stack }}"
+            "${{ needs.setup.outputs.appiam-stack }}"
             "${{ needs.setup.outputs.edge-stack }}"
             "${{ needs.setup.outputs.api-stack }}"
           )

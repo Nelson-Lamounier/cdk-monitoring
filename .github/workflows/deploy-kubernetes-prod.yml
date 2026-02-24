@@ -1,9 +1,9 @@
 # @format
 # @description Deploy K8s Infrastructure to Production
 #
-# Deploys the centralized k3s Kubernetes infrastructure to the production account.
-# Includes: Data (DynamoDB/S3), Compute (EC2 k3s), Edge (CloudFront/WAF).
-# Post-deploy: monitoring manifests, app manifests, static assets, smoke tests.
+# Deploys the k3s Kubernetes CDK infrastructure to the production account.
+# 6-Stack Architecture: Data → Base → Compute → AppIam → Api → Edge.
+# Bootstrap scripts and app manifests are synced by independent S3 pipelines.
 #
 # Prerequisites:
 #   - Shared VPC from deploy-shared workflow
@@ -22,8 +22,6 @@ on:
       - "lib/projects/k8s/**"
       - "lib/stacks/kubernetes/**"
       - "lib/common/compute/builders/user-data-builder.ts"
-      - "k8s-bootstrap/**"
-      - "app-deploy/**"
       - "infra-ami/**"
       - "lambda/**"
       - "bin/app.ts"

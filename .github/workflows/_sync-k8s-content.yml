@@ -1,0 +1,207 @@
+# @format
+# @description Reusable K8s Content Sync Workflow
+#
+# Syncs a local directory (k8s-bootstrap or app-deploy) to the S3 scripts bucket
+# created by the Infra pipeline. Discovers the bucket via SSM parameter.
+#
+# After sync, creates/updates an SSM State Manager association for continuous
+# configuration enforcement. The association re-applies the SSM document on schedule.
+#
+# Prerequisites:
+#   - Infra pipeline has run at least once (SSM parameter exists)
+
+name: Sync K8s Content (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+      cdk-environment:
+        description: "CDK context environment value"
+        required: true
+        type: string
+      content-type:
+        description: "Content type label for logging (bootstrap | app)"
+        required: true
+        type: string
+      source-dir:
+        description: "Local directory to sync (e.g., ./k8s-bootstrap)"
+        required: true
+        type: string
+      s3-prefix:
+        description: "S3 key prefix (e.g., k8s-bootstrap or app-deploy)"
+        required: true
+        type: string
+      ssm-document:
+        description: "SSM document name for State Manager association (optional)"
+        required: false
+        type: string
+        default: ""
+      association-name:
+        description: "Unique name for the SSM State Manager association"
+        required: false
+        type: string
+        default: ""
+      schedule-expression:
+        description: "State Manager schedule (rate or cron expression)"
+        required: false
+        type: string
+        default: "rate(30 minutes)"
+    secrets:
+      AWS_OIDC_ROLE:
+        description: "AWS OIDC role ARN"
+        required: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  sync:
+    name: "Sync ${{ inputs.content-type }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      # -----------------------------------------------------------------------
+      # 1. Discover the S3 bucket from SSM (written by Infra pipeline)
+      # -----------------------------------------------------------------------
+      - name: Discover Scripts Bucket
+        id: bucket
+        run: |
+          SSM_KEY="/k8s/${{ inputs.cdk-environment }}/scripts-bucket"
+          echo "Looking up SSM parameter: ${SSM_KEY}"
+
+          BUCKET=$(aws ssm get-parameter \
+            --name "${SSM_KEY}" \
+            --query 'Parameter.Value' \
+            --output text \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+
+          if [ -z "$BUCKET" ]; then
+            echo "::error::SSM parameter ${SSM_KEY} not found. Has the Infra pipeline been deployed?"
+            exit 1
+          fi
+
+          # Normalize — strip any s3:// prefix or trailing slashes
+          BUCKET=$(echo "$BUCKET" | sed 's|^s3://||' | sed 's|/$||')
+          echo "bucket=${BUCKET}" >> $GITHUB_OUTPUT
+          echo "✓ Scripts bucket: ${BUCKET}"
+
+      # -----------------------------------------------------------------------
+      # 2. Sync content to S3
+      # -----------------------------------------------------------------------
+      - name: "Sync ${{ inputs.content-type }} to S3"
+        run: |
+          SOURCE="${{ inputs.source-dir }}"
+          DEST="s3://${{ steps.bucket.outputs.bucket }}/${{ inputs.s3-prefix }}/"
+
+          echo "Syncing: ${SOURCE} → ${DEST}"
+          aws s3 sync "${SOURCE}" "${DEST}" --delete --region ${{ env.AWS_REGION }}
+          echo "✓ Sync complete"
+
+      # -----------------------------------------------------------------------
+      # 3. Create/Update SSM State Manager Association (continuous config)
+      # -----------------------------------------------------------------------
+      - name: Ensure SSM State Manager Association
+        if: inputs.ssm-document != '' && inputs.association-name != ''
+        run: |
+          SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}"
+          ASSOC_NAME="${{ inputs.association-name }}"
+          DOC_NAME="${{ inputs.ssm-document }}"
+          SCHEDULE="${{ inputs.schedule-expression }}"
+          BUCKET="${{ steps.bucket.outputs.bucket }}"
+          REGION="${{ env.AWS_REGION }}"
+
+          # Look up instance ID to verify infra exists
+          INSTANCE_ID=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/instance-id" \
+            --query 'Parameter.Value' --output text \
+            --region "${REGION}" 2>/dev/null || echo "")
+
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "::warning::No instance ID in SSM — skipping association (Day-0 bootstrap?)"
+            exit 0
+          fi
+
+          # Common parameters for the SSM document
+          PARAMS="S3Bucket=[${BUCKET}],S3KeyPrefix=[${{ inputs.s3-prefix }}],Region=[${REGION}],SsmPrefix=[${SSM_PREFIX}]"
+
+          echo "Creating/updating State Manager association: ${ASSOC_NAME}"
+          echo "  Document:  ${DOC_NAME}"
+          echo "  Target:    ${INSTANCE_ID}"
+          echo "  Schedule:  ${SCHEDULE}"
+
+          # Try create first; if it already exists, update it
+          if aws ssm create-association \
+            --association-name "${ASSOC_NAME}" \
+            --name "${DOC_NAME}" \
+            --targets "Key=InstanceIds,Values=${INSTANCE_ID}" \
+            --parameters "${PARAMS}" \
+            --schedule-expression "${SCHEDULE}" \
+            --apply-only-at-cron-interval \
+            --region "${REGION}" 2>/dev/null; then
+            echo "✓ Association created: ${ASSOC_NAME}"
+          else
+            echo "Association exists — updating..."
+            # Look up the existing association ID
+            ASSOC_ID=$(aws ssm describe-association \
+              --association-name "${ASSOC_NAME}" \
+              --query 'AssociationDescription.AssociationId' \
+              --output text \
+              --region "${REGION}" 2>/dev/null || echo "")
+
+            if [ -z "$ASSOC_ID" ]; then
+              echo "::error::Could not find or create association ${ASSOC_NAME}"
+              exit 1
+            fi
+
+            aws ssm update-association \
+              --association-id "${ASSOC_ID}" \
+              --name "${DOC_NAME}" \
+              --targets "Key=InstanceIds,Values=${INSTANCE_ID}" \
+              --parameters "${PARAMS}" \
+              --schedule-expression "${SCHEDULE}" \
+              --apply-only-at-cron-interval \
+              --region "${REGION}"
+            echo "✓ Association updated: ${ASSOC_NAME} (${ASSOC_ID})"
+          fi
+
+      # -----------------------------------------------------------------------
+      # 4. Apply association immediately (one-shot after sync)
+      # -----------------------------------------------------------------------
+      - name: Apply Association Now
+        if: inputs.ssm-document != '' && inputs.association-name != ''
+        run: |
+          ASSOC_NAME="${{ inputs.association-name }}"
+          REGION="${{ env.AWS_REGION }}"
+
+          ASSOC_ID=$(aws ssm describe-association \
+            --association-name "${ASSOC_NAME}" \
+            --query 'AssociationDescription.AssociationId' \
+            --output text \
+            --region "${REGION}" 2>/dev/null || echo "")
+
+          if [ -z "$ASSOC_ID" ]; then
+            echo "::warning::Association ${ASSOC_NAME} not found — skipping immediate apply"
+            exit 0
+          fi
+
+          echo "Triggering immediate apply: ${ASSOC_NAME} (${ASSOC_ID})"
+          aws ssm start-associations-once \
+            --association-ids "${ASSOC_ID}" \
+            --region "${REGION}" 2>/dev/null || true
+          echo "✓ Association apply triggered"

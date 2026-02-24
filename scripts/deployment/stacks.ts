@@ -252,9 +252,10 @@ const orgProject: ProjectConfig = {
 };
 
 // =============================================================================
-// K8S PROJECT (kubeadm Kubernetes Cluster — 4-Stack Architecture)
-// Synth outputs all 4 stacks. Infra pipeline deploys Data/Compute/Edge (3).
+// K8S PROJECT (kubeadm Kubernetes Cluster — 6-Stack Architecture)
+// Synth outputs all 6 stacks. Infra pipeline deploys Data→Base→Compute→AppIam→Edge.
 // API stack is deployed by the Next.js thin wrapper pipeline.
+// Bootstrap/app manifests synced by independent S3 sync pipelines.
 // =============================================================================
 
 const k8sStacks: StackConfig[] = [
@@ -265,11 +266,25 @@ const k8sStacks: StackConfig[] = [
     description: 'DynamoDB, S3 assets, SSM parameters for K8s application',
   },
   {
+    id: 'base',
+    name: 'Base Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'base', env),
+    description: 'VPC networking, security group, KMS key, EBS volume, Elastic IP',
+    dependsOn: ['data'],
+  },
+  {
     id: 'compute',
     name: 'Compute Stack',
     getStackName: (env) => getStackId(Project.KUBERNETES, 'compute', env),
-    description: 'kubeadm Kubernetes cluster: EC2 + ASG + EBS + Security Group + Elastic IP',
-    dependsOn: ['data'],
+    description: 'kubeadm Kubernetes cluster: EC2 + ASG + SSM documents + S3 scripts bucket',
+    dependsOn: ['base'],
+  },
+  {
+    id: 'appIam',
+    name: 'App IAM Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'appIam', env),
+    description: 'Application-tier IAM grants: DynamoDB, S3, Secrets Manager, SSM',
+    dependsOn: ['compute'],
   },
   {
     id: 'api',
