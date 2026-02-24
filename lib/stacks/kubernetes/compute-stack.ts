@@ -10,13 +10,13 @@
  *   - Launch Template (Amazon Linux 2023, IMDSv2)
  *   - ASG (min=1, max=1, single-node cluster)
  *   - IAM Role (monitoring grants + optional application grants)
- *   - S3 Bucket (syncs all k8s manifests: monitoring + application)
  *   - SSM Run Command Document (manifest re-deploy)
  *   - Golden AMI Pipeline (optional, Image Builder)
  *   - SSM State Manager (optional, post-boot configuration)
  *
  * Resources from KubernetesBaseStack (consumed, not created):
  *   - VPC, Security Group, KMS Key, EBS Volume, Elastic IP
+ *   - S3 Bucket (k8s scripts & manifests)
  *
  * @example
  * ```typescript
@@ -31,13 +31,11 @@
  * ```
  */
 
-import { NagSuppressions } from 'cdk-nag';
 
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
-import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -51,7 +49,6 @@ import {
     SsmStateManagerConstruct,
     UserDataBuilder,
 } from '../../common/index';
-import { S3BucketConstruct } from '../../common/storage';
 import {
     MONITORING_APP_TAG,
 } from '../../config/defaults';
@@ -171,60 +168,14 @@ export class KubernetesComputeStack extends cdk.Stack {
         const asgLogicalId = asgCfnResource.logicalId;
 
         // =====================================================================
-        // S3 Access Logs Bucket (AwsSolutions-S1)
-        // =====================================================================
-        const accessLogsBucketConstruct = new S3BucketConstruct(this, 'K8sScriptsAccessLogsBucket', {
-            environment: targetEnvironment,
-            config: {
-                bucketName: `${namePrefix}-k8s-scripts-logs-${this.account}-${this.region}`,
-                purpose: 'k8s-scripts-access-logs',
-                encryption: s3.BucketEncryption.S3_MANAGED,
-                removalPolicy: configs.removalPolicy,
-                autoDeleteObjects: !configs.isProduction,
-                lifecycleRules: [{
-                    expiration: cdk.Duration.days(90),
-                }],
-            },
-        });
-
-        NagSuppressions.addResourceSuppressions(accessLogsBucketConstruct.bucket, [{
-            id: 'AwsSolutions-S1',
-            reason: 'Access logs bucket cannot log to itself — this is the terminal logging destination',
-        }]);
-
-        // =====================================================================
-        // S3 Bucket for K8s Scripts & Manifests
+        // S3 Bucket (consumed from BaseStack — Day-1 safety)
         //
-        // Syncs from k8s-bootstrap/ and app-deploy/ into the S3 bucket.
-        // Runtime paths on EC2 remain /data/k8s/... for backward compat.
+        // The scripts bucket lives in BaseStack so that the CI sync job can
+        // seed boot-k8s.sh BEFORE the Compute stack launches EC2 instances.
+        // Content sync (k8s-bootstrap/, app-deploy/) is handled by CI via
+        // `aws s3 sync`, NOT by CDK BucketDeployment.
         // =====================================================================
-        const scriptsBucketConstruct = new S3BucketConstruct(this, 'K8sScriptsBucket', {
-            environment: targetEnvironment,
-            config: {
-                bucketName: `${namePrefix}-k8s-scripts-${this.account}`,
-                purpose: 'k8s-scripts-and-manifests',
-                versioned: configs.isProduction,
-                removalPolicy: configs.removalPolicy,
-                autoDeleteObjects: !configs.isProduction,
-                accessLogsBucket: accessLogsBucketConstruct.bucket,
-                accessLogsPrefix: 'k8s-scripts-bucket/',
-            },
-        });
-        const scriptsBucket = scriptsBucketConstruct.bucket;
-
-        // =====================================================================
-        // NOTE: Content sync (k8s-bootstrap/, app-deploy/) is handled by CI
-        // via `aws s3 sync`, NOT by CDK BucketDeployment. This decouples
-        // manifest/script changes from infrastructure deployments.
-        // =====================================================================
-
-        // Publish bucket name to SSM for CI discovery
-        new ssm.StringParameter(this, 'ScriptsBucketParam', {
-            parameterName: `${props.ssmPrefix}/scripts-bucket`,
-            stringValue: scriptsBucket.bucketName,
-            description: 'S3 bucket for k8s scripts and manifests (used by CI for aws s3 sync)',
-            tier: ssm.ParameterTier.STANDARD,
-        });
+        const scriptsBucket = baseStack.scriptsBucket;
 
         // =====================================================================
         // SSM Run Command Document (unified manifest deployment)

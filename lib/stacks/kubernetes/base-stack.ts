@@ -13,7 +13,8 @@
  *   - KMS Key (CloudWatch log group encryption)
  *   - EBS Volume (persistent storage for Kubernetes data + PVCs)
  *   - Elastic IP (shared by Next.js CloudFront and SSM access)
- *   - SSM Parameters (cross-stack discovery: SG ID, EIP)
+ *   - S3 Bucket (k8s scripts & manifests — synced by CI pipeline)
+ *   - SSM Parameters (cross-stack discovery: SG ID, EIP, scripts-bucket)
  *
  * Lifecycle: Only re-deployed when hardware specs, networking rules,
  * or storage configuration changes. Typically stable for weeks/months.
@@ -30,9 +31,12 @@
  * ```
  */
 
+import { NagSuppressions } from 'cdk-nag';
+
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -47,6 +51,7 @@ import {
     LOKI_NODEPORT,
     TEMPO_NODEPORT,
 } from '../../config/defaults';
+import { S3BucketConstruct } from '../../common/storage';
 import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
 
@@ -88,8 +93,8 @@ export interface KubernetesBaseStackProps extends cdk.StackProps {
  * Kubernetes Base Stack — Long-Lived Infrastructure.
  *
  * Contains VPC lookup, Security Group, KMS Key, EBS Volume, Elastic IP,
- * and SSM discovery parameters. These resources rarely change and are
- * decoupled from the runtime compute stack.
+ * S3 scripts bucket, and SSM discovery parameters. These resources rarely
+ * change and are decoupled from the runtime compute stack.
  */
 export class KubernetesBaseStack extends cdk.Stack {
     /** The looked-up VPC */
@@ -103,6 +108,9 @@ export class KubernetesBaseStack extends cdk.Stack {
 
     /** EBS volume for persistent Kubernetes data */
     public readonly ebsVolume: ec2.Volume;
+
+    /** S3 bucket for k8s scripts and manifests */
+    public readonly scriptsBucket: s3.IBucket;
 
     /** Elastic IP for stable external access */
     public readonly elasticIp: ec2.CfnEIP;
@@ -223,6 +231,48 @@ export class KubernetesBaseStack extends cdk.Stack {
         });
 
         // =====================================================================
+        // S3 Access Logs Bucket (AwsSolutions-S1)
+        // =====================================================================
+        const accessLogsBucketConstruct = new S3BucketConstruct(this, 'K8sScriptsAccessLogsBucket', {
+            environment: targetEnvironment,
+            config: {
+                bucketName: `${namePrefix}-k8s-scripts-logs-${this.account}-${this.region}`,
+                purpose: 'k8s-scripts-access-logs',
+                encryption: s3.BucketEncryption.S3_MANAGED,
+                removalPolicy: configs.removalPolicy,
+                autoDeleteObjects: !configs.isProduction,
+                lifecycleRules: [{
+                    expiration: cdk.Duration.days(90),
+                }],
+            },
+        });
+
+        NagSuppressions.addResourceSuppressions(accessLogsBucketConstruct.bucket, [{
+            id: 'AwsSolutions-S1',
+            reason: 'Access logs bucket cannot log to itself — this is the terminal logging destination',
+        }]);
+
+        // =====================================================================
+        // S3 Bucket for K8s Scripts & Manifests
+        //
+        // Created in BaseStack so that the CI sync job can seed boot scripts
+        // BEFORE the Compute stack launches EC2 instances (Day-1 safety).
+        // =====================================================================
+        const scriptsBucketConstruct = new S3BucketConstruct(this, 'K8sScriptsBucket', {
+            environment: targetEnvironment,
+            config: {
+                bucketName: `${namePrefix}-k8s-scripts-${this.account}`,
+                purpose: 'k8s-scripts-and-manifests',
+                versioned: configs.isProduction,
+                removalPolicy: configs.removalPolicy,
+                autoDeleteObjects: !configs.isProduction,
+                accessLogsBucket: accessLogsBucketConstruct.bucket,
+                accessLogsPrefix: 'k8s-scripts-bucket/',
+            },
+        });
+        this.scriptsBucket = scriptsBucketConstruct.bucket;
+
+        // =====================================================================
         // SSM Parameters (for cross-project discovery)
         // =====================================================================
         new ssm.StringParameter(this, 'SecurityGroupIdParam', {
@@ -236,6 +286,13 @@ export class KubernetesBaseStack extends cdk.Stack {
             parameterName: `${props.ssmPrefix}/elastic-ip`,
             stringValue: this.elasticIp.ref,
             description: 'Kubernetes cluster Elastic IP address (used by Edge stack as CloudFront origin)',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
+        new ssm.StringParameter(this, 'ScriptsBucketParam', {
+            parameterName: `${props.ssmPrefix}/scripts-bucket`,
+            stringValue: this.scriptsBucket.bucketName,
+            description: 'S3 bucket for k8s scripts and manifests (used by CI for aws s3 sync)',
             tier: ssm.ParameterTier.STANDARD,
         });
 
@@ -271,6 +328,11 @@ export class KubernetesBaseStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'LogGroupKmsKeyArn', {
             value: this.logGroupKmsKey.keyArn,
             description: 'KMS key ARN for CloudWatch log group encryption',
+        });
+
+        new cdk.CfnOutput(this, 'ScriptsBucketName', {
+            value: this.scriptsBucket.bucketName,
+            description: 'S3 bucket for k8s scripts and manifests',
         });
     }
 }
