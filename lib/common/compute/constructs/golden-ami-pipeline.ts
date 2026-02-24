@@ -164,22 +164,30 @@ export class GoldenAmiPipelineConstruct extends Construct {
         // 5. SSM Parameter — stores latest AMI ID
         //
         // Created before the distribution config so it can be referenced
-        // as a target. Initially set to a placeholder; Image Builder
-        // overwrites it with the actual AMI ID after each successful build.
-        // The LaunchTemplate looks up this parameter to resolve the AMI.
+        // as a target. Image Builder overwrites it with the actual AMI ID
+        // after each successful build. The LaunchTemplate looks up this
+        // parameter to resolve the AMI.
         //
-        // IMPORTANT: Uses CfnParameter (L1) instead of StringParameter (L2)
-        // because Image Builder DistributionConfiguration requires the SSM
-        // parameter to have dataType 'aws:ec2:image'. The L2 StringParameter
-        // only creates dataType 'text', causing CREATE_FAILED on the
-        // distribution config (you can't change an SSM parameter's data type
-        // after creation).
+        // IMPORTANT — dataType 'aws:ec2:image':
+        //   - Uses CfnParameter (L1) because Image Builder requires
+        //     dataType 'aws:ec2:image'. L2 StringParameter only creates
+        //     dataType 'text', which breaks the distribution config.
+        //   - The seed value MUST be a valid AMI ID. SSM validates the
+        //     value format when dataType is 'aws:ec2:image' — arbitrary
+        //     placeholders like 'PENDING_FIRST_BUILD' cause CREATE_FAILED
+        //     (timeout). We seed with the parent Amazon Linux 2023 AMI
+        //     resolved from the public SSM parameter.
         // -----------------------------------------------------------------
+        const parentAmiId = ssm.StringParameter.valueForStringParameter(
+            this,
+            imageConfig.parentImageSsmPath,
+        );
+
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const amiSsmCfnParameter = new ssm.CfnParameter(this, 'AmiParameter', {
             name: imageConfig.amiSsmPath,
             type: 'String',
-            value: 'PENDING_FIRST_BUILD',
+            value: parentAmiId,
             dataType: 'aws:ec2:image',
             description: `Latest Golden AMI ID for ${namePrefix}`,
             tier: 'Standard',
