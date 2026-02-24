@@ -62,10 +62,10 @@ jobs:
         with:
           filters: |
             stacks:
-              - 'lib/*-stack.ts'
-              - 'tests/unit/stacks/**'
+              - 'infra/lib/*-stack.ts'
+              - 'infra/tests/unit/stacks/**'
             aspects:
-              - 'lib/aspects/**'
+              - 'infra/lib/aspects/**'
             ci-config:
               - '.github/**'
               - 'package.json'
@@ -74,10 +74,10 @@ jobs:
               - 'jest.config.*'
               - 'justfile'
             any-src:
-              - 'lib/**/*.ts'
+              - 'infra/lib/**/*.ts'
               - 'bin/**/*.ts'
             any-tests:
-              - 'tests/**/*.ts'
+              - 'infra/tests/**/*.ts'
 
       - name: Compute Run Flags
         id: compute

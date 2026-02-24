@@ -8,7 +8,7 @@ on:
     branches:
       - staging
     paths:
-      - "lib/**"
+      - "infra/lib/**"
       - "bin/**"
       - ".github/workflows/deploy-monitoring-staging.yml"
       - ".github/workflows/_deploy-monitoring.yml"

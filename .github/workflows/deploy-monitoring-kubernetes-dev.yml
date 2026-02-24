@@ -11,14 +11,14 @@ on:
     branches:
       - develop
     paths:
-      - "lib/config/k8s/**"
-      - "lib/config/projects.ts"
-      - "lib/config/defaults.ts"
-      - "lib/projects/k8s/**"
-      - "lib/stacks/k8s/**"
-      - "lib/common/compute/builders/user-data-builder.ts"
+      - "infra/lib/config/k8s/**"
+      - "infra/lib/config/projects.ts"
+      - "infra/lib/config/defaults.ts"
+      - "infra/lib/projects/k8s/**"
+      - "infra/lib/stacks/k8s/**"
+      - "infra/lib/common/compute/builders/user-data-builder.ts"
       - "app-deploy/monitoring/**"
-      - "bin/app.ts"
+      - "infra/bin/app.ts"
       - ".github/workflows/deploy-monitoring-kubernetes-dev.yml"
       - ".github/workflows/_deploy-monitoring-kubernetes.yml"
       - ".github/workflows/_verify-stack.yml"

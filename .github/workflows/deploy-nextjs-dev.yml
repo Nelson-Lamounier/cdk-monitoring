@@ -10,10 +10,10 @@ on:
     branches:
       - develop
     paths:
-      - "lib/stacks/nextjs/**"
-      - "lib/projects/nextjs/**"
-      - "lib/common/**"
-      - "bin/app.ts"
+      - "infra/lib/stacks/nextjs/**"
+      - "infra/lib/projects/nextjs/**"
+      - "infra/lib/common/**"
+      - "infra/bin/app.ts"
       - ".github/workflows/_deploy-nextjs.yml"
 
   workflow_dispatch:

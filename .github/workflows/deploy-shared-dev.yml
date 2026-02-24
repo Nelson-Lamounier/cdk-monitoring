@@ -11,8 +11,8 @@ on:
   push:
     branches: [main]
     paths:
-      - "lib/shared/**"
-      - "bin/app.ts"
+      - "infra/lib/shared/**"
+      - "infra/bin/app.ts"
       - "scripts/deployment/stacks.ts"
       - ".github/workflows/deploy-shared-*.yml"
       - ".github/workflows/_deploy-stack.yml"
