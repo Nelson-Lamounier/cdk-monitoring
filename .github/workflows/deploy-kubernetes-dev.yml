@@ -6,7 +6,7 @@
 # Post-deploy: monitoring manifests, app manifests, static assets, smoke tests.
 #
 # Prerequisites:
-#   - Shared VPC from deploy-shared workflow/ Test
+#   - Shared VPC from deploy-shared workflow
 
 name: Deploy K8s to Development
 
