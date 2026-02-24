@@ -306,11 +306,11 @@ jobs:
                       for match in matches:
                           print(f"  {match}")
                   else:
-                      print("  ✅ passed")
+                      print("  PASS")
               except RecursionError:
-                  print(f"  ⚠️  skipped (template too deeply nested)")
+                  print(f"  SKIP (template too deeply nested)")
               except Exception as e:
-                  print(f"  ⚠️  skipped ({type(e).__name__}: {e})")
+                  print(f"  SKIP ({type(e).__name__}: {e})")
 
           if total_errors > 0:
               print(f"\n{total_errors} validation errors found")
@@ -574,7 +574,7 @@ jobs:
 
             if [ "$ALL_HEALTHY" = true ]; then
               echo ""
-              echo "✅ All ArgoCD apps are Synced+Healthy"
+              echo "All ArgoCD apps are Synced+Healthy"
               exit 0
             fi
 
@@ -622,11 +622,11 @@ jobs:
       # -----------------------------------------------------------------------
       # Failure Diagnostics — extract CFn events + K8s state on failure
       # -----------------------------------------------------------------------
-      - name: "📋 Capture Failure Diagnostics"
+      - name: "Capture Failure Diagnostics"
         if: failure()
         continue-on-error: true
         run: |
-          echo "## 🔍 Failure Diagnostics" >> $GITHUB_STEP_SUMMARY
+          echo "## Failure Diagnostics" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Environment**: ${{ inputs.environment }} | **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -651,7 +651,7 @@ jobs:
               echo "$EVENTS" >> $GITHUB_STEP_SUMMARY
               echo '```' >> $GITHUB_STEP_SUMMARY
             else
-              echo "✅ No failed events" >> $GITHUB_STEP_SUMMARY
+              echo "No failed events" >> $GITHUB_STEP_SUMMARY
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
           done
@@ -684,6 +684,14 @@ jobs:
             echo "_Could not resolve instance ID from SSM — skipping K8s diagnostics_" >> $GITHUB_STEP_SUMMARY
           fi
 
+      # -----------------------------------------------------------------------
+      # Boot Logs — fetch recent CloudWatch logs from the EC2 instance
+      # -----------------------------------------------------------------------
+      - name: "Fetch Boot Logs from CloudWatch"
+        if: failure()
+        continue-on-error: true
+        run: just ci-fetch-boot-logs ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+
   # ===========================================================================
   # Deployment Failure Alert (staging/production only)
   #
@@ -695,7 +703,7 @@ jobs:
   #   4. Let them "roll forward" with a targeted fix
   # ===========================================================================
   deployment-failure-alert:
-    name: "🚨 Deployment Failed — Alert"
+    name: "Deployment Failed — Alert"
     needs:
       [setup, deploy-compute, deploy-edge, deploy-nextjs-app, verify-and-test]
     runs-on: ubuntu-latest
@@ -787,15 +795,37 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
 
+      - name: "Fetch Boot Logs from CloudWatch"
+        continue-on-error: true
+        run: |
+          echo "### EC2 Boot Logs (last 15 minutes)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          LOG_GROUP="/ec2/k8s-${{ inputs.cdk-environment }}/instances"
+          START_TIME=$(( $(date +%s) * 1000 - 900000 ))
+          EVENTS=$(aws logs filter-log-events \
+            --log-group-name "$LOG_GROUP" \
+            --start-time "$START_TIME" \
+            --query 'events[].{ts:timestamp,stream:logStreamName,msg:message}' \
+            --output table \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+          if [ -n "$EVENTS" ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$EVENTS" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "_No boot log events found (log group: ${LOG_GROUP})_" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
       - name: "Post Failure Context"
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "### Quick Links" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **[Failed Run Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**" >> $GITHUB_STEP_SUMMARY
           echo "- **[Commit](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> ⚠️ **Do not run automated CFn rollbacks on K8s/GitOps infrastructure.**" >> $GITHUB_STEP_SUMMARY
+          echo "> **Do not run automated CFn rollbacks on K8s/GitOps infrastructure.**" >> $GITHUB_STEP_SUMMARY
           echo "> Prefer \"roll forward\" — push a fix commit to trigger a new deployment." >> $GITHUB_STEP_SUMMARY
 
           echo "::error::Deployment verification failed for ${{ inputs.environment }}. Check the Deployment Failure Report in the job summary for diagnostics."
@@ -845,7 +875,7 @@ jobs:
           if [ "${{ needs.setup.result }}" != "success" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             cat >> $GITHUB_STEP_SUMMARY << 'EOF'
-          ## ⚠️ Pipeline Aborted
+          ## Pipeline Aborted
 
           **Reason**: Setup job did not complete successfully (`${{ needs.setup.result }}`)
           **Commit**: `${{ github.sha }}`
