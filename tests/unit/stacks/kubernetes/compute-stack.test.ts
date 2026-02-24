@@ -354,11 +354,131 @@ describe('KubernetesComputeStack', () => {
 
     // =========================================================================
     // Golden AMI Pipeline (conditional)
+    //
+    // See: docs/kubernetes/cloudformation/COMPUTE_TROUBLESHOOT.md
+    //
+    // Key regression guard: SSM parameter with dataType 'aws:ec2:image'
+    // MUST be seeded with a valid AMI ID — arbitrary placeholders
+    // (e.g. 'PENDING_FIRST_BUILD') cause CREATE_FAILED (timeout).
+    // The fix is to seed with the parent AMI ID resolved from the
+    // public SSM parameter at deploy time.
     // =========================================================================
     describe('Golden AMI Pipeline', () => {
-        it.todo('should create Image Builder pipeline when enableImageBuilder is true');
+        // Default TEST_CONFIGS has enableImageBuilder: true
+        const { template } = createComputeStack();
 
-        it.todo('should NOT create Image Builder pipeline when enableImageBuilder is false');
+        it('should create an Image Builder pipeline when enableImageBuilder is true', () => {
+            template.resourceCountIs('AWS::ImageBuilder::ImagePipeline', 1);
+        });
+
+        it('should create an Image Builder recipe with encrypted EBS', () => {
+            template.hasResourceProperties('AWS::ImageBuilder::ImageRecipe', {
+                BlockDeviceMappings: Match.arrayWith([
+                    Match.objectLike({
+                        Ebs: Match.objectLike({
+                            Encrypted: true,
+                            VolumeType: 'gp3',
+                        }),
+                    }),
+                ]),
+            });
+        });
+
+        it('should create an Image Builder infrastructure configuration', () => {
+            template.hasResourceProperties(
+                'AWS::ImageBuilder::InfrastructureConfiguration',
+                Match.objectLike({
+                    TerminateInstanceOnFailure: true,
+                }),
+            );
+        });
+
+        it('should create an Image Builder distribution with SSM parameter target', () => {
+            template.hasResourceProperties(
+                'AWS::ImageBuilder::DistributionConfiguration',
+                {
+                    Distributions: Match.arrayWith([
+                        Match.objectLike({
+                            SsmParameterConfigurations: Match.arrayWith([
+                                Match.objectLike({
+                                    DataType: 'aws:ec2:image',
+                                }),
+                            ]),
+                        }),
+                    ]),
+                },
+            );
+        });
+
+        // -----------------------------------------------------------------
+        // REGRESSION GUARD — docs/kubernetes/cloudformation/COMPUTE_TROUBLESHOOT.md
+        //
+        // SSM parameter with dataType 'aws:ec2:image' must hold a valid AMI ID.
+        // Previously seeded with 'PENDING_FIRST_BUILD' which caused timeouts.
+        // -----------------------------------------------------------------
+        describe('Golden AMI SSM Parameter (aws:ec2:image dataType)', () => {
+            type SsmResource = { Properties?: { DataType?: string; Value?: unknown } };
+            let goldenAmiParam: [string, SsmResource] | undefined;
+            let paramValue: unknown;
+
+            beforeAll(() => {
+                const ssmParameters = template.findResources('AWS::SSM::Parameter');
+                goldenAmiParam = Object.entries(ssmParameters).find(([, resource]) => {
+                    const props = (resource as SsmResource).Properties;
+                    return props?.DataType === 'aws:ec2:image';
+                }) as [string, SsmResource] | undefined;
+
+                paramValue = goldenAmiParam?.[1]?.Properties?.Value;
+            });
+
+            it('should create an SSM parameter with dataType aws:ec2:image', () => {
+                expect(goldenAmiParam).toBeDefined();
+            });
+
+            it('should NOT use a placeholder string as the initial value', () => {
+                // The value must NOT be a bare placeholder like 'PENDING_FIRST_BUILD'.
+                const invalidPlaceholders = [
+                    'PENDING_FIRST_BUILD',
+                    'PLACEHOLDER',
+                    'TBD',
+                    'NONE',
+                ];
+
+                expect(invalidPlaceholders).not.toContain(
+                    String(paramValue).toUpperCase(),
+                );
+            });
+
+            it('should resolve the initial value from the parent AMI SSM parameter', () => {
+                // CDK synthesizes ssm.StringParameter.valueForStringParameter
+                // as a { Ref: ... } to a CloudFormation Parameter backed by SSM,
+                // NOT a {{resolve:ssm:...}} dynamic reference.
+                expect(paramValue).toStrictEqual(
+                    expect.objectContaining({ Ref: expect.stringContaining('SsmParameterValue') }),
+                );
+            });
+        });
+
+        // -----------------------------------------------------------------
+        // Conditional: disabled
+        // -----------------------------------------------------------------
+        describe('when enableImageBuilder is false', () => {
+            const disabledConfigs = {
+                ...TEST_CONFIGS,
+                image: { ...TEST_CONFIGS.image, enableImageBuilder: false },
+            };
+            const { template: disabledTemplate } = createComputeStack({
+                configs: disabledConfigs,
+            });
+
+            it('should NOT create an Image Builder pipeline', () => {
+                disabledTemplate.resourceCountIs('AWS::ImageBuilder::ImagePipeline', 0);
+            });
+
+            it('should NOT create an Image Builder recipe', () => {
+                disabledTemplate.resourceCountIs('AWS::ImageBuilder::ImageRecipe', 0);
+            });
+        });
     });
 
     // =========================================================================
