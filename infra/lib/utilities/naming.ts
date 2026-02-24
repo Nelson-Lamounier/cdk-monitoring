@@ -47,7 +47,9 @@ export const STACK_REGISTRY = {
     },
     kubernetes: {
         data: 'Data',
+        base: 'Base',
         compute: 'Compute',
+        appIam: 'AppIam',
         api: 'Api',
         edge: 'Edge',
     },
