@@ -333,7 +333,18 @@ export class KubernetesEdgeStack extends cdk.Stack {
 
         // EIP origin — Traefik Ingress on the Kubernetes node
         // Uses HTTP_ONLY since Traefik's self-signed cert doesn't match our domain
-        const eipOrigin = new origins.HttpOrigin(eipAddress, {
+        //
+        // IMPORTANT: CloudFront rejects raw IP addresses as origin domain names.
+        // Convert the EIP to its AWS EC2 public DNS hostname:
+        //   1.2.3.4 → ec2-1-2-3-4.eu-west-1.compute.amazonaws.com
+        // This hostname is auto-assigned by AWS and resolves to the same IP.
+        const eipDnsName = cdk.Fn.join('', [
+            'ec2-',
+            cdk.Fn.join('-', cdk.Fn.split('.', eipAddress)),
+            `.${ssmRegion}.compute.amazonaws.com`,
+        ]);
+
+        const eipOrigin = new origins.HttpOrigin(eipDnsName, {
             protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
             connectionAttempts: cfConfig.albOriginTimeouts.connectionAttempts,
             connectionTimeout: cfConfig.albOriginTimeouts.connectionTimeout,
