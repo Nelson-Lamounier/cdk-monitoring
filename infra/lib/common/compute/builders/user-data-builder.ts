@@ -189,8 +189,8 @@ export interface KubeadmJoinConfig {
     readonly caHashSsmPath: string;
     /** Kubernetes node label for workload isolation (e.g., 'role=application') */
     readonly nodeLabel: string;
-    /** Kubernetes node taint for workload isolation (e.g., 'role=application:NoSchedule') */
-    readonly nodeTaint: string;
+    /** Kubernetes node taint for workload isolation (e.g., 'role=application:NoSchedule'). Omit for Hybrid-HA. */
+    readonly nodeTaint?: string;
     /** AWS region for SSM lookups @default 'eu-west-1' */
     readonly region?: string;
 }

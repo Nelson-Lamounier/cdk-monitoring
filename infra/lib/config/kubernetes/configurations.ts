@@ -60,6 +60,8 @@ export interface KubernetesClusterConfig {
 export interface K8sComputeConfig {
     /** EC2 instance type */
     readonly instanceType: ec2.InstanceType;
+    /** Root EBS volume size in GB (must be >= Golden AMI snapshot size) @default 30 */
+    readonly rootVolumeSizeGb: number;
     /** Whether to enable detailed CloudWatch monitoring */
     readonly detailedMonitoring: boolean;
     /** Whether to use CloudFormation signals for ASG */
@@ -138,6 +140,27 @@ export interface K8sSsmConfig {
     readonly maxErrors: string;
 }
 
+/**
+ * Monitoring worker node configuration
+ *
+ * Dedicated worker node for K8s-native monitoring workloads
+ * (Prometheus Operator, Grafana, Loki, Tempo).
+ */
+export interface MonitoringWorkerConfig {
+    /** EC2 instance type for the monitoring worker */
+    readonly instanceType: ec2.InstanceType;
+    /** Kubernetes node label for workload placement (observability, not exclusive) */
+    readonly nodeLabel: string;
+    /** Whether to enable detailed CloudWatch monitoring */
+    readonly detailedMonitoring: boolean;
+    /** Whether to use CloudFormation signals for ASG */
+    readonly useSignals: boolean;
+    /** Timeout for CloudFormation signals in minutes */
+    readonly signalsTimeoutMinutes: number;
+    /** EBS root volume size in GB */
+    readonly rootVolumeSizeGb: number;
+}
+
 export interface K8sEdgeConfig {
     // Synth-time context — DNS/Edge (env var > hardcoded default)
     /** Domain name for monitoring CloudFront distribution */
@@ -167,6 +190,7 @@ export interface K8sConfigs {
     readonly image: K8sImageConfig;
     readonly ssm: K8sSsmConfig;
     readonly edge: K8sEdgeConfig;
+    readonly monitoringWorker: MonitoringWorkerConfig;
     readonly logRetention: logs.RetentionDays;
     readonly isProduction: boolean;
     readonly removalPolicy: cdk.RemovalPolicy;
@@ -187,10 +211,11 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             podNetworkCidr: '192.168.0.0/16',
             serviceSubnet: '10.96.0.0/12',
             dataDir: '/data/kubernetes',
-            workerCount: 1,
+            workerCount: 2,
         },
         compute: {
-            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            rootVolumeSizeGb: 30,
             detailedMonitoring: false,
             useSignals: true,
             signalsTimeoutMinutes: 15,
@@ -234,6 +259,14 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             enableRateLimiting: true,
             enableIpReputationList: true,
         },
+        monitoringWorker: {
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            nodeLabel: 'role=monitoring',
+            detailedMonitoring: false,
+            useSignals: true,
+            signalsTimeoutMinutes: 15,
+            rootVolumeSizeGb: 30,
+        },
         logRetention: logs.RetentionDays.ONE_WEEK,
         isProduction: false,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -246,10 +279,11 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             podNetworkCidr: '192.168.0.0/16',
             serviceSubnet: '10.96.0.0/12',
             dataDir: '/data/kubernetes',
-            workerCount: 1,
+            workerCount: 2,
         },
         compute: {
-            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            rootVolumeSizeGb: 30,
             detailedMonitoring: true,
             useSignals: true,
             signalsTimeoutMinutes: 15,
@@ -291,6 +325,14 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             enableRateLimiting: true,
             enableIpReputationList: true,
         },
+        monitoringWorker: {
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            nodeLabel: 'role=monitoring',
+            detailedMonitoring: true,
+            useSignals: true,
+            signalsTimeoutMinutes: 15,
+            rootVolumeSizeGb: 30,
+        },
         logRetention: logs.RetentionDays.ONE_MONTH,
         isProduction: false,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -303,10 +345,11 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             podNetworkCidr: '192.168.0.0/16',
             serviceSubnet: '10.96.0.0/12',
             dataDir: '/data/kubernetes',
-            workerCount: 1,
+            workerCount: 2,
         },
         compute: {
-            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.LARGE),
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            rootVolumeSizeGb: 30,
             detailedMonitoring: true,
             useSignals: true,
             signalsTimeoutMinutes: 15,
@@ -347,6 +390,14 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             rateLimitPerIp: 2000,
             enableRateLimiting: true,
             enableIpReputationList: true,
+        },
+        monitoringWorker: {
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            nodeLabel: 'role=monitoring',
+            detailedMonitoring: true,
+            useSignals: true,
+            signalsTimeoutMinutes: 15,
+            rootVolumeSizeGb: 30,
         },
         logRetention: logs.RetentionDays.THREE_MONTHS,
         isProduction: true,

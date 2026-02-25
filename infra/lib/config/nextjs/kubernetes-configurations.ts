@@ -36,10 +36,8 @@ export interface NextJsK8sConfig {
     readonly instanceType: ec2.InstanceType;
     /** Capacity type (on-demand or spot) */
     readonly capacityType: CapacityType;
-    /** Kubernetes node label for workload isolation */
+    /** Kubernetes node label for workload placement (observability, not exclusive) */
     readonly nodeLabel: string;
-    /** Kubernetes node taint for workload isolation */
-    readonly nodeTaint: string;
     /**
      * SSM parameter prefix of the kubeadm control plane cluster.
      * Used to discover the server URL and join token.
@@ -70,12 +68,11 @@ export const NEXTJS_K8S_CONFIGS: Record<Environment, NextJsK8sConfig> = {
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
         capacityType: 'on-demand',
         nodeLabel: 'role=application',
-        nodeTaint: 'role=application:NoSchedule',
         controlPlaneSsmPrefix: '/k8s/development',
         detailedMonitoring: false,
         useSignals: true,
         signalsTimeoutMinutes: 15,
-        rootVolumeSizeGb: 20,
+        rootVolumeSizeGb: 30, // Must be >= Golden AMI snapshot size (30GB)
         isProduction: false,
     },
 
@@ -83,12 +80,11 @@ export const NEXTJS_K8S_CONFIGS: Record<Environment, NextJsK8sConfig> = {
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
         capacityType: 'on-demand',
         nodeLabel: 'role=application',
-        nodeTaint: 'role=application:NoSchedule',
         controlPlaneSsmPrefix: '/k8s/staging',
         detailedMonitoring: true,
         useSignals: true,
         signalsTimeoutMinutes: 15,
-        rootVolumeSizeGb: 20,
+        rootVolumeSizeGb: 30, // Must be >= Golden AMI snapshot size (30GB)
         isProduction: false,
     },
 
@@ -96,12 +92,11 @@ export const NEXTJS_K8S_CONFIGS: Record<Environment, NextJsK8sConfig> = {
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
         capacityType: 'on-demand', // Switch to reserved via AWS console/CLI after purchase
         nodeLabel: 'role=application',
-        nodeTaint: 'role=application:NoSchedule',
         controlPlaneSsmPrefix: '/k8s/production',
         detailedMonitoring: true,
         useSignals: true,
         signalsTimeoutMinutes: 15,
-        rootVolumeSizeGb: 20,
+        rootVolumeSizeGb: 30, // Must be >= Golden AMI snapshot size (30GB)
         isProduction: true,
     },
 };
