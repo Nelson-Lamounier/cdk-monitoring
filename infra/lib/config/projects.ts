@@ -67,7 +67,7 @@ export const PROJECT_CONFIGS: Record<Project, ProjectConfig> = {
     [Project.KUBERNETES]: {
         displayName: 'Kubernetes',
         description: 'Kubernetes cluster for unified workloads',
-        namespace: 'Monitoring-K8s',
+        namespace: '',
         requiresSharedVpc: true,
     },
 } as const;
