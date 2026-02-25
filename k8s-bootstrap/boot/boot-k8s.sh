@@ -500,6 +500,26 @@ kubectl get pods -n calico-system
 kubectl get nodes -o wide
 
 # =============================================================================
+# 5b. Install metrics-server (required for HPA)
+# =============================================================================
+
+echo "=== Installing metrics-server ==="
+
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+# kubeadm uses self-signed kubelet certificates — metrics-server needs
+# --kubelet-insecure-tls to skip TLS verification against kubelet endpoints.
+kubectl patch deployment metrics-server -n kube-system \
+    --type='json' \
+    -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+
+echo "Waiting for metrics-server to become ready..."
+kubectl wait --for=condition=Available deployment/metrics-server \
+    -n kube-system --timeout=120s || echo "WARNING: metrics-server not ready in 120s"
+
+echo "metrics-server installed successfully"
+
+# =============================================================================
 # 6. Configure kubectl Access
 # =============================================================================
 
