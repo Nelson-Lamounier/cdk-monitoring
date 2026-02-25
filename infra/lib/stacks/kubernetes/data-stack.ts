@@ -37,8 +37,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 import { Construct } from 'constructs';
 
-import { applyCommonSuppressions } from '../../../aspects/cdk-nag-aspect';
-import { DynamoDbTableConstruct, S3BucketConstruct } from '../../../common/storage';
+import { applyCommonSuppressions } from '../../aspects/cdk-nag-aspect';
+import { DynamoDbTableConstruct, S3BucketConstruct } from '../../common/storage';
 import {
     Environment,
     isProductionEnvironment,
@@ -49,9 +49,9 @@ import {
     PORTFOLIO_GSI1_NAME,
     PORTFOLIO_GSI2_NAME,
     nextjsSsmPaths,
-} from '../../../config';
-import { getNextJsConfigs } from '../../../config/nextjs/configurations';
-import { nextjsResourceNames, DYNAMO_TABLE_STEM } from '../../../config/nextjs/resource-names';
+} from '../../config';
+import { getNextJsConfigs } from '../../config/nextjs/configurations';
+import { nextjsResourceNames, DYNAMO_TABLE_STEM } from '../../config/nextjs/resource-names';
 
 // =============================================================================
 // STACK PROPS
