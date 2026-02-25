@@ -353,19 +353,20 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Build Golden AMI (parallel with Compute)
+  # Build Golden AMI (after Compute — needs updated pipeline resources)
   #
   # Triggers Image Builder to bake containerd + kubeadm into a Golden AMI.
-  # Runs in parallel with deploy-compute — does NOT block the deployment.
+  # Runs AFTER deploy-compute so that any changes to the component/recipe
+  # (content-hash versioned) are deployed before triggering the build.
   # On Day-0: AMI matches parent → build triggered (first bake).
   # On Day-1+: AMI differs from parent → skipped (already baked).
   # ===========================================================================
   build-golden-ami:
     name: Build Golden AMI
-    needs: [setup, deploy-data]
+    needs: [setup, deploy-compute]
     if: >-
       always()
-      && needs.deploy-data.result == 'success'
+      && needs.deploy-compute.result == 'success'
       && inputs.enable-golden-ami-build
     uses: ./.github/workflows/_build-golden-ami.yml
     with:
