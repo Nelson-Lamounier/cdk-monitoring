@@ -19,6 +19,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@aws-cdk/aws-lambda-python-alpha@npm:2.233.0-alpha.0":
+  version: 2.233.0-alpha.0
+  resolution: "@aws-cdk/aws-lambda-python-alpha@npm:2.233.0-alpha.0"
+  peerDependencies:
+    aws-cdk-lib: ^2.233.0
+    constructs: ^10.0.0
+  checksum: 10c0/9799280e94d48fd2ca6c402e36cfa12703d62c5d4f0d19c7d05b1fbfeadc9f573d0b8ea59a5439a477c4541e5ca54a28a30101fe7d224fa2e0f92ddb4852d962
+  languageName: node
+  linkType: hard
+
 "@aws-cdk/aws-service-spec@npm:0.1.132":
   version: 0.1.132
   resolution: "@aws-cdk/aws-service-spec@npm:0.1.132"
@@ -3251,6 +3261,20 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@cdklabs/generative-ai-cdk-constructs@npm:^0.1.314":
+  version: 0.1.314
+  resolution: "@cdklabs/generative-ai-cdk-constructs@npm:0.1.314"
+  dependencies:
+    "@aws-cdk/aws-lambda-python-alpha": "npm:2.233.0-alpha.0"
+    cdk-nag: "npm:^2.37.55"
+    deepmerge: "npm:^4.3.1"
+  peerDependencies:
+    aws-cdk-lib: ^2.233.0
+    constructs: ^10.3.0
+  checksum: 10c0/46e67be592ba94763e6613c08a6821a70b146015ed190289bb41320c765588ac2154024c7c141f0279a85efd5085987889a3ec5ba4188391b5f5bed9f79e07ea
+  languageName: node
+  linkType: hard
+
 "@cdklabs/tskb@npm:^0.0.4":
   version: 0.0.4
   resolution: "@cdklabs/tskb@npm:0.0.4"
@@ -6252,6 +6276,7 @@ __metadata:
     "@babel/core": "npm:^7.28.5"
     "@babel/preset-env": "npm:^7.28.5"
     "@babel/preset-typescript": "npm:^7.28.5"
+    "@cdklabs/generative-ai-cdk-constructs": "npm:^0.1.314"
     "@jest/test-sequencer": "npm:^30.2.0"
     "@smithy/util-waiter": "npm:^4.2.8"
     "@types/aws-lambda": "npm:^8.10.159"

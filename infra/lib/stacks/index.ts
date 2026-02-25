@@ -18,3 +18,6 @@ export * from './nextjs';
 
 // Shared stacks (cross-account resources)
 export * from './shared';
+
+// Bedrock AI agent stacks
+export * from './bedrock';
