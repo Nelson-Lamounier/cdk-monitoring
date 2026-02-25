@@ -49,6 +49,8 @@ export const STACK_REGISTRY = {
         data: 'Data',
         base: 'Base',
         compute: 'Compute',
+        worker: 'Worker',
+        monitoringWorker: 'MonWorker',
         appIam: 'AppIam',
         api: 'Api',
         edge: 'Edge',

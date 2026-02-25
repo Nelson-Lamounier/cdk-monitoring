@@ -280,6 +280,20 @@ const k8sStacks: StackConfig[] = [
     dependsOn: ['base'],
   },
   {
+    id: 'worker',
+    name: 'Worker Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'worker', env),
+    description: 'Application worker node: kubeadm join + role=application label/taint',
+    dependsOn: ['compute'],
+  },
+  {
+    id: 'monitoringWorker',
+    name: 'Monitoring Worker Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'monitoringWorker', env),
+    description: 'Monitoring worker node: kubeadm join + role=monitoring label/taint',
+    dependsOn: ['compute'],
+  },
+  {
     id: 'appIam',
     name: 'App IAM Stack',
     getStackName: (env) => getStackId(Project.KUBERNETES, 'appIam', env),

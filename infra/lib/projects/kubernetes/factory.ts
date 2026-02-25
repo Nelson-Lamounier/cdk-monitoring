@@ -5,11 +5,12 @@
  * Creates shared Kubernetes infrastructure hosting both monitoring and
  * application workloads on a kubeadm Kubernetes cluster.
  *
- * Stack Architecture (6 stacks):
+ * Stack Architecture (7 stacks):
  *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
  *   2. Kubernetes-Base: VPC, Security Group, KMS, EBS, Elastic IP
- *   3. Kubernetes-Compute: EC2 instance, ASG, IAM, S3 manifests bucket,
- *      SSM docs, Golden AMI, State Manager
+ *   3. Kubernetes-Compute: Control plane EC2 (t3.medium), ASG, IAM,
+ *      S3 manifests bucket, SSM docs, Golden AMI, State Manager
+ *   3b. Kubernetes-Worker: Application node EC2 (t3.small), ASG, kubeadm join
  *   4. Kubernetes-AppIam: Application-tier IAM grants (DynamoDB, S3, Secrets)
  *   5. Kubernetes-API: API Gateway + Lambda (email subscriptions)
  *   6. Kubernetes-Edge: ACM + WAF + CloudFront (us-east-1)
@@ -31,6 +32,7 @@ import {
 } from '../../config/environments';
 import { getK8sConfigs } from '../../config/kubernetes';
 import { getNextJsConfigs } from '../../config/nextjs/configurations';
+import { getNextJsK8sConfig } from '../../config/nextjs/kubernetes-configurations';
 import { nextjsResourceNames } from '../../config/nextjs/resource-names';
 import { Project, getProjectConfig } from '../../config/projects';
 import { nextjsSsmPaths } from '../../config/ssm-paths';
@@ -42,9 +44,11 @@ import {
 import {
     KubernetesAppIamStack,
     KubernetesBaseStack,
-    KubernetesComputeStack,
+    KubernetesControlPlaneStack,
     KubernetesDataStack,
     KubernetesEdgeStack,
+    KubernetesMonitoringWorkerStack,
+    KubernetesAppWorkerStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/nextjs/networking/api-stack';
 import { stackId } from '../../utilities/naming';
@@ -216,13 +220,13 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stackMap.base = baseStack;
 
         // =================================================================
-        // Stack 3: COMPUTE STACK (ASG + Launch Template + Runtime)
+        // Stack 3: CONTROL PLANE STACK (ASG + Launch Template + Runtime)
         //
         // kubeadm cluster hosting both monitoring and app workloads.
         // Consumes base infrastructure from KubernetesBaseStack.
         // Does NOT contain application-specific IAM — see AppIamStack.
         // =================================================================
-        const computeStack = new KubernetesComputeStack(
+        const controlPlaneStack = new KubernetesControlPlaneStack(
             scope,
             stackId(this.namespace, 'Compute', environment),
             {
@@ -235,9 +239,58 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 ssmPrefix,
             },
         );
-        computeStack.addDependency(baseStack);
-        stacks.push(computeStack);
-        stackMap.compute = computeStack;
+        controlPlaneStack.addDependency(baseStack);
+        stacks.push(controlPlaneStack);
+        stackMap.compute = controlPlaneStack;
+
+        // =================================================================
+        // Stack 3b: WORKER STACK (Application Node — t3.small)
+        //
+        // Dedicated worker node for Next.js workloads.
+        // Joins the kubeadm cluster via SSM-published join token.
+        // Workload isolated via node labels + taints.
+        // =================================================================
+        const workerConfig = getNextJsK8sConfig(environment);
+        const workerStack = new KubernetesAppWorkerStack(
+            scope,
+            stackId(this.namespace, 'Worker', environment),
+            {
+                baseStack,
+                env,
+                description: `Kubernetes worker node for Next.js application — ${environment}`,
+                targetEnvironment: environment,
+                workerConfig,
+                controlPlaneSsmPrefix: ssmPrefix,
+                namePrefix,
+            },
+        );
+        workerStack.addDependency(controlPlaneStack);
+        stacks.push(workerStack);
+        stackMap.worker = workerStack;
+
+        // =================================================================
+        // Stack 3c: MONITORING WORKER STACK (Monitoring Node — t3.small)
+        //
+        // Dedicated worker node for K8s-native monitoring workloads.
+        // Joins the kubeadm cluster via SSM-published join token.
+        // Workload isolated via node labels + taints (role=monitoring).
+        // =================================================================
+        const monitoringWorkerStack = new KubernetesMonitoringWorkerStack(
+            scope,
+            stackId(this.namespace, 'MonWorker', environment),
+            {
+                baseStack,
+                env,
+                description: `Kubernetes monitoring worker node — ${environment}`,
+                targetEnvironment: environment,
+                monitoringWorkerConfig: configs.monitoringWorker,
+                controlPlaneSsmPrefix: ssmPrefix,
+                namePrefix,
+            },
+        );
+        monitoringWorkerStack.addDependency(controlPlaneStack);
+        stacks.push(monitoringWorkerStack);
+        stackMap.monitoringWorker = monitoringWorkerStack;
 
         // =================================================================
         // Stack 4: APP IAM STACK (Application-Tier Grants)
@@ -251,7 +304,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             scope,
             stackId(this.namespace, 'AppIam', environment),
             {
-                computeStack,
+                controlPlaneStack,
                 env,
                 description: `Application-tier IAM grants for Kubernetes cluster — ${environment}`,
                 targetEnvironment: environment,
@@ -268,7 +321,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
             },
         );
-        appIamStack.addDependency(computeStack);
+        appIamStack.addDependency(controlPlaneStack);
         stacks.push(appIamStack);
         stackMap.appIam = appIamStack;
 
@@ -336,7 +389,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 env: edgeEnv,
             },
         );
-        edgeStack.addDependency(computeStack);
+        edgeStack.addDependency(controlPlaneStack);
         edgeStack.addDependency(dataStack);
         edgeStack.addDependency(apiStack);
         stacks.push(edgeStack);

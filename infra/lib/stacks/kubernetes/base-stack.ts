@@ -181,6 +181,16 @@ export class KubernetesBaseStack extends cdk.Stack {
             'Allow Tempo OTLP gRPC from VPC (cross-stack trace shipping)',
         );
 
+        // Intra-cluster communication (3-node kubeadm)
+        // Self-referencing SG rule: allows all traffic between nodes sharing
+        // this security group. Required for kubelet API (10250), VXLAN overlay
+        // (4789), Calico BGP (179), etcd (2379-2380), and NodePort services.
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.allTraffic(),
+            'Allow all intra-cluster traffic between K8s nodes',
+        );
+
         // =====================================================================
         // KMS Key for CloudWatch Log Group Encryption
         // =====================================================================
