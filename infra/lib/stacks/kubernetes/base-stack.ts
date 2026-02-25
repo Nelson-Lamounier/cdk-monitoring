@@ -33,6 +33,7 @@
 
 import { NagSuppressions } from 'cdk-nag';
 
+import * as dlm from 'aws-cdk-lib/aws-dlm';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
@@ -217,6 +218,53 @@ export class KubernetesBaseStack extends cdk.Stack {
             encrypted: true,
             removalPolicy: configs.removalPolicy,
             volumeName: `${namePrefix}-data`,
+        });
+
+        // =====================================================================
+        // EBS Snapshot Lifecycle Policy (DLM)
+        //
+        // Automated daily snapshots with 7-day retention. Critical insurance
+        // for single-node cluster: protects against etcd corruption, EBS
+        // failure, and accidental data loss.
+        // Cost: ~$0.05/GB/mo incremental → < $0.50/mo for 30 GB volume.
+        // =====================================================================
+        const dlmRole = new iam.Role(this, 'DlmLifecycleRole', {
+            assumedBy: new iam.ServicePrincipal('dlm.amazonaws.com'),
+            managedPolicies: [
+                iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSDataLifecycleManagerServiceRole'),
+            ],
+        });
+
+        new dlm.CfnLifecyclePolicy(this, 'EbsSnapshotPolicy', {
+            description: `Daily EBS snapshots for ${namePrefix} Kubernetes data volume`,
+            state: 'ENABLED',
+            executionRoleArn: dlmRole.roleArn,
+            policyDetails: {
+                resourceTypes: ['VOLUME'],
+                targetTags: [{
+                    key: 'Name',
+                    value: `${namePrefix}-data`,
+                }],
+                schedules: [{
+                    name: `${namePrefix}-daily-snapshot`,
+                    createRule: {
+                        interval: 24,
+                        intervalUnit: 'HOURS',
+                        times: ['03:00'],  // UTC — low-traffic window
+                    },
+                    retainRule: {
+                        count: 7,  // Keep 7 days of daily snapshots
+                    },
+                    tagsToAdd: [{
+                        key: 'CreatedBy',
+                        value: 'DLM',
+                    }, {
+                        key: 'Environment',
+                        value: targetEnvironment,
+                    }],
+                    copyTags: true,
+                }],
+            },
         });
 
         // =====================================================================
