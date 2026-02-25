@@ -153,7 +153,13 @@ jobs:
           MAX_POLLS=35
           INTERVAL=60
 
+          # CloudWatch log group for build output
+          LOG_GROUP="/aws/imagebuilder/k8s-development-golden-ami-recipe"
+          NEXT_TOKEN=""
+          LOG_STREAM=""
+
           echo "Polling Image Builder (timeout: ${MAX_POLLS}m)..."
+          echo "CloudWatch Log Group: $LOG_GROUP"
           echo ""
 
           for i in $(seq 1 $MAX_POLLS); do
@@ -162,6 +168,57 @@ jobs:
 
             TIMESTAMP=$(date '+%H:%M:%S')
             echo "  [$TIMESTAMP] Poll $i/$MAX_POLLS — Status: $STATUS"
+
+            # ---------------------------------------------------------------
+            # Stream CloudWatch Logs (incremental — only new lines each poll)
+            # ---------------------------------------------------------------
+            if [ -z "$LOG_STREAM" ]; then
+              # Discover the latest log stream (created when build instance starts)
+              LOG_STREAM=$(aws logs describe-log-streams \
+                --log-group-name "$LOG_GROUP" \
+                --order-by LastEventTime \
+                --descending \
+                --max-items 1 \
+                --query 'logStreams[0].logStreamName' \
+                --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "")
+              if [ -n "$LOG_STREAM" ] && [ "$LOG_STREAM" != "None" ]; then
+                echo "  Log stream: $LOG_STREAM"
+              else
+                LOG_STREAM=""
+              fi
+            fi
+
+            if [ -n "$LOG_STREAM" ]; then
+              # Fetch new log events since last token
+              if [ -n "$NEXT_TOKEN" ]; then
+                LOG_RESULT=$(aws logs get-log-events \
+                  --log-group-name "$LOG_GROUP" \
+                  --log-stream-name "$LOG_STREAM" \
+                  --next-token "$NEXT_TOKEN" \
+                  --start-from-head \
+                  --output json --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "{}")
+              else
+                LOG_RESULT=$(aws logs get-log-events \
+                  --log-group-name "$LOG_GROUP" \
+                  --log-stream-name "$LOG_STREAM" \
+                  --start-from-head \
+                  --output json --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "{}")
+              fi
+
+              # Extract and print new log lines
+              NEW_LINES=$(echo "$LOG_RESULT" | jq -r '.events[].message // empty' 2>/dev/null || echo "")
+              if [ -n "$NEW_LINES" ]; then
+                echo ""
+                echo "$NEW_LINES"
+                echo ""
+              fi
+
+              # Save forward token for next iteration
+              NEW_TOKEN=$(echo "$LOG_RESULT" | jq -r '.nextForwardToken // empty' 2>/dev/null || echo "")
+              if [ -n "$NEW_TOKEN" ]; then
+                NEXT_TOKEN="$NEW_TOKEN"
+              fi
+            fi
 
             case "$STATUS" in
               AVAILABLE)
