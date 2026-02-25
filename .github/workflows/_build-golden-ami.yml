@@ -176,9 +176,72 @@ jobs:
                 ;;
               FAILED|CANCELLED)
                 echo ""
+                echo "============================================="
+                echo "  GOLDEN AMI BUILD FAILED — Collecting Logs  "
+                echo "============================================="
+                echo ""
+
+                # 1. Show the high-level failure reason
                 REASON=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
                   --query 'image.state.reason' --output text 2>/dev/null || echo "unknown")
                 echo "::error::Image Builder build failed: $REASON"
+                echo ""
+
+                # 2. Fetch workflow execution logs (shows which step failed)
+                echo "--- Workflow Execution Logs ---"
+                WORKFLOW_ID=$(echo "$REASON" | grep -oP "wf-[a-f0-9-]+" || echo "")
+                if [ -n "$WORKFLOW_ID" ]; then
+                  aws imagebuilder get-workflow-execution \
+                    --workflow-execution-id "$WORKFLOW_ID" \
+                    --query 'steps[?status!=`COMPLETED`].{Step:stepName,Status:status,Reason:failureMessage}' \
+                    --output table --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "(Could not fetch workflow steps)"
+                  echo ""
+
+                  # Also list all step details
+                  aws imagebuilder list-workflow-step-executions \
+                    --workflow-execution-id "$WORKFLOW_ID" \
+                    --query 'steps[].{Step:name,Action:action,Status:status,Message:failureMessage}' \
+                    --output table --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "(Could not list step executions)"
+                else
+                  echo "(Could not extract workflow execution ID from reason)"
+                fi
+                echo ""
+
+                # 3. Fetch CloudWatch Logs from the build instance
+                #    Image Builder writes logs to /aws/imagebuilder/<component-name>
+                echo "--- CloudWatch Build Logs (last 80 lines) ---"
+                LOG_GROUP="/aws/imagebuilder/k8s-development-golden-ami-install"
+
+                # Get the most recent log stream
+                LATEST_STREAM=$(aws logs describe-log-streams \
+                  --log-group-name "$LOG_GROUP" \
+                  --order-by LastEventTime \
+                  --descending \
+                  --max-items 1 \
+                  --query 'logStreams[0].logStreamName' \
+                  --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "")
+
+                if [ -n "$LATEST_STREAM" ] && [ "$LATEST_STREAM" != "None" ]; then
+                  echo "Log stream: $LOG_GROUP/$LATEST_STREAM"
+                  echo ""
+                  aws logs get-log-events \
+                    --log-group-name "$LOG_GROUP" \
+                    --log-stream-name "$LATEST_STREAM" \
+                    --limit 80 \
+                    --query 'events[].message' \
+                    --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "(Could not fetch log events)"
+                else
+                  echo "No CloudWatch log stream found in $LOG_GROUP"
+                  echo "Trying alternate log group pattern..."
+                  # List available log groups matching the pattern
+                  aws logs describe-log-groups \
+                    --log-group-name-prefix "/aws/imagebuilder/" \
+                    --query 'logGroups[].logGroupName' \
+                    --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "(No Image Builder log groups found)"
+                fi
+                echo ""
+                echo "============================================="
+
                 exit 1
                 ;;
             esac
