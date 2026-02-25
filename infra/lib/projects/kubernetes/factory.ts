@@ -185,6 +185,10 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 targetEnvironment: environment,
                 projectName: nextjsNamePrefix,
                 env,
+                // Seed the Golden AMI SSM parameter so it exists before the
+                // Compute stack's LaunchTemplate resolves {{resolve:ssm:...}}
+                goldenAmiSsmPath: configs.image.amiSsmPath,
+                parentImageSsmPath: configs.image.parentImageSsmPath,
             },
         );
         stacks.push(dataStack);

@@ -290,13 +290,8 @@ describe('KubernetesComputeStack', () => {
     // =========================================================================
     // Golden AMI Pipeline (conditional)
     //
-    // See: docs/kubernetes/cloudformation/COMPUTE_TROUBLESHOOT.md
-    //
-    // Key regression guard: SSM parameter with dataType 'aws:ec2:image'
-    // MUST be seeded with a valid AMI ID — arbitrary placeholders
-    // (e.g. 'PENDING_FIRST_BUILD') cause CREATE_FAILED (timeout).
-    // The fix is to seed with the parent AMI ID resolved from the
-    // public SSM parameter at deploy time.
+    // NOTE: The SSM parameter (dataType 'aws:ec2:image') has been moved to
+    // the Data stack to avoid a Day-0 circular dependency. See data-stack.test.ts.
     // =========================================================================
     describe('Golden AMI Pipeline', () => {
         // Default TEST_CONFIGS has enableImageBuilder: true
@@ -346,51 +341,22 @@ describe('KubernetesComputeStack', () => {
         });
 
         // -----------------------------------------------------------------
-        // REGRESSION GUARD — docs/kubernetes/cloudformation/COMPUTE_TROUBLESHOOT.md
+        // REGRESSION GUARD — SSM parameter moved to Data stack
         //
-        // SSM parameter with dataType 'aws:ec2:image' must hold a valid AMI ID.
-        // Previously seeded with 'PENDING_FIRST_BUILD' which caused timeouts.
+        // The Compute stack must NOT create the Golden AMI SSM parameter.
+        // It's seeded by the Data stack (deployed first) to avoid Day-0
+        // ValidationError when CloudFormation resolves {{resolve:ssm:...}}.
         // -----------------------------------------------------------------
-        describe('Golden AMI SSM Parameter (aws:ec2:image dataType)', () => {
-            type SsmResource = { Properties?: { DataType?: string; Value?: unknown } };
-            let goldenAmiParam: [string, SsmResource] | undefined;
-            let paramValue: unknown;
-
-            beforeAll(() => {
+        describe('Golden AMI SSM Parameter (moved to Data stack)', () => {
+            it('should NOT create the Golden AMI SSM parameter in the Compute stack', () => {
+                type SsmResource = { Properties?: { DataType?: string; Value?: unknown } };
                 const ssmParameters = template.findResources('AWS::SSM::Parameter');
-                goldenAmiParam = Object.entries(ssmParameters).find(([, resource]) => {
+                const goldenAmiParam = Object.entries(ssmParameters).find(([, resource]) => {
                     const props = (resource as SsmResource).Properties;
                     return props?.DataType === 'aws:ec2:image';
-                }) as [string, SsmResource] | undefined;
+                });
 
-                paramValue = goldenAmiParam?.[1]?.Properties?.Value;
-            });
-
-            it('should create an SSM parameter with dataType aws:ec2:image', () => {
-                expect(goldenAmiParam).toBeDefined();
-            });
-
-            it('should NOT use a placeholder string as the initial value', () => {
-                // The value must NOT be a bare placeholder like 'PENDING_FIRST_BUILD'.
-                const invalidPlaceholders = [
-                    'PENDING_FIRST_BUILD',
-                    'PLACEHOLDER',
-                    'TBD',
-                    'NONE',
-                ];
-
-                expect(invalidPlaceholders).not.toContain(
-                    String(paramValue).toUpperCase(),
-                );
-            });
-
-            it('should resolve the initial value from the parent AMI SSM parameter', () => {
-                // CDK synthesizes ssm.StringParameter.valueForStringParameter
-                // as a { Ref: ... } to a CloudFormation Parameter backed by SSM,
-                // NOT a {{resolve:ssm:...}} dynamic reference.
-                expect(paramValue).toStrictEqual(
-                    expect.objectContaining({ Ref: expect.stringContaining('SsmParameterValue') }),
-                );
+                expect(goldenAmiParam).toBeUndefined();
             });
         });
 

@@ -66,6 +66,20 @@ export interface KubernetesDataStackProps extends cdk.StackProps {
 
     /** Project name @default 'k8s' */
     readonly projectName?: string;
+
+    /**
+     * SSM parameter path for the Golden AMI ID.
+     * When provided (along with parentImageSsmPath), the Data stack seeds
+     * this parameter so it exists before the Compute stack resolves it.
+     * @example '/k8s/development/golden-ami/latest'
+     */
+    readonly goldenAmiSsmPath?: string;
+
+    /**
+     * SSM parameter path for the parent (base) AMI used to seed the Golden AMI parameter.
+     * @example '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64'
+     */
+    readonly parentImageSsmPath?: string;
 }
 
 // =============================================================================
@@ -135,6 +149,8 @@ export class KubernetesDataStack extends cdk.Stack {
         const {
             targetEnvironment,
             projectName = 'k8s',
+            goldenAmiSsmPath,
+            parentImageSsmPath,
         } = props;
 
         this.targetEnvironment = targetEnvironment;
@@ -368,6 +384,38 @@ export class KubernetesDataStack extends cdk.Stack {
                 parameterName: paths.dynamodbKmsKeyArn,
                 stringValue: dynamoEncryptionKey.keyArn,
                 description: 'KMS key ARN for DynamoDB encryption (cross-stack discovery)',
+            });
+        }
+
+        // =================================================================
+        // GOLDEN AMI SSM PARAMETER — Day-0 Seed
+        //
+        // The Compute stack's LaunchTemplate uses fromSsmParameter() which
+        // generates a {{resolve:ssm:...}} dynamic reference. CloudFormation
+        // resolves this BEFORE creating any resources. If the SSM parameter
+        // doesn't exist, the stack fails with ValidationError.
+        //
+        // By seeding the parameter here (Data stack deploys BEFORE Compute),
+        // we guarantee the parameter exists when CloudFormation validates
+        // the Compute stack template.
+        //
+        // Uses CfnParameter (L1) because Image Builder requires
+        // dataType 'aws:ec2:image'. L2 StringParameter only creates
+        // dataType 'text', which breaks Image Builder distribution config.
+        // =================================================================
+        if (goldenAmiSsmPath && parentImageSsmPath) {
+            const parentAmiId = ssm.StringParameter.valueForStringParameter(
+                this,
+                parentImageSsmPath,
+            );
+
+            new ssm.CfnParameter(this, 'GoldenAmiSeedParameter', {
+                name: goldenAmiSsmPath,
+                type: 'String',
+                value: parentAmiId,
+                dataType: 'aws:ec2:image',
+                description: 'Golden AMI ID — seeded with parent AL2023 AMI, overwritten by Image Builder',
+                tier: 'Standard',
             });
         }
 
