@@ -97,7 +97,7 @@ bootstrap account profile *ARGS:
 # CI synth-validate: synthesize all projects for CI validation
 # Validates that all CDK stacks synthesize correctly without AWS API calls.
 # Uses --no-lookups to rely on cached cdk.context.json instead of live AWS lookups.
-# Covers: monitoring (3 stacks), k8s (4 stacks), nextjs (multi-stack).
+# Covers: monitoring (3 stacks), k8s (8 stacks), nextjs (multi-stack).
 # Called by: .github/workflows/ci.yml → validate-cdk job
 [group('ci')]
 ci-synth-validate:
@@ -118,7 +118,7 @@ ci-synth-validate:
     echo "==========================================="
     echo "Validating K8s Project (dev)"
     echo "==========================================="
-    # k8s stacks: Compute (EC2/ASG/EBS) + Edge (CloudFront/WAF/ACM)
+    # k8s stacks: Data + Base + ControlPlane + AppWorker + MonitoringWorker + AppIam + Api + Edge
     npx cdk list -c project=kubernetes -c environment=dev --no-lookups || {
       echo "Note: Some stacks may require cached context in cdk.context.json"
     }
@@ -150,7 +150,7 @@ ci-synth project environment:
 ci-preflight *ARGS:
     npx tsx infra/scripts/deployment/preflight-checks.ts {{ARGS}}
 
-# CI deploy: deploy a specific stack (e.g., just ci-deploy K8s-Compute-development)
+# CI deploy: deploy a specific stack (e.g., just ci-deploy ControlPlane-development)
 [group('ci')]
 ci-deploy *ARGS:
     npx tsx infra/scripts/deployment/deploy.ts {{ARGS}}
