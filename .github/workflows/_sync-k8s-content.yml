@@ -153,7 +153,6 @@ jobs:
             --targets "Key=InstanceIds,Values=${INSTANCE_ID}" \
             --parameters "${PARAMS}" \
             --schedule-expression "${SCHEDULE}" \
-            --apply-only-at-cron-interval \
             --region "${REGION}" 2>"${CREATE_ERR}"; then
             echo "✓ Association created: ${ASSOC_NAME}"
           else
@@ -184,7 +183,6 @@ jobs:
               --targets "Key=InstanceIds,Values=${INSTANCE_ID}" \
               --parameters "${PARAMS}" \
               --schedule-expression "${SCHEDULE}" \
-              --apply-only-at-cron-interval \
               --region "${REGION}"
             echo "✓ Association updated: ${ASSOC_NAME} (${ASSOC_ID})"
           fi
