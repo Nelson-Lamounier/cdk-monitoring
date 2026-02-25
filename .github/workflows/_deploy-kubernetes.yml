@@ -17,7 +17,7 @@
 #   7. ArgoCD Health Gate          (wait for GitOps sync)
 #   8. Verify & Smoke Tests
 #   9. Deployment Failure Alert    (halt + preserve + alert)
-#  10. Summary -
+#  10. Summary - Test
 #
 # Concurrency:
 #   This is a workflow_call (reusable) workflow — concurrency MUST be set
