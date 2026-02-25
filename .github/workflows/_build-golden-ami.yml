@@ -238,6 +238,24 @@ jobs:
                 AMI_ID=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
                   --query 'image.outputResources.amis[0].image' --output text 2>/dev/null || echo "unknown")
                 echo "  AMI ID: $AMI_ID"
+
+                # Write AMI ID to SSM parameter for the Launch Template
+                # (Handled here instead of via Image Builder ssmParameterConfigurations
+                #  because the Image Builder SLR lacks ssm:PutParameter on custom paths)
+                SSM_PATH="/k8s/${{ inputs.cdk-environment }}/golden-ami/latest"
+                if [ "$AMI_ID" != "unknown" ]; then
+                  echo "  Writing AMI ID to SSM: $SSM_PATH"
+                  aws ssm put-parameter \
+                    --name "$SSM_PATH" \
+                    --value "$AMI_ID" \
+                    --type "String" \
+                    --overwrite \
+                    --region "$AWS_DEFAULT_REGION" 2>&1 || echo "::warning::Failed to update SSM parameter"
+                  echo "  ✓ SSM parameter updated"
+                else
+                  echo "::warning::Could not extract AMI ID — SSM parameter not updated"
+                fi
+
                 exit 0
                 ;;
               FAILED|CANCELLED)

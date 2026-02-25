@@ -210,11 +210,16 @@ export class GoldenAmiPipelineConstruct extends Construct {
         }));
 
         // -----------------------------------------------------------------
-        // 6. Distribution Configuration — outputs AMI ID to SSM
+        // 6. Distribution Configuration — AMI tagging & naming
         //
         // NOTE: amiDistributionConfiguration uses PascalCase raw JSON due to
         // a known CDK/CloudFormation binding issue where camelCase properties
         // fail CloudFormation validation.
+        //
+        // SSM parameter update is handled by the CI pipeline
+        // (_build-golden-ami.yml) after a successful build, because the
+        // Image Builder service-linked role (AWSServiceRoleForImageBuilder)
+        // does not have ssm:PutParameter on custom parameter paths.
         // -----------------------------------------------------------------
         const distribution = new imagebuilder.CfnDistributionConfiguration(
             this,
@@ -233,14 +238,6 @@ export class GoldenAmiPipelineConstruct extends Construct {
                                 'Component': 'ImageBuilder',
                             },
                         },
-                        // Write the built AMI ID to the SSM parameter so the
-                        // LaunchTemplate can resolve it at deploy time
-                        ssmParameterConfigurations: [
-                            {
-                                parameterName: imageConfig.amiSsmPath,
-                                dataType: 'aws:ec2:image',
-                            },
-                        ],
                     },
                 ],
             },
