@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # @format
-# deploy-manifests.sh — Deploy Next.js application to Kubernetes
+# deploy-manifests.sh — Deploy Next.js application to Kubernetes via Helm
 #
-# Deploys the Next.js K8s manifests to the nextjs-app namespace. Can be invoked:
+# Deploys the Next.js Helm chart to the nextjs-app namespace. Can be invoked:
 #   1. By UserData during first boot (after S3 sync)
 #   2. By SSM Run Command from CI/CD pipeline (re-syncs from S3)
 #
 # Steps:
 #   1. (Optional) Re-sync manifests from S3 (when S3_BUCKET is set)
 #   2. Resolve secrets from SSM (DynamoDB table, S3 bucket, API URL)
-#   3. Apply all manifests via kustomize
-#   4. Create/update Kubernetes secrets (post-apply)
+#   3. Create/update Kubernetes secrets (pre-Helm so pods can mount them)
+#   4. Helm upgrade --install (deploys all resources)
 #   5. Wait for deployment rollout
+#   6. Summary
 #
 # Environment variables:
 #   MANIFESTS_DIR      Path to nextjs manifests dir (default: /data/k8s/apps/nextjs)
@@ -41,10 +42,16 @@ WAIT_TIMEOUT="${WAIT_TIMEOUT:-300}"
 K8S_ENV="${SSM_PREFIX##*/}"
 FRONTEND_SSM_PREFIX="${FRONTEND_SSM_PREFIX:-/frontend/${K8S_ENV}}"
 
+# Helm paths
+HELM_DIR="${MANIFESTS_DIR}/helm"
+HELM_CHART="${HELM_DIR}/chart"
+HELM_VALUES="${HELM_DIR}/nextjs-values.yaml"
+
 export KUBECONFIG
 
-echo "=== Next.js Application Deployment ==="
+echo "=== Next.js Application Deployment (Helm) ==="
 echo "Manifests: ${MANIFESTS_DIR}"
+echo "Helm chart: ${HELM_CHART}"
 echo "SSM prefix: ${SSM_PREFIX}"
 echo "Frontend SSM prefix: ${FRONTEND_SSM_PREFIX}"
 echo "Region:     ${AWS_REGION}"
@@ -107,28 +114,15 @@ resolve_secret "api/gateway-url" "NEXT_PUBLIC_API_URL"
 echo ""
 
 # ---------------------------------------------------------------------------
-# 3. Apply manifests via kustomize
-# ---------------------------------------------------------------------------
-echo "=== Step 3: Applying manifests ==="
-
-# Show diff before applying (informational)
-echo "--- kubectl diff (preview) ---"
-kubectl diff -k "${MANIFESTS_DIR}" 2>/dev/null || true
-echo "--- end diff ---"
-echo ""
-
-kubectl apply --server-side --force-conflicts -k "${MANIFESTS_DIR}"
-echo ""
-echo "✓ All Next.js manifests applied"
-echo ""
-
-# ---------------------------------------------------------------------------
-# 4. Create/update Kubernetes secrets (post-apply, always wins)
+# 3. Create/update Kubernetes secrets (pre-Helm)
 #
 # Using kubectl create --dry-run=client | kubectl apply is idempotent.
-# Applied AFTER kustomize so our secrets overwrite placeholder values.
+# Created BEFORE Helm so the Deployment pods can mount secrets immediately.
 # ---------------------------------------------------------------------------
-echo "=== Step 4: Creating Kubernetes secrets ==="
+echo "=== Step 3: Creating Kubernetes secrets ==="
+
+# Ensure namespace exists (Helm will also create it, but we need it for secrets)
+kubectl create namespace nextjs-app --dry-run=client -o yaml | kubectl apply -f -
 
 SECRET_ARGS=""
 if [ -n "${DYNAMODB_TABLE_NAME:-}" ]; then
@@ -153,6 +147,71 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
+# 4. Helm Upgrade — Full Application Deployment
+#
+# Deploys all Next.js Kubernetes resources via the Helm chart:
+#   Namespace, ConfigMap, Secret (placeholder), Service, Deployment,
+#   IngressRoute, HPA, NetworkPolicy, ResourceQuota
+#
+# Topology settings (replicas, affinity, spread) come from nextjs-values.yaml.
+# Image repository is passed via --set for SSM-resolved ECR URI.
+# ---------------------------------------------------------------------------
+echo "=== Step 4: Helm upgrade (full application) ==="
+
+if ! command -v helm &>/dev/null; then
+    echo "  ✗ Helm is not installed — cannot deploy"
+    exit 1
+fi
+
+if [ ! -d "${HELM_CHART}" ]; then
+    echo "  ✗ Helm chart not found at: ${HELM_CHART}"
+    exit 1
+fi
+
+echo "  Helm chart:  ${HELM_CHART}"
+echo "  Values file: ${HELM_VALUES}"
+
+# Build --set flags for dynamic values
+HELM_SET_FLAGS=""
+
+# ECR image URI (resolved from SSM or environment)
+ECR_REPOSITORY_URI="${ECR_REPOSITORY_URI:-}"
+if [ -z "${ECR_REPOSITORY_URI}" ]; then
+    ECR_SSM_PATH="${SSM_PREFIX}/ecr/nextjs-repository-uri"
+    echo "  → Resolving ECR URI from SSM: ${ECR_SSM_PATH}"
+    ECR_REPOSITORY_URI=$(aws ssm get-parameter \
+        --name "${ECR_SSM_PATH}" \
+        --query 'Parameter.Value' \
+        --output text \
+        --region "${AWS_REGION}" 2>/dev/null || echo "")
+fi
+
+if [ -n "${ECR_REPOSITORY_URI}" ]; then
+    HELM_SET_FLAGS="${HELM_SET_FLAGS} --set image.repository=${ECR_REPOSITORY_URI}"
+    echo "  ✓ Image: ${ECR_REPOSITORY_URI}:latest"
+else
+    echo "  ⚠ ECR URI not found — using chart default image"
+fi
+
+# Values file (optional — chart has sane defaults)
+VALUES_FLAG=""
+if [ -f "${HELM_VALUES}" ]; then
+    VALUES_FLAG="-f ${HELM_VALUES}"
+fi
+
+helm upgrade --install nextjs-app "${HELM_CHART}" \
+    -n nextjs-app \
+    ${VALUES_FLAG} \
+    ${HELM_SET_FLAGS} \
+    --wait --timeout 5m
+
+echo ""
+echo "  ✓ Helm upgrade complete"
+echo "  Release status:"
+helm status nextjs-app -n nextjs-app --short 2>/dev/null || true
+echo ""
+
+# ---------------------------------------------------------------------------
 # 5. Wait for deployment rollout
 # ---------------------------------------------------------------------------
 echo "=== Step 5: Waiting for rollout (timeout: ${WAIT_TIMEOUT}s) ==="
@@ -167,62 +226,7 @@ kubectl rollout status "deployment/nextjs" \
 echo ""
 
 # ---------------------------------------------------------------------------
-# 6. Helm Upgrade — Topology & Scaling Overrides
-#
-# Applies topology-aware scheduling overrides (replicas, pod anti-affinity,
-# topology spread constraints) from the thin Helm chart.
-#
-# The base application resources (Service, ConfigMap, Secrets, Ingress)
-# are already deployed by kustomize (Step 3). This step patches ONLY the
-# Deployment resource for multi-node HA.
-#
-# Graceful fallback: if Helm or the values file is missing, the kustomize-
-# deployed Deployment is unchanged (single-node mode).
-# ---------------------------------------------------------------------------
-echo "=== Step 6: Helm Upgrade (topology & scaling overrides) ==="
-
-HELM_DIR="${MANIFESTS_DIR}/helm"
-HELM_CHART="${HELM_DIR}/chart"
-HELM_VALUES="${HELM_DIR}/nextjs-values.yaml"
-
-if command -v helm &>/dev/null && [ -f "${HELM_VALUES}" ] && [ -d "${HELM_CHART}" ]; then
-    echo "  Helm chart:  ${HELM_CHART}"
-    echo "  Values file: ${HELM_VALUES}"
-
-    helm upgrade --install nextjs-topology "${HELM_CHART}" \
-        -n nextjs-app \
-        -f "${HELM_VALUES}" \
-        --wait --timeout 5m
-
-    echo ""
-    echo "  ✓ Helm upgrade complete"
-    echo "  Release status:"
-    helm status nextjs-topology -n nextjs-app --short 2>/dev/null || true
-
-    # Wait for re-rollout after Helm patches replicas/affinity
-    echo "  → Waiting for post-Helm rollout..."
-    kubectl rollout status "deployment/nextjs" \
-        -n nextjs-app \
-        --timeout="${WAIT_TIMEOUT}s" 2>/dev/null || {
-        echo "  ⚠ Post-Helm rollout not ready within timeout"
-    }
-else
-    echo "  ⚠ Helm or chart/values not found — skipping topology overrides"
-    if ! command -v helm &>/dev/null; then
-        echo "    (helm binary not installed)"
-    fi
-    if [ ! -f "${HELM_VALUES}" ]; then
-        echo "    (values file missing: ${HELM_VALUES})"
-    fi
-    if [ ! -d "${HELM_CHART}" ]; then
-        echo "    (chart dir missing: ${HELM_CHART})"
-    fi
-    echo "  Kustomize manifests from Step 3 are active (single-node mode)"
-fi
-echo ""
-
-# ---------------------------------------------------------------------------
-# 7. Summary
+# 6. Summary
 # ---------------------------------------------------------------------------
 echo "=== Deployment Summary ==="
 echo ""
@@ -230,13 +234,11 @@ kubectl get pods -n nextjs-app -o wide
 echo ""
 kubectl get svc -n nextjs-app
 echo ""
-if command -v helm &>/dev/null; then
-    echo "=== Helm Releases ==="
-    helm list -n nextjs-app 2>/dev/null || true
-    echo ""
-fi
+echo "=== Helm Releases ==="
+helm list -n nextjs-app 2>/dev/null || true
+echo ""
 echo "=== Access ==="
 echo "  Next.js: Via Traefik Ingress on EIP (port 80/443)"
-echo "  kubectl port-forward svc/nextjs 3000:80 -n nextjs-app"
+echo "  kubectl port-forward svc/nextjs 3000:3000 -n nextjs-app"
 echo ""
 echo "✓ Next.js application deployment complete ($(date -u '+%Y-%m-%dT%H:%M:%SZ'))"
