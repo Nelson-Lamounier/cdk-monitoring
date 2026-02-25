@@ -1,10 +1,15 @@
 # @format
-# Default values for nextjs-topology chart
+# Default values for nextjs-app chart
 #
-# These defaults are overridden by nextjs-values.yaml in the parent directory.
+# These defaults are overridden by nextjs-values.yaml.
 # They provide safe single-node defaults for development clusters.
 
 replicaCount: 1
+
+image:
+  # Overridden by deploy-manifests.sh via --set image.repository
+  repository: ""
+  tag: "latest"
 
 affinity: {}
 

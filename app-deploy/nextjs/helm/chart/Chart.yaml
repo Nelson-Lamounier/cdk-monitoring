@@ -1,19 +1,22 @@
 # @format
-# Next.js Topology Helm Chart
+# Next.js Helm Chart — Full Application
 #
-# Thin overlay chart that manages deployment scaling, pod anti-affinity,
-# and topology spread constraints. The base application resources (Service,
-# ConfigMap, Secrets, Ingress) are deployed by kustomize in deploy-manifests.sh.
+# Manages all Next.js Kubernetes resources including:
+#   - Namespace, ConfigMap, Secrets (placeholders)
+#   - Deployment with topology-aware scheduling
+#   - Service, IngressRoute, HPA, NetworkPolicy, ResourceQuota
+#   - Alloy sidecar configuration for OTLP tracing
 #
-# This chart only patches the Deployment resource for topology-aware scheduling.
-# It is designed to work alongside the existing kustomize pipeline, not replace it.
+# ArgoCD manages this chart as a Helm-type source.
+# Secrets are resolved from SSM by deploy-manifests.sh and passed
+# via helm upgrade --set or kubectl create secret.
 #
 # Usage:
-#   helm upgrade --install nextjs-topology ./chart -n nextjs-app -f ../nextjs-values.yaml
+#   helm upgrade --install nextjs-app ./chart -n nextjs-app -f ../nextjs-values.yaml --wait
 
 apiVersion: v2
-name: nextjs-topology
-description: Topology and scaling overrides for the Next.js deployment
+name: nextjs-app
+description: Next.js portfolio application for Kubernetes
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "1.0.0"
