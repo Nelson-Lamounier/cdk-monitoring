@@ -107,10 +107,12 @@ jobs:
       domain-name: ${{ steps.resolve-edge.outputs.domain-name }}
       hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
       cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
-      # Stack names from synthesize-ci.ts (5-stack architecture)
+      # Stack names from synthesize-ci.ts (8-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
       compute-stack: ${{ steps.synth.outputs.compute }}
+      worker-stack: ${{ steps.synth.outputs.worker }}
+      monitoring-worker-stack: ${{ steps.synth.outputs.monitoringWorker }}
       appiam-stack: ${{ steps.synth.outputs.appIam }}
       edge-stack: ${{ steps.synth.outputs.edge }}
 
@@ -454,12 +456,48 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Deploy AppIam Stack (4/6) — Application-tier IAM grants
+  # Deploy Worker Stack (3b/8) — Application Worker Node
+  # ===========================================================================
+  deploy-worker:
+    name: Deploy Worker
+    needs: [setup, deploy-compute]
+    if: always() && needs.deploy-compute.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.worker-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy Monitoring Worker Stack (3c/8) — Monitoring Worker Node
+  # ===========================================================================
+  deploy-monitoring-worker:
+    name: Deploy Monitoring Worker
+    needs: [setup, deploy-compute]
+    if: always() && needs.deploy-compute.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.monitoring-worker-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy AppIam Stack (4/8) — Application-tier IAM grants
   # ===========================================================================
   deploy-appiam:
     name: Deploy App IAM
-    needs: [setup, deploy-compute]
-    if: always() && needs.deploy-compute.result == 'success'
+    needs: [setup, deploy-worker, deploy-monitoring-worker]
+    if: always() && needs.deploy-worker.result == 'success' && needs.deploy-monitoring-worker.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.appiam-stack }}
@@ -804,7 +842,15 @@ jobs:
   # ===========================================================================
   deployment-failure-alert:
     name: "Deployment Failed — Alert"
-    needs: [setup, deploy-compute, deploy-edge, verify-and-test]
+    needs:
+      [
+        setup,
+        deploy-compute,
+        deploy-worker,
+        deploy-monitoring-worker,
+        deploy-edge,
+        verify-and-test,
+      ]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ inputs.environment }}
@@ -940,6 +986,8 @@ jobs:
       - drift-detection
       - deploy-data
       - deploy-compute
+      - deploy-worker
+      - deploy-monitoring-worker
       - deploy-edge
       - sync-static-assets
       - verify-and-test
@@ -989,6 +1037,8 @@ jobs:
         env:
           DEPLOY_DATA_RESULT: ${{ needs.deploy-data.result }}
           DEPLOY_COMPUTE_RESULT: ${{ needs.deploy-compute.result }}
+          DEPLOY_WORKER_RESULT: ${{ needs.deploy-worker.result || 'skipped' }}
+          DEPLOY_MON_WORKER_RESULT: ${{ needs.deploy-monitoring-worker.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
           VERIFY_RESULT: ${{ needs.verify-and-test.result || 'skipped' }}
