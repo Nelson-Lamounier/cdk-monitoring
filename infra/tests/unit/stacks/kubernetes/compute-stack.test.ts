@@ -324,17 +324,17 @@ describe('KubernetesComputeStack', () => {
             );
         });
 
-        it('should create an Image Builder distribution with SSM parameter target', () => {
+        it('should create an Image Builder distribution with AMI tagging (SSM write handled by CI pipeline)', () => {
             template.hasResourceProperties(
                 'AWS::ImageBuilder::DistributionConfiguration',
                 {
                     Distributions: Match.arrayWith([
                         Match.objectLike({
-                            SsmParameterConfigurations: Match.arrayWith([
-                                Match.objectLike({
-                                    DataType: 'aws:ec2:image',
+                            AmiDistributionConfiguration: Match.objectLike({
+                                AmiTags: Match.objectLike({
+                                    Purpose: 'GoldenAMI',
                                 }),
-                            ]),
+                            }),
                         }),
                     ]),
                 },
