@@ -275,3 +275,122 @@ jobs:
           done
 
           echo "::warning::Health check timed out after ${TIMEOUT}s — execution may still be in progress"
+
+      # -----------------------------------------------------------------------
+      # 6. ArgoCD Health Check (bootstrap syncs only)
+      #
+      # After the bootstrap association completes, queries the K8s node
+      # via SSM Run Command to check ArgoCD status. Shows:
+      #   - ArgoCD pods (running/crashloop)
+      #   - Application sync + health status
+      #   - Recent ArgoCD events
+      #
+      # Non-blocking: failures emit warnings but don't break the pipeline.
+      # -----------------------------------------------------------------------
+      - name: ArgoCD Health Check
+        if: inputs.content-type == 'bootstrap' && inputs.ssm-document != ''
+        run: |
+          REGION="${{ env.AWS_REGION }}"
+          SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}"
+
+          INSTANCE_ID=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/instance-id" \
+            --query 'Parameter.Value' --output text \
+            --region "${REGION}" 2>/dev/null || echo "")
+
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "::warning::No instance ID — skipping ArgoCD check"
+            exit 0
+          fi
+
+          echo "============================================="
+          echo "  ArgoCD Health Check (via SSM Run Command)  "
+          echo "============================================="
+          echo ""
+
+          # Send a command to the node to check ArgoCD status
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "export KUBECONFIG=/etc/kubernetes/admin.conf",
+              "echo \"--- ArgoCD Pods ---\"",
+              "kubectl get pods -n argocd -o wide 2>/dev/null || echo \"ArgoCD namespace not found\"",
+              "echo \"\"",
+              "echo \"--- ArgoCD Applications ---\"",
+              "kubectl get applications -n argocd -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REPO:.spec.source.repoURL,PATH:.spec.source.path 2>/dev/null || echo \"No ArgoCD Applications found\"",
+              "echo \"\"",
+              "echo \"--- ArgoCD Repo Server Logs (last 10 lines) ---\"",
+              "kubectl logs -n argocd -l app.kubernetes.io/name=argocd-repo-server --tail=10 2>/dev/null || echo \"No repo-server logs\"",
+              "echo \"\"",
+              "echo \"--- Recent ArgoCD Events ---\"",
+              "kubectl get events -n argocd --sort-by=.lastTimestamp --field-selector type!=Normal 2>/dev/null | tail -15 || echo \"No warning events\""
+            ]' \
+            --timeout-seconds 60 \
+            --query 'Command.CommandId' \
+            --output text \
+            --region "${REGION}" 2>/dev/null || echo "")
+
+          if [ -z "$CMD_ID" ]; then
+            echo "::warning::Failed to send SSM command — IAM permissions may be missing"
+            exit 0
+          fi
+
+          echo "SSM Command ID: $CMD_ID"
+          echo "Waiting for output..."
+          echo ""
+
+          # Wait for the command to complete (up to 90 seconds)
+          TIMEOUT=90
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "${INSTANCE_ID}" \
+              --query 'Status' \
+              --output text \
+              --region "${REGION}" 2>/dev/null || echo "Pending")
+
+            case "$STATUS" in
+              Success)
+                # Fetch and display the output
+                aws ssm get-command-invocation \
+                  --command-id "$CMD_ID" \
+                  --instance-id "${INSTANCE_ID}" \
+                  --query 'StandardOutputContent' \
+                  --output text \
+                  --region "${REGION}" 2>/dev/null || echo "(No output)"
+
+                STDERR=$(aws ssm get-command-invocation \
+                  --command-id "$CMD_ID" \
+                  --instance-id "${INSTANCE_ID}" \
+                  --query 'StandardErrorContent' \
+                  --output text \
+                  --region "${REGION}" 2>/dev/null || echo "")
+                if [ -n "$STDERR" ] && [ "$STDERR" != "None" ]; then
+                  echo ""
+                  echo "--- Errors ---"
+                  echo "$STDERR"
+                fi
+                echo ""
+                echo "✓ ArgoCD health check complete"
+                exit 0
+                ;;
+              Failed|TimedOut|Cancelled)
+                echo "::warning::ArgoCD health check command ${STATUS}"
+                # Still try to fetch partial output
+                aws ssm get-command-invocation \
+                  --command-id "$CMD_ID" \
+                  --instance-id "${INSTANCE_ID}" \
+                  --query 'StandardOutputContent' \
+                  --output text \
+                  --region "${REGION}" 2>/dev/null || true
+                exit 0
+                ;;
+            esac
+          done
+
+          echo "::warning::ArgoCD health check timed out after ${TIMEOUT}s"
