@@ -252,8 +252,8 @@ const orgProject: ProjectConfig = {
 };
 
 // =============================================================================
-// K8S PROJECT (kubeadm Kubernetes Cluster — 6-Stack Architecture)
-// Synth outputs all 6 stacks. Infra pipeline deploys Data→Base→Compute→AppIam→Edge.
+// K8S PROJECT (kubeadm Kubernetes Cluster — 8-Stack Architecture)
+// Synth outputs all 8 stacks. Infra pipeline deploys Data→Base→GoldenAMI→Compute→AppWorker→MonitoringWorker→AppIam→Edge.
 // API stack is deployed by the Next.js thin wrapper pipeline.
 // Bootstrap/app manifests synced by independent S3 sync pipelines.
 // =============================================================================
@@ -273,32 +273,32 @@ const k8sStacks: StackConfig[] = [
     dependsOn: ['data'],
   },
   {
-    id: 'compute',
-    name: 'Compute Stack',
-    getStackName: (env) => getStackId(Project.KUBERNETES, 'compute', env),
-    description: 'kubeadm Kubernetes cluster: EC2 + ASG + SSM documents + S3 scripts bucket',
+    id: 'controlPlane',
+    name: 'Control Plane Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'controlPlane', env),
+    description: 'kubeadm Kubernetes control plane: EC2 + ASG + SSM documents + S3 scripts bucket',
     dependsOn: ['base'],
   },
   {
-    id: 'worker',
-    name: 'Worker Stack',
-    getStackName: (env) => getStackId(Project.KUBERNETES, 'worker', env),
+    id: 'appWorker',
+    name: 'App Worker Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'appWorker', env),
     description: 'Application worker node: kubeadm join + role=application label/taint',
-    dependsOn: ['compute'],
+    dependsOn: ['controlPlane'],
   },
   {
     id: 'monitoringWorker',
     name: 'Monitoring Worker Stack',
     getStackName: (env) => getStackId(Project.KUBERNETES, 'monitoringWorker', env),
     description: 'Monitoring worker node: kubeadm join + role=monitoring label/taint',
-    dependsOn: ['compute'],
+    dependsOn: ['controlPlane'],
   },
   {
     id: 'appIam',
     name: 'App IAM Stack',
     getStackName: (env) => getStackId(Project.KUBERNETES, 'appIam', env),
     description: 'Application-tier IAM grants: DynamoDB, S3, Secrets Manager, SSM',
-    dependsOn: ['compute'],
+    dependsOn: ['controlPlane'],
   },
   {
     id: 'api',
@@ -313,7 +313,7 @@ const k8sStacks: StackConfig[] = [
     name: 'Edge Stack',
     getStackName: (env) => getStackId(Project.KUBERNETES, 'edge', env),
     description: 'CloudFront distribution with ACM certificate and WAF (us-east-1)',
-    dependsOn: ['compute'],
+    dependsOn: ['controlPlane'],
     region: 'us-east-1',
   },
 ];

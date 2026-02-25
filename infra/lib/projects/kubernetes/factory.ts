@@ -8,9 +8,10 @@
  * Stack Architecture (7 stacks):
  *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
  *   2. Kubernetes-Base: VPC, Security Group, KMS, EBS, Elastic IP
- *   3. Kubernetes-Compute: Control plane EC2 (t3.medium), ASG, IAM,
+ *   3. Kubernetes-ControlPlane: Control plane EC2 (t3.medium), ASG, IAM,
  *      S3 manifests bucket, SSM docs, Golden AMI, State Manager
- *   3b. Kubernetes-Worker: Application node EC2 (t3.small), ASG, kubeadm join
+ *   3b. Kubernetes-AppWorker: Application node EC2 (t3.small), ASG, kubeadm join
+ *   3c. Kubernetes-MonitoringWorker: Monitoring node EC2 (t3.small), ASG, kubeadm join
  *   4. Kubernetes-AppIam: Application-tier IAM grants (DynamoDB, S3, Secrets)
  *   5. Kubernetes-API: API Gateway + Lambda (email subscriptions)
  *   6. Kubernetes-Edge: ACM + WAF + CloudFront (us-east-1)
@@ -228,7 +229,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // =================================================================
         const controlPlaneStack = new KubernetesControlPlaneStack(
             scope,
-            stackId(this.namespace, 'Compute', environment),
+            stackId(this.namespace, 'ControlPlane', environment),
             {
                 baseStack,
                 env,
@@ -241,7 +242,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         );
         controlPlaneStack.addDependency(baseStack);
         stacks.push(controlPlaneStack);
-        stackMap.compute = controlPlaneStack;
+        stackMap.controlPlane = controlPlaneStack;
 
         // =================================================================
         // Stack 3b: WORKER STACK (Application Node — t3.small)
@@ -253,7 +254,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         const workerConfig = getNextJsK8sConfig(environment);
         const workerStack = new KubernetesAppWorkerStack(
             scope,
-            stackId(this.namespace, 'Worker', environment),
+            stackId(this.namespace, 'AppWorker', environment),
             {
                 baseStack,
                 env,
@@ -277,7 +278,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // =================================================================
         const monitoringWorkerStack = new KubernetesMonitoringWorkerStack(
             scope,
-            stackId(this.namespace, 'MonWorker', environment),
+            stackId(this.namespace, 'MonitoringWorker', environment),
             {
                 baseStack,
                 env,
