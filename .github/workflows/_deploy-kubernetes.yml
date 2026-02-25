@@ -4,20 +4,24 @@
 # Infra-only pipeline for the K8s (kubeadm) infrastructure.
 # Bootstrap/app manifests synced by independent S3 pipelines.
 #
-# 5-Stack Deployment Order:
-#   1. Data      (DynamoDB + S3 + SSM Parameters)
-#   2. Base      (VPC networking + Security Group + KMS + EBS + EIP + S3 Scripts)
-#   2b. Sync     (Seed boot scripts to S3 — Day-1 safety)
-#   3. Compute   (EC2 kubeadm + ASG + SSM Docs)
-#   4. AppIam    (Application-tier IAM grants)
-#   5. Edge      (CloudFront + ACM + WAF in us-east-1)
+# 8-Stack Deployment Order:
+#   1.  Data             (DynamoDB + S3 + SSM Parameters)
+#   2.  Base             (VPC networking + SG + KMS + EBS + EIP + S3 Scripts)
+#   2b. Sync             (Seed boot scripts to S3 — Day-1 safety)
+#   2c. Golden AMI       (Bake containerd + kubeadm into AMI)
+#   3.  Compute          (Control plane EC2 + ASG + SSM Docs)
+#   3b. AppWorker        (Application worker node)
+#   3c. MonitoringWorker (Monitoring worker node)
+#   4.  AppIam           (Application-tier IAM grants)
+#   5.  Api              (API Gateway + Lambda)
+#   6.  Edge             (CloudFront + ACM + WAF in us-east-1)
 #
 # Post-Deploy (manifests managed by ArgoCD GitOps):
-#   6. Sync Static Assets          (S3 + CloudFront invalidation)
-#   7. ArgoCD Health Gate          (wait for GitOps sync)
-#   8. Verify & Smoke Tests
-#   9. Deployment Failure Alert    (halt + preserve + alert)
-#  10. Summary - Test
+#   7.  Sync Static Assets          (S3 + CloudFront invalidation)
+#   8.  ArgoCD Health Gate          (wait for GitOps sync)
+#   9.  Verify & Smoke Tests
+#  10.  Deployment Failure Alert    (halt + preserve + alert)
+#  11.  Summary
 #
 # Concurrency:
 #   This is a workflow_call (reusable) workflow — concurrency MUST be set
@@ -110,8 +114,8 @@ jobs:
       # Stack names from synthesize-ci.ts (8-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
-      compute-stack: ${{ steps.synth.outputs.compute }}
-      worker-stack: ${{ steps.synth.outputs.worker }}
+      controlplane-stack: ${{ steps.synth.outputs.controlPlane }}
+      worker-stack: ${{ steps.synth.outputs.appWorker }}
       monitoring-worker-stack: ${{ steps.synth.outputs.monitoringWorker }}
       appiam-stack: ${{ steps.synth.outputs.appIam }}
       edge-stack: ${{ steps.synth.outputs.edge }}
@@ -355,20 +359,20 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Build Golden AMI (after Compute — needs updated pipeline resources)
+  # Build Golden AMI (2c — BEFORE Compute)
   #
   # Triggers Image Builder to bake containerd + kubeadm into a Golden AMI.
-  # Runs AFTER deploy-compute so that any changes to the component/recipe
-  # (content-hash versioned) are deployed before triggering the build.
+  # Runs AFTER S3 bootstrap sync so the boot script is available, but
+  # BEFORE Compute so the control plane launches from the baked AMI.
   # On Day-0: AMI matches parent → build triggered (first bake).
   # On Day-1+: AMI differs from parent → skipped (already baked).
   # ===========================================================================
   build-golden-ami:
     name: Build Golden AMI
-    needs: [setup, deploy-compute]
+    needs: [setup, sync-bootstrap-content]
     if: >-
       always()
-      && needs.deploy-compute.result == 'success'
+      && needs.sync-bootstrap-content.result == 'success'
       && inputs.enable-golden-ami-build
     uses: ./.github/workflows/_build-golden-ami.yml
     with:
@@ -438,15 +442,22 @@ jobs:
           echo "✓ Bootstrap scripts seeded — EC2 instances can now boot safely"
 
   # ===========================================================================
-  # Deploy Compute Stack (3/6) — EC2 kubeadm + ASG + SSM Docs
+  # Deploy Compute Stack (3/8) — Control Plane EC2 + ASG + SSM Docs
+  #
+  # Waits for Golden AMI bake (or skip) so the Launch Template resolves
+  # to the latest baked AMI. If Golden AMI is disabled, the stack uses
+  # the parent AMI directly.
   # ===========================================================================
-  deploy-compute:
-    name: Deploy Compute
-    needs: [setup, deploy-base, sync-bootstrap-content]
-    if: always() && needs.sync-bootstrap-content.result == 'success'
+  deploy-controlplane:
+    name: Deploy Control Plane
+    needs: [setup, deploy-base, sync-bootstrap-content, build-golden-ami]
+    if: >-
+      always()
+      && needs.sync-bootstrap-content.result == 'success'
+      && (needs.build-golden-ami.result == 'success' || needs.build-golden-ami.result == 'skipped')
     uses: ./.github/workflows/_deploy-stack.yml
     with:
-      stack-name: ${{ needs.setup.outputs.compute-stack }}
+      stack-name: ${{ needs.setup.outputs.controlplane-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
       aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
@@ -456,12 +467,12 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Deploy Worker Stack (3b/8) — Application Worker Node
+  # Deploy App Worker Stack (3b/8) — Application Worker Node
   # ===========================================================================
-  deploy-worker:
-    name: Deploy Worker
-    needs: [setup, deploy-compute]
-    if: always() && needs.deploy-compute.result == 'success'
+  deploy-app-worker:
+    name: Deploy App Worker
+    needs: [setup, deploy-controlplane]
+    if: always() && needs.deploy-controlplane.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.worker-stack }}
@@ -478,8 +489,8 @@ jobs:
   # ===========================================================================
   deploy-monitoring-worker:
     name: Deploy Monitoring Worker
-    needs: [setup, deploy-compute]
-    if: always() && needs.deploy-compute.result == 'success'
+    needs: [setup, deploy-controlplane]
+    if: always() && needs.deploy-controlplane.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.monitoring-worker-stack }}
@@ -496,8 +507,8 @@ jobs:
   # ===========================================================================
   deploy-appiam:
     name: Deploy App IAM
-    needs: [setup, deploy-worker, deploy-monitoring-worker]
-    if: always() && needs.deploy-worker.result == 'success' && needs.deploy-monitoring-worker.result == 'success'
+    needs: [setup, deploy-app-worker, deploy-monitoring-worker]
+    if: always() && needs.deploy-app-worker.result == 'success' && needs.deploy-monitoring-worker.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.appiam-stack }}
@@ -600,13 +611,13 @@ jobs:
   # ===========================================================================
   verify-and-test:
     name: Verify & Smoke Tests
-    needs: [setup, deploy-compute, deploy-edge, sync-static-assets]
+    needs: [setup, deploy-controlplane, deploy-edge, sync-static-assets]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
     if: >-
       always()
-      && needs.deploy-compute.result == 'success'
+      && needs.deploy-controlplane.result == 'success'
       && inputs.skip-verification != true
     outputs:
       status: ${{ steps.smoke.outputs.status }}
@@ -772,7 +783,7 @@ jobs:
           STACKS=(
             "${{ needs.setup.outputs.data-stack }}"
             "${{ needs.setup.outputs.base-stack }}"
-            "${{ needs.setup.outputs.compute-stack }}"
+            "${{ needs.setup.outputs.controlplane-stack }}"
             "${{ needs.setup.outputs.appiam-stack }}"
             "${{ needs.setup.outputs.edge-stack }}"
           )
@@ -845,8 +856,8 @@ jobs:
     needs:
       [
         setup,
-        deploy-compute,
-        deploy-worker,
+        deploy-controlplane,
+        deploy-app-worker,
         deploy-monitoring-worker,
         deploy-edge,
         verify-and-test,
@@ -876,7 +887,7 @@ jobs:
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| **Environment** | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Commit** | \`${{ needs.setup.outputs.commit-sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Compute** | ${{ needs.deploy-compute.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Control Plane** | ${{ needs.deploy-controlplane.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Edge** | ${{ needs.deploy-edge.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Verification** | ${{ needs.verify-and-test.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -885,7 +896,7 @@ jobs:
           STACKS=(
             "${{ needs.setup.outputs.data-stack }}"
             "${{ needs.setup.outputs.base-stack }}"
-            "${{ needs.setup.outputs.compute-stack }}"
+            "${{ needs.setup.outputs.controlplane-stack }}"
             "${{ needs.setup.outputs.appiam-stack }}"
             "${{ needs.setup.outputs.edge-stack }}"
           )
@@ -985,8 +996,9 @@ jobs:
       - security-scan
       - drift-detection
       - deploy-data
-      - deploy-compute
-      - deploy-worker
+      - deploy-controlplane
+      - build-golden-ami
+      - deploy-app-worker
       - deploy-monitoring-worker
       - deploy-edge
       - sync-static-assets
@@ -1036,8 +1048,8 @@ jobs:
         if: steps.prereqs.outputs.skip != 'true'
         env:
           DEPLOY_DATA_RESULT: ${{ needs.deploy-data.result }}
-          DEPLOY_COMPUTE_RESULT: ${{ needs.deploy-compute.result }}
-          DEPLOY_WORKER_RESULT: ${{ needs.deploy-worker.result || 'skipped' }}
+          DEPLOY_CONTROLPLANE_RESULT: ${{ needs.deploy-controlplane.result }}
+          DEPLOY_WORKER_RESULT: ${{ needs.deploy-app-worker.result || 'skipped' }}
           DEPLOY_MON_WORKER_RESULT: ${{ needs.deploy-monitoring-worker.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
