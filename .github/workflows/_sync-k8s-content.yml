@@ -8,7 +8,7 @@
 # configuration enforcement. The association re-applies the SSM document on schedule.
 #
 # Prerequisites:
-#   - Infra pipeline has run at least once (SSM parameter exists) - Test
+#   - Infra pipeline has run at least once (SSM parameter exists) Test
 
 name: Sync K8s Content (Reusable)
 

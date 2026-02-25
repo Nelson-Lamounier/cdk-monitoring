@@ -7,7 +7,7 @@
 # this sync ensures SSM-triggered deployments also have fresh manifests.
 #
 # Prerequisites:
-#   - Infra pipeline deployed (SSM parameter /k8s/development/scripts-bucket exists) - test
+#   - Infra pipeline deployed (SSM parameter /k8s/development/scripts-bucket exists)
 
 name: Sync K8s App Deploy to Development
 
