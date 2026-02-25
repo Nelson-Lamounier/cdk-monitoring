@@ -454,23 +454,30 @@ fi # End SKIP_CLUSTER_INIT guard (sections 4-6)
 # =============================================================================
 
 echo "=== Downloading k8s manifests from S3 ==="
-K8S_DIR="${MOUNT_POINT}/k8s"
-mkdir -p $K8S_DIR
+
+# Sync both content trees from S3:
+#   s3://{bucket}/k8s-bootstrap/ → /data/k8s-bootstrap/  (platform layer)
+#   s3://{bucket}/app-deploy/    → /data/app-deploy/      (workload layer)
+BOOTSTRAP_DIR="${MOUNT_POINT}/k8s-bootstrap"
+APP_DEPLOY_DIR="${MOUNT_POINT}/app-deploy"
+mkdir -p $BOOTSTRAP_DIR $APP_DEPLOY_DIR
 
 # "Patient" retry for Day-1 coordination — Sync pipeline may not have
 # uploaded manifests yet. Wait up to 5 minutes (15 × 20s) before
 # gracefully skipping (SSM State Manager or ArgoCD will handle it later).
-S3_MANIFEST_PREFIX="s3://${S3_BUCKET}/k8s/"
+S3_BOOTSTRAP_PREFIX="s3://${S3_BUCKET}/k8s-bootstrap/"
+S3_APPDEPLOY_PREFIX="s3://${S3_BUCKET}/app-deploy/"
 MANIFEST_MAX_RETRIES=15
 MANIFEST_RETRY_INTERVAL=20
 MANIFESTS_FOUND=false
 
 for i in $(seq 1 $MANIFEST_MAX_RETRIES); do
-  # Check if any objects exist under the prefix
-  OBJ_COUNT=$(aws s3 ls "${S3_MANIFEST_PREFIX}" --recursive --region ${AWS_REGION} 2>/dev/null | wc -l | tr -d ' ')
+  # Check if any objects exist under the bootstrap prefix
+  OBJ_COUNT=$(aws s3 ls "${S3_BOOTSTRAP_PREFIX}" --recursive --region ${AWS_REGION} 2>/dev/null | wc -l | tr -d ' ')
   if [ "$OBJ_COUNT" -gt 0 ]; then
-    echo "✓ Found ${OBJ_COUNT} objects in S3 (attempt $i/$MANIFEST_MAX_RETRIES)"
-    aws s3 sync "${S3_MANIFEST_PREFIX}" $K8S_DIR/ --region ${AWS_REGION}
+    echo "✓ Found ${OBJ_COUNT} objects in S3 bootstrap (attempt $i/$MANIFEST_MAX_RETRIES)"
+    aws s3 sync "${S3_BOOTSTRAP_PREFIX}" $BOOTSTRAP_DIR/ --region ${AWS_REGION}
+    aws s3 sync "${S3_APPDEPLOY_PREFIX}" $APP_DEPLOY_DIR/ --region ${AWS_REGION} 2>/dev/null || true
     MANIFESTS_FOUND=true
     break
   fi
@@ -479,20 +486,21 @@ for i in $(seq 1 $MANIFEST_MAX_RETRIES); do
 done
 
 if [ "$MANIFESTS_FOUND" = "true" ]; then
-  echo "k8s bundle downloaded to $K8S_DIR"
+  echo "k8s bundles downloaded: $BOOTSTRAP_DIR, $APP_DEPLOY_DIR"
 
   # Restore execute permissions lost during S3 sync
-  find $K8S_DIR -name '*.sh' -exec chmod +x {} +
+  find $BOOTSTRAP_DIR -name '*.sh' -exec chmod +x {} +
+  find $APP_DEPLOY_DIR -name '*.sh' -exec chmod +x {} +
 
-  # Run the deploy script
+  # Run the monitoring deploy script (Day-1 initial apply)
   export KUBECONFIG=/etc/kubernetes/admin.conf
-  export MANIFESTS_DIR="$K8S_DIR/manifests"
+  export MANIFESTS_DIR="$APP_DEPLOY_DIR/monitoring/manifests"
 
-  echo "Running deploy-manifests.sh..."
-  $K8S_DIR/apps/monitoring/deploy-manifests.sh
+  echo "Running monitoring deploy-manifests.sh..."
+  $APP_DEPLOY_DIR/monitoring/deploy-manifests.sh
 else
   echo "WARNING: No manifests found in S3 after $((MANIFEST_MAX_RETRIES * MANIFEST_RETRY_INTERVAL))s"
-  echo "Skipping manifest deployment — SSM State Manager will handle it on next schedule"
+  echo "Skipping manifest deployment — ArgoCD will handle it once bootstrapped"
 fi
 
 echo "=== k8s first-boot deployment complete ==="
@@ -547,9 +555,9 @@ echo "=== Next.js secret pre-seeding complete ==="
 echo "=== Bootstrapping ArgoCD ==="
 
 export KUBECONFIG=/etc/kubernetes/admin.conf
-export ARGOCD_DIR="$K8S_DIR/system/argocd"
+export ARGOCD_DIR="$BOOTSTRAP_DIR/system/argocd"
 
-$K8S_DIR/system/argocd/bootstrap-argocd.sh || echo "WARNING: ArgoCD bootstrap failed -- manifests still applied via deploy scripts above"
+$BOOTSTRAP_DIR/system/argocd/bootstrap-argocd.sh || echo "WARNING: ArgoCD bootstrap failed -- manifests still applied via deploy scripts above"
 
 echo "=== ArgoCD bootstrap complete ==="
 

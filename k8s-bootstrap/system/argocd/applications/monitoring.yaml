@@ -1,12 +1,14 @@
 # @format
 # ArgoCD Application: Monitoring Stack
 #
-# Points ArgoCD at the monitoring manifests directory.
-# ArgoCD watches this path in Git and auto-syncs changes.
-# This replaces the SSM Run Command deployment for monitoring.
+# Points ArgoCD at the monitoring manifests directory in Git.
+# ArgoCD watches this path and auto-syncs changes (selfHeal + prune).
 #
-# Secrets (Grafana password, GitHub token) are pre-seeded by user-data
-# on first boot. ArgoCD manages all declarative manifests.
+# Secrets (Grafana password, GitHub token) are pre-seeded by boot-k8s.sh
+# on first boot. ArgoCD manages all declarative YAML manifests.
+#
+# Credential: SSH Deploy Key (read-only) — stored in K8s secret
+# via bootstrap-argocd.sh from SSM parameter.
 
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -23,9 +25,9 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/Nelson-Lamounier/cdk-monitoring.git
+    repoURL: git@github.com:Nelson-Lamounier/cdk-monitoring.git
     targetRevision: HEAD
-    path: k8s/apps/monitoring/manifests
+    path: app-deploy/monitoring/manifests
 
   destination:
     server: https://kubernetes.default.svc

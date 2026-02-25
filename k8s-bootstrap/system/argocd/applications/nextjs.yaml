@@ -1,15 +1,17 @@
 # @format
 # ArgoCD Application: Next.js
 #
-# Points ArgoCD at the k8s/apps/nextjs/ directory.
-# ArgoCD watches this path in Git and auto-syncs changes.
-# This replaces the SSM Run Command deployment for Next.js.
+# Points ArgoCD at the app-deploy/nextjs/ directory in Git.
+# ArgoCD watches this path and auto-syncs changes (selfHeal + prune).
 #
 # Secrets (DynamoDB table, S3 bucket, API URL) are pre-seeded
-# by user-data on first boot. ArgoCD manages all declarative manifests.
+# by boot-k8s.sh on first boot. ArgoCD manages all declarative manifests.
 #
 # Note: deploy-manifests.sh is excluded from sync — it's a bash script,
 # not a K8s manifest. ArgoCD only manages YAML resources.
+#
+# Credential: SSH Deploy Key (read-only) — stored in K8s secret
+# via bootstrap-argocd.sh from SSM parameter.
 
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -27,9 +29,9 @@ spec:
 
   source:
     # Points to this same repo — monorepo pattern
-    repoURL: https://github.com/Nelson-Lamounier/cdk-monitoring.git
+    repoURL: git@github.com:Nelson-Lamounier/cdk-monitoring.git
     targetRevision: HEAD
-    path: k8s/apps/nextjs
+    path: app-deploy/nextjs
     directory:
       exclude: "deploy-manifests.sh"
 

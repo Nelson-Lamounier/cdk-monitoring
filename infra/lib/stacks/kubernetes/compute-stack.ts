@@ -194,7 +194,7 @@ export class KubernetesComputeStack extends cdk.Stack {
                 S3KeyPrefix: {
                     type: 'String',
                     description: 'S3 key prefix',
-                    default: 'k8s',
+                    default: 'app-deploy',
                 },
                 SsmPrefix: {
                     type: 'String',
@@ -254,7 +254,7 @@ export class KubernetesComputeStack extends cdk.Stack {
                 S3KeyPrefix: {
                     type: 'String',
                     description: 'S3 key prefix',
-                    default: 'k8s',
+                    default: 'app-deploy',
                 },
                 SsmPrefix: {
                     type: 'String',

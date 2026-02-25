@@ -145,7 +145,8 @@ jobs:
           echo "  Target:    ${INSTANCE_ID}"
           echo "  Schedule:  ${SCHEDULE}"
 
-          # Try create first; if it already exists, update it
+          # Try create first; capture stderr to diagnose failures
+          CREATE_ERR=$(mktemp)
           if aws ssm create-association \
             --association-name "${ASSOC_NAME}" \
             --name "${DOC_NAME}" \
@@ -153,22 +154,30 @@ jobs:
             --parameters "${PARAMS}" \
             --schedule-expression "${SCHEDULE}" \
             --apply-only-at-cron-interval \
-            --region "${REGION}" 2>/dev/null; then
+            --region "${REGION}" 2>"${CREATE_ERR}"; then
             echo "✓ Association created: ${ASSOC_NAME}"
           else
-            echo "Association exists — updating..."
-            # Look up the existing association ID
-            ASSOC_ID=$(aws ssm describe-association \
-              --association-name "${ASSOC_NAME}" \
-              --query 'AssociationDescription.AssociationId' \
+            CREATE_MSG=$(cat "${CREATE_ERR}")
+            echo "Create failed: ${CREATE_MSG}"
+
+            # Look up existing association by name using list-associations
+            # (describe-association requires --association-id or --name+--instance-id,
+            #  --association-name alone is not sufficient for lookup)
+            echo "Looking up existing association: ${ASSOC_NAME}..."
+            ASSOC_ID=$(aws ssm list-associations \
+              --association-filter-list "key=AssociationName,value=${ASSOC_NAME}" \
+              --query 'Associations[0].AssociationId' \
               --output text \
               --region "${REGION}" 2>/dev/null || echo "")
 
-            if [ -z "$ASSOC_ID" ]; then
+            # list-associations returns "None" when no results
+            if [ -z "$ASSOC_ID" ] || [ "$ASSOC_ID" = "None" ]; then
               echo "::error::Could not find or create association ${ASSOC_NAME}"
+              echo "::error::Create error was: ${CREATE_MSG}"
               exit 1
             fi
 
+            echo "Found association: ${ASSOC_ID} — updating..."
             aws ssm update-association \
               --association-id "${ASSOC_ID}" \
               --name "${DOC_NAME}" \
@@ -179,6 +188,7 @@ jobs:
               --region "${REGION}"
             echo "✓ Association updated: ${ASSOC_NAME} (${ASSOC_ID})"
           fi
+          rm -f "${CREATE_ERR}"
 
       # -----------------------------------------------------------------------
       # 4. Apply association immediately (one-shot after sync)
@@ -189,13 +199,13 @@ jobs:
           ASSOC_NAME="${{ inputs.association-name }}"
           REGION="${{ env.AWS_REGION }}"
 
-          ASSOC_ID=$(aws ssm describe-association \
-            --association-name "${ASSOC_NAME}" \
-            --query 'AssociationDescription.AssociationId' \
+          ASSOC_ID=$(aws ssm list-associations \
+            --association-filter-list "key=AssociationName,value=${ASSOC_NAME}" \
+            --query 'Associations[0].AssociationId' \
             --output text \
             --region "${REGION}" 2>/dev/null || echo "")
 
-          if [ -z "$ASSOC_ID" ]; then
+          if [ -z "$ASSOC_ID" ] || [ "$ASSOC_ID" = "None" ]; then
             echo "::warning::Association ${ASSOC_NAME} not found — skipping immediate apply"
             exit 0
           fi
@@ -205,3 +215,65 @@ jobs:
             --association-ids "${ASSOC_ID}" \
             --region "${REGION}" 2>/dev/null || true
           echo "✓ Association apply triggered"
+
+      # -----------------------------------------------------------------------
+      # 5. Wait for association execution to complete
+      #
+      # Polls the association status to verify the deploy script ran
+      # successfully on the instance. Both bootstrap and app-deploy
+      # associations are idempotent, so ordering between them is not
+      # enforced — each deploy script handles missing dependencies
+      # gracefully and SSM re-runs every 30 minutes for convergence.
+      # -----------------------------------------------------------------------
+      - name: Wait for Execution
+        if: inputs.ssm-document != '' && inputs.association-name != ''
+        run: |
+          ASSOC_NAME="${{ inputs.association-name }}"
+          REGION="${{ env.AWS_REGION }}"
+          TIMEOUT=300  # 5 minutes
+          POLL_INTERVAL=15
+          ELAPSED=0
+
+          ASSOC_ID=$(aws ssm list-associations \
+            --association-filter-list "key=AssociationName,value=${ASSOC_NAME}" \
+            --query 'Associations[0].AssociationId' \
+            --output text \
+            --region "${REGION}" 2>/dev/null || echo "")
+
+          if [ -z "$ASSOC_ID" ] || [ "$ASSOC_ID" = "None" ]; then
+            echo "::warning::Association not found — skipping health check"
+            exit 0
+          fi
+
+          echo "Waiting for association ${ASSOC_NAME} execution (timeout: ${TIMEOUT}s)..."
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            STATUS=$(aws ssm describe-association-executions \
+              --association-id "${ASSOC_ID}" \
+              --max-results 1 \
+              --query 'AssociationExecutions[0].Status' \
+              --output text \
+              --region "${REGION}" 2>/dev/null || echo "Unknown")
+
+            case "$STATUS" in
+              Success)
+                echo "✓ Association execution completed successfully"
+                exit 0
+                ;;
+              Failed)
+                echo "::warning::Association execution failed — check SSM Run Command history"
+                echo "::warning::Deploy scripts are idempotent; next SSM schedule (30min) or ArgoCD will retry"
+                exit 0  # Non-blocking: don't fail the pipeline
+                ;;
+              TimedOut)
+                echo "::warning::Association execution timed out on the instance"
+                exit 0
+                ;;
+            esac
+
+            sleep $POLL_INTERVAL
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
+            echo "  Status: ${STATUS} (${ELAPSED}s / ${TIMEOUT}s)"
+          done
+
+          echo "::warning::Health check timed out after ${TIMEOUT}s — execution may still be in progress"

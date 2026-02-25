@@ -169,7 +169,7 @@ flowchart TD
 | KMS Key | Encryption for EBS volumes |
 | EBS Volume | Persistent storage for Prometheus/Grafana data |
 | Elastic IP | Static IP for the k8s node |
-| S3 Scripts Bucket | Boot scripts and manifests storage |
+| S3 Scripts Bucket | Boot scripts and manifests storage (kubeadm init, Helm charts) |
 
 #### ②b Sync Bootstrap Content
 Runs `aws s3 sync` to seed boot scripts from `k8s-bootstrap/` into the S3 scripts bucket. This ensures `boot-k8s.sh` is available when the EC2 instance launches during the Compute stack deployment.
@@ -223,7 +223,7 @@ After CDK provisions the hardware, two independent pipelines deploy the software
 | 4 | Trigger immediate association apply |
 
 **What gets installed:**
-- k3s (lightweight Kubernetes)
+- kubeadm Kubernetes cluster initialization
 - Traefik (ingress controller → EIP starts responding)
 - ArgoCD (GitOps controller)
 - Helm charts (Prometheus, Grafana, cert-manager)
@@ -247,7 +247,7 @@ After CDK provisions the hardware, two independent pipelines deploy the software
 - Kubernetes namespaces, ResourceQuotas, NetworkPolicies
 
 > [!NOTE]
-> Phases 3a and 3b **can run in parallel**. Bootstrap installs the cluster software; app deploy pushes the workload manifests. SSM State Manager ensures they're applied in the correct order on the instance.
+> Phases 3a and 3b **can run in parallel**. Bootstrap initialises the kubeadm cluster and platform components; app deploy pushes the workload manifests. SSM State Manager ensures they're applied in the correct order on the instance.
 
 ---
 

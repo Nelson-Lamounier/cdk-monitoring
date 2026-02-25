@@ -32,7 +32,7 @@ set -euo pipefail
 SSM_PREFIX="${SSM_PREFIX:-/k8s/development}"
 AWS_REGION="${AWS_REGION:-eu-west-1}"
 KUBECONFIG="${KUBECONFIG:-/etc/kubernetes/admin.conf}"
-ARGOCD_DIR="${ARGOCD_DIR:-/data/k8s/system/argocd}"
+ARGOCD_DIR="${ARGOCD_DIR:-/data/k8s-bootstrap/system/argocd}"
 
 export KUBECONFIG
 
@@ -52,26 +52,30 @@ echo "✓ argocd namespace ready"
 echo ""
 
 # ---------------------------------------------------------------------------
-# 2. Resolve GitHub token from SSM
+# 2. Resolve SSH Deploy Key from SSM
+#
+# Deploy Keys are read-only per-repo and don't grant access beyond
+# the specific repository. Preferred over personal access tokens.
 # ---------------------------------------------------------------------------
-echo "=== Step 2: Resolving GitHub token from SSM ==="
+echo "=== Step 2: Resolving SSH Deploy Key from SSM ==="
 
-GITHUB_TOKEN="${GITHUB_TOKEN:-}"
-if [ -z "${GITHUB_TOKEN}" ]; then
-    SSM_PATH="${SSM_PREFIX}/github-token"
+DEPLOY_KEY="${DEPLOY_KEY:-}"
+if [ -z "${DEPLOY_KEY}" ]; then
+    SSM_PATH="${SSM_PREFIX}/deploy-key"
     echo "  → Resolving from SSM: ${SSM_PATH}"
-    GITHUB_TOKEN=$(aws ssm get-parameter \
+    DEPLOY_KEY=$(aws ssm get-parameter \
         --name "${SSM_PATH}" \
         --with-decryption \
         --query 'Parameter.Value' \
         --output text \
         --region "${AWS_REGION}" 2>/dev/null || echo "")
 
-    if [ -n "${GITHUB_TOKEN}" ]; then
-        echo "  ✓ GitHub token resolved from SSM"
+    if [ -n "${DEPLOY_KEY}" ]; then
+        echo "  ✓ SSH Deploy Key resolved from SSM"
     else
-        echo "  ⚠ GitHub token not found in SSM — ArgoCD won't be able to access private repo"
-        echo "  ⚠ Store token at: ${SSM_PATH}"
+        echo "  ⚠ Deploy Key not found in SSM — ArgoCD won't be able to access private repo"
+        echo "  ⚠ Store Deploy Key at: ${SSM_PATH}"
+        echo "  ⚠ See: docs/kubernetes/bootstrap-vs-app-deploy-review.md for setup instructions"
     fi
 else
     echo "  ✓ Using environment override"
@@ -79,27 +83,27 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# 3. Create repo credentials secret (before ArgoCD install)
+# 3. Create repo credentials secret (SSH Deploy Key, before ArgoCD install)
 #
 # ArgoCD picks up secrets with label argocd.argoproj.io/secret-type=repository
 # on startup. Creating it before install ensures immediate repo access.
+# Using SSH Deploy Key (read-only per-repo) instead of personal access token.
 # ---------------------------------------------------------------------------
-echo "=== Step 3: Creating repo credentials ==="
+echo "=== Step 3: Creating repo credentials (SSH Deploy Key) ==="
 
-if [ -n "${GITHUB_TOKEN}" ]; then
+if [ -n "${DEPLOY_KEY}" ]; then
     kubectl create secret generic repo-cdk-monitoring \
         --from-literal=type=git \
-        --from-literal=url=https://github.com/Nelson-Lamounier/cdk-monitoring.git \
-        --from-literal=username=argocd \
-        --from-literal=password="${GITHUB_TOKEN}" \
+        --from-literal=url=git@github.com:Nelson-Lamounier/cdk-monitoring.git \
+        --from-literal=sshPrivateKey="${DEPLOY_KEY}" \
         --namespace argocd \
         --dry-run=client -o yaml | \
     kubectl label -f - --local --dry-run=client -o yaml \
         argocd.argoproj.io/secret-type=repository | \
     kubectl apply -f -
-    echo "  ✓ Repo credentials created"
+    echo "  ✓ SSH Deploy Key repo credentials created"
 else
-    echo "  ⚠ Skipping — no GitHub token available"
+    echo "  ⚠ Skipping — no Deploy Key available"
 fi
 echo ""
 
