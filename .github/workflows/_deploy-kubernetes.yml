@@ -201,16 +201,18 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
-          path: cdk.out/
+          path: infra/cdk.out/
           retention-days: 30
+          if-no-files-found: error
 
       - name: Upload for Security Scan
         if: inputs.enable-security-scan
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cdk-synthesis
-          path: cdk.out/
+          path: infra/cdk.out/
           retention-days: 7
+          if-no-files-found: error
 
   # ===========================================================================
   # IaC Security Scan (Conditional)
