@@ -292,6 +292,7 @@ const k8sStacks: StackConfig[] = [
     getStackName: (env) => getStackId(Project.KUBERNETES, 'api', env),
     description: 'API Gateway with Lambda for email subscriptions (subscribe + verify)',
     dependsOn: ['data'],
+    optional: true, // Application-layer — deployed separately from infrastructure
   },
   {
     id: 'edge',

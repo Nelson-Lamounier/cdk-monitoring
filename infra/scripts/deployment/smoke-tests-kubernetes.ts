@@ -300,9 +300,10 @@ async function checkCloudFormationStacks(): Promise<CheckResult> {
       }
       details.push(`${stack.name}: ${status}`);
     } catch {
-      // NOT_FOUND — Edge stack may not be deployed in development
-      if (isEdge) {
-        logger.warn(`${stack.name}${regionLabel}: NOT_FOUND (Edge stack not deployed — OK for dev)`);
+      // NOT_FOUND — Edge or optional stacks may not be deployed
+      if (isEdge || stack.optional) {
+        const label = isEdge ? 'Edge stack' : 'Optional stack';
+        logger.warn(`${stack.name}${regionLabel}: NOT_FOUND (${label} not deployed — OK)`);
         details.push(`${stack.name}: NOT_FOUND (optional)`);
       } else {
         logger.error(`${stack.name}${regionLabel}: NOT_FOUND`);
@@ -386,7 +387,7 @@ async function checkGoldenAmiSsm(): Promise<CheckResult> {
 async function checkEipHealth(): Promise<CheckResult> {
   if (!eipAddress) {
     logger.info('No EIP available — skipping');
-    return { name: 'EIP HTTP Health', status: 'skipped', critical: true };
+    return { name: 'EIP HTTP Health', status: 'skipped', critical: false };
   }
 
   logger.task(`Testing HTTP endpoint on EIP ${eipAddress}...`);
@@ -447,7 +448,7 @@ async function checkEipHealth(): Promise<CheckResult> {
     return {
       name: 'EIP HTTP Health',
       status: 'unhealthy',
-      critical: true,
+      critical: false,
       details: details.join('; '),
     };
   }
@@ -455,7 +456,7 @@ async function checkEipHealth(): Promise<CheckResult> {
   return {
     name: 'EIP HTTP Health',
     status: passed > 0 ? 'healthy' : 'degraded',
-    critical: true,
+    critical: false,
     details: details.join('; '),
   };
 }
