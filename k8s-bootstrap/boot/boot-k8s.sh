@@ -21,6 +21,7 @@
 #   CALICO_VERSION   — Calico CNI version (default: v3.29.3)
 #   LOG_GROUP_NAME   — CloudWatch log group for boot log streaming
 #   AWS_REGION       — AWS region
+#   EIP_ALLOC_ID     — Elastic IP allocation ID (for aws ec2 associate-address)
 # =============================================================================
 
 set -euxo pipefail
@@ -194,6 +195,46 @@ chown -R ec2-user:ec2-user ${MOUNT_POINT}
 echo "EBS volume mounted at ${MOUNT_POINT}"
 
 # =============================================================================
+# 1.5 Associate Elastic IP
+#
+# Binds the pre-allocated EIP to this instance so that:
+#   - CloudFront origin hostname stays stable across instance replacements
+#   - SSM `elastic-ip` parameter matches the actual public IP
+# EIP_ALLOC_ID is set by CDK user-data from baseStack.elasticIp.attrAllocationId
+# =============================================================================
+
+if [ -n "${EIP_ALLOC_ID:-}" ]; then
+    echo "=== Associating Elastic IP ==="
+    echo "EIP Allocation ID: $EIP_ALLOC_ID"
+    echo "Instance ID: $INSTANCE_ID"
+
+    # Retry loop — EIP may be briefly in use if old instance is terminating
+    EIP_MAX_RETRIES=12
+    EIP_RETRY_INTERVAL=10
+
+    for i in $(seq 1 $EIP_MAX_RETRIES); do
+        if aws ec2 associate-address \
+            --allocation-id "$EIP_ALLOC_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --allow-reassociation \
+            --region "$REGION" 2>&1; then
+            echo "✓ Elastic IP associated successfully (attempt $i/$EIP_MAX_RETRIES)"
+            break
+        fi
+        if [ $i -eq $EIP_MAX_RETRIES ]; then
+            echo "ERROR: Failed to associate EIP after $EIP_MAX_RETRIES attempts"
+            echo "Instance will use ephemeral public IP — CloudFront origin will be incorrect"
+        else
+            echo "EIP association failed (attempt $i/$EIP_MAX_RETRIES). Retrying in ${EIP_RETRY_INTERVAL}s..."
+            sleep $EIP_RETRY_INTERVAL
+        fi
+    done
+else
+    echo "WARNING: EIP_ALLOC_ID not set — skipping Elastic IP association"
+    echo "Instance will use ephemeral public IP"
+fi
+
+# =============================================================================
 # 2. CloudFormation Signal: Infrastructure Ready
 # =============================================================================
 
@@ -281,6 +322,19 @@ if [ -f /etc/kubernetes/admin.conf ]; then
     echo "=== Cluster already initialized — skipping kubeadm init, Calico, kubectl setup ==="
     echo "  (This is a second-run via SSM State Manager or instance reboot)"
     export KUBECONFIG=/etc/kubernetes/admin.conf
+
+    # =========================================================================
+    # Certificate Renewal — kubeadm certs expire after 1 year by default.
+    # Running on every boot ensures certificates are refreshed naturally
+    # as the ASG replaces instances or SSM re-invokes the boot script.
+    # On a fresh cluster (Day-0), this is a no-op (certs are brand new).
+    # =========================================================================
+    echo "=== Renewing kubeadm certificates ==="
+    kubeadm certs renew all 2>&1 || echo "WARNING: Certificate renewal failed"
+    echo "Certificate expiry status:"
+    kubeadm certs check-expiration 2>&1 || true
+    echo ""
+
     SKIP_CLUSTER_INIT=true
 else
     SKIP_CLUSTER_INIT=false
@@ -353,6 +407,10 @@ aws ssm put-parameter --name "$SSM_PREFIX/control-plane-endpoint" --value "$PRIV
 
 aws ssm put-parameter --name "$SSM_PREFIX/instance-id" --value "$INSTANCE_ID" \
     --type "String" --overwrite --region "$REGION" || echo "WARNING: Failed to store instance-id in SSM"
+
+# Refresh public IP after EIP association (IMDS reflects the new EIP)
+IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4 || echo "")
 
 if [ -n "$PUBLIC_IP" ]; then
     aws ssm put-parameter --name "$SSM_PREFIX/elastic-ip" --value "$PUBLIC_IP" \

@@ -196,6 +196,7 @@ describe('KubernetesComputeStack', () => {
                 'S3_BUCKET',
                 'CALICO_VERSION',
                 'LOG_GROUP_NAME',
+                'EIP_ALLOC_ID',
             ];
 
             it.each(requiredExports)('should export %s', (envVar) => {

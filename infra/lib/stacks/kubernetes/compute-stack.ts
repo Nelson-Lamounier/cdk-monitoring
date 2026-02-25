@@ -371,6 +371,7 @@ export SSM_PREFIX="${props.ssmPrefix}"
 export S3_BUCKET="${scriptsBucket.bucketName}"
 export CALICO_VERSION="${configs.image.bakedVersions.calico}"
 export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
+export EIP_ALLOC_ID="${baseStack.elasticIp.attrAllocationId}"
 
 # Download boot script from S3 — "Patient" retry for Day-1 coordination
 # On first-ever deploy, the Sync pipeline may not have uploaded boot-k8s.sh
