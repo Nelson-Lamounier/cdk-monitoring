@@ -2,7 +2,7 @@
 # @description Reusable Kubernetes Deployment Workflow (Centralized)
 #
 # Infra-only pipeline for the K8s (kubeadm) infrastructure.
-# Bootstrap/app manifests synced by independent S3 pipelines. /Test
+# Bootstrap/app manifests synced by independent S3 pipelines.
 #
 # 5-Stack Deployment Order:
 #   1. Data      (DynamoDB + S3 + SSM Parameters)
