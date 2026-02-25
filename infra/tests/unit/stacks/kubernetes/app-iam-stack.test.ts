@@ -29,8 +29,8 @@ import {
 } from '../../../../lib/stacks/kubernetes/app-iam-stack';
 import { KubernetesBaseStack } from '../../../../lib/stacks/kubernetes/base-stack';
 import {
-    KubernetesComputeStack,
-} from '../../../../lib/stacks/kubernetes/compute-stack';
+    KubernetesControlPlaneStack,
+} from '../../../../lib/stacks/kubernetes/control-plane-stack';
 import {
     TEST_ENV_EU,
     createTestApp,
@@ -61,7 +61,7 @@ function createAppIamStack(
         vpcName: 'shared-vpc-development',
     });
 
-    const computeStack = new KubernetesComputeStack(app, 'TestK8sComputeStack', {
+    const controlPlaneStack = new KubernetesControlPlaneStack(app, 'TestK8sComputeStack', {
         baseStack,
         env: TEST_ENV_EU,
         targetEnvironment: Environment.DEVELOPMENT,
@@ -71,7 +71,7 @@ function createAppIamStack(
     });
 
     const stack = new KubernetesAppIamStack(app, 'TestK8sAppIamStack', {
-        computeStack,
+        controlPlaneStack,
         env: TEST_ENV_EU,
         targetEnvironment: Environment.DEVELOPMENT,
         configs: TEST_CONFIGS,

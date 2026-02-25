@@ -65,23 +65,25 @@ describe('KubernetesProjectFactory', () => {
             app = new cdk.App();
         });
 
-        it('should create 6 stacks: Data, Base, Compute, AppIam, API, and Edge', () => {
+        it('should create 8 stacks: Data, Base, Compute, Worker, MonWorker, AppIam, API, and Edge', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
             const { stacks, stackMap } = factory.createAllStacks(app, context);
 
-            // Shared kubeadm project has 6 stacks: Data, Base, Compute, AppIam, API, Edge
-            expect(stacks).toHaveLength(6);
+            // Shared kubeadm project has 8 stacks: Data, Base, Compute, Worker, MonWorker, AppIam, API, Edge
+            expect(stacks).toHaveLength(8);
             expect(stackMap).toHaveProperty('data');
             expect(stackMap).toHaveProperty('base');
             expect(stackMap).toHaveProperty('compute');
+            expect(stackMap).toHaveProperty('worker');
+            expect(stackMap).toHaveProperty('monitoringWorker');
             expect(stackMap).toHaveProperty('appIam');
             expect(stackMap).toHaveProperty('api');
             expect(stackMap).toHaveProperty('edge');
         });
 
-        it('should order stacks as Data → Base → Compute → AppIam → Api → Edge', () => {
+        it('should order stacks as Data → Base → Compute → Worker → MonWorker → AppIam → Api → Edge', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
@@ -91,9 +93,11 @@ describe('KubernetesProjectFactory', () => {
             expect(stackNames[0]).toContain('Data');
             expect(stackNames[1]).toContain('Base');
             expect(stackNames[2]).toContain('Compute');
-            expect(stackNames[3]).toContain('AppIam');
-            expect(stackNames[4]).toContain('Api');
-            expect(stackNames[5]).toContain('Edge');
+            expect(stackNames[3]).toContain('Worker');
+            expect(stackNames[4]).toContain('MonWorker');
+            expect(stackNames[5]).toContain('AppIam');
+            expect(stackNames[6]).toContain('Api');
+            expect(stackNames[7]).toContain('Edge');
         });
 
         it('should name stacks correctly with namespace and environment', () => {

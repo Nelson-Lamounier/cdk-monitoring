@@ -2,7 +2,7 @@
  * @format
  * Kubernetes Compute Stack Unit Tests
  *
- * Tests for the KubernetesComputeStack (Runtime Layer):
+ * Tests for the KubernetesControlPlaneStack (Runtime Layer):
  * - Launch Template + Auto Scaling Group
  * - S3 Buckets (scripts + access logs via S3BucketConstruct)
  * - S3 Bucket Deployment (k8s manifests sync)
@@ -34,9 +34,9 @@ import { Environment } from '../../../../lib/config';
 import { getK8sConfigs } from '../../../../lib/config/kubernetes';
 import { KubernetesBaseStack } from '../../../../lib/stacks/kubernetes/base-stack';
 import {
-    KubernetesComputeStack,
-    KubernetesComputeStackProps,
-} from '../../../../lib/stacks/kubernetes/compute-stack';
+    KubernetesControlPlaneStack,
+    KubernetesControlPlaneStackProps,
+} from '../../../../lib/stacks/kubernetes/control-plane-stack';
 import {
     TEST_ENV_EU,
     createTestApp,
@@ -83,16 +83,16 @@ function extractUserDataParts(template: Template): string[] {
 }
 
 /**
- * Helper to create KubernetesComputeStack with sensible defaults.
+ * Helper to create KubernetesControlPlaneStack with sensible defaults.
  *
  * Override any prop via the `overrides` parameter.
  *
  * Creates a KubernetesBaseStack first (for VPC, SG, KMS, EBS, EIP),
- * then passes it as a prop to KubernetesComputeStack.
+ * then passes it as a prop to KubernetesControlPlaneStack.
  */
 function createComputeStack(
-    overrides?: Partial<KubernetesComputeStackProps>,
-): { stack: KubernetesComputeStack; template: Template; app: cdk.App } {
+    overrides?: Partial<KubernetesControlPlaneStackProps>,
+): { stack: KubernetesControlPlaneStack; template: Template; app: cdk.App } {
     const app = createTestApp();
 
     const baseStack = new KubernetesBaseStack(app, 'TestK8sBaseStack', {
@@ -104,7 +104,7 @@ function createComputeStack(
         vpcName: 'shared-vpc-development',
     });
 
-    const stack = new KubernetesComputeStack(app, 'TestK8sComputeStack', {
+    const stack = new KubernetesControlPlaneStack(app, 'TestK8sComputeStack', {
         baseStack,
         env: TEST_ENV_EU,
         targetEnvironment: Environment.DEVELOPMENT,
@@ -122,7 +122,7 @@ function createComputeStack(
 // Tests
 // =============================================================================
 
-describe('KubernetesComputeStack', () => {
+describe('KubernetesControlPlaneStack', () => {
 
     // =========================================================================
     // Launch Template + Auto Scaling Group

@@ -18,7 +18,7 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Environment } from '../../../../lib/config';
 import { getK8sConfigs } from '../../../../lib/config/kubernetes';
-import { KubernetesDataStack } from '../../../../lib/stacks/kubernetes/data/data-stack';
+import { KubernetesDataStack } from '../../../../lib/stacks/kubernetes/data-stack';
 import {
     TEST_ENV_EU,
     createTestApp,

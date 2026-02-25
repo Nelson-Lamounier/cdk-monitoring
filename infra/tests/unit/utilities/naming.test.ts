@@ -96,7 +96,7 @@ describe('Naming Utilities', () => {
         });
 
         it('should have expected k8s stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.kubernetes)).toEqual(['data', 'compute', 'api', 'edge']);
+            expect(Object.keys(STACK_REGISTRY.kubernetes)).toEqual(['data', 'base', 'compute', 'worker', 'monitoringWorker', 'appIam', 'api', 'edge']);
         });
     });
 
