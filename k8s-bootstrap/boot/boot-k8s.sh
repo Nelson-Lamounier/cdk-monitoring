@@ -284,6 +284,25 @@ PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.1
 # =====================================================================
 if ! command -v containerd &>/dev/null; then
     echo "WARNING: containerd not found — Day-0 bootstrap from parent AMI"
+
+    # Configure networking prerequisites (normally baked by Golden AMI)
+    # Required by kubeadm preflight: overlay + br_netfilter modules, ip_forward=1
+    echo "Configuring kernel modules and sysctl for Kubernetes..."
+    cat > /etc/modules-load.d/k8s.conf <<MODULES_EOF
+overlay
+br_netfilter
+MODULES_EOF
+    modprobe overlay
+    modprobe br_netfilter
+
+    cat > /etc/sysctl.d/k8s.conf <<SYSCTL_EOF
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+SYSCTL_EOF
+    sysctl --system
+    echo "Kernel modules and sysctl configured"
+
     echo "Installing containerd, kubeadm, kubelet, kubectl..."
 
     # Install containerd from Amazon Linux repo
