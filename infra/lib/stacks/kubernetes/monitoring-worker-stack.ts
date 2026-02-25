@@ -114,7 +114,7 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
 
         const { monitoringWorkerConfig, baseStack } = props;
         const namePrefix = props.namePrefix ?? 'k8s';
-        const workerPrefix = `${namePrefix}-mon-worker`;
+        const workerPrefix = `${namePrefix}/mon-worker`;
 
         // =====================================================================
         // Consume base infrastructure (from KubernetesBaseStack)
