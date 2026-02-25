@@ -271,3 +271,53 @@ export function monitoringSsmPaths(environment: Environment): MonitoringSsmPaths
         tempoEndpoint: `${prefix}/tempo/endpoint`,
     };
 }
+
+// =============================================================================
+// BEDROCK SSM PATHS
+// =============================================================================
+
+/** Bedrock SSM prefix: /bedrock/{environment} */
+export function bedrockSsmPrefix(environment: Environment): string {
+    return `/bedrock/${environment}`;
+}
+
+/**
+ * SSM parameter paths for the Bedrock Agent stack.
+ */
+export interface BedrockSsmPaths {
+    /** The prefix itself: /bedrock/{environment} */
+    readonly prefix: string;
+    /** Bedrock Agent ID */
+    readonly agentId: string;
+    /** Bedrock Agent ARN */
+    readonly agentArn: string;
+    /** Bedrock Agent Alias ID */
+    readonly agentAliasId: string;
+    /** Knowledge Base ID */
+    readonly knowledgeBaseId: string;
+    /** API Gateway URL */
+    readonly apiUrl: string;
+    /** S3 data bucket name (for Knowledge Base documents) */
+    readonly dataBucketName: string;
+    /** Wildcard path for IAM: /bedrock/{environment}/* */
+    readonly wildcard: string;
+}
+
+/**
+ * Get Bedrock SSM parameter paths for a given environment.
+ */
+export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
+    const prefix = bedrockSsmPrefix(environment);
+
+    return {
+        prefix,
+        agentId: `${prefix}/agent-id`,
+        agentArn: `${prefix}/agent-arn`,
+        agentAliasId: `${prefix}/agent-alias-id`,
+        knowledgeBaseId: `${prefix}/knowledge-base-id`,
+        apiUrl: `${prefix}/api-url`,
+        dataBucketName: `${prefix}/data-bucket-name`,
+        wildcard: `${prefix}/*`,
+    };
+}
+

@@ -18,6 +18,8 @@ export enum Project {
     NEXTJS = 'nextjs',
     /** AWS Organization and root account resources */
     ORG = 'org',
+    /** Amazon Bedrock AI agent */
+    BEDROCK = 'bedrock',
 }
 
 /**
@@ -61,6 +63,12 @@ export const PROJECT_CONFIGS: Record<Project, ProjectConfig> = {
         description: 'AWS Organization and root account resources',
         namespace: 'Org',
         requiresSharedVpc: false,
+    },
+    [Project.BEDROCK]: {
+        displayName: 'Bedrock',
+        description: 'Amazon Bedrock AI agent with Knowledge Bases and API Gateway',
+        namespace: 'Bedrock',
+        requiresSharedVpc: false, // Bedrock is fully managed serverless
     },
 } as const;
 
