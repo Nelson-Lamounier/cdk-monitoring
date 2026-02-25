@@ -210,7 +210,7 @@ jobs:
                 # 3. Fetch CloudWatch Logs from the build instance
                 #    Image Builder writes logs to /aws/imagebuilder/<component-name>
                 echo "--- CloudWatch Build Logs (last 80 lines) ---"
-                LOG_GROUP="/aws/imagebuilder/k8s-development-golden-ami-install"
+                LOG_GROUP="/aws/imagebuilder/k8s-development-golden-ami-recipe"
 
                 # Get the most recent log stream
                 LATEST_STREAM=$(aws logs describe-log-streams \

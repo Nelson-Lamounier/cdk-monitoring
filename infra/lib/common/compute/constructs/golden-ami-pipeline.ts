@@ -35,6 +35,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as imagebuilder from 'aws-cdk-lib/aws-imagebuilder';
 import * as cdk from 'aws-cdk-lib/core';
+import * as crypto from 'crypto';
 
 import { Construct } from 'constructs';
 
@@ -108,13 +109,24 @@ export class GoldenAmiPipelineConstruct extends Construct {
 
         // -----------------------------------------------------------------
         // 2. Image Builder Component — installs Docker, AWS CLI, kubeadm toolchain, Calico
+        //
+        // Image Builder components are IMMUTABLE — same name + version
+        // cannot be updated. We derive the version from a content hash
+        // so it auto-bumps whenever install steps or software versions change.
         // -----------------------------------------------------------------
+        const componentDoc = this._buildComponentDocument(imageConfig, clusterConfig);
+
+        // Deterministic semver from SHA-256 of component content.
+        // First 3 bytes → x.y.z (0-255 each). Same content = same version.
+        const contentHash = crypto.createHash('sha256').update(componentDoc).digest();
+        const componentVersion = `${contentHash[0]}.${contentHash[1]}.${contentHash[2]}`;
+
         const installComponent = new imagebuilder.CfnComponent(this, 'InstallComponent', {
             name: `${namePrefix}-golden-ami-install`,
             platform: 'Linux',
-            version: '1.0.0',
+            version: componentVersion,
             description: 'Installs Docker, AWS CLI, kubeadm toolchain, and Calico CNI manifests',
-            data: this._buildComponentDocument(imageConfig, clusterConfig),
+            data: componentDoc,
         });
 
         // -----------------------------------------------------------------
@@ -122,7 +134,7 @@ export class GoldenAmiPipelineConstruct extends Construct {
         // -----------------------------------------------------------------
         const recipe = new imagebuilder.CfnImageRecipe(this, 'Recipe', {
             name: `${namePrefix}-golden-ami-recipe`,
-            version: '1.0.0',
+            version: componentVersion,
             parentImage: `ssm:${imageConfig.parentImageSsmPath}`,
             components: [
                 {
