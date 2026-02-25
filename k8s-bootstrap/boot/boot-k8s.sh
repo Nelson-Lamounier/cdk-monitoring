@@ -626,7 +626,49 @@ fi
 echo "=== Next.js secret pre-seeding complete ==="
 
 # =============================================================================
-# 9. Bootstrap ArgoCD
+# 9. Install Helm + Traefik Ingress Controller (DaemonSet — Hybrid-HA)
+#
+# Traefik runs as a DaemonSet with hostNetwork=true so every node listens
+# on ports 80/443. This enables seamless EIP failover — when the EIP moves
+# to a different node, Traefik is already there serving traffic.
+# =============================================================================
+
+echo "=== Installing Helm ==="
+
+if ! command -v helm &>/dev/null; then
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    echo "Helm installed: $(helm version --short)"
+else
+    echo "Helm already installed: $(helm version --short)"
+fi
+
+echo "=== Installing Traefik Ingress Controller (DaemonSet) ==="
+
+export KUBECONFIG=/etc/kubernetes/admin.conf
+
+# Add Traefik Helm repo
+helm repo add traefik https://traefik.github.io/charts
+helm repo update
+
+# Install Traefik as DaemonSet with hostNetwork
+TRAEFIK_VALUES="$BOOTSTRAP_DIR/system/traefik/traefik-values.yaml"
+
+if helm status traefik -n kube-system &>/dev/null; then
+    echo "Traefik already installed — upgrading"
+    helm upgrade traefik traefik/traefik -n kube-system -f "$TRAEFIK_VALUES" --wait --timeout 5m
+else
+    helm install traefik traefik/traefik -n kube-system -f "$TRAEFIK_VALUES" --wait --timeout 5m
+fi
+
+# Wait for DaemonSet rollout
+echo "Waiting for Traefik DaemonSet to be ready..."
+kubectl rollout status daemonset/traefik -n kube-system --timeout=120s || true
+kubectl get ds traefik -n kube-system
+
+echo "=== Traefik Ingress Controller ready ==="
+
+# =============================================================================
+# 10. Bootstrap ArgoCD
 # =============================================================================
 
 echo "=== Bootstrapping ArgoCD ==="
