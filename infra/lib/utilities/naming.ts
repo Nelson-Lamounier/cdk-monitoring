@@ -6,7 +6,7 @@
  * All CDK factories and deployment scripts derive names from here.
  *
  * Stack name pattern: {Namespace}-{Component}-{environment}
- *   e.g. NextJS-Compute-development, Monitoring-K8s-Compute-production
+ *   e.g. NextJS-Compute-development, ControlPlane-production
  */
 
 import { EnvironmentName } from '../config/environments';
@@ -48,9 +48,9 @@ export const STACK_REGISTRY = {
     kubernetes: {
         data: 'Data',
         base: 'Base',
-        compute: 'Compute',
-        worker: 'Worker',
-        monitoringWorker: 'MonWorker',
+        controlPlane: 'ControlPlane',
+        appWorker: 'AppWorker',
+        monitoringWorker: 'MonitoringWorker',
         appIam: 'AppIam',
         api: 'Api',
         edge: 'Edge',
@@ -74,25 +74,28 @@ export type RegistryStackKey<P extends RegistryProject> = keyof (typeof STACK_RE
  * Generate a CDK construct ID / CloudFormation stack name.
  *
  * Pattern: {Namespace}-{Component}-{environment}
+ * If namespace is empty: {Component}-{environment}
  *
- * @param namespace - Project namespace (e.g. 'NextJS', 'Monitoring-K8s')
- * @param component - Stack component name (e.g. 'Compute', 'K8s-Compute')
+ * @param namespace - Project namespace (e.g. 'NextJS', '' for Kubernetes)
+ * @param component - Stack component name (e.g. 'ControlPlane', 'AppWorker')
  * @param environment - Target environment (e.g. 'development')
- * @returns Full stack name (e.g. 'NextJS-K8s-Compute-development')
+ * @returns Full stack name (e.g. 'NextJS-Compute-development' or 'ControlPlane-development')
  *
  * @example
  * stackId('Monitoring', 'Storage', 'development')
  * // Returns: 'Monitoring-Storage-development'
  *
- * stackId('NextJS', 'K8s-Compute', 'production')
- * // Returns: 'NextJS-K8s-Compute-production'
+ * stackId('', 'ControlPlane', 'production')
+ * // Returns: 'ControlPlane-production'
  */
 export function stackId(
     namespace: string,
     component: string,
     environment: EnvironmentName
 ): string {
-    return `${namespace}-${component}-${environment}`;
+    return namespace
+        ? `${namespace}-${component}-${environment}`
+        : `${component}-${environment}`;
 }
 
 /**
@@ -121,8 +124,8 @@ const PROJECT_TO_REGISTRY: Record<Project, RegistryProject> = {
  * @throws Error if project or stackKey is invalid
  *
  * @example
- * getStackId(Project.NEXTJS, 'k8sCompute', 'development')
- * // Returns: 'NextJS-K8s-Compute-development'
+ * getStackId(Project.KUBERNETES, 'controlPlane', 'development')
+ * // Returns: 'ControlPlane-development'
  *
  * getStackId(Project.MONITORING, 'storage', 'production')
  * // Returns: 'Monitoring-Storage-production'
