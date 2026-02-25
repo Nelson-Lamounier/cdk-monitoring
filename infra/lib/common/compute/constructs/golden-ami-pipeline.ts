@@ -316,7 +316,7 @@ phases:
           commands:
             - source /etc/environment
             - dnf update -y
-            - dnf install -y jq curl unzip tar iproute-tc conntrack-tools socat
+            - dnf install -y jq unzip tar iproute-tc conntrack-tools socat
 
       - name: InstallDocker
         action: ExecuteBash
