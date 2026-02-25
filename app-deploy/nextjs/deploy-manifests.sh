@@ -167,7 +167,62 @@ kubectl rollout status "deployment/nextjs" \
 echo ""
 
 # ---------------------------------------------------------------------------
-# 6. Summary
+# 6. Helm Upgrade — Topology & Scaling Overrides
+#
+# Applies topology-aware scheduling overrides (replicas, pod anti-affinity,
+# topology spread constraints) from the thin Helm chart.
+#
+# The base application resources (Service, ConfigMap, Secrets, Ingress)
+# are already deployed by kustomize (Step 3). This step patches ONLY the
+# Deployment resource for multi-node HA.
+#
+# Graceful fallback: if Helm or the values file is missing, the kustomize-
+# deployed Deployment is unchanged (single-node mode).
+# ---------------------------------------------------------------------------
+echo "=== Step 6: Helm Upgrade (topology & scaling overrides) ==="
+
+HELM_DIR="${MANIFESTS_DIR}/helm"
+HELM_CHART="${HELM_DIR}/chart"
+HELM_VALUES="${HELM_DIR}/nextjs-values.yaml"
+
+if command -v helm &>/dev/null && [ -f "${HELM_VALUES}" ] && [ -d "${HELM_CHART}" ]; then
+    echo "  Helm chart:  ${HELM_CHART}"
+    echo "  Values file: ${HELM_VALUES}"
+
+    helm upgrade --install nextjs-topology "${HELM_CHART}" \
+        -n nextjs-app \
+        -f "${HELM_VALUES}" \
+        --wait --timeout 5m
+
+    echo ""
+    echo "  ✓ Helm upgrade complete"
+    echo "  Release status:"
+    helm status nextjs-topology -n nextjs-app --short 2>/dev/null || true
+
+    # Wait for re-rollout after Helm patches replicas/affinity
+    echo "  → Waiting for post-Helm rollout..."
+    kubectl rollout status "deployment/nextjs" \
+        -n nextjs-app \
+        --timeout="${WAIT_TIMEOUT}s" 2>/dev/null || {
+        echo "  ⚠ Post-Helm rollout not ready within timeout"
+    }
+else
+    echo "  ⚠ Helm or chart/values not found — skipping topology overrides"
+    if ! command -v helm &>/dev/null; then
+        echo "    (helm binary not installed)"
+    fi
+    if [ ! -f "${HELM_VALUES}" ]; then
+        echo "    (values file missing: ${HELM_VALUES})"
+    fi
+    if [ ! -d "${HELM_CHART}" ]; then
+        echo "    (chart dir missing: ${HELM_CHART})"
+    fi
+    echo "  Kustomize manifests from Step 3 are active (single-node mode)"
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# 7. Summary
 # ---------------------------------------------------------------------------
 echo "=== Deployment Summary ==="
 echo ""
@@ -175,6 +230,11 @@ kubectl get pods -n nextjs-app -o wide
 echo ""
 kubectl get svc -n nextjs-app
 echo ""
+if command -v helm &>/dev/null; then
+    echo "=== Helm Releases ==="
+    helm list -n nextjs-app 2>/dev/null || true
+    echo ""
+fi
 echo "=== Access ==="
 echo "  Next.js: Via Traefik Ingress on EIP (port 80/443)"
 echo "  kubectl port-forward svc/nextjs 3000:80 -n nextjs-app"

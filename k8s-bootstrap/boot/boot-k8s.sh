@@ -668,7 +668,31 @@ kubectl get ds traefik -n kube-system
 echo "=== Traefik Ingress Controller ready ==="
 
 # =============================================================================
-# 10. Bootstrap ArgoCD
+# 10. Deploy Next.js Application (first boot)
+#
+# Runs the Next.js deploy-manifests.sh after Traefik so IngressRoutes
+# (which use Traefik CRDs) are accepted by the API server. This covers:
+#   - kustomize apply (base manifests: Deployment, Service, ConfigMap, etc.)
+#   - Helm topology overlay (replicas, anti-affinity, spread constraints)
+#   - Secret creation from SSM parameters
+# =============================================================================
+
+NEXTJS_DEPLOY_SCRIPT="$APP_DEPLOY_DIR/nextjs/deploy-manifests.sh"
+if [ -f "$NEXTJS_DEPLOY_SCRIPT" ]; then
+    echo "=== Deploying Next.js application ==="
+    export MANIFESTS_DIR="$APP_DEPLOY_DIR/nextjs"
+    export SSM_PREFIX="${SSM_PREFIX}"
+    export AWS_REGION="${AWS_REGION}"
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+    $NEXTJS_DEPLOY_SCRIPT
+    echo "=== Next.js application deployment complete ==="
+else
+    echo "WARNING: Next.js deploy script not found at ${NEXTJS_DEPLOY_SCRIPT}"
+    echo "  SSM State Manager or ArgoCD will deploy Next.js on next sync cycle"
+fi
+
+# =============================================================================
+# 11. Bootstrap ArgoCD
 # =============================================================================
 
 echo "=== Bootstrapping ArgoCD ==="

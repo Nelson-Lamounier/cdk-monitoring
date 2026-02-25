@@ -1,0 +1,13 @@
+# @format
+# Default values for nextjs-topology chart
+#
+# These defaults are overridden by nextjs-values.yaml in the parent directory.
+# They provide safe single-node defaults for development clusters.
+
+replicaCount: 1
+
+affinity: {}
+
+topologySpreadConstraints: []
+
+tolerations: []
