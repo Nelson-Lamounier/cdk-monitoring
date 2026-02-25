@@ -153,13 +153,12 @@ jobs:
           MAX_POLLS=35
           INTERVAL=60
 
-          # CloudWatch log group for build output
-          LOG_GROUP="/aws/imagebuilder/k8s-development-golden-ami-recipe"
+          # CloudWatch log streaming state
           NEXT_TOKEN=""
           LOG_STREAM=""
+          LOG_GROUP=""
 
           echo "Polling Image Builder (timeout: ${MAX_POLLS}m)..."
-          echo "CloudWatch Log Group: $LOG_GROUP"
           echo ""
 
           for i in $(seq 1 $MAX_POLLS); do
@@ -171,24 +170,34 @@ jobs:
 
             # ---------------------------------------------------------------
             # Stream CloudWatch Logs (incremental — only new lines each poll)
+            # Auto-discovers the active log group and stream
             # ---------------------------------------------------------------
-            if [ -z "$LOG_STREAM" ]; then
-              # Discover the latest log stream (created when build instance starts)
-              LOG_STREAM=$(aws logs describe-log-streams \
-                --log-group-name "$LOG_GROUP" \
-                --order-by LastEventTime \
-                --descending \
-                --max-items 1 \
-                --query 'logStreams[0].logStreamName' \
-                --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "")
-              if [ -n "$LOG_STREAM" ] && [ "$LOG_STREAM" != "None" ]; then
-                echo "  Log stream: $LOG_STREAM"
-              else
-                LOG_STREAM=""
-              fi
+            if [ -z "$LOG_GROUP" ]; then
+              # Find active Image Builder log groups
+              for CANDIDATE_LG in $(aws logs describe-log-groups \
+                --log-group-name-prefix "/aws/imagebuilder/" \
+                --query 'logGroups[].logGroupName' \
+                --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo ""); do
+
+                CANDIDATE_STREAM=$(aws logs describe-log-streams \
+                  --log-group-name "$CANDIDATE_LG" \
+                  --order-by LastEventTime \
+                  --descending \
+                  --max-items 1 \
+                  --query 'logStreams[0].logStreamName' \
+                  --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "")
+
+                if [ -n "$CANDIDATE_STREAM" ] && [ "$CANDIDATE_STREAM" != "None" ]; then
+                  LOG_GROUP="$CANDIDATE_LG"
+                  LOG_STREAM="$CANDIDATE_STREAM"
+                  echo "  Log group:  $LOG_GROUP"
+                  echo "  Log stream: $LOG_STREAM"
+                  break
+                fi
+              done
             fi
 
-            if [ -n "$LOG_STREAM" ]; then
+            if [ -n "$LOG_GROUP" ] && [ -n "$LOG_STREAM" ]; then
               # Fetch new log events since last token
               if [ -n "$NEXT_TOKEN" ]; then
                 LOG_RESULT=$(aws logs get-log-events \
@@ -205,11 +214,11 @@ jobs:
                   --output json --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "{}")
               fi
 
-              # Extract and print new log lines
-              NEW_LINES=$(echo "$LOG_RESULT" | jq -r '.events[].message // empty' 2>/dev/null || echo "")
-              if [ -n "$NEW_LINES" ]; then
+              # Extract and print new log lines (skip if empty)
+              EVENT_COUNT=$(echo "$LOG_RESULT" | jq '.events | length' 2>/dev/null || echo "0")
+              if [ "$EVENT_COUNT" -gt 0 ] 2>/dev/null; then
                 echo ""
-                echo "$NEW_LINES"
+                echo "$LOG_RESULT" | jq -r '.events[].message' 2>/dev/null
                 echo ""
               fi
 
@@ -265,36 +274,54 @@ jobs:
                 echo ""
 
                 # 3. Fetch CloudWatch Logs from the build instance
-                #    Image Builder writes logs to /aws/imagebuilder/<component-name>
-                echo "--- CloudWatch Build Logs (last 80 lines) ---"
-                LOG_GROUP="/aws/imagebuilder/k8s-development-golden-ami-recipe"
+                #    Image Builder may write logs to various /aws/imagebuilder/* groups
+                echo "--- CloudWatch Build Logs ---"
 
-                # Get the most recent log stream
-                LATEST_STREAM=$(aws logs describe-log-streams \
-                  --log-group-name "$LOG_GROUP" \
-                  --order-by LastEventTime \
-                  --descending \
-                  --max-items 1 \
-                  --query 'logStreams[0].logStreamName' \
+                # List ALL Image Builder log groups
+                echo "Available log groups:"
+                ALL_LOG_GROUPS=$(aws logs describe-log-groups \
+                  --log-group-name-prefix "/aws/imagebuilder/" \
+                  --query 'logGroups[].logGroupName' \
                   --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "")
+                echo "  $ALL_LOG_GROUPS"
+                echo ""
 
-                if [ -n "$LATEST_STREAM" ] && [ "$LATEST_STREAM" != "None" ]; then
-                  echo "Log stream: $LOG_GROUP/$LATEST_STREAM"
-                  echo ""
-                  aws logs get-log-events \
-                    --log-group-name "$LOG_GROUP" \
-                    --log-stream-name "$LATEST_STREAM" \
-                    --limit 80 \
-                    --query 'events[].message' \
-                    --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "(Could not fetch log events)"
-                else
-                  echo "No CloudWatch log stream found in $LOG_GROUP"
-                  echo "Trying alternate log group pattern..."
-                  # List available log groups matching the pattern
-                  aws logs describe-log-groups \
-                    --log-group-name-prefix "/aws/imagebuilder/" \
-                    --query 'logGroups[].logGroupName' \
-                    --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "(No Image Builder log groups found)"
+                # Try each log group to find build logs
+                FOUND_LOGS=false
+                for LG in $ALL_LOG_GROUPS; do
+                  # Get the most recent stream in this group
+                  STREAMS=$(aws logs describe-log-streams \
+                    --log-group-name "$LG" \
+                    --order-by LastEventTime \
+                    --descending \
+                    --max-items 3 \
+                    --query 'logStreams[].logStreamName' \
+                    --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "")
+
+                  for STREAM in $STREAMS; do
+                    [ -z "$STREAM" ] || [ "$STREAM" = "None" ] && continue
+
+                    EVENTS=$(aws logs get-log-events \
+                      --log-group-name "$LG" \
+                      --log-stream-name "$STREAM" \
+                      --limit 80 \
+                      --start-from-head \
+                      --output json --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "{}")
+
+                    EVENT_COUNT=$(echo "$EVENTS" | jq '.events | length' 2>/dev/null || echo "0")
+
+                    if [ "$EVENT_COUNT" -gt 0 ] 2>/dev/null; then
+                      echo "=== $LG / $STREAM ($EVENT_COUNT events) ==="
+                      echo "$EVENTS" | jq -r '.events[].message' 2>/dev/null || echo "(parse error)"
+                      echo ""
+                      FOUND_LOGS=true
+                    fi
+                  done
+                done
+
+                if [ "$FOUND_LOGS" = "false" ]; then
+                  echo "No build log events found in any Image Builder log group"
+                  echo "The build instance may not have had time to write logs before failing"
                 fi
                 echo ""
                 echo "============================================="
