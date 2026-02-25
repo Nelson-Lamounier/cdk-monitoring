@@ -31,11 +31,12 @@
  * ```
  */
 
+import * as crypto from 'crypto';
+
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as imagebuilder from 'aws-cdk-lib/aws-imagebuilder';
 import * as cdk from 'aws-cdk-lib/core';
-import * as crypto from 'crypto';
 
 import { Construct } from 'constructs';
 
