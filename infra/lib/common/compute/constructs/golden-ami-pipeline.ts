@@ -492,7 +492,7 @@ phases:
         action: ExecuteBash
         inputs:
           commands:
-            - mkdir -p /data/kubernetes /data/k8s/manifests
+            - mkdir -p /data/kubernetes /data/k8s-bootstrap /data/app-deploy
 
   - name: validate
     steps:
