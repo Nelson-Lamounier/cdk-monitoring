@@ -308,31 +308,43 @@ jobs:
           echo "============================================="
           echo ""
 
-          # Send a command to the node to check ArgoCD status
-          CMD_ID=$(aws ssm send-command \
+          # Build the command script as a single heredoc to avoid quoting issues
+          cat > /tmp/argocd-check.json <<'CMDJSON'
+          {
+            "commands": [
+              "export KUBECONFIG=/etc/kubernetes/admin.conf",
+              "echo '--- ArgoCD Pods ---'",
+              "kubectl get pods -n argocd -o wide 2>/dev/null || echo 'ArgoCD namespace not found'",
+              "echo ''",
+              "echo '--- ArgoCD Applications ---'",
+              "kubectl get applications -n argocd -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REPO:.spec.source.repoURL,PATH:.spec.source.path 2>/dev/null || echo 'No ArgoCD Applications found'",
+              "echo ''",
+              "echo '--- ArgoCD Repo Server Logs (last 10 lines) ---'",
+              "kubectl logs -n argocd -l app.kubernetes.io/name=argocd-repo-server --tail=10 2>/dev/null || echo 'No repo-server logs'",
+              "echo ''",
+              "echo '--- Recent ArgoCD Events ---'",
+              "kubectl get events -n argocd --sort-by=.lastTimestamp --field-selector type!=Normal 2>/dev/null | tail -15 || echo 'No warning events'"
+            ]
+          }
+          CMDJSON
+
+          echo "Instance ID: ${INSTANCE_ID}"
+          echo "Sending SSM command..."
+
+          SEND_OUTPUT=$(aws ssm send-command \
             --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "export KUBECONFIG=/etc/kubernetes/admin.conf",
-              "echo \"--- ArgoCD Pods ---\"",
-              "kubectl get pods -n argocd -o wide 2>/dev/null || echo \"ArgoCD namespace not found\"",
-              "echo \"\"",
-              "echo \"--- ArgoCD Applications ---\"",
-              "kubectl get applications -n argocd -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REPO:.spec.source.repoURL,PATH:.spec.source.path 2>/dev/null || echo \"No ArgoCD Applications found\"",
-              "echo \"\"",
-              "echo \"--- ArgoCD Repo Server Logs (last 10 lines) ---\"",
-              "kubectl logs -n argocd -l app.kubernetes.io/name=argocd-repo-server --tail=10 2>/dev/null || echo \"No repo-server logs\"",
-              "echo \"\"",
-              "echo \"--- Recent ArgoCD Events ---\"",
-              "kubectl get events -n argocd --sort-by=.lastTimestamp --field-selector type!=Normal 2>/dev/null | tail -15 || echo \"No warning events\""
-            ]' \
+            --parameters file:///tmp/argocd-check.json \
             --timeout-seconds 60 \
             --query 'Command.CommandId' \
             --output text \
-            --region "${REGION}" 2>/dev/null || echo "")
+            --region "${REGION}" 2>&1) || true
 
-          if [ -z "$CMD_ID" ]; then
-            echo "::warning::Failed to send SSM command — IAM permissions may be missing"
+          CMD_ID=$(echo "$SEND_OUTPUT" | grep -v "^$" | tail -1)
+
+          if [ -z "$CMD_ID" ] || echo "$CMD_ID" | grep -qi "error\|exception\|denied"; then
+            echo "::warning::Failed to send SSM command"
+            echo "SSM Response: $SEND_OUTPUT"
             exit 0
           fi
 
