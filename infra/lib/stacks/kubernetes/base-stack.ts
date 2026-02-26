@@ -213,7 +213,7 @@ export class KubernetesBaseStack extends cdk.Stack {
             resources: ['*'],
             conditions: {
                 ArnLike: {
-                    'kms:EncryptionContext:aws:logs:arn': `arn:aws:logs:${this.region}:${this.account}:log-group:/ec2/${namePrefix}/*`,
+                    'kms:EncryptionContext:aws:logs:arn': `arn:aws:logs:${this.region}:${this.account}:log-group:/ec2/${namePrefix}*`,
                 },
             },
         }));
