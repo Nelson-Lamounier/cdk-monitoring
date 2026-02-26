@@ -19,3 +19,9 @@ export * from './allocations';
 
 // Export all configurations
 export * from './configurations';
+
+// Export content pipeline allocations
+export * from './content-allocations';
+
+// Export content pipeline configurations
+export * from './content-configurations';
