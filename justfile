@@ -97,7 +97,7 @@ bootstrap account profile *ARGS:
 # CI synth-validate: synthesize all projects for CI validation
 # Validates that all CDK stacks synthesize correctly without AWS API calls.
 # Uses --no-lookups to rely on cached cdk.context.json instead of live AWS lookups.
-# Covers: monitoring (3 stacks), k8s (8 stacks), nextjs (multi-stack).
+# Covers: monitoring (3 stacks), k8s (8 stacks), nextjs (multi-stack), bedrock (4 stacks).
 # Called by: .github/workflows/ci.yml → validate-cdk job
 [group('ci')]
 ci-synth-validate:
@@ -133,6 +133,14 @@ ci-synth-validate:
     # NextJS stacks resolve VPC via Vpc.fromLookup() internally (no cross-stack exports)
     npx cdk synth -c project=nextjs -c environment=dev --no-lookups --quiet 2>&1 || {
       echo "⚠ NextJS synth requires cached VPC context — run locally to update cdk.context.json"
+    }
+
+    echo ""
+    echo "==========================================="
+    echo "Validating Bedrock Project (dev)"
+    echo "==========================================="
+    npx cdk synth -c project=bedrock -c environment=dev --no-lookups --quiet || {
+      echo "⚠ Bedrock synth failed"
     }
 
     echo ""
@@ -372,7 +380,7 @@ k8s-reconfigure *ARGS:
 # Trigger Golden AMI build (Image Builder)
 [group('k8s')]
 k8s-build-golden-ami env="development" region="eu-west-1":
-    npx tsx infra-ami/scripts/build-golden-ami.ts {{env}} --region {{region}}
+    npx tsx kubernetes-app/infra-ami/scripts/build-golden-ami.ts {{env}} --region {{region}}
 
 # =============================================================================
 # CROSS-ACCOUNT & OPS (delegates to standalone scripts)
@@ -444,7 +452,7 @@ clean:
 clean-backups:
     find . \( -name '*.backup' -o -name '*.bak' -o -name '*.backup.ts' \) -not -path './node_modules/*' -delete
 
-# Install dependencies
+# Install dependencies (all workspaces)
 [group('util')]
 install:
-    cd infra && yarn install
+    yarn install

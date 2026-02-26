@@ -27,7 +27,7 @@ spec:
   source:
     repoURL: git@github.com:Nelson-Lamounier/cdk-monitoring.git
     targetRevision: HEAD
-    path: app-deploy/monitoring/manifests
+    path: kubernetes-app/app-deploy/monitoring/manifests
 
   destination:
     server: https://kubernetes.default.svc

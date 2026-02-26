@@ -28,9 +28,9 @@ on:
       - "infra/lib/stacks/kubernetes/**"
       - "infra/lib/common/compute/builders/user-data-builder.ts"
       # Bootstrap scripts (synced to S3 inside _deploy-kubernetes.yml)
-      - "k8s-bootstrap/**"
+      - "kubernetes-app/k8s-bootstrap/**"
       # Golden AMI recipes
-      - "infra-ami/**"
+      - "kubernetes-app/infra-ami/**"
       - "infra/lambda/**"
       - "infra/bin/app.ts"
       # Pipeline definitions

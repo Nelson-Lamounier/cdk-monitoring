@@ -14,7 +14,7 @@ on:
     branches:
       - main
     paths:
-      - "app-deploy/**"
+      - "kubernetes-app/app-deploy/**"
       - ".github/workflows/sync-k8s-app-deploy-prod.yml"
       - ".github/workflows/_sync-k8s-content.yml"
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
       environment: production
       cdk-environment: production
       content-type: app
-      source-dir: ./app-deploy
+      source-dir: ./kubernetes-app/app-deploy
       s3-prefix: app-deploy
       ssm-document: k8s-production-deploy-app-manifests
       association-name: k8s-prod-app-deploy-sync

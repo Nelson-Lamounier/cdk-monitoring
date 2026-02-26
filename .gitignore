@@ -56,3 +56,4 @@ resume-data-esc.ts
 deploy-key
 deploy-key.pub
 
+__pycache__/

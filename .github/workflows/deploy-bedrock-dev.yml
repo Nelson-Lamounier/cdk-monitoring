@@ -1,0 +1,104 @@
+# @format
+# @description Deploy Bedrock AI Infrastructure to Development
+#
+# Deploys the 4-stack Bedrock architecture in dependency order:
+#   1. Bedrock-Data       — S3 bucket for Knowledge Base documents + drafts
+#   2. Bedrock-Agent      — Bedrock Agent, Knowledge Base, Guardrail
+#   3. Bedrock-Api        — API Gateway + Lambda for agent invocation
+#   4. Bedrock-Content    — MD-to-Blog pipeline (S3 event → Lambda → DynamoDB)
+
+name: Deploy Bedrock (Dev)
+
+on:
+  workflow_dispatch: # Manual trigger
+  push:
+    branches: [main]
+    paths:
+      - "infra/lib/stacks/bedrock/**"
+      - "infra/lib/config/bedrock/**"
+      - "infra/lib/projects/bedrock/**"
+      - "bedrock-publisher/src/**"
+      - "infra/bin/app.ts"
+      - ".github/workflows/deploy-bedrock-*.yml"
+      - ".github/workflows/_deploy-stack.yml"
+      - ".github/actions/**"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-bedrock-development
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # Stack 1: Data (S3 bucket for KB documents + drafts/published prefixes)
+  # ===========================================================================
+  deploy-data:
+    name: Deploy Data Stack
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Bedrock-Data-development
+      project: bedrock
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Stack 2: Agent (Bedrock Agent, Knowledge Base, Guardrail, Action Group)
+  # Depends on: Data (S3 bucket for KB data source)
+  # ===========================================================================
+  deploy-agent:
+    name: Deploy Agent Stack
+    needs: [deploy-data]
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Bedrock-Agent-development
+      project: bedrock
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Stack 3: API (API Gateway + Lambda for agent invocation)
+  # Depends on: Agent (agent alias ARN for Lambda)
+  # ===========================================================================
+  deploy-api:
+    name: Deploy API Stack
+    needs: [deploy-agent]
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Bedrock-Api-development
+      project: bedrock
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Stack 4: Content (MD-to-Blog Agentic Pipeline)
+  # Depends on: Data (S3 bucket for drafts/ and published/ prefixes)
+  # Independent of Agent/API stacks — runs in parallel after Data.
+  # ===========================================================================
+  deploy-content:
+    name: Deploy Content Stack
+    needs: [deploy-data]
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Bedrock-Content-development
+      project: bedrock
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}

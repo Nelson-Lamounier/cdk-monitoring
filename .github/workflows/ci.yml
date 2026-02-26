@@ -19,6 +19,7 @@
 #   1. monitoring  — Monitoring-Storage, Monitoring-SSM, Monitoring-Compute
 #   2. k8s         — K8s-Compute (EC2/ASG/EBS), K8s-Edge (CloudFront/WAF/ACM)
 #   3. nextjs      — NextJS application stacks (ECS, API Gateway, Edge)
+#   4. bedrock     — Bedrock-Data, Bedrock-Agent, Bedrock-Api, Bedrock-Content
 
 name: Continuous Integration
 
@@ -76,6 +77,7 @@ jobs:
             any-src:
               - 'infra/lib/**/*.ts'
               - 'bin/**/*.ts'
+              - 'bedrock-publisher/src/**/*.ts'
             any-tests:
               - 'infra/tests/**/*.ts'
 

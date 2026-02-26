@@ -31,9 +31,9 @@ on:
       - "infra/lambda/**"
       - "infra/bin/app.ts"
       # Bootstrap scripts (synced to S3 inside _deploy-kubernetes.yml)
-      - "k8s-bootstrap/**"
+      - "kubernetes-app/k8s-bootstrap/**"
       # Golden AMI recipes
-      - "infra-ami/**"
+      - "kubernetes-app/infra-ami/**"
       # Pipeline definitions
       - ".github/workflows/deploy-kubernetes-dev.yml"
       - ".github/workflows/_deploy-kubernetes.yml"

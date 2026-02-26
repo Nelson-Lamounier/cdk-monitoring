@@ -193,6 +193,10 @@ export interface KubeadmJoinConfig {
     readonly nodeTaint?: string;
     /** AWS region for SSM lookups @default 'eu-west-1' */
     readonly region?: string;
+    /** Maximum kubeadm join attempts (each re-fetches token from SSM) @default 10 */
+    readonly joinMaxRetries?: number;
+    /** Seconds between retry attempts @default 30 */
+    readonly joinRetryIntervalSeconds?: number;
 }
 
 // =============================================================================
@@ -734,13 +738,20 @@ kubectl get nodes -o wide`);
      */
     joinKubeadmCluster(config: KubeadmJoinConfig): this {
         const region = config.region ?? 'eu-west-1';
+        const maxRetries = config.joinMaxRetries ?? 10;
+        const retryInterval = config.joinRetryIntervalSeconds ?? 30;
 
         this.userData.addCommands(`
 # =============================================================================
-# Join kubeadm Cluster (Worker Node)
+# Join kubeadm Cluster (Worker Node) — with retry
+#
+# Re-fetches the join token from SSM on each attempt. This handles the
+# race condition where the control plane signals CloudFormation SUCCESS
+# before kubeadm init completes and publishes fresh tokens.
 # =============================================================================
 
 echo "=== Joining kubeadm cluster as worker node ==="
+echo "Join config: max_retries=${maxRetries}, retry_interval=${retryInterval}s"
 
 # Get instance metadata via IMDSv2 (always fetch fresh token to avoid TTL expiration)
 IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
@@ -753,47 +764,84 @@ echo "Instance: $INSTANCE_ID, Private IP: $PRIVATE_IP"
 systemctl start containerd
 echo "containerd started"
 
-# Retrieve join token from SSM (published by control plane at boot)
-echo "Retrieving join token from SSM: ${config.tokenSsmPath}"
-JOIN_TOKEN=$(aws ssm get-parameter \\
-    --name "${config.tokenSsmPath}" \\
-    --with-decryption \\
-    --query "Parameter.Value" \\
-    --output text \\
-    --region "${region}" 2>/dev/null || echo "")
+# Retry loop: re-fetch token + join on each attempt
+JOIN_SUCCESS=false
+for ATTEMPT in $(seq 1 ${maxRetries}); do
+    echo ""
+    echo "=== kubeadm join attempt \${ATTEMPT}/${maxRetries} ==="
 
-if [ -z "$JOIN_TOKEN" ]; then
-    echo "ERROR: Failed to retrieve join token from SSM"
-    echo "Ensure the control plane has started and published its token to ${config.tokenSsmPath}"
-    exit 1
-fi
-echo "Join token retrieved successfully"
+    # Retrieve join token from SSM (re-fetch each attempt — token may be refreshed by CP)
+    echo "Retrieving join token from SSM: ${config.tokenSsmPath}"
+    JOIN_TOKEN=$(aws ssm get-parameter \\
+        --name "${config.tokenSsmPath}" \\
+        --with-decryption \\
+        --query "Parameter.Value" \\
+        --output text \\
+        --region "${region}" 2>/dev/null || echo "")
 
-# Retrieve CA certificate hash from SSM
-echo "Retrieving CA hash from SSM: ${config.caHashSsmPath}"
-CA_HASH=$(aws ssm get-parameter \\
-    --name "${config.caHashSsmPath}" \\
-    --query "Parameter.Value" \\
-    --output text \\
-    --region "${region}" 2>/dev/null || echo "")
+    if [ -z "$JOIN_TOKEN" ]; then
+        echo "WARNING: Join token not available in SSM (attempt \${ATTEMPT}/${maxRetries})"
+        echo "Control plane may still be initializing..."
+        if [ \${ATTEMPT} -lt ${maxRetries} ]; then
+            echo "Sleeping ${retryInterval}s before retry..."
+            sleep ${retryInterval}
+            continue
+        fi
+        echo "ERROR: Join token never became available after ${maxRetries} attempts"
+        exit 1
+    fi
+    echo "Join token retrieved successfully"
 
-if [ -z "$CA_HASH" ]; then
-    echo "ERROR: Failed to retrieve CA hash from SSM"
-    exit 1
-fi
-echo "CA hash retrieved successfully"
+    # Retrieve CA certificate hash from SSM
+    echo "Retrieving CA hash from SSM: ${config.caHashSsmPath}"
+    CA_HASH=$(aws ssm get-parameter \\
+        --name "${config.caHashSsmPath}" \\
+        --query "Parameter.Value" \\
+        --output text \\
+        --region "${region}" 2>/dev/null || echo "")
 
-# Join the cluster
-echo "Running kubeadm join..."
-kubeadm join "${config.controlPlaneEndpoint}" \\
-    --token "$JOIN_TOKEN" \\
-    --discovery-token-ca-cert-hash "$CA_HASH" \\
-    --node-labels "${config.nodeLabel}" \\
-    2>&1 | tee /tmp/kubeadm-join.log
+    if [ -z "$CA_HASH" ]; then
+        echo "WARNING: CA hash not available in SSM (attempt \${ATTEMPT}/${maxRetries})"
+        if [ \${ATTEMPT} -lt ${maxRetries} ]; then
+            echo "Sleeping ${retryInterval}s before retry..."
+            sleep ${retryInterval}
+            continue
+        fi
+        echo "ERROR: CA hash never became available after ${maxRetries} attempts"
+        exit 1
+    fi
+    echo "CA hash retrieved successfully"
 
-if [ \${PIPESTATUS[0]} -ne 0 ]; then
-    echo "ERROR: kubeadm join failed"
+    # Attempt kubeadm join
+    echo "Running kubeadm join..."
+    kubeadm join "${config.controlPlaneEndpoint}" \\
+        --token "$JOIN_TOKEN" \\
+        --discovery-token-ca-cert-hash "$CA_HASH" \\
+        --node-labels "${config.nodeLabel}" \\
+        2>&1 | tee /tmp/kubeadm-join.log
+
+    if [ \${PIPESTATUS[0]} -eq 0 ]; then
+        echo "kubeadm join succeeded on attempt \${ATTEMPT}"
+        JOIN_SUCCESS=true
+        break
+    fi
+
+    echo "WARNING: kubeadm join failed on attempt \${ATTEMPT}/${maxRetries}"
     cat /tmp/kubeadm-join.log
+
+    # Reset kubeadm state before retrying (required for re-join)
+    if [ \${ATTEMPT} -lt ${maxRetries} ]; then
+        echo "Running kubeadm reset before retry..."
+        kubeadm reset -f 2>/dev/null || true
+        echo "Sleeping ${retryInterval}s before retry..."
+        sleep ${retryInterval}
+    fi
+done
+
+if [ "$JOIN_SUCCESS" != "true" ]; then
+    echo "ERROR: kubeadm join failed after ${maxRetries} attempts"
+    echo "Last join log:"
+    cat /tmp/kubeadm-join.log 2>/dev/null || true
     exit 1
 fi
 

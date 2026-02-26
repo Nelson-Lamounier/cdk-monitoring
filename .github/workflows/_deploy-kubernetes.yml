@@ -402,7 +402,7 @@ jobs:
   # ===========================================================================
   # Seed Bootstrap Scripts to S3 (2b/6) — Day-1 Safety
   #
-  # Syncs k8s-bootstrap/ scripts into the S3 bucket created by BaseStack.
+  # Syncs kubernetes-app/k8s-bootstrap/ scripts into the S3 bucket created by BaseStack.
   # Runs BEFORE the Compute stack so boot-k8s.sh is waiting in S3
   # by the time the EC2 instance launches — zero race condition.
   # ===========================================================================
@@ -436,7 +436,7 @@ jobs:
             --region "${REGION}")
 
           echo "Seeding bootstrap scripts to s3://${BUCKET}/k8s-bootstrap/"
-          aws s3 sync ./k8s-bootstrap "s3://${BUCKET}/k8s-bootstrap/" \
+          aws s3 sync ./kubernetes-app/k8s-bootstrap "s3://${BUCKET}/k8s-bootstrap/" \
             --delete --region "${REGION}"
 
           echo "✓ Bootstrap scripts seeded — EC2 instances can now boot safely"
@@ -503,6 +503,143 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Monitor Worker Join (real-time observability)
+  #
+  # Runs in parallel with worker deployments. Polls CloudFormation stack
+  # events every 30s to show ASG status and cfn-signal progress.
+  # Observational only — does not block the pipeline.
+  # ===========================================================================
+  monitor-worker-join:
+    name: Monitor Worker Join
+    needs: [setup, deploy-controlplane]
+    if: always() && needs.deploy-controlplane.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    continue-on-error: true
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Monitor Worker Stack Progress
+        env:
+          APP_WORKER_STACK: ${{ needs.setup.outputs.worker-stack }}
+          MON_WORKER_STACK: ${{ needs.setup.outputs.monitoring-worker-stack }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: |
+          POLL_INTERVAL=30
+          MAX_POLLS=50  # 25 minutes max monitoring window
+          STACKS=("$APP_WORKER_STACK" "$MON_WORKER_STACK")
+
+          echo "## Worker Join Monitor"
+          echo ""
+          echo "Monitoring stacks:"
+          echo "  - App Worker:        $APP_WORKER_STACK"
+          echo "  - Monitoring Worker: $MON_WORKER_STACK"
+          echo "  - Poll interval:     ${POLL_INTERVAL}s"
+          echo "  - Max duration:      $(( MAX_POLLS * POLL_INTERVAL ))s"
+          echo ""
+          echo "---"
+
+          # Track completion per stack
+          declare -A STACK_DONE
+          for S in "${STACKS[@]}"; do STACK_DONE[$S]=false; done
+
+          for POLL in $(seq 1 $MAX_POLLS); do
+            TIMESTAMP=$(date -u +"%H:%M:%S")
+            ALL_DONE=true
+
+            for STACK_NAME in "${STACKS[@]}"; do
+              # Skip if already completed
+              if [ "${STACK_DONE[$STACK_NAME]}" = "true" ]; then
+                continue
+              fi
+
+              # Short label for output
+              LABEL=$(echo "$STACK_NAME" | grep -oE '(App|Monitoring)Worker' || echo "$STACK_NAME")
+
+              # Get latest stack events (last 5)
+              EVENTS=$(aws cloudformation describe-stack-events \
+                --stack-name "$STACK_NAME" \
+                --max-items 5 \
+                --query "StackEvents[].{Type:ResourceType,LogId:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}" \
+                --output json \
+                --region "$AWS_REGION" 2>/dev/null || echo "[]")
+
+              # Extract ASG status specifically
+              ASG_STATUS=$(echo "$EVENTS" | jq -r '
+                [.[] | select(.Type == "AWS::AutoScaling::AutoScalingGroup")] |
+                first // empty |
+                "\(.Status) | \(.Reason // "—")"' 2>/dev/null || echo "—")
+
+              # Get overall stack status
+              STACK_STATUS=$(aws cloudformation describe-stacks \
+                --stack-name "$STACK_NAME" \
+                --query "Stacks[0].StackStatus" \
+                --output text \
+                --region "$AWS_REGION" 2>/dev/null || echo "PENDING")
+
+              # Check for signal-related events
+              SIGNAL_INFO=$(echo "$EVENTS" | jq -r '
+                [.[] | select(.Reason != null and (.Reason | test("signal|Signal"; "i")))] |
+                first // empty |
+                .Reason // empty' 2>/dev/null || echo "")
+
+              # Format output
+              if [ -n "$SIGNAL_INFO" ]; then
+                echo "[$TIMESTAMP] $LABEL | $STACK_STATUS | ASG: $ASG_STATUS | Signal: $SIGNAL_INFO"
+              else
+                echo "[$TIMESTAMP] $LABEL | $STACK_STATUS"
+              fi
+
+              # Check if stack is terminal
+              case "$STACK_STATUS" in
+                *COMPLETE|*FAILED|*ROLLBACK_COMPLETE)
+                  STACK_DONE[$STACK_NAME]=true
+                  if [[ "$STACK_STATUS" == *"COMPLETE" ]] && [[ "$STACK_STATUS" != *"ROLLBACK"* ]]; then
+                    echo "[$TIMESTAMP] $LABEL | ✅ Stack update completed successfully"
+                  else
+                    echo "[$TIMESTAMP] $LABEL | ❌ Stack update failed: $STACK_STATUS"
+                  fi
+                  ;;
+                *)
+                  ALL_DONE=false
+                  ;;
+              esac
+            done
+
+            if [ "$ALL_DONE" = "true" ]; then
+              echo ""
+              echo "---"
+              echo "All worker stacks reached terminal state."
+              break
+            fi
+
+            sleep $POLL_INTERVAL
+          done
+
+          # Final summary
+          echo ""
+          echo "## Summary"
+          echo ""
+          echo "| Stack | Final Status |"
+          echo "|-------|-------------|"
+          for STACK_NAME in "${STACKS[@]}"; do
+            LABEL=$(echo "$STACK_NAME" | grep -oE '(App|Monitoring)Worker' || echo "$STACK_NAME")
+            FINAL=$(aws cloudformation describe-stacks \
+              --stack-name "$STACK_NAME" \
+              --query "Stacks[0].StackStatus" \
+              --output text \
+              --region "$AWS_REGION" 2>/dev/null || echo "UNKNOWN")
+            echo "| $LABEL | $FINAL |"
+          done
+
+  # ===========================================================================
   # Deploy AppIam Stack (4/8) — Application-tier IAM grants
   # ===========================================================================
   deploy-appiam:
@@ -549,7 +686,7 @@ jobs:
   # on the kubeadm node. ArgoCD watches this Git repo and auto-syncs changes
   # within ~3 minutes. No CI pipeline jobs needed.
   #
-  # See: k8s-bootstrap/system/argocd/ for ArgoCD config and Application CRDs.
+  # See: kubernetes-app/k8s-bootstrap/system/argocd/ for ArgoCD config and Application CRDs.
   # SSM Run Command documents are retained as a fallback for secret updates.
   # ===========================================================================
 
