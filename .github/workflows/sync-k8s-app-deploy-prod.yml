@@ -1,0 +1,42 @@
+# @format
+# @description Sync K8s App Manifests to Production
+#
+# Syncs app-deploy/ to S3 when application manifests change.
+# Independent from CDK infra pipeline — no cdk deploy triggered.
+#
+# Prerequisites:
+#   - Infra pipeline deployed (SSM parameter /k8s/production/scripts-bucket exists)
+
+name: Sync K8s App Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app-deploy/**"
+      - ".github/workflows/sync-k8s-app-deploy-prod.yml"
+      - ".github/workflows/_sync-k8s-content.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: sync-k8s-app-deploy-production
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync App Deploy to Prod
+    uses: ./.github/workflows/_sync-k8s-content.yml
+    with:
+      environment: production
+      cdk-environment: production
+      content-type: app
+      source-dir: ./app-deploy
+      s3-prefix: app-deploy
+      ssm-document: k8s-production-deploy-app-manifests
+      association-name: k8s-prod-app-deploy-sync
+    secrets: inherit

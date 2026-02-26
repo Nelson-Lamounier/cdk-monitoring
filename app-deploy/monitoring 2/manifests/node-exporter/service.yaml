@@ -1,0 +1,21 @@
+# @format
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter
+  annotations:
+    kubernetes.io/description: "Exposes Node Exporter metrics on port 9100"
+  namespace: monitoring
+  labels:
+    app: node-exporter
+    app.kubernetes.io/name: node-exporter
+    app.kubernetes.io/component: node-metrics
+    app.kubernetes.io/part-of: monitoring
+spec:
+  type: ClusterIP
+  selector:
+    app: node-exporter
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics

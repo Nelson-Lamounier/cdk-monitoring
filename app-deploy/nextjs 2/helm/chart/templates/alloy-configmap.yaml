@@ -1,0 +1,35 @@
+# @format
+# Grafana Alloy Configuration
+#
+# Receives OTLP traces from the Next.js app on localhost:4317
+# and forwards them to Tempo via Kubernetes DNS.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  annotations:
+    kubernetes.io/description: "Grafana Alloy OTLP collector sidecar configuration for traces"
+  namespace: nextjs-app
+  labels: {{- include "nextjs.componentLabels" . | nindent 4}}
+data:
+  config.alloy: |
+    // OTLP gRPC receiver (listens on localhost:4317 within the pod)
+    otelcol.receiver.otlp "default" {
+      grpc {
+        endpoint = "0.0.0.0:4317"
+      }
+      output {
+        traces = [otelcol.exporter.otlp.tempo.input]
+      }
+    }
+
+    // Forward traces to Tempo via K8s service DNS
+    otelcol.exporter.otlp "tempo" {
+      client {
+        endpoint = env("TEMPO_ENDPOINT")
+        tls {
+          insecure = true
+        }
+      }
+    }

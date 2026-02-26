@@ -1,0 +1,42 @@
+# @format
+# @description Sync K8s Bootstrap Scripts to Production
+#
+# Syncs k8s-bootstrap/ to S3 when bootstrap scripts change.
+# Independent from CDK infra pipeline — no cdk deploy triggered.
+#
+# Prerequisites:
+#   - Infra pipeline deployed (SSM parameter /k8s/production/scripts-bucket exists)
+
+name: Sync K8s Bootstrap to Production
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "k8s-bootstrap/**"
+      - ".github/workflows/sync-k8s-bootstrap-prod.yml"
+      - ".github/workflows/_sync-k8s-content.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: sync-k8s-bootstrap-production
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync Bootstrap to Prod
+    uses: ./.github/workflows/_sync-k8s-content.yml
+    with:
+      environment: production
+      cdk-environment: production
+      content-type: bootstrap
+      source-dir: ./k8s-bootstrap
+      s3-prefix: k8s-bootstrap
+      ssm-document: k8s-production-deploy-manifests
+      association-name: k8s-prod-bootstrap-sync
+    secrets: inherit

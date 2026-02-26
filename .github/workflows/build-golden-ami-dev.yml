@@ -1,0 +1,37 @@
+# @format
+# @description Build Golden AMI for Development
+#
+# Entry-point workflow for the Image Pipeline (development environment).
+# Triggers the standalone _build-golden-ami.yml reusable workflow.
+#
+# Lifecycle:
+#   - Schedule: Weekly (Monday 6 AM UTC) for OS security patches
+#   - Manual: workflow_dispatch for ad-hoc builds (Day-0, K8s version bump)
+#
+# Prerequisite: The Compute stack must be deployed first to create the
+# Image Builder pipeline resource in AWS.
+
+name: Build Golden AMI (Development)
+
+on:
+  schedule:
+    # Weekly: Monday at 6 AM UTC for OS security patches
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: build-golden-ami-development
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Golden AMI
+    uses: ./.github/workflows/_build-golden-ami.yml
+    with:
+      environment: development
+      cdk-environment: development
+    secrets: inherit

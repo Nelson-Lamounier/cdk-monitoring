@@ -1,0 +1,395 @@
+# @format
+# @description Build Golden AMI — Standalone Image Pipeline (Reusable)
+#
+# Decoupled Image Pipeline that bakes containerd, kubeadm, kubelet, kubectl,
+# and Calico into a Golden AMI via EC2 Image Builder.
+#
+# This workflow is INDEPENDENT from the infrastructure (CDK) pipeline.
+# It runs on its own lifecycle:
+#   - Scheduled: weekly for OS security patches
+#   - Manual: workflow_dispatch for ad-hoc builds
+#   - Callable: workflow_call from entry-point workflows
+#
+# Output: Updates the SSM parameter /k8s/{env}/golden-ami/latest.
+# The CDK infrastructure pipeline reads this parameter at deploy time.
+#
+# Pipeline naming convention:
+#   Image Builder pipeline: k8s-{env}-golden-ami-pipeline
+#   SSM parameter:          /k8s/{env}/golden-ami/latest
+#   Parent AMI SSM:         /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+
+name: Build Golden AMI (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+      cdk-environment:
+        description: "CDK environment name (development, staging, production)"
+        required: true
+        type: string
+    secrets:
+      AWS_OIDC_ROLE:
+        description: "AWS OIDC role ARN"
+        required: true
+
+jobs:
+  # ===========================================================================
+  # Build Golden AMI
+  #
+  # 1. Check if a Golden AMI already exists (SSM ≠ parent → skip)
+  # 2. Find the Image Builder pipeline by naming convention
+  # 3. Trigger build and poll until AVAILABLE or FAILED
+  # 4. Verify SSM parameter was updated
+  # ===========================================================================
+  build:
+    name: Build Golden AMI
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      # -----------------------------------------------------------------
+      # Step 1: Check if Golden AMI already exists
+      # If SSM parameter differs from the parent AMI, a Golden AMI was
+      # already built — skip the build entirely.
+      # -----------------------------------------------------------------
+      - name: Check if Golden AMI Already Exists
+        id: check-ami
+        run: |
+          SSM_PATH="/k8s/${{ inputs.cdk-environment }}/golden-ami/latest"
+          PARENT_SSM_PATH="/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
+
+          echo "Checking SSM parameter: $SSM_PATH"
+
+          CURRENT_AMI=$(aws ssm get-parameter --name "$SSM_PATH" \
+            --query 'Parameter.Value' --output text 2>/dev/null || echo "NOT_FOUND")
+          PARENT_AMI=$(aws ssm get-parameter --name "$PARENT_SSM_PATH" \
+            --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+
+          echo "current-ami=$CURRENT_AMI" >> $GITHUB_OUTPUT
+          echo "parent-ami=$PARENT_AMI" >> $GITHUB_OUTPUT
+
+          if [ "$CURRENT_AMI" = "NOT_FOUND" ]; then
+            echo "needs-build=true" >> $GITHUB_OUTPUT
+            echo "⚠ SSM parameter not found — Image Builder pipeline not yet deployed"
+            echo "   Deploy the Compute stack first: deploy-kubernetes-dev.yml"
+            exit 0
+          fi
+
+          if [ "$CURRENT_AMI" != "$PARENT_AMI" ]; then
+            echo "needs-build=false" >> $GITHUB_OUTPUT
+            echo "✓ Golden AMI already exists: $CURRENT_AMI"
+            echo "  (differs from parent: $PARENT_AMI)"
+          else
+            echo "needs-build=true" >> $GITHUB_OUTPUT
+            echo "⚠ Golden AMI matches parent AMI — build required"
+            echo "  Current: $CURRENT_AMI"
+            echo "  Parent:  $PARENT_AMI"
+          fi
+
+      # -----------------------------------------------------------------
+      # Step 2: Find the Image Builder pipeline
+      # Pipeline name follows CDK convention: k8s-{env}-golden-ami-pipeline
+      # -----------------------------------------------------------------
+      - name: Find Image Builder Pipeline
+        if: steps.check-ami.outputs.needs-build == 'true'
+        id: find-pipeline
+        run: |
+          PIPELINE_NAME="k8s-${{ inputs.cdk-environment }}-golden-ami-pipeline"
+          echo "Looking for pipeline: $PIPELINE_NAME"
+
+          PIPELINE_ARN=$(aws imagebuilder list-image-pipelines \
+            --query "imagePipelineList[?name=='${PIPELINE_NAME}'].arn | [0]" \
+            --output text 2>/dev/null || echo "None")
+
+          if [ "$PIPELINE_ARN" = "None" ] || [ -z "$PIPELINE_ARN" ]; then
+            echo "::warning::Image Builder pipeline '$PIPELINE_NAME' not found"
+            echo "   Deploy the Compute stack first to create the pipeline resource."
+            echo "found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "pipeline-arn=$PIPELINE_ARN" >> $GITHUB_OUTPUT
+          echo "found=true" >> $GITHUB_OUTPUT
+          echo "✓ Found pipeline: $PIPELINE_ARN"
+
+      # -----------------------------------------------------------------
+      # Step 3: Trigger Image Builder build
+      # -----------------------------------------------------------------
+      - name: Trigger Image Builder
+        if: steps.find-pipeline.outputs.found == 'true'
+        id: trigger
+        run: |
+          PIPELINE_ARN="${{ steps.find-pipeline.outputs.pipeline-arn }}"
+          echo "Triggering Image Builder pipeline..."
+
+          BUILD_ARN=$(aws imagebuilder start-image-pipeline-execution \
+            --image-pipeline-arn "$PIPELINE_ARN" \
+            --query 'imageBuildVersionArn' --output text)
+
+          echo "build-arn=$BUILD_ARN" >> $GITHUB_OUTPUT
+          echo "✓ Build started: $BUILD_ARN"
+
+      # -----------------------------------------------------------------
+      # Step 4: Poll for build completion
+      # Image Builder typically takes 15-25 minutes.
+      # Poll every 60 seconds, timeout after 35 minutes.
+      # -----------------------------------------------------------------
+      - name: Wait for Image Builder
+        if: steps.find-pipeline.outputs.found == 'true'
+        run: |
+          BUILD_ARN="${{ steps.trigger.outputs.build-arn }}"
+          MAX_POLLS=35
+          INTERVAL=60
+
+          # CloudWatch log streaming state
+          NEXT_TOKEN=""
+          LOG_STREAM=""
+          LOG_GROUP=""
+
+          echo "Polling Image Builder (timeout: ${MAX_POLLS}m)..."
+          echo ""
+
+          for i in $(seq 1 $MAX_POLLS); do
+            STATUS=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
+              --query 'image.state.status' --output text 2>/dev/null || echo "UNKNOWN")
+
+            TIMESTAMP=$(date '+%H:%M:%S')
+            echo "  [$TIMESTAMP] Poll $i/$MAX_POLLS — Status: $STATUS"
+
+            # ---------------------------------------------------------------
+            # Stream CloudWatch Logs (incremental — only new lines each poll)
+            # Auto-discovers the active log group and stream
+            # ---------------------------------------------------------------
+            if [ -z "$LOG_GROUP" ]; then
+              # Find active Image Builder log groups
+              for CANDIDATE_LG in $(aws logs describe-log-groups \
+                --log-group-name-prefix "/aws/imagebuilder/" \
+                --query 'logGroups[].logGroupName' \
+                --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo ""); do
+
+                CANDIDATE_STREAM=$(aws logs describe-log-streams \
+                  --log-group-name "$CANDIDATE_LG" \
+                  --order-by LastEventTime \
+                  --descending \
+                  --max-items 1 \
+                  --query 'logStreams[0].logStreamName' \
+                  --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "")
+
+                if [ -n "$CANDIDATE_STREAM" ] && [ "$CANDIDATE_STREAM" != "None" ]; then
+                  LOG_GROUP="$CANDIDATE_LG"
+                  LOG_STREAM="$CANDIDATE_STREAM"
+                  echo "  Log group:  $LOG_GROUP"
+                  echo "  Log stream: $LOG_STREAM"
+                  break
+                fi
+              done
+            fi
+
+            if [ -n "$LOG_GROUP" ] && [ -n "$LOG_STREAM" ]; then
+              # Fetch new log events since last token
+              if [ -n "$NEXT_TOKEN" ]; then
+                LOG_RESULT=$(aws logs get-log-events \
+                  --log-group-name "$LOG_GROUP" \
+                  --log-stream-name "$LOG_STREAM" \
+                  --next-token "$NEXT_TOKEN" \
+                  --start-from-head \
+                  --output json --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "{}")
+              else
+                LOG_RESULT=$(aws logs get-log-events \
+                  --log-group-name "$LOG_GROUP" \
+                  --log-stream-name "$LOG_STREAM" \
+                  --start-from-head \
+                  --output json --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "{}")
+              fi
+
+              # Extract and print new log lines (skip if empty)
+              EVENT_COUNT=$(echo "$LOG_RESULT" | jq '.events | length' 2>/dev/null || echo "0")
+              if [ "$EVENT_COUNT" -gt 0 ] 2>/dev/null; then
+                echo ""
+                echo "$LOG_RESULT" | jq -r '.events[].message' 2>/dev/null
+                echo ""
+              fi
+
+              # Save forward token for next iteration
+              NEW_TOKEN=$(echo "$LOG_RESULT" | jq -r '.nextForwardToken // empty' 2>/dev/null || echo "")
+              if [ -n "$NEW_TOKEN" ]; then
+                NEXT_TOKEN="$NEW_TOKEN"
+              fi
+            fi
+
+            case "$STATUS" in
+              AVAILABLE)
+                echo ""
+                echo "✓ Golden AMI built successfully"
+
+                # Extract the AMI ID from the build output
+                AMI_ID=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
+                  --query 'image.outputResources.amis[0].image' --output text 2>/dev/null || echo "unknown")
+                echo "  AMI ID: $AMI_ID"
+
+                # Write AMI ID to SSM parameter for the Launch Template
+                # (Handled here instead of via Image Builder ssmParameterConfigurations
+                #  because the Image Builder SLR lacks ssm:PutParameter on custom paths)
+                SSM_PATH="/k8s/${{ inputs.cdk-environment }}/golden-ami/latest"
+                if [ "$AMI_ID" != "unknown" ]; then
+                  echo "  Writing AMI ID to SSM: $SSM_PATH"
+                  aws ssm put-parameter \
+                    --name "$SSM_PATH" \
+                    --value "$AMI_ID" \
+                    --type "String" \
+                    --overwrite \
+                    --region "$AWS_DEFAULT_REGION" 2>&1 || echo "::warning::Failed to update SSM parameter"
+                  echo "  ✓ SSM parameter updated"
+                else
+                  echo "::warning::Could not extract AMI ID — SSM parameter not updated"
+                fi
+
+                exit 0
+                ;;
+              FAILED|CANCELLED)
+                echo ""
+                echo "============================================="
+                echo "  GOLDEN AMI BUILD FAILED — Collecting Logs  "
+                echo "============================================="
+                echo ""
+
+                # 1. Show the high-level failure reason
+                REASON=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
+                  --query 'image.state.reason' --output text 2>/dev/null || echo "unknown")
+                echo "::error::Image Builder build failed: $REASON"
+                echo ""
+
+                # 2. Fetch workflow execution logs (shows which step failed)
+                echo "--- Workflow Execution Logs ---"
+                WORKFLOW_ID=$(echo "$REASON" | grep -oP "wf-[a-f0-9-]+" || echo "")
+                if [ -n "$WORKFLOW_ID" ]; then
+                  aws imagebuilder get-workflow-execution \
+                    --workflow-execution-id "$WORKFLOW_ID" \
+                    --query 'steps[?status!=`COMPLETED`].{Step:stepName,Status:status,Reason:failureMessage}' \
+                    --output table --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "(Could not fetch workflow steps)"
+                  echo ""
+
+                  # Also list all step details
+                  aws imagebuilder list-workflow-step-executions \
+                    --workflow-execution-id "$WORKFLOW_ID" \
+                    --query 'steps[].{Step:name,Action:action,Status:status,Message:failureMessage}' \
+                    --output table --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "(Could not list step executions)"
+                else
+                  echo "(Could not extract workflow execution ID from reason)"
+                fi
+                echo ""
+
+                # 3. Fetch CloudWatch Logs from the build instance
+                #    Image Builder may write logs to various /aws/imagebuilder/* groups
+                echo "--- CloudWatch Build Logs ---"
+
+                # List ALL Image Builder log groups
+                echo "Available log groups:"
+                ALL_LOG_GROUPS=$(aws logs describe-log-groups \
+                  --log-group-name-prefix "/aws/imagebuilder/" \
+                  --query 'logGroups[].logGroupName' \
+                  --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "")
+                echo "  $ALL_LOG_GROUPS"
+                echo ""
+
+                # Try each log group to find build logs
+                FOUND_LOGS=false
+                for LG in $ALL_LOG_GROUPS; do
+                  # Get the most recent stream in this group
+                  STREAMS=$(aws logs describe-log-streams \
+                    --log-group-name "$LG" \
+                    --order-by LastEventTime \
+                    --descending \
+                    --max-items 3 \
+                    --query 'logStreams[].logStreamName' \
+                    --output text --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "")
+
+                  for STREAM in $STREAMS; do
+                    [ -z "$STREAM" ] || [ "$STREAM" = "None" ] && continue
+
+                    EVENTS=$(aws logs get-log-events \
+                      --log-group-name "$LG" \
+                      --log-stream-name "$STREAM" \
+                      --limit 80 \
+                      --start-from-head \
+                      --output json --region "$AWS_DEFAULT_REGION" 2>/dev/null || echo "{}")
+
+                    EVENT_COUNT=$(echo "$EVENTS" | jq '.events | length' 2>/dev/null || echo "0")
+
+                    if [ "$EVENT_COUNT" -gt 0 ] 2>/dev/null; then
+                      echo "=== $LG / $STREAM ($EVENT_COUNT events) ==="
+                      echo "$EVENTS" | jq -r '.events[].message' 2>/dev/null || echo "(parse error)"
+                      echo ""
+                      FOUND_LOGS=true
+                    fi
+                  done
+                done
+
+                if [ "$FOUND_LOGS" = "false" ]; then
+                  echo "No build log events found in any Image Builder log group"
+                  echo "The build instance may not have had time to write logs before failing"
+                fi
+                echo ""
+                echo "============================================="
+
+                exit 1
+                ;;
+            esac
+
+            sleep $INTERVAL
+          done
+
+          echo ""
+          echo "::error::Image Builder timed out after ${MAX_POLLS}m"
+          exit 1
+
+      # -----------------------------------------------------------------
+      # Step 5: Verify SSM parameter was updated
+      # -----------------------------------------------------------------
+      - name: Verify SSM Parameter Updated
+        if: steps.find-pipeline.outputs.found == 'true'
+        run: |
+          SSM_PATH="/k8s/${{ inputs.cdk-environment }}/golden-ami/latest"
+          PARENT_AMI="${{ steps.check-ami.outputs.parent-ami }}"
+
+          NEW_AMI=$(aws ssm get-parameter --name "$SSM_PATH" \
+            --query 'Parameter.Value' --output text)
+
+          if [ "$NEW_AMI" = "$PARENT_AMI" ]; then
+            echo "::error::SSM parameter still points to parent AMI after build"
+            echo "  Expected: a new Golden AMI ID"
+            echo "  Got: $NEW_AMI (same as parent)"
+            exit 1
+          fi
+
+          echo "✓ SSM parameter updated successfully"
+          echo "  Path:  $SSM_PATH"
+          echo "  Value: $NEW_AMI"
+
+      # -----------------------------------------------------------------
+      # Summary
+      # -----------------------------------------------------------------
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Golden AMI Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ inputs.cdk-environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Needs Build | ${{ steps.check-ami.outputs.needs-build }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Pipeline Found | ${{ steps.find-pipeline.outputs.found || 'n/a' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Current AMI | ${{ steps.check-ami.outputs.current-ami }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Parent AMI | ${{ steps.check-ami.outputs.parent-ami }} |" >> $GITHUB_STEP_SUMMARY

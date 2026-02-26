@@ -1,0 +1,153 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CoreInfrastructureServices",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:*",
+        "ecs:*",
+        "ec2:*",
+        "elasticfilesystem:*",
+        "elasticloadbalancing:*",
+        "autoscaling:*",
+        "application-autoscaling:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "MonitoringAndLogging",
+      "Effect": "Allow",
+      "Action": ["logs:*", "cloudwatch:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "IAMManagement",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:PassRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:CreatePolicy",
+        "iam:DeletePolicy",
+        "iam:GetPolicy",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:ListPolicyVersions",
+        "iam:CreateServiceLinkedRole",
+        "iam:DeleteServiceLinkedRole",
+        "iam:GetServiceLinkedRoleDeletionStatus",
+        "iam:CreateInstanceProfile",
+        "iam:DeleteInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:ListInstanceProfilesForRole",
+        "iam:ListInstanceProfiles"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SSMFullAccess",
+      "Effect": "Allow",
+      "Action": "ssm:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ContainerServices",
+      "Effect": "Allow",
+      "Action": ["ecr:*", "lambda:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "StorageServices",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "SecretsAndEncryption",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:*", "kms:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EventsAndMessaging",
+      "Effect": "Allow",
+      "Action": ["events:*", "sns:*", "sqs:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NetworkingServices",
+      "Effect": "Allow",
+      "Action": ["servicediscovery:*", "route53:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CertificateManagement",
+      "Effect": "Allow",
+      "Action": "acm:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DynamoDBManagement",
+      "Effect": "Allow",
+      "Action": "dynamodb:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ApiGatewayManagement",
+      "Effect": "Allow",
+      "Action": "apigateway:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DataLifecycleManager",
+      "Effect": "Allow",
+      "Action": "dlm:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ImageBuilderServices",
+      "Effect": "Allow",
+      "Action": "imagebuilder:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "WebApplicationFirewall",
+      "Effect": "Allow",
+      "Action": "wafv2:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "EmailServices",
+      "Effect": "Allow",
+      "Action": "ses:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ContentDeliveryNetwork",
+      "Effect": "Allow",
+      "Action": "cloudfront:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "STSAccess",
+      "Effect": "Allow",
+      "Action": ["sts:AssumeRole", "sts:GetCallerIdentity"],
+      "Resource": "*"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+# @format
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-data
+  annotations:
+    kubernetes.io/description: "Persistent storage for Loki log chunks and index"
+  namespace: monitoring
+  labels:
+    app: loki
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/component: log-aggregator
+    app.kubernetes.io/part-of: monitoring
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi

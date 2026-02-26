@@ -63,11 +63,37 @@ runs:
         corepack enable
         echo "✓ Corepack enabled"
 
+    - name: Install Just Task Runner
+      shell: bash
+      run: |
+        if ! command -v just &> /dev/null; then
+          echo "Installing just via GitHub Releases..."
+          JUST_VERSION="1.40.0"
+          curl -sSL "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz -C /usr/local/bin just
+          chmod +x /usr/local/bin/just
+        fi
+        echo "Just version: $(just --version)"
+
     - name: Generate Dependency Cache Key
       id: cache-key
       shell: bash
       run: |
-        HASH=$(cat yarn.lock package.json | sha256sum | cut -d' ' -f1)
+        # Find lockfiles in repo root or infra/ subdirectory (monorepo layout)
+        LOCK_FILES=""
+        for DIR in . infra infra-ami; do
+          [ -f "$DIR/yarn.lock" ] && LOCK_FILES="$LOCK_FILES $DIR/yarn.lock"
+          [ -f "$DIR/package.json" ] && LOCK_FILES="$LOCK_FILES $DIR/package.json"
+        done
+
+        if [ -z "$LOCK_FILES" ]; then
+          echo "::warning::No yarn.lock or package.json found — using fallback cache key"
+          HASH=$(echo "${{ github.sha }}" | sha256sum | cut -d' ' -f1)
+        else
+          echo "Hashing lockfiles:$LOCK_FILES"
+          HASH=$(cat $LOCK_FILES | sha256sum | cut -d' ' -f1)
+        fi
+
         CACHE_KEY="deps-${{ runner.os }}-node${{ steps.resolve-node.outputs.version }}-$HASH"
         echo "key=$CACHE_KEY" >> $GITHUB_OUTPUT
         echo "Generated cache key: $CACHE_KEY"
@@ -99,6 +125,20 @@ runs:
       if: inputs.install-dependencies == 'true'
       shell: bash
       run: |
+        # Find the project root (directory containing package.json)
+        PROJECT_ROOT="."
+        if [ -f "package.json" ]; then
+          PROJECT_ROOT="."
+        elif [ -f "infra/package.json" ]; then
+          PROJECT_ROOT="infra"
+        else
+          echo "::warning::No package.json found — skipping dependency install"
+          exit 0
+        fi
+
+        cd "$PROJECT_ROOT"
+        echo "Installing dependencies in $(pwd)..."
+
         if [ "${{ steps.cache-deps.outputs.cache-hit }}" = "true" ]; then
           echo "Cache hit - running install to ensure binaries are linked..."
         else

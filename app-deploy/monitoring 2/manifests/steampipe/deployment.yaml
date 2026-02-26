@@ -1,0 +1,76 @@
+# @format
+# Steampipe — SQL-based cloud governance and inventory
+# Exposes PostgreSQL-compatible endpoint for Grafana queries
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: steampipe
+  namespace: monitoring
+  labels:
+    app: steampipe
+    app.kubernetes.io/name: steampipe
+    app.kubernetes.io/component: cloud-query
+    app.kubernetes.io/part-of: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: steampipe
+  template:
+    metadata:
+      labels:
+        app: steampipe
+    spec:
+      containers:
+        - name: steampipe
+          image: turbot/steampipe:latest
+          command:
+            - steampipe
+          args:
+            - service
+            - start
+            - "--foreground"
+            - "--database-listen"
+            - network
+            - "--database-port"
+            - "9193"
+          ports:
+            - name: postgres
+              containerPort: 9193
+          env:
+            - name: STEAMPIPE_DATABASE_PASSWORD
+              value: steampipe
+          volumeMounts:
+            - name: config
+              mountPath: /home/steampipe/.steampipe/config
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 300m
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: steampipe-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: steampipe
+  namespace: monitoring
+  labels:
+    app: steampipe
+    app.kubernetes.io/name: steampipe
+    app.kubernetes.io/component: cloud-query
+    app.kubernetes.io/part-of: monitoring
+spec:
+  type: ClusterIP
+  selector:
+    app: steampipe
+  ports:
+    - name: postgres
+      port: 9193
+      targetPort: postgres

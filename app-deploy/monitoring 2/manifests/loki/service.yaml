@@ -1,0 +1,27 @@
+# @format
+# Loki service — NodePort for cross-stack access
+# NodePort 30100 allows ECS tasks to push logs via host IP
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  annotations:
+    kubernetes.io/description: "Exposes Loki push and query API on ports 3100 and 9096"
+  namespace: monitoring
+  labels:
+    app: loki
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/component: log-aggregator
+    app.kubernetes.io/part-of: monitoring
+spec:
+  type: NodePort
+  selector:
+    app: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: http
+      nodePort: 30100
+    - name: grpc
+      port: 9096
+      targetPort: grpc

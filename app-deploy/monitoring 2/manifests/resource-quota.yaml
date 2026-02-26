@@ -1,0 +1,22 @@
+# @format
+# Resource Quota for the monitoring namespace
+#
+# Allocates ~60% of single-node capacity to monitoring workloads.
+# Prometheus and Loki are memory-hungry — they need the larger share.
+# Matches the tier isolation model documented in the implementation plan.
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: monitoring-quota
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: monitoring
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  hard:
+    requests.cpu: "1500m"
+    requests.memory: 3Gi
+    limits.cpu: "3"
+    limits.memory: 5Gi
+    pods: "15"

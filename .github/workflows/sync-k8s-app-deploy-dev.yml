@@ -1,0 +1,45 @@
+# @format
+# @description Sync K8s App Manifests to Development
+#
+# Syncs app-deploy/ to S3 when application manifests change.
+# Independent from CDK infra pipeline — no cdk deploy triggered.
+# ArgoCD will pick up changes automatically from the Git repo;
+# this sync ensures SSM-triggered deployments also have fresh manifests.
+#
+# Prerequisites:
+#   - Infra pipeline deployed (SSM parameter /k8s/development/scripts-bucket exists)
+
+name: Sync K8s App Deploy to Development
+
+on:
+  push:
+    branches:
+      - develop
+      - feature/k3s-kubernetes-migration
+    paths:
+      - "app-deploy/**"
+      - ".github/workflows/sync-k8s-app-deploy-dev.yml"
+      - ".github/workflows/_sync-k8s-content.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: sync-k8s-app-deploy-development
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Sync App Deploy to Dev
+    uses: ./.github/workflows/_sync-k8s-content.yml
+    with:
+      environment: development
+      cdk-environment: development
+      content-type: app
+      source-dir: ./app-deploy
+      s3-prefix: app-deploy
+      ssm-document: k8s-development-deploy-app-manifests
+      association-name: k8s-dev-app-deploy-sync
+    secrets: inherit

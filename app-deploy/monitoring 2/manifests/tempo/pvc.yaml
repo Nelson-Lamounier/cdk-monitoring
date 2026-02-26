@@ -1,0 +1,20 @@
+# @format
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tempo-data
+  annotations:
+    kubernetes.io/description: "Persistent storage for Tempo trace data"
+  namespace: monitoring
+  labels:
+    app: tempo
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/component: trace-backend
+    app.kubernetes.io/part-of: monitoring
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi

@@ -1,0 +1,71 @@
+# @format
+# Development Overlay
+#
+# Patches for development environment:
+# - 1 replica (minimal resources)
+# - Lower resource limits
+# - Both nodes On-Demand (per user decision)
+# - Development-specific OTEL attributes
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../apps/nextjs
+
+patches:
+  # Deployment: dev-specific overrides
+  - target:
+      kind: Deployment
+      name: nextjs
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: nextjs
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: nextjs
+                resources:
+                  requests:
+                    cpu: 128m
+                    memory: 256Mi
+                  limits:
+                    cpu: 256m
+                    memory: 512Mi
+              - name: alloy
+                resources:
+                  requests:
+                    cpu: 16m
+                    memory: 32Mi
+                  limits:
+                    cpu: 32m
+                    memory: 64Mi
+
+  # HPA: smaller scale for dev
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: nextjs
+    patch: |-
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: nextjs
+      spec:
+        minReplicas: 1
+        maxReplicas: 2
+
+  # ConfigMap: dev-specific OTEL attributes
+  - target:
+      kind: ConfigMap
+      name: nextjs-config
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: nextjs-config
+      data:
+        OTEL_RESOURCE_ATTRIBUTES: "environment=development,service.namespace=nextjs"
