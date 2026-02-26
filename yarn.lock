@@ -3328,9 +3328,9 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@cdk-monitoring/infra-ami@workspace:infra-ami":
+"@cdk-monitoring/infra-ami@workspace:kubernetes-app/infra-ami":
   version: 0.0.0-use.local
-  resolution: "@cdk-monitoring/infra-ami@workspace:infra-ami"
+  resolution: "@cdk-monitoring/infra-ami@workspace:kubernetes-app/infra-ami"
   dependencies:
     "@aws-sdk/client-imagebuilder": "npm:^3.700.0"
     "@aws-sdk/client-ssm": "npm:^3.700.0"
