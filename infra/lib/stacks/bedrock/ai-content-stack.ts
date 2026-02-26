@@ -19,6 +19,8 @@
  * - Adaptive Thinking (inferenceConfig.thinking)
  */
 
+import * as path from 'path';
+
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -30,7 +32,6 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
-import * as path from 'path';
 
 // =============================================================================
 // PROPS

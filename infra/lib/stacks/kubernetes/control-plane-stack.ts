@@ -32,6 +32,8 @@
  */
 
 
+import { NagSuppressions } from 'cdk-nag';
+
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
@@ -41,7 +43,6 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
-import { NagSuppressions } from 'cdk-nag';
 
 import { Construct } from 'constructs';
 
