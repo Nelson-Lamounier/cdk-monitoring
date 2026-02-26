@@ -587,12 +587,12 @@ def handler(event, context):
 
         if (stateManager) {
             new cdk.CfnOutput(this, 'SsmDocumentName', {
-                value: stateManager.document.name!,
+                value: stateManager.document.ref,
                 description: 'SSM Document name for post-boot Kubernetes configuration',
             });
 
             new cdk.CfnOutput(this, 'SsmAssociationName', {
-                value: stateManager.association.associationName!,
+                value: stateManager.association.ref,
                 description: 'SSM State Manager association name',
             });
         }
