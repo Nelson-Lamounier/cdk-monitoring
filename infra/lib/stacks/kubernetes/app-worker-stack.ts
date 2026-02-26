@@ -111,7 +111,7 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
 
         const { workerConfig, baseStack } = props;
         const namePrefix = props.namePrefix ?? 'k8s';
-        const workerPrefix = `${namePrefix}/worker`;
+        const workerPrefix = `${namePrefix}-worker`;
 
         // =====================================================================
         // Consume base infrastructure (from KubernetesBaseStack)

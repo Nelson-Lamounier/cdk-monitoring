@@ -4,12 +4,13 @@
  * Kubernetes Infrastructure Smoke Tests
  *
  * Validates the full kubeadm Kubernetes deployment after a CDK deploy.
- * Covers all 4 stacks (Data, Compute, API, Edge) and their resources.
+ * Covers all 8 stacks (Data, Base, ControlPlane, AppWorker, MonitoringWorker,
+ * AppIam, API, Edge) and their resources.
  *
  * Checks performed:
- *   1. CloudFormation Stack Status (Data, Compute, API, Edge)
+ *   1. CloudFormation Stack Status (all 8 stacks)
  *   2. Golden AMI SSM Parameter (AMI ID is resolved, not PENDING_FIRST_BUILD)
- *   3. EIP HTTP Health (Traefik/Ingress controller responding)
+ *   3. EIP HTTP Health (Traefik/Ingress controller responding on control plane)
  *   4. SSM Parameters (/k8s/{env}/*)
  *   5. S3 Scripts Bucket (k8s manifests bucket accessible)
  *   6. API Gateway (subscription endpoint responds)
@@ -468,10 +469,12 @@ async function checkSsmParameters(): Promise<CheckResult> {
   logger.task('Checking SSM parameters...');
 
   // Core K8s SSM params (primary region)
+  // Control plane + shared infrastructure params
   const k8sParams = [
     `${k8sSsmPrefix}/instance-id`,
     `${k8sSsmPrefix}/elastic-ip`,
     `${k8sSsmPrefix}/security-group-id`,
+    `${k8sSsmPrefix}/scripts-bucket`,
   ];
 
   let totalFound = 0;
@@ -546,18 +549,18 @@ async function checkS3Bucket(): Promise<CheckResult> {
   logger.task('Checking S3 scripts bucket...');
 
   try {
-    const computeStack = project!.stacks.find((s) => s.id === 'compute');
-    if (!computeStack) {
+    const baseStack = project!.stacks.find((s) => s.id === 'base');
+    if (!baseStack) {
       return { name: 'S3 Scripts Bucket', status: 'skipped', critical: false };
     }
 
-    const computeStackName = computeStack.getStackName(environment);
+    const baseStackName = baseStack.getStackName(environment);
 
     // Try stack output first
     let bucket = '';
     try {
       const response = await cfn.send(
-        new DescribeStacksCommand({ StackName: computeStackName }),
+        new DescribeStacksCommand({ StackName: baseStackName }),
       );
       const outputs = response.Stacks?.[0]?.Outputs ?? [];
       bucket =

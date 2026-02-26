@@ -611,13 +611,23 @@ jobs:
   # ===========================================================================
   verify-and-test:
     name: Verify & Smoke Tests
-    needs: [setup, deploy-controlplane, deploy-edge, sync-static-assets]
+    needs:
+      [
+        setup,
+        deploy-controlplane,
+        deploy-app-worker,
+        deploy-monitoring-worker,
+        deploy-edge,
+        sync-static-assets,
+      ]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
     if: >-
       always()
       && needs.deploy-controlplane.result == 'success'
+      && needs.deploy-app-worker.result == 'success'
+      && needs.deploy-monitoring-worker.result == 'success'
       && inputs.skip-verification != true
     outputs:
       status: ${{ steps.smoke.outputs.status }}
@@ -784,6 +794,8 @@ jobs:
             "${{ needs.setup.outputs.data-stack }}"
             "${{ needs.setup.outputs.base-stack }}"
             "${{ needs.setup.outputs.controlplane-stack }}"
+            "${{ needs.setup.outputs.worker-stack }}"
+            "${{ needs.setup.outputs.monitoring-worker-stack }}"
             "${{ needs.setup.outputs.appiam-stack }}"
             "${{ needs.setup.outputs.edge-stack }}"
           )
@@ -867,7 +879,13 @@ jobs:
     environment: ${{ inputs.environment }}
     if: |
       always()
-      && needs.verify-and-test.result == 'failure'
+      && (
+        needs.deploy-controlplane.result == 'failure'
+        || needs.deploy-app-worker.result == 'failure'
+        || needs.deploy-monitoring-worker.result == 'failure'
+        || needs.deploy-edge.result == 'failure'
+        || needs.verify-and-test.result == 'failure'
+      )
       && inputs.cdk-environment != 'development'
 
     steps:
@@ -888,6 +906,8 @@ jobs:
           echo "| **Environment** | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Commit** | \`${{ needs.setup.outputs.commit-sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Control Plane** | ${{ needs.deploy-controlplane.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **App Worker** | ${{ needs.deploy-app-worker.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Mon. Worker** | ${{ needs.deploy-monitoring-worker.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Edge** | ${{ needs.deploy-edge.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Verification** | ${{ needs.verify-and-test.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -897,6 +917,8 @@ jobs:
             "${{ needs.setup.outputs.data-stack }}"
             "${{ needs.setup.outputs.base-stack }}"
             "${{ needs.setup.outputs.controlplane-stack }}"
+            "${{ needs.setup.outputs.worker-stack }}"
+            "${{ needs.setup.outputs.monitoring-worker-stack }}"
             "${{ needs.setup.outputs.appiam-stack }}"
             "${{ needs.setup.outputs.edge-stack }}"
           )
