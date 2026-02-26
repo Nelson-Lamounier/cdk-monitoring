@@ -151,6 +151,5 @@
     "fast-xml-parser": ">=5.3.6",
     "tar": ">=7.5.8",
     "picomatch": "^3.0.0"
-  },
-  "packageManager": "yarn@4.12.0"
+  }
 }

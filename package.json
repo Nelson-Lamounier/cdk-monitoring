@@ -1,0 +1,16 @@
+{
+  "name": "cdk-monitoring-monorepo",
+  "private": true,
+  "workspaces": [
+    "infra",
+    "bedrock-publisher",
+    "infra-ami"
+  ],
+  "resolutions": {
+    "markdown-it": ">=14.1.1",
+    "fast-xml-parser": ">=5.3.6",
+    "tar": ">=7.5.8",
+    "picomatch": "^3.0.0"
+  },
+  "packageManager": "yarn@4.12.0"
+}
