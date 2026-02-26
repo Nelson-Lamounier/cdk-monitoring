@@ -4,7 +4,7 @@
 # Syncs app-deploy/ to S3 when application manifests change.
 # Independent from CDK infra pipeline — no cdk deploy triggered.
 # ArgoCD will pick up changes automatically from the Git repo;
-# this sync ensures SSM-triggered deployments also have fresh manifests.
+# this sync ensures SSM-triggered deployments also have fresh manifests. - Test
 #
 # Prerequisites:
 #   - Infra pipeline deployed (SSM parameter /k8s/development/scripts-bucket exists)
