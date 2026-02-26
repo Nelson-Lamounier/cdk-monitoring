@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: steampipe
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "monitoring.fullLabels" "steampipe" | nindent 4 }}
+spec:
+  replicas: {{ .Values.steampipe.replicas }}
+  selector:
+    matchLabels:
+      {{- include "monitoring.selectorLabels" "steampipe" | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "monitoring.fullLabels" "steampipe" | nindent 8 }}
+    spec:
+      containers:
+        - name: steampipe
+          image: {{ .Values.steampipe.image }}
+          command: ["steampipe", "service", "start", "--foreground"]
+          ports:
+            - containerPort: {{ .Values.steampipe.service.port }}
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /home/steampipe/.steampipe/config
+          resources:
+            {{- toYaml .Values.steampipe.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: steampipe-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: steampipe
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "monitoring.fullLabels" "steampipe" | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "monitoring.selectorLabels" "steampipe" | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.steampipe.service.port }}
+      targetPort: {{ .Values.steampipe.service.port }}
+      protocol: TCP

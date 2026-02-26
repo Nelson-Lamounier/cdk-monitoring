@@ -210,10 +210,10 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
                     description: 'AWS region',
                     default: this.region,
                 },
-                ManifestsDir: {
+                ChartDir: {
                     type: 'String',
-                    description: 'Local path to manifests directory',
-                    default: '/data/app-deploy/monitoring/manifests',
+                    description: 'Local path to Helm chart directory',
+                    default: '/data/app-deploy/monitoring/chart',
                 },
                 DeployScript: {
                     type: 'String',
@@ -229,7 +229,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
                     'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
                     'export SSM_PREFIX="{{SsmPrefix}}"',
                     'export AWS_REGION="{{Region}}"',
-                    'export MANIFESTS_DIR="{{ManifestsDir}}"',
+                    'export CHART_DIR="{{ChartDir}}"',
                     '',
                     '# Re-sync all manifests from S3 and run deploy script',
                     '"{{DeployScript}}"',

@@ -1,0 +1,176 @@
+# @format
+# Default values for the monitoring-stack Helm chart.
+# Override per-environment via values-development.yaml / values-production.yaml.
+
+namespace: monitoring
+
+# ---------------------------------------------------------------------------
+# Prometheus
+# ---------------------------------------------------------------------------
+prometheus:
+  image: prom/prometheus:v3.3.0
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  pvc:
+    size: 10Gi
+    storageClass: ""
+  retention: 15d
+  scrapeInterval: 30s
+
+# ---------------------------------------------------------------------------
+# Grafana
+# ---------------------------------------------------------------------------
+grafana:
+  image: grafana/grafana:11.6.0
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  pvc:
+    size: 5Gi
+    storageClass: ""
+  service:
+    port: 3000
+
+# ---------------------------------------------------------------------------
+# Loki (log aggregation)
+# ---------------------------------------------------------------------------
+loki:
+  image: grafana/loki:3.5.0
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+  pvc:
+    size: 10Gi
+    storageClass: ""
+  service:
+    port: 3100
+
+# ---------------------------------------------------------------------------
+# Tempo (distributed tracing)
+# ---------------------------------------------------------------------------
+tempo:
+  image: grafana/tempo:2.7.2
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+  pvc:
+    size: 10Gi
+    storageClass: ""
+  service:
+    httpPort: 3200
+    otlpGrpcPort: 4317
+    otlpHttpPort: 4318
+
+# ---------------------------------------------------------------------------
+# Promtail (log shipper — DaemonSet)
+# ---------------------------------------------------------------------------
+promtail:
+  image: grafana/promtail:3.5.0
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# ---------------------------------------------------------------------------
+# Node Exporter (host metrics — DaemonSet)
+# ---------------------------------------------------------------------------
+nodeExporter:
+  image: prom/node-exporter:v1.9.1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  service:
+    port: 9100
+
+# ---------------------------------------------------------------------------
+# Kube State Metrics
+# ---------------------------------------------------------------------------
+kubeStateMetrics:
+  image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.15.0
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  service:
+    port: 8080
+
+# ---------------------------------------------------------------------------
+# GitHub Actions Exporter
+# ---------------------------------------------------------------------------
+githubActionsExporter:
+  image: ghcr.io/cpanato/github_actions_exporter:v0.7.0
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  service:
+    port: 9101
+
+# ---------------------------------------------------------------------------
+# Steampipe (AWS compliance)
+# ---------------------------------------------------------------------------
+steampipe:
+  image: turbot/steampipe:latest
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+  service:
+    port: 9193
+
+# ---------------------------------------------------------------------------
+# Resource Quota (namespace-level limits)
+# ---------------------------------------------------------------------------
+resourceQuota:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "4"
+    limits.memory: 8Gi
+    persistentvolumeclaims: "10"
+
+# ---------------------------------------------------------------------------
+# Network Policy
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true

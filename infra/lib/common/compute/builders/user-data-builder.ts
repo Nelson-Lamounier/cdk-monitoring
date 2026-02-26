@@ -985,10 +985,10 @@ find $K8S_DIR -name '*.sh' -exec chmod +x {} +
 export KUBECONFIG=/etc/kubernetes/admin.conf
 export SSM_PREFIX="${ssmPrefix}"
 export AWS_REGION="${region}"
-export MANIFESTS_DIR="$K8S_DIR/manifests"
+export CHART_DIR="$K8S_DIR/monitoring/chart"
 
 echo "Running deploy-manifests.sh..."
-$K8S_DIR/apps/monitoring/deploy-manifests.sh
+$K8S_DIR/monitoring/deploy-manifests.sh
 
 echo "=== k8s first-boot deployment complete ==="`);
         return this;

@@ -228,7 +228,7 @@ export class SsmStateManagerConstruct extends Construct {
                                 'export S3_BUCKET={{ S3Bucket }}',
                                 'export SSM_PREFIX={{ SsmPrefix }}',
                                 'export AWS_REGION={{ AwsRegion }}',
-                                'export MANIFESTS_DIR=/data/app-deploy/monitoring/manifests',
+                                'export CHART_DIR=/data/app-deploy/monitoring/chart',
                                 '',
                                 '# Run the deploy-manifests.sh script',
                                 'DEPLOY_SCRIPT="/data/app-deploy/monitoring/deploy-manifests.sh"',
