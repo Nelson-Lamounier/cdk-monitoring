@@ -158,10 +158,10 @@ CP_WAITED=0
 CONTROL_PLANE_ENDPOINT=""
 
 while [ -z "$CONTROL_PLANE_ENDPOINT" ] || [ "$CONTROL_PLANE_ENDPOINT" = "None" ]; do
-    CONTROL_PLANE_ENDPOINT=$(aws ssm get-parameter \\\\
-        --name "${controlPlaneEndpointSsmPath}" \\\\
-        --query "Parameter.Value" \\\\
-        --output text \\\\
+    CONTROL_PLANE_ENDPOINT=$(aws ssm get-parameter \\
+        --name "${controlPlaneEndpointSsmPath}" \\
+        --query "Parameter.Value" \\
+        --output text \\
         --region "$REGION" 2>/dev/null || echo "")
 
     if [ -n "$CONTROL_PLANE_ENDPOINT" ] && [ "$CONTROL_PLANE_ENDPOINT" != "None" ]; then

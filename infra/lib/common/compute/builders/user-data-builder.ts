@@ -788,6 +788,7 @@ echo "Running kubeadm join..."
 kubeadm join "${config.controlPlaneEndpoint}" \\
     --token "$JOIN_TOKEN" \\
     --discovery-token-ca-cert-hash "$CA_HASH" \\
+    --node-labels "${config.nodeLabel}" \\
     2>&1 | tee /tmp/kubeadm-join.log
 
 if [ \${PIPESTATUS[0]} -ne 0 ]; then
@@ -924,6 +925,12 @@ mkdir -p /home/ec2-user/.kube
 cp -f $KUBECONFIG_SRC /home/ec2-user/.kube/config
 chown ec2-user:ec2-user /home/ec2-user/.kube/config
 chmod 600 /home/ec2-user/.kube/config
+
+# Set up for ssm-user (SSM Session Manager default user)
+mkdir -p /home/ssm-user/.kube
+cp -f $KUBECONFIG_SRC /home/ssm-user/.kube/config
+chown ssm-user:ssm-user /home/ssm-user/.kube/config
+chmod 600 /home/ssm-user/.kube/config
 
 # Add KUBECONFIG to shell profiles for both users
 echo "export KUBECONFIG=$KUBECONFIG_SRC" > /etc/profile.d/kubernetes.sh

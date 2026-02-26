@@ -342,6 +342,14 @@ if [ -f /etc/kubernetes/admin.conf ]; then
     echo "  (This is a second-run via SSM State Manager or instance reboot)"
     export KUBECONFIG=/etc/kubernetes/admin.conf
 
+    # Refresh ssm-user kubeconfig (may have been updated by cert renewal)
+    if id ssm-user &>/dev/null; then
+        mkdir -p /home/ssm-user/.kube
+        cp -f /etc/kubernetes/admin.conf /home/ssm-user/.kube/config
+        chown ssm-user:ssm-user /home/ssm-user/.kube/config
+        chmod 600 /home/ssm-user/.kube/config
+    fi
+
     # =========================================================================
     # Certificate Renewal — kubeadm certs expire after 1 year by default.
     # Running on every boot ensures certificates are refreshed naturally
@@ -535,6 +543,12 @@ mkdir -p /home/ec2-user/.kube
 cp -f $KUBECONFIG_SRC /home/ec2-user/.kube/config
 chown ec2-user:ec2-user /home/ec2-user/.kube/config
 chmod 600 /home/ec2-user/.kube/config
+
+# Configure kubectl for ssm-user (SSM Session Manager default user)
+mkdir -p /home/ssm-user/.kube
+cp -f $KUBECONFIG_SRC /home/ssm-user/.kube/config
+chown ssm-user:ssm-user /home/ssm-user/.kube/config
+chmod 600 /home/ssm-user/.kube/config
 
 echo "export KUBECONFIG=$KUBECONFIG_SRC" > /etc/profile.d/kubernetes.sh
 chmod 644 /etc/profile.d/kubernetes.sh
