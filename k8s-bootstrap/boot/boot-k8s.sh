@@ -617,50 +617,7 @@ fi
 echo "=== k8s first-boot deployment complete ==="
 
 # =============================================================================
-# 8. Pre-seed Next.js Secrets
-# =============================================================================
-
-echo "=== Pre-seeding Next.js secrets ==="
-
-export KUBECONFIG=/etc/kubernetes/admin.conf
-
-# Derive frontend SSM prefix: /k8s/development -> /frontend/development
-K8S_ENV="${SSM_PREFIX##*/}"
-FRONTEND_SSM_PREFIX="/frontend/${K8S_ENV}"
-
-kubectl create namespace nextjs-app --dry-run=client -o yaml | kubectl apply -f -
-
-resolve_frontend_secret() {
-    local param_name="$1"
-    local ssm_path="${FRONTEND_SSM_PREFIX}/${param_name}"
-    aws ssm get-parameter --name "${ssm_path}" --with-decryption \
-        --query 'Parameter.Value' --output text \
-        --region "${AWS_REGION}" 2>/dev/null || echo ""
-}
-
-DYNAMODB_TABLE_NAME=$(resolve_frontend_secret "dynamodb/table-name")
-ASSETS_BUCKET_NAME=$(resolve_frontend_secret "s3/assets-bucket-name")
-NEXT_PUBLIC_API_URL=$(resolve_frontend_secret "api/gateway-url")
-
-SECRET_ARGS=""
-[ -n "${DYNAMODB_TABLE_NAME}" ] && SECRET_ARGS="${SECRET_ARGS} --from-literal=DYNAMODB_TABLE_NAME=${DYNAMODB_TABLE_NAME}"
-[ -n "${ASSETS_BUCKET_NAME}" ] && SECRET_ARGS="${SECRET_ARGS} --from-literal=ASSETS_BUCKET_NAME=${ASSETS_BUCKET_NAME}"
-[ -n "${NEXT_PUBLIC_API_URL}" ] && SECRET_ARGS="${SECRET_ARGS} --from-literal=NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}"
-
-if [ -n "${SECRET_ARGS}" ]; then
-    kubectl create secret generic nextjs-secrets \
-        ${SECRET_ARGS} \
-        --namespace nextjs-app \
-        --dry-run=client -o yaml | kubectl apply -f -
-    echo "nextjs-secrets pre-seeded"
-else
-    echo "No Next.js secrets resolved - skipping"
-fi
-
-echo "=== Next.js secret pre-seeding complete ==="
-
-# =============================================================================
-# 9. Install Helm + Traefik Ingress Controller (DaemonSet — Hybrid-HA)
+# 8. Install Helm + Traefik Ingress Controller (DaemonSet — Hybrid-HA)
 #
 # Traefik runs as a DaemonSet with hostNetwork=true so every node listens
 # on ports 80/443. This enables seamless EIP failover — when the EIP moves
@@ -702,7 +659,7 @@ kubectl get ds traefik -n kube-system
 echo "=== Traefik Ingress Controller ready ==="
 
 # =============================================================================
-# 10. Deploy Next.js Application (first boot)
+# 9. Deploy Next.js Application (first boot)
 #
 # Runs the Next.js deploy-manifests.sh after Traefik so IngressRoutes
 # (which use Traefik CRDs) are accepted by the API server. This covers:
@@ -726,7 +683,7 @@ else
 fi
 
 # =============================================================================
-# 11. Bootstrap ArgoCD
+# 10. Bootstrap ArgoCD
 # =============================================================================
 
 echo "=== Bootstrapping ArgoCD ==="
