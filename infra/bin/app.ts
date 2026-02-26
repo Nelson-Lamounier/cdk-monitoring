@@ -71,7 +71,7 @@ const { stacks } = factory.createAllStacks(app, {
 // Tagging — enforces consistent 5-key schema across all resources
 cdk.Aspects.of(app).add(new TaggingAspect({
     environment,
-    project: projectConfig.namespace,
+    project: projectConfig.namespace || projectConfig.displayName,
     owner: process.env.PROJECT_OWNER ?? 'Nelson Lamounier',
     costCenter: process.env.COST_CENTER,
 }));
