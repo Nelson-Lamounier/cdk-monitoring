@@ -62,6 +62,7 @@ export const STACK_REGISTRY = {
         data: 'Data',
         agent: 'Agent',
         api: 'Api',
+        content: 'Content',
     },
 } as const;
 
