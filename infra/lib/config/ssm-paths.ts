@@ -272,6 +272,48 @@ export function monitoringSsmPaths(environment: Environment): MonitoringSsmPaths
     };
 }
 
+
+// =============================================================================
+// K8S (kubeadm) SSM PATHS
+// =============================================================================
+
+/** k8s SSM prefix: /k8s/{environment} */
+export function k8sSsmPrefix(environment: Environment): string {
+    return `/k8s/${environment}`;
+}
+
+/**
+ * SSM parameter paths for the kubeadm Kubernetes cluster.
+ */
+export interface K8sSsmPaths {
+    /** The prefix itself: /k8s/{environment} */
+    readonly prefix: string;
+    /** Kubernetes node EC2 instance ID */
+    readonly instanceId: string;
+    /** Elastic IP address for stable CloudFront origin */
+    readonly elasticIp: string;
+    /** Security group ID for the Kubernetes cluster */
+    readonly securityGroupId: string;
+
+    /** Wildcard path for IAM: /k8s/{environment}/* */
+    readonly wildcard: string;
+}
+
+/**
+ * Get k8s SSM parameter paths for a given environment.
+ */
+export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
+    const prefix = k8sSsmPrefix(environment);
+
+    return {
+        prefix,
+        instanceId: `${prefix}/instance-id`,
+        elasticIp: `${prefix}/elastic-ip`,
+        securityGroupId: `${prefix}/security-group-id`,
+        wildcard: `${prefix}/*`,
+    };
+}
+
 // =============================================================================
 // BEDROCK SSM PATHS
 // =============================================================================
@@ -317,47 +359,6 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
         knowledgeBaseId: `${prefix}/knowledge-base-id`,
         apiUrl: `${prefix}/api-url`,
         dataBucketName: `${prefix}/data-bucket-name`,
-        wildcard: `${prefix}/*`,
-    };
-}
-
-// =============================================================================
-// K8S (kubeadm) SSM PATHS
-// =============================================================================
-
-/** k8s SSM prefix: /k8s/{environment} */
-export function k8sSsmPrefix(environment: Environment): string {
-    return `/k8s/${environment}`;
-}
-
-/**
- * SSM parameter paths for the kubeadm Kubernetes cluster.
- */
-export interface K8sSsmPaths {
-    /** The prefix itself: /k8s/{environment} */
-    readonly prefix: string;
-    /** Kubernetes node EC2 instance ID */
-    readonly instanceId: string;
-    /** Elastic IP address for stable CloudFront origin */
-    readonly elasticIp: string;
-    /** Security group ID for the Kubernetes cluster */
-    readonly securityGroupId: string;
-
-    /** Wildcard path for IAM: /k8s/{environment}/* */
-    readonly wildcard: string;
-}
-
-/**
- * Get k8s SSM parameter paths for a given environment.
- */
-export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
-    const prefix = k8sSsmPrefix(environment);
-
-    return {
-        prefix,
-        instanceId: `${prefix}/instance-id`,
-        elasticIp: `${prefix}/elastic-ip`,
-        securityGroupId: `${prefix}/security-group-id`,
         wildcard: `${prefix}/*`,
     };
 }

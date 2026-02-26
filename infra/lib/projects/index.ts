@@ -8,3 +8,4 @@ export * from './monitoring';
 export * from './nextjs';
 export * from './org';
 export * from './kubernetes';
+export * from './bedrock';

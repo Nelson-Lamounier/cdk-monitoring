@@ -21,3 +21,6 @@ export * from './shared';
 
 // Kubernetes cluster stacks
 export * from './kubernetes';
+
+// Bedrock AI agent stacks
+export * from './bedrock';

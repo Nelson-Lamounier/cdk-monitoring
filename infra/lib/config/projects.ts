@@ -21,6 +21,8 @@ export enum Project {
 
     /** Kubernetes cluster for unified workloads */
     KUBERNETES = 'kubernetes',
+    /** Amazon Bedrock AI agent */
+    BEDROCK = 'bedrock',
 }
 
 /**
@@ -71,6 +73,12 @@ export const PROJECT_CONFIGS: Record<Project, ProjectConfig> = {
         description: 'Kubernetes cluster for unified workloads',
         namespace: '',
         requiresSharedVpc: true,
+    },
+    [Project.BEDROCK]: {
+        displayName: 'Bedrock',
+        description: 'Amazon Bedrock AI agent with Knowledge Bases and API Gateway',
+        namespace: 'Bedrock',
+        requiresSharedVpc: false, // Bedrock is fully managed serverless
     },
 } as const;
 

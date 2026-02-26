@@ -58,6 +58,11 @@ export const STACK_REGISTRY = {
     org: {
         dnsRole: 'DnsRole',
     },
+    bedrock: {
+        data: 'Data',
+        agent: 'Agent',
+        api: 'Api',
+    },
 } as const;
 
 /** Type-safe project keys */
@@ -109,6 +114,7 @@ const PROJECT_TO_REGISTRY: Record<Project, RegistryProject> = {
     [Project.NEXTJS]: 'nextjs',
     [Project.KUBERNETES]: 'kubernetes',
     [Project.ORG]: 'org',
+    [Project.BEDROCK]: 'bedrock',
 };
 
 /**
