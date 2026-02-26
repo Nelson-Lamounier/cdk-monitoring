@@ -663,7 +663,7 @@ echo "=== Traefik Ingress Controller ready ==="
 #
 # Runs the Next.js deploy-manifests.sh after Traefik so IngressRoutes
 # (which use Traefik CRDs) are accepted by the API server. This covers:
-#   - kustomize apply (base manifests: Deployment, Service, ConfigMap, etc.)
+#   - Helm upgrade/install (Deployment, Service, ConfigMap, etc.)
 #   - Helm topology overlay (replicas, anti-affinity, spread constraints)
 #   - Secret creation from SSM parameters
 # =============================================================================
