@@ -394,18 +394,29 @@ export class LambdaFunctionConstruct extends Construct {
 // =========================================================================
 
 /**
- * Auto-detect the dependency lock file in the project root.
- * Checks yarn.lock → package-lock.json → pnpm-lock.yaml in order.
+ * Auto-detect the dependency lock file.
+ *
+ * Walks up from cwd toward the filesystem root, checking for
+ * yarn.lock → package-lock.json → pnpm-lock.yaml at each level.
+ * This supports the monorepo layout where a single yarn.lock lives
+ * at the repo root while CDK synth/test runs from the infra/ workspace.
  */
 function detectLockFile(): string {
-    const cwd = process.cwd();
     const candidates = ['yarn.lock', 'package-lock.json', 'pnpm-lock.yaml'];
-    for (const candidate of candidates) {
-        const filePath = path.join(cwd, candidate);
-        if (fs.existsSync(filePath)) {
-            return filePath;
+    let dir = process.cwd();
+
+    while (true) {
+        for (const candidate of candidates) {
+            const filePath = path.join(dir, candidate);
+            if (fs.existsSync(filePath)) {
+                return filePath;
+            }
         }
+        const parent = path.dirname(dir);
+        if (parent === dir) break; // filesystem root
+        dir = parent;
     }
-    // Fallback to yarn.lock — esbuild will provide a clear error if missing
-    return path.join(cwd, 'yarn.lock');
+
+    // Fallback — NodejsFunction will provide a clear error if missing
+    return path.join(process.cwd(), 'yarn.lock');
 }

@@ -79,15 +79,15 @@ runs:
       id: cache-key
       shell: bash
       run: |
-        # Find lockfiles in repo root or infra/ subdirectory (monorepo layout)
-        LOCK_FILES=""
-        for DIR in . infra infra-ami; do
-          [ -f "$DIR/yarn.lock" ] && LOCK_FILES="$LOCK_FILES $DIR/yarn.lock"
+        # Centralized lockfile: Yarn workspaces uses a single root yarn.lock.
+        # Hash root lockfile + all workspace package.json files for cache key.
+        LOCK_FILES="./yarn.lock"
+        for DIR in . infra infra-ami bedrock-publisher; do
           [ -f "$DIR/package.json" ] && LOCK_FILES="$LOCK_FILES $DIR/package.json"
         done
 
-        if [ -z "$LOCK_FILES" ]; then
-          echo "::warning::No yarn.lock or package.json found — using fallback cache key"
+        if [ ! -f "./yarn.lock" ]; then
+          echo "::warning::No root yarn.lock found — using fallback cache key"
           HASH=$(echo "${{ github.sha }}" | sha256sum | cut -d' ' -f1)
         else
           echo "Hashing lockfiles:$LOCK_FILES"
