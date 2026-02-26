@@ -1,0 +1,22 @@
+{
+  "name": "@cdk-monitoring/ai-publisher",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MD-to-Blog AI publisher using Bedrock Converse API (Claude 4.6 Sonnet)",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.985.0",
+    "@aws-sdk/client-dynamodb": "^3.985.0",
+    "@aws-sdk/client-s3": "^3.985.0",
+    "@aws-sdk/lib-dynamodb": "^3.985.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.159",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}
