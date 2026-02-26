@@ -400,14 +400,15 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Seed Bootstrap Scripts to S3 (2b/6) — Day-1 Safety
+  # Sync K8s Boot Scripts to S3 (2b/6) — Day-1 Safety
   #
   # Syncs kubernetes-app/k8s-bootstrap/ scripts into the S3 bucket created by BaseStack.
-  # Runs BEFORE the Compute stack so boot-k8s.sh is waiting in S3
+  # The control plane downloads boot-k8s.sh from s3://{bucket}/k8s-bootstrap/boot/boot-k8s.sh
+  # at launch. Runs BEFORE Compute so the script is waiting in S3
   # by the time the EC2 instance launches — zero race condition.
   # ===========================================================================
   sync-bootstrap-content:
-    name: Seed Bootstrap Scripts
+    name: Sync K8s Boot Scripts to S3
     needs: [setup, deploy-base]
     if: always() && needs.deploy-base.result == 'success'
     runs-on: ubuntu-latest
@@ -419,7 +420,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
@@ -430,16 +431,35 @@ jobs:
           SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}"
           REGION="${{ vars.AWS_REGION || 'eu-west-1' }}"
 
+          # Resolve scripts bucket from SSM (created by BaseStack)
           BUCKET=$(aws ssm get-parameter \
             --name "${SSM_PREFIX}/scripts-bucket" \
             --query 'Parameter.Value' --output text \
-            --region "${REGION}")
+            --region "${REGION}" 2>/dev/null || echo "")
 
-          echo "Seeding bootstrap scripts to s3://${BUCKET}/k8s-bootstrap/"
-          aws s3 sync ./kubernetes-app/k8s-bootstrap "s3://${BUCKET}/k8s-bootstrap/" \
+          if [ -z "$BUCKET" ]; then
+            echo "ERROR: Could not resolve scripts bucket from SSM parameter ${SSM_PREFIX}/scripts-bucket"
+            echo "Ensure the Base stack deployed successfully and published the parameter."
+            exit 1
+          fi
+          echo "Resolved scripts bucket: ${BUCKET}"
+
+          # Verify source directory exists
+          SOURCE_DIR="./kubernetes-app/k8s-bootstrap"
+          if [ ! -d "$SOURCE_DIR" ]; then
+            echo "ERROR: Source directory not found: ${SOURCE_DIR}"
+            exit 1
+          fi
+
+          # Count files before sync
+          FILE_COUNT=$(find "$SOURCE_DIR" -type f | wc -l | tr -d ' ')
+          echo "Syncing ${FILE_COUNT} files from ${SOURCE_DIR} to s3://${BUCKET}/k8s-bootstrap/"
+
+          # Sync with --delete to remove stale files
+          aws s3 sync "$SOURCE_DIR" "s3://${BUCKET}/k8s-bootstrap/" \
             --delete --region "${REGION}"
 
-          echo "✓ Bootstrap scripts seeded — EC2 instances can now boot safely"
+          echo "✓ ${FILE_COUNT} bootstrap files seeded — EC2 instances can now boot safely"
 
   # ===========================================================================
   # Deploy Compute Stack (3/8) — Control Plane EC2 + ASG + SSM Docs
