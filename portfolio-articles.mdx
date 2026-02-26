@@ -1,0 +1,825 @@
+import { ArticleLayout } from '@/components/ArticleLayout'
+import { Callout } from '@/components/Callout'
+import { ProcessTimeline } from '@/components/ProcessTimeline'
+
+export const article = {
+  author: 'Nelson Lamounier',
+  date: '2026-02-17',
+  title:
+    'Full-Stack Observability: Prometheus, Grafana, Loki & Tempo on a Single EC2 Instance',
+  description:
+    'I run 7 Docker containers on one EC2 instance to get full metrics, logs, and traces for my ECS portfolio. Cloud Map DNS handles service discovery, SSM handles access, and the whole thing costs $15/month.',
+}
+
+export const metadata = {
+  title: article.title,
+  description: article.description,
+}
+
+export default (props) => <ArticleLayout article={article} {...props} />
+
+Running a full observability stack (metrics, logs, traces) for a solo-dev portfolio shouldn't require a Kubernetes cluster or a $500/month managed service. This article walks through a **7-container Docker Compose** deployment on a single EC2 instance that collects metrics from ECS tasks via **Cloud Map DNS service discovery**, aggregates logs via **Promtail**, receives distributed traces via **Grafana Alloy + Tempo**, and provisions **9 Grafana dashboards from S3** — all configured through **SSM Run Command** documents, with **zero public ingress** and **EBS-backed data persistence**.
+
+---
+
+## 1. The Constraint
+
+I run a Next.js application on ECS Fargate and need full observability — metrics, logs, and traces — without paying more for monitoring than for the application itself. The challenge is not whether to monitor, but _how_: the ECS tasks use `awsvpc` networking, which means each task gets its own private ENI IP that standard EC2 service discovery cannot resolve. Managed services like CloudWatch Container Insights offer a quick start, but I needed Prometheus-native exporters, custom Grafana dashboards, Loki log pipelines, and Tempo traces — the kind of customization that managed services either don't support or charge a premium for.
+
+The monitoring platform had to meet six requirements:
+
+- Scrape metrics from ECS tasks with dynamic IPs (Cloud Map DNS, not a custom Lambda)
+- Aggregate logs from multiple ECS services and the EC2 host
+- Receive distributed traces from the Next.js application
+- Survive EC2 instance replacements without losing historical data
+- Expose zero public network endpoints (SSM-only access)
+- Deploy entirely from CDK with no manual SSH configuration
+
+---
+
+## 2. Decision Log: Why Docker Compose on EC2 Over Everything Else
+
+This is the most common question I get about this architecture: why not ECS, why not Kubernetes, why not managed services? The answer comes down to three constraints that intersect in a way that eliminates most alternatives.
+
+### Why Not Managed Services?
+
+CloudWatch Container Insights costs roughly $15–30/month at my scale for 15 days of metric retention, and it doesn't support Prometheus-native exporters, PromQL, or custom Loki pipelines. Grafana Cloud's free tier offers 14 days of metrics and 50GB of logs, but the trace retention and dashboard customization are limited. Neither gives me the ability to write custom Promtail pipelines that parse Docker container JSON logs or correlate traces to logs to metrics in a single click. As of February 2026, AWS does not offer a managed Tempo equivalent — X-Ray is the closest option, but it uses a proprietary trace format that doesn't integrate with the Grafana observability stack.
+
+### Why Not ECS for the Monitoring Stack Itself?
+
+Prometheus, Grafana, Loki, and Tempo all need persistent storage. ECS Fargate tasks are ephemeral by design — when a task stops, its local storage is gone. EFS is the standard answer for persistent Fargate storage, but Prometheus's TSDB writes heavily to disk in a pattern that EFS's latency profile handles poorly. I benchmarked Prometheus on EFS at roughly 3–5x slower query response compared to a local EBS gp3 volume. ECS with EC2 launch type could mount EBS, but then I'm managing an ECS cluster just to run 7 related containers that need to share a network and disk — exactly what Docker Compose does natively.
+
+### Why Not Kubernetes?
+
+I considered EKS and even k3s on a single node. EKS adds a $74/month control plane cost before any workload. k3s eliminates that, but introduces a Kubernetes layer (kubelet, etcd, kube-proxy) that consumes memory and CPU on a `t3.small` with 2GB RAM — memory that the monitoring containers need. Docker Compose gives me the same container orchestration semantics (health checks, restart policies, shared networking) without the overhead, and the resulting `docker-compose.yml` is 138 lines of readable YAML instead of a forest of Kubernetes manifests.
+
+| Approach                 | Monthly Cost | Persistent Storage | Operational Overhead | Customization |
+| :----------------------- | :----------- | :----------------- | :------------------- | :------------ |
+| CloudWatch Insights      | ~$15–30      | 15 days (managed)  | None                 | Limited       |
+| Grafana Cloud (free)     | $0           | 14 days            | None                 | Moderate      |
+| ECS Fargate + EFS        | ~$25–40      | Unlimited (slow)   | Moderate             | Full          |
+| EKS                      | ~$90+        | EBS via CSI driver | High                 | Full          |
+| **Docker Compose + EC2** | **~$15**     | **EBS gp3 (fast)** | **Low**              | **Full**      |
+
+The trade-off is clear: I accepted a single point of failure (one EC2 instance) in exchange for full customization, fast local storage, and ~$15/month all-in.
+
+---
+
+## 3. Architecture: The 7-Container Stack
+
+The monitoring instance runs 7 Docker containers in a single Compose network. Every service except Tempo's OTLP receivers binds to `127.0.0.1`, which means the only way to reach Grafana or Prometheus is through SSM port forwarding — there are no Security Group rules that allow direct internet access.
+
+<Mermaid chart={`
+graph TB
+    subgraph ECS["ECS Cluster (awsvpc networking)"]
+        NT["Next.js Tasks<br/>(port 3000)"]
+        PS["Promtail Sidecar<br/>(log collector)"]
+        AS["Alloy Sidecar<br/>(OTLP forwarder)"]
+    end
+
+    subgraph EC2["EC2 Monitoring Instance (t3.small)"]
+        subgraph DC["Docker Compose (7 containers)"]
+            P["Prometheus<br/>127.0.0.1:9090"]
+            G["Grafana<br/>127.0.0.1:3000"]
+            L["Loki<br/>127.0.0.1:3100"]
+            PT["Promtail<br/>127.0.0.1:9080"]
+            T["Tempo<br/>0.0.0.0:4317"]
+            NE["Node Exporter<br/>127.0.0.1:9100"]
+            GA["GitHub Actions<br/>Exporter :9101"]
+        end
+        EBS["EBS gp3 /data<br/>(4 named volumes)"]
+    end
+
+    subgraph AWS["AWS Service Layer"]
+        CM["Cloud Map DNS<br/>nextjs.local"]
+        SSMp["SSM Parameter Store"]
+        S3["S3 Scripts Bucket"]
+    end
+
+    NT -->|"/api/metrics"| P
+    PS -->|"logs"| L
+    AS -->|"OTLP gRPC :4317"| T
+    CM -->|"DNS A records"| P
+    NE --> P
+    GA --> P
+    P --> G
+    L --> G
+    T --> G
+    S3 -->|"dashboards + configs"| G
+    SSMp -->|"bearer token<br/>Loki endpoint"| NT
+    EBS --> P & G & L & T
+
+    style P fill:#e65100,color:#fff
+    style G fill:#1b5e20,color:#fff
+    style L fill:#1a237e,color:#fff
+    style T fill:#4a148c,color:#fff
+    style EBS fill:#0d47a1,color:#fff
+    style CM fill:#00695c,color:#fff
+
+`} caption="Full monitoring architecture: 7 containers on EC2, consuming metrics/logs/traces from ECS tasks via Cloud Map DNS and OTLP" />
+
+### What Each Container Does
+
+Prometheus scrapes 5 targets (itself, the local Node Exporter, ECS host-level Node Exporters via EC2 service discovery, Next.js application metrics via Cloud Map DNS, and the GitHub Actions Exporter) on a 15-second default interval. Grafana connects to all four backends (Prometheus, Loki, Tempo, CloudWatch) with cross-datasource linking so that clicking a trace span opens the corresponding log entries or metrics panel. Loki stores logs with 15-day retention using the TSDB v13 schema. Promtail collects three log streams: Docker container logs (parsed from JSON), system `syslog`, and the `user-data.log` that captures EC2 bootstrap output. Tempo receives OTLP traces via gRPC on port 4317 and generates service-graph and span-metrics that it remote-writes back into Prometheus — this is how trace data becomes queryable as regular Prometheus metrics. Node Exporter exposes host-level CPU, memory, disk, and network metrics. The GitHub Actions Exporter polls the GitHub API every 30 seconds for workflow run data.
+
+### Docker Compose Startup
+
+Here's what a healthy bootstrap looks like — all 7 containers starting in dependency order:
+
+```bash
+$ docker-compose up -d
+Creating network "monitoring_default" with the default driver
+Creating monitoring_node-exporter_1    ... done
+Creating monitoring_loki_1             ... done
+Creating monitoring_promtail_1         ... done
+Creating monitoring_tempo_1            ... done
+Creating monitoring_prometheus_1       ... done
+Creating monitoring_github-exporter_1  ... done
+Creating monitoring_grafana_1          ... done
+
+$ docker-compose ps
+         Name                       State       Ports
+-------------------------------------------------------------
+monitoring_grafana_1           Up (healthy)   127.0.0.1:3000->3000/tcp
+monitoring_loki_1              Up (healthy)   127.0.0.1:3100->3100/tcp
+monitoring_node-exporter_1     Up             127.0.0.1:9100->9100/tcp
+monitoring_prometheus_1        Up (healthy)   127.0.0.1:9090->9090/tcp
+monitoring_promtail_1          Up             127.0.0.1:9080->9080/tcp
+monitoring_tempo_1             Up (healthy)   0.0.0.0:4317->4317/tcp
+monitoring_github-exporter_1   Up             127.0.0.1:9101->9101/tcp
+```
+
+<Callout variant="info" title="Zero Public Exposure">
+  Every port except Tempo's `:4317` binds to `127.0.0.1` — no public exposure.
+  The only way to reach Grafana or Prometheus is through SSM port forwarding.
+</Callout>
+
+---
+
+## 4. Service Discovery: Why Cloud Map DNS Instead of Lambda-Based SD
+
+This is the sharpest edge in the architecture. ECS tasks with `awsvpc` networking get private ENI IPs that are invisible to Prometheus's `ec2_sd_configs` — that discovery mechanism resolves to the _host_ IP, not the _task_ IP. I initially built a Lambda function that called the ECS API to list running tasks and wrote their IPs to a file-based service discovery JSON. It worked, but it added operational complexity: a Lambda to maintain, IAM permissions to manage, a cron trigger to schedule, and a 60-second lag between task launch and Prometheus discovery.
+
+Cloud Map DNS eliminates all of that. When an ECS service is registered with a Cloud Map namespace, AWS automatically creates and updates DNS A records for each running task. Prometheus queries these DNS records directly using `dns_sd_configs`, with no intermediary Lambda, no file-based discovery, and no API polling. The refresh interval is 30 seconds, and new tasks appear in Prometheus within one DNS TTL cycle.
+
+```yaml
+# scripts/monitoring/prometheus/prometheus.yml
+scrape_configs:
+  # Next.js application metrics via Cloud Map DNS
+  - job_name: 'nextjs-application-metrics'
+    metrics_path: '/api/metrics'
+    scrape_interval: 30s
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/metrics-token
+    dns_sd_configs:
+      - names:
+          - 'nextjs-app.nextjs.local' # Cloud Map DNS name
+        type: A # Resolves to task ENI IPs
+        port: 3000
+        refresh_interval: 30s
+    relabel_configs:
+      - source_labels: [__meta_dns_name]
+        target_label: cloudmap_service
+      - target_label: environment
+        replacement: 'production'
+```
+
+<Callout variant="security" title="Bearer Token Authentication">
+  Without bearer token authentication, anyone with network access to port 3000
+  can scrape the `/api/metrics` endpoint, leaking application internals (heap
+  usage, request latency distributions, active connections). The token is stored
+  as an SSM SecureString parameter and mounted into the Prometheus container's
+  secrets directory. Prometheus reads the file at scrape time — no environment
+  variable exposure, no plaintext in the Compose file.
+</Callout>
+
+### The EC2 SD Complement
+
+Cloud Map handles task-level discovery, but I also need host-level metrics from the EC2 instances that run the ECS tasks. Standard `ec2_sd_configs` works well here because these are actual EC2 instances, not containers:
+
+```yaml
+# scripts/monitoring/prometheus/prometheus.yml
+- job_name: 'ecs-nextjs-node-exporter'
+  ec2_sd_configs:
+    - region: eu-west-1
+      port: 9100
+      filters:
+        - name: tag:Purpose
+          values: ['NextJS']
+  relabel_configs:
+    - source_labels: [__meta_ec2_tag_Name]
+      target_label: instance_name
+    - source_labels: [__meta_ec2_instance_id]
+      target_label: instance_id
+    - source_labels: [__meta_ec2_availability_zone]
+      target_label: availability_zone
+```
+
+The `filters` clause uses the EC2 `Purpose` tag to discover only instances running Next.js tasks. The relabel configs extract instance metadata (name, ID, AZ) as Prometheus labels, which powers the per-instance Grafana dashboard panels.
+
+### Prometheus Targets API: Verifying Discovery
+
+After Cloud Map DNS resolves the ECS task IPs, you can verify that Prometheus has discovered and is scraping them by querying the Targets API:
+
+```bash
+$ curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets[] | select(.labels.job=="nextjs-application-metrics") | {instance: .labels.instance, health: .health, lastScrape: .lastScrape}'
+{
+  "instance": "10.0.1.47:3000",
+  "health": "up",
+  "lastScrape": "2026-02-17T07:45:12.003Z"
+}
+{
+  "instance": "10.0.2.183:3000",
+  "health": "up",
+  "lastScrape": "2026-02-17T07:45:14.112Z"
+}
+```
+
+<ScreenshotPlaceholder
+  alt="Prometheus targets page showing the nextjs-application-metrics job with multiple Cloud Map DNS-discovered targets in the UP state"
+  type="screenshot"
+/>
+
+---
+
+## 5. The 3-Tier Bootstrap: UserData → SSM Run Command → Docker Compose
+
+The monitoring EC2 instance uses a 3-tier bootstrap pattern. I arrived at this pattern after discovering that putting everything in UserData creates an undebuggable monolith — if step 47 of a 60-step script fails during boot, the only way to diagnose it is to terminate the instance, add logging, and launch a new one. The SSM trigger pattern gives me retriable execution, parameterized configuration, captured output, and timeout control.
+
+<Mermaid chart={`
+graph LR
+    subgraph T1["Tier 1: UserData (OS Level)"]
+        U1["Update System"]
+        U2["Install Docker"]
+        U3["Install AWS CLI"]
+        U4["Attach EBS Volume"]
+    end
+
+    subgraph T2["Tier 2: SSM Run Command (App Level)"]
+        S1["Download from S3"]
+        S2["Configure Secrets"]
+        S3["Register Endpoints"]
+        S4["docker-compose up"]
+    end
+
+    subgraph T3["Tier 3: Docker Compose (Service Level)"]
+        D1["Prometheus"]
+        D2["Grafana"]
+        D3["Loki + Promtail"]
+        D4["Tempo"]
+    end
+
+    U1 --> U2 --> U3 --> U4
+    U4 -->|"SSM SendCommand"| S1
+    S1 --> S2 --> S3 --> S4
+    S4 --> D1 & D2 & D3 & D4
+
+    style U1 fill:#1565c0,color:#fff
+    style U2 fill:#1565c0,color:#fff
+    style U3 fill:#1565c0,color:#fff
+    style U4 fill:#1565c0,color:#fff
+    style S1 fill:#e65100,color:#fff
+    style S2 fill:#e65100,color:#fff
+    style S3 fill:#e65100,color:#fff
+    style S4 fill:#e65100,color:#fff
+    style D1 fill:#2e7d32,color:#fff
+    style D2 fill:#2e7d32,color:#fff
+    style D3 fill:#2e7d32,color:#fff
+    style D4 fill:#2e7d32,color:#fff
+
+`} caption="3-tier bootstrap: OS prep (blue) → SSM configuration (orange) → Docker services (green)" />
+
+### Tier 1: The CDK UserDataBuilder (683 Lines, Fluent API)
+
+The CDK `UserDataBuilder` uses a fluent interface to construct the OS-level bootstrap. Each method returns `this` for chaining, and the whole builder produces a single shell script that runs at instance boot:
+
+```typescript
+// lib/stacks/monitoring/compute/compute-stack.ts
+const setupScript = new UserDataBuilder()
+  .updateSystem()
+  .installDocker()
+  .installAwsCli()
+  .attachEbsVolume({
+    volumeId: props.volumeId,
+    mountPoint: "/data",
+    deviceName: "/dev/xvdf",
+    fsType: "xfs",
+  })
+  .triggerSsmConfiguration({
+    documentName: ssmDocumentName,
+    parameters: {
+      S3BucketName: scriptsBucketName,
+      GrafanaPassword: grafanaPassword,
+      NamePrefix: namePrefix,
+      Region: this.region,
+      MonitoringDir: "/opt/monitoring",
+    },
+    region: this.region,
+    timeoutSeconds: 600,
+  })
+  .build();
+```
+
+The `attachEbsVolume()` method alone is 148 lines because it handles the full lifecycle: attaching the volume via the EC2 API, waiting for the device to appear (including NVMe device name mapping on Nitro instances), checking whether a filesystem already exists, creating one if needed, mounting it, and adding a persistent fstab entry. The `triggerSsmConfiguration()` method is 122 lines and handles SSM document invocation with retry logic, timeout handling, and CloudFormation signal integration.
+
+### Tier 2: SSM Run Command — Why Not Put Everything in UserData?
+
+UserData scripts run as root during boot with no interactive access. If the Docker pull fails because of a transient Docker Hub rate limit, the instance is stuck — you cannot re-run UserData without terminating the instance. The SSM trigger pattern at the end of Tier 1 hands off to an SSM Run Command document, which provides three advantages:
+
+<Callout variant="info" title="Why SSM Run Command?">
+  <ol>
+    <li>
+      SSM commands can be re-run without rebooting the instance — if the
+      monitoring stack configuration fails, re-invoke the SSM document and the
+      instance picks up where it left off.
+    </li>
+    <li>
+      SSM command output is captured in CloudWatch Logs — diagnose failures from
+      the console without needing SSH access.
+    </li>
+    <li>
+      The SSM document receives parameters (S3 bucket name, Grafana password,
+      region), so the same document works across development, staging, and
+      production.
+    </li>
+  </ol>
+</Callout>
+
+### Tier 3: Docker Compose
+
+The SSM document downloads the monitoring stack from S3, writes secrets into the appropriate directories, and runs `docker-compose up -d`. The Compose file defines a `monitoring` bridge network that all containers share, so Prometheus can reach Node Exporter at `node-exporter:9100` and Grafana can reach Loki at `loki:3100` using Docker DNS.
+
+<ScreenshotPlaceholder
+  alt="Terminal session showing SSM Run Command execution output — S3 download, secret injection, and docker-compose up with health check results"
+  type="terminal"
+/>
+
+---
+
+## 6. Distributed Tracing: The Alloy → Tempo → Prometheus Pipeline
+
+Distributed tracing required solving a routing problem: the Next.js application runs in ECS tasks, but Tempo runs on the monitoring EC2 instance. The application can't send OTLP traces directly to Tempo because the monitoring instance's IP changes on every replacement. I solved this with a two-hop architecture: Grafana Alloy runs as a sidecar in each ECS task, receives traces on `localhost:4317`, and forwards them to Tempo at an IP discovered via SSM Parameter Store.
+
+```
+Next.js App (localhost:4317) → Alloy Sidecar → Tempo (10.0.x.y:4317)
+```
+
+The Alloy configuration is 27 lines:
+
+```
+// scripts/monitoring/alloy/config.alloy
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = env("TEMPO_ENDPOINT")    // Injected by ECS task definition
+
+    tls {
+      insecure = true                   // VPC-internal traffic, no TLS needed
+    }
+  }
+}
+```
+
+The `TEMPO_ENDPOINT` environment variable (e.g., `http://10.0.0.197:4317`) is injected by the ECS task definition, which reads the monitoring instance's IP from an SSM parameter that gets updated at every instance boot (see Section 7).
+
+### Tempo → Prometheus: Metrics from Traces
+
+Tempo doesn't just store traces — it generates metrics from them. The `metrics_generator` configuration remote-writes two sets of derived metrics back into Prometheus:
+
+```yaml
+# scripts/monitoring/tempo/config.yml
+metrics_generator:
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors:
+        - service-graphs # Request rate, error rate, duration between services
+        - span-metrics # Histogram of span durations by service + operation
+```
+
+This means every trace automatically produces Prometheus metrics like `traces_service_graph_request_total` and `traces_spanmetrics_latency_bucket`, which I can query with PromQL and display in Grafana dashboards without writing custom exporters. The `send_exemplars: true` flag links specific trace IDs back to metric data points, enabling the "click a metric spike → see the exact trace" workflow.
+
+---
+
+## 7. The Dynamic Endpoint Problem: SSM Placeholders at Boot
+
+The monitoring EC2 instance gets a different private IP on every launch. ECS tasks need to know this IP to forward logs to Loki and traces to Tempo. I couldn't use a static address because the instance is managed by an Auto Scaling Group, and I didn't want to introduce an internal load balancer for a single-instance deployment.
+
+The solution is a two-phase SSM parameter pattern:
+
+<Mermaid chart={`
+stateDiagram-v2
+    [*] --> SynthTime: CDK synthesizes
+    SynthTime --> Placeholder: Creates SSM placeholder param
+    Placeholder --> EC2Boots: Instance launches
+    EC2Boots --> IMDSv2: Queries metadata endpoint
+    IMDSv2 --> RealIP: Gets 10.0.x.y
+    RealIP --> SSMUpdate: Overwrites SSM with real IP
+    SSMUpdate --> ECSReads: Next deploy reads real IP
+
+    style Placeholder fill:#e65100,color:#fff
+    style RealIP fill:#2e7d32,color:#fff
+
+`} caption="Two-phase SSM parameter lifecycle: placeholder at synthesis → real IP at boot" />
+
+At CDK synthesis time, the monitoring stack creates a placeholder SSM parameter so that the Next.js stack (which reads it via `ssm.StringParameter.valueFromLookup`) doesn't fail during synthesis:
+
+```typescript
+// CDK creates placeholder — synthesis won't fail even if instance hasn't booted yet
+new ssm.StringParameter(this, "LokiEndpointParam", {
+  parameterName: `/${namePrefix}/loki/endpoint`,
+  stringValue: "placeholder://set-at-boot",
+  description: "Loki push endpoint (overwritten at EC2 boot)",
+});
+```
+
+At boot, the SSM Run Command script queries IMDSv2 for the real private IP and overwrites the parameter:
+
+```bash
+# Resolve private IP via IMDSv2 (not the older insecure metadata endpoint)
+TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/local-ipv4)
+
+# Write real Loki endpoint to SSM
+aws ssm put-parameter \
+    --name "/monitoring/loki/endpoint" \
+    --value "http://${PRIVATE_IP}:3100/loki/api/v1/push" \
+    --overwrite
+
+echo "[INFO] SSM parameter updated: Loki endpoint → http://${PRIVATE_IP}:3100/loki/api/v1/push"
+```
+
+The next ECS deployment reads the updated parameter and injects it into the task definition.
+
+<Callout variant="warning" title="Known Gap: Stale IP Between Deployments">
+  If the monitoring instance is replaced _between_ Next.js deployments, the ECS
+  tasks will try to reach the old IP until the next deployment picks up the new
+  parameter value. In practice, I mitigate this by always deploying the
+  monitoring stack **before** the Next.js stack in my CI/CD pipeline.
+</Callout>
+
+---
+
+## 8. EBS Persistence: Surviving Instance Replacement
+
+All Docker volumes point to the EBS-mounted `/data` directory. The storage stack (531 lines) creates an encrypted EBS gp3 volume with DLM (Data Lifecycle Manager) snapshots for nightly backups:
+
+<Mermaid chart={`
+graph TB
+    subgraph EC2["EC2 Instance (ephemeral)"]
+        DC["Docker Compose"]
+        DV["Docker Volumes"]
+    end
+
+    subgraph EBS["EBS Volume /data (persistent)"]
+        PD["prometheus_data"]
+        GD["grafana_data"]
+        LD["loki_data"]
+        TD["tempo_data"]
+    end
+
+    subgraph DLM["DLM Lifecycle Policy"]
+        SN["Daily Snapshots<br/>(7 retained)"]
+    end
+
+    DC --> DV --> PD & GD & LD & TD
+    PD & GD & LD & TD -.->|"nightly backup"| SN
+
+    style PD fill:#e65100,color:#fff
+    style GD fill:#1b5e20,color:#fff
+    style LD fill:#1a237e,color:#fff
+    style TD fill:#4a148c,color:#fff
+    style SN fill:#0d47a1,color:#fff
+
+`} caption="EBS persistence: 4 named Docker volumes on a gp3 EBS with nightly DLM snapshots" />
+
+### The ASG Rolling Update Challenge
+
+EBS volumes can only attach to one instance at a time. When CloudFormation performs a rolling update of the ASG, it needs to terminate the old instance _before_ launching the new one — otherwise the new instance will fail to attach the volume because the old instance still holds it.
+
+<Callout
+  variant="warning"
+  title="minInstancesInService Must Be 0 for EBS-Attached Monitoring"
+>
+  If you set `minInstancesInService: 1` (the typical production default),
+  CloudFormation keeps the old instance alive while launching the new one. The
+  new instance's UserData tries to attach the EBS volume and fails because it's
+  still attached to the old instance. The deployment hangs until CloudFormation
+  times out. Setting `minInstancesInService: 0` allows the old instance to
+  terminate first, freeing the volume.
+</Callout>
+
+**The rolling update sequence:**
+
+<ProcessTimeline
+  steps={[
+    {
+      title: 'Instance Termination',
+      description:
+        'CloudFormation terminates the old instance (minInstancesInService: 0).',
+    },
+    {
+      title: 'EBS Detach',
+      description:
+        'The ASG lifecycle hook triggers a Lambda that detaches the EBS volume.',
+    },
+    {
+      title: 'New Instance Launch',
+      description:
+        'A new instance launches and UserData calls aws ec2 attach-volume.',
+    },
+    {
+      title: 'Volume Mount',
+      description:
+        'The attachEbsVolume() builder method waits for the device to appear, checks for an existing filesystem, and mounts it.',
+    },
+    {
+      title: 'Service Restore',
+      description:
+        'SSM Run Command starts Docker Compose on the existing data directories.',
+    },
+  ]}
+/>
+
+Historical metrics, dashboards, log indexes, and trace data survive the replacement because they're stored on the EBS volume, not the instance's root filesystem.
+
+---
+
+## 9. Grafana: 4 Datasources, 9 Dashboards, Cross-Signal Correlation
+
+### Auto-Provisioned Datasources
+
+Grafana connects to all four observability backends via provisioned datasources that are deployed as YAML files in `grafana/provisioning/datasources/`:
+
+```yaml
+# scripts/monitoring/grafana/provisioning/datasources/datasources.yml
+datasources:
+  - name: Prometheus
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: Loki
+    type: loki
+    url: http://loki:3100
+
+  - name: CloudWatch
+    type: cloudwatch
+    jsonData:
+      authType: default # Uses EC2 instance role — no credentials stored
+      defaultRegion: eu-west-1
+
+  - name: Tempo
+    type: tempo
+    url: http://tempo:3200
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki # Click a trace span → see matching log entries
+      tracesToMetrics:
+        datasourceUid: prometheus # Click a trace span → see related metrics
+      serviceMap:
+        datasourceUid: prometheus # Service topology from trace data
+```
+
+<Callout variant="insight" title="Cross-Signal Investigation Workflow">
+  The cross-datasource linking (`tracesToLogsV2`, `tracesToMetrics`,
+  `serviceMap`) is what makes this stack more powerful than running each tool in
+  isolation. Investigating a slow API response: open the Tempo explore view →
+  find the slow trace → click a span → jump to the Loki log entries for that
+  request → jump to the Prometheus metrics for P99 latency. **Three datasources,
+  three signals, one workflow.**
+</Callout>
+
+### The 9 Dashboards
+
+| Dashboard                 | Data Source | What It Shows                                                              |
+| :------------------------ | :---------- | :------------------------------------------------------------------------- |
+| `system-overview.json`    | Prometheus  | EC2 host CPU, memory, disk I/O, network                                    |
+| `node-exporter.json`      | Prometheus  | Detailed Node Exporter panels (filesystem, network sockets)                |
+| `ecs-nextjs.json`         | Prometheus  | ECS host-level metrics for Next.js instances via EC2 SD                    |
+| `nextjs-app-metrics.json` | Prometheus  | Application metrics from `/api/metrics` (heap, event loop, active handles) |
+| `nextjs-otel.json`        | Prometheus  | OpenTelemetry-derived metrics from Tempo's metrics generator               |
+| `loki-logs.json`          | Loki        | Log aggregation, filtering, and search across all streams                  |
+| `cloudwatch-logs.json`    | CloudWatch  | AWS-native log groups (Lambda, API Gateway, etc.)                          |
+| `deployment-logs.json`    | Loki        | Deployment-correlated log entries from `user-data.log`                     |
+| `github-actions.json`     | Prometheus  | CI/CD workflow run status, duration, success rate                          |
+
+All 9 dashboards are stored as JSON files in Git (`scripts/monitoring/grafana/dashboards/`) and synced to the instance via the S3 scripts bucket. Dashboard changes go through the same PR review process as infrastructure code.
+
+<ScreenshotPlaceholder
+  alt="Grafana dashboards list showing all 9 dashboards with their folder organisation, icons, and last-updated timestamps"
+  type="screenshot"
+/>
+
+---
+
+## 10. The Log Pipeline: 3 Streams, 2 Collection Points
+
+Log collection happens at two points: the monitoring EC2 instance (via Promtail running in Docker Compose) and the ECS tasks (via Promtail sidecars). The on-instance Promtail collects three log streams:
+
+```yaml
+# scripts/monitoring/promtail/config.yml
+scrape_configs:
+  # Stream 1: Docker container logs — parsed from JSON format
+  - job_name: containers
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: 'containerlogs'
+          __path__: /var/lib/docker/containers/*/*log
+    pipeline_stages:
+      - json:
+          expressions:
+            output: log
+            stream: stream
+      - regex:
+          expression: (?P<container_name>(?:[a-zA-Z0-9][a-zA-Z0-9_.-]+))
+          source: tag
+      - labels:
+          stream:
+          container_name:
+
+  # Stream 2: System syslog
+  - job_name: syslog
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: 'syslog'
+          __path__: /var/log/syslog
+
+  # Stream 3: EC2 UserData bootstrap log
+  - job_name: user-data
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: 'user-data'
+          __path__: /var/log/user-data.log
+```
+
+The Docker container log pipeline deserves explanation. Docker writes container logs as JSON objects (`{"log": "...", "stream": "stdout", "time": "..."}`) to `/var/lib/docker/containers/<id>/<id>-json.log`. The Promtail pipeline parses this JSON, extracts the container name from the tag field via regex, and promotes both `stream` (stdout/stderr) and `container_name` as Loki labels. This means I can filter logs in Grafana by `{container_name="prometheus"}` or `{stream="stderr"}` without any custom logging drivers.
+
+### Querying Logs with LogCLI
+
+Once logs are flowing into Loki, you can query them from the CLI or Grafana. Here's a real query showing container startup logs:
+
+```bash
+$ logcli query '{job="containerlogs"} |= "Starting"' --limit=5 --output=jsonl
+{
+  "labels": "{container_name=\"prometheus\", job=\"containerlogs\", stream=\"stderr\"}",
+  "line": "ts=2026-02-17T07:30:01.234Z caller=main.go:542 level=info msg=\"Starting Prometheus Server\" version=\"3.9.1\"",
+  "timestamp": "2026-02-17T07:30:01.234Z"
+}
+{
+  "labels": "{container_name=\"grafana\", job=\"containerlogs\", stream=\"stdout\"}",
+  "line": "logger=http.server t=2026-02-17T07:30:03.112Z level=info msg=\"Starting HTTP server\" address=127.0.0.1:3000",
+  "timestamp": "2026-02-17T07:30:03.112Z"
+}
+{
+  "labels": "{container_name=\"tempo\", job=\"containerlogs\", stream=\"stdout\"}",
+  "line": "level=info ts=2026-02-17T07:30:02.891Z caller=tempo.go:214 msg=\"Starting Tempo\" version=\"2.6.1\"",
+  "timestamp": "2026-02-17T07:30:02.891Z"
+}
+```
+
+---
+
+## 11. SSM-Only Access: Zero Public Ingress
+
+Every port binding in the Docker Compose file uses `127.0.0.1:` — Grafana, Prometheus, Loki, Promtail, Node Exporter, and the GitHub Actions Exporter are all localhost-only. The only exception is Tempo's OTLP receivers (`0.0.0.0:4317` and `0.0.0.0:4318`), which need to accept gRPC connections from ECS tasks in the VPC. But even Tempo's receivers are only reachable from within the VPC because the monitoring instance's Security Group does not allow any ingress from the internet.
+
+Access to Grafana and Prometheus is via SSM port forwarding:
+
+```bash
+# Open Grafana at localhost:3000
+aws ssm start-session --target i-0abc123 \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["3000"],"localPortNumber":["3000"]}'
+
+# Output:
+# Starting session with SessionId: nelson-0a1b2c3d4
+# Port 3000 opened for sessionId nelson-0a1b2c3d4.
+# Waiting for connections...
+```
+
+These SSM commands are output by the CDK stack as `CfnOutput` values, so they're always retrievable from the CloudFormation console or via `aws cloudformation describe-stacks`. AWS designed Session Manager as a zero-trust access model: it requires IAM authentication, logs every session to CloudTrail, and doesn't need Security Group rules or a bastion host.
+
+<ScreenshotPlaceholder
+  alt="Terminal showing SSM port forwarding session connected to the monitoring instance, with Grafana accessible at localhost:3000 in the browser"
+  type="screenshot"
+/>
+
+---
+
+## 12. FinOps: The $15/Month Monitoring Platform
+
+### Monthly Cost Breakdown
+
+| Resource                     | Monthly Cost   | Notes                        |
+| :--------------------------- | :------------- | :--------------------------- |
+| EC2 `t3.small` (2 vCPU, 2GB) | ~$12.00        | On-demand pricing, eu-west-1 |
+| EBS gp3 30GB                 | ~$2.40         | 3,000 IOPS baseline (free)   |
+| DLM Snapshots (7 retained)   | ~$0.50         | Incremental daily snapshots  |
+| S3 (scripts bucket)          | ~$0.01         | Config files + dashboards    |
+| SSM Sessions                 | $0             | Session Manager is free      |
+| Cloud Map DNS namespace      | ~$0.10         | Per-namespace + per-query    |
+| **Total**                    | **~$15/month** | Full metrics + logs + traces |
+
+### Compared to Managed Alternatives
+
+| Solution                  | Monthly Cost               | Custom Dashboards | Traces  | Log Retention |
+| :------------------------ | :------------------------- | :---------------- | :------ | :------------ |
+| Datadog                   | ~$23/host + $0.10/GB logs  | Yes               | Yes     | 15 days       |
+| New Relic (free tier)     | $0 (100GB/month cap)       | Limited           | Yes     | 8 days        |
+| Grafana Cloud (free tier) | $0 (capped metrics + logs) | Moderate          | Limited | 14 days       |
+| **Self-hosted on EC2**    | **$15**                    | **Unlimited**     | **Yes** | **15 days**   |
+
+The self-hosted approach costs $15/month regardless of data volume. The managed alternatives all have per-GB or per-host pricing models that scale with usage — fine for a large team, but unnecessary for a solo-dev portfolio where predictable cost matters more than SLA guarantees.
+
+---
+
+## 13. What Needs Work — and What's Next
+
+### What's Working
+
+The 7-container stack has run for several months with minimal intervention. Prometheus's 15d retention covers my debugging window. The Cloud Map DNS discovery eliminated the custom Lambda I was maintaining. The SSM-only access model means I've never opened port 22 or port 3000 to the internet. EBS persistence has survived three instance replacements without losing data.
+
+### Remaining Gaps
+
+The biggest gap is the single point of failure. If the monitoring EC2 instance goes down, I lose observability until the ASG replacement launches (typically 3–5 minutes). For a solo-dev portfolio, this is acceptable. For a team environment, it would need either a warm standby or a migration to a managed backend.
+
+The dashboard update workflow is also clunkier than it should be. Today, changing a dashboard means committing the JSON to Git, syncing to S3, and re-running the SSM document to pull the updated files. A future improvement is using the Grafana provisioning API for hot reloads — Grafana supports watching a provisioning directory, but the S3 sync step still requires a manual trigger.
+
+### Refactoring Roadmap
+
+| Improvement                                        | Effort  | Impact                                              | Status                |
+| :------------------------------------------------- | :------ | :-------------------------------------------------- | :-------------------- |
+| Grafana provisioning API for hot dashboard reloads | 4 hours | Eliminate S3 sync + restart cycle                   | Planned               |
+| Alertmanager → SNS integration                     | 2 hours | Production alerting via email/Slack                 | Planned               |
+| Tempo S3 backend for long-term trace storage       | 1 day   | Extend trace retention beyond 7 days                | Researching           |
+| Prometheus remote write to Thanos/Mimir            | 2 days  | Long-term metric storage beyond 15 days             | Future                |
+| ECS Fargate migration for monitoring               | 1 week  | Eliminate EC2 management, but needs EBS alternative | Evaluating trade-offs |
+
+The monitoring stack will probably evolve. Prometheus and Loki might eventually move to managed backends (AMP, Grafana Cloud) if the portfolio grows enough to justify it. The dashboards, alert rules, and datasource configs will stay in Git and CDK regardless — those are the parts I actually want version-controlled. What I got out of building this wasn't just a working monitoring platform. It was a repeatable set of patterns — Cloud Map discovery, 3-tier bootstrap, EBS persistence across ASG replacements, SSM-only access — that I can reuse the next time I need observability on any stack.
+
+---
+
+## 14. Related Files
+
+| File                                                                  | Description                                               |
+| :-------------------------------------------------------------------- | :-------------------------------------------------------- |
+| `lib/stacks/monitoring/compute/compute-stack.ts`                      | CDK compute stack (739 lines)                             |
+| `lib/stacks/monitoring/storage/storage-stack.ts`                      | Storage stack with EBS, DLM, lifecycle Lambda (531 lines) |
+| `lib/stacks/monitoring/ssm/ssm-stack.ts`                              | SSM documents + S3 scripts bucket                         |
+| `lib/common/compute/builders/user-data-builder.ts`                    | UserDataBuilder fluent API (683 lines)                    |
+| `scripts/monitoring/docker-compose.yml`                               | 7-service Docker Compose (138 lines)                      |
+| `scripts/monitoring/prometheus/prometheus.yml`                        | Prometheus config with 5 scrape targets                   |
+| `scripts/monitoring/grafana/provisioning/datasources/datasources.yml` | 4 datasource connections                                  |
+| `scripts/monitoring/grafana/dashboards/*.json`                        | 9 Grafana dashboards                                      |
+| `scripts/monitoring/loki/config.yml`                                  | Loki config (15d retention, TSDB v13)                     |
+| `scripts/monitoring/tempo/config.yml`                                 | Tempo OTLP receiver + metrics generator                   |
+| `scripts/monitoring/promtail/config.yml`                              | 3-stream log collection (containers, syslog, user-data)   |
+| `scripts/monitoring/alloy/config.alloy`                               | Grafana Alloy OTLP forwarder (27 lines)                   |
+| `scripts/monitoring/prometheus/alert_rules.yml`                       | Alerting rules                                            |
+
+---
+
+## 15. Tech Stack Summary
+
+| Category          | Technology                                                               |
+| :---------------- | :----------------------------------------------------------------------- |
+| Metrics           | Prometheus v3.9.1 + Node Exporter v1.8.2 + GitHub Actions Exporter       |
+| Dashboards        | Grafana 12.3.0 (9 dashboards, 4 datasources, cross-signal correlation)   |
+| Logs              | Loki 3.0.0 + Promtail 3.0.0 (host + ECS sidecar, 15d retention)          |
+| Traces            | Tempo 2.6.1 + Grafana Alloy (OTLP gRPC, 7d retention, metrics generator) |
+| Orchestration     | Docker Compose (7 containers, bridge network, localhost binding)         |
+| Compute           | EC2 `t3.small` + ASG (rolling update with `minInstancesInService: 0`)    |
+| Storage           | EBS gp3 30GB + DLM snapshots (7-day retention)                           |
+| Service Discovery | Cloud Map DNS (`dns_sd_configs`) + EC2 SD (`ec2_sd_configs`)             |
+| Bootstrap         | UserDataBuilder (683 lines) → SSM Run Command → Docker Compose           |
+| Configuration     | SSM Parameter Store (endpoints, tokens, secrets)                         |
+| Access            | SSM Session Manager (zero public ingress, port forwarding)               |
+| Infrastructure    | AWS CDK v2 (TypeScript, 3-stack architecture)                            |
+
+---
+
+_Based in Dublin. I build and operate AWS infrastructure for my portfolio projects — and occasionally help others do the same._
+
+---
