@@ -266,7 +266,7 @@ export class SsmStateManagerConstruct extends Construct {
         // registration with SSM.
         // -----------------------------------------------------------------
         this.association = new ssm.CfnAssociation(this, 'PostBootAssoc', {
-            name: this.document.name!,
+            name: this.document.ref,
             // No custom associationName — auto-generated to prevent future
             // CFn replacement conflicts (same pattern as the document above).
             targets: [
