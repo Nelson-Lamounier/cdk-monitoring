@@ -230,6 +230,28 @@ export NODE_LABEL="${workerConfig.nodeLabel}"
 export S3_BUCKET="${scriptsBucket.bucketName}"
 export LOG_GROUP_NAME="${logGroupName}"
 
+# ─── Fail-safe trap ───────────────────────────────────────────────────
+# If boot-worker.sh never downloads (S3 sync race / missing file),
+# send cfn-signal --success false so CloudFormation fails fast instead
+# of waiting the full signalsTimeoutMinutes.
+# boot-worker.sh has its own trap; once exec replaces this shell,
+# this trap is no longer active.
+# ──────────────────────────────────────────────────────────────────────
+send_stub_failure() {
+  local rc=\$?
+  [ \$rc -eq 0 ] && return
+  echo "FATAL: user-data stub exited with code \$rc before exec boot-worker.sh"
+  if ! command -v /opt/aws/bin/cfn-signal &> /dev/null; then
+    dnf install -y aws-cfn-bootstrap 2>/dev/null || true
+  fi
+  /opt/aws/bin/cfn-signal --success false \\
+    --stack "\${STACK_NAME}" \\
+    --resource "\${ASG_LOGICAL_ID}" \\
+    --region "\${AWS_REGION}" \\
+    --reason "boot-worker.sh download failed (exit \$rc)" 2>/dev/null || true
+}
+trap send_stub_failure EXIT
+
 # Download boot script from S3 — "Patient" retry for Day-1 coordination
 # On first-ever deploy, the Sync pipeline may not have uploaded boot-worker.sh
 # yet. Retry for up to 10 minutes (30 × 20s) before giving up.
