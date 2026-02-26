@@ -102,7 +102,10 @@ export class SsmStateManagerConstruct extends Construct {
         // to be idempotent so it can re-run safely on every schedule tick.
         // -----------------------------------------------------------------
         this.document = new ssm.CfnDocument(this, 'ConfigDocument', {
-            name: `${namePrefix}-k8s-post-boot-config-v2`,
+            // No custom name — let CloudFormation auto-generate.
+            // Custom-named SSM documents cannot be replaced in-place by CFn
+            // (name conflict during create-before-delete). Auto-generated
+            // names allow seamless replacement on every future content change.
             documentType: 'Command',
             documentFormat: 'YAML',
             targetType: '/AWS::EC2::Instance',
