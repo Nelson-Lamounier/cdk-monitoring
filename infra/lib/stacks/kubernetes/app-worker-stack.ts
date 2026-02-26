@@ -122,91 +122,22 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
         // User Data — kubeadm join
         //
         // Steps:
-        //   1. Install AWS CLI (if not baked)
-        //   2. Start containerd
-        //   3. Retrieve join token + CA hash from SSM
-        //   4. Run kubeadm join
-        //   5. Signal CloudFormation
+        //   1. Export env vars (CDK tokens resolved at synth time)
+        //   2. Download boot-worker.sh from S3
+        //   3. exec into boot script (handles join + cfn-signal)
         // =====================================================================
         const userData = ec2.UserData.forLinux();
-        const builder = new UserDataBuilder(userData);
+        const { scriptsBucket } = baseStack;
 
-        // SSM paths published by the control plane
+        // SSM paths used by boot-worker.sh for discovery
         const ssmPrefix = props.controlPlaneSsmPrefix;
         const tokenSsmPath = `${ssmPrefix}/join-token`;
         const caHashSsmPath = `${ssmPrefix}/ca-hash`;
         const controlPlaneEndpointSsmPath = `${ssmPrefix}/control-plane-endpoint`;
 
-        // The control plane endpoint is dynamic (private IP), so we resolve
-        // it from SSM at boot time rather than passing a static value.
-        builder.addCustomScript(`
-# =============================================================================
-# Resolve control plane endpoint from SSM (dynamic private IP)
-# =============================================================================
-
-echo "=== Resolving control plane endpoint from SSM ==="
-
-IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
-
-# Wait for control plane to publish its endpoint (may not be ready on Day-1)
-CP_MAX_WAIT=300
-CP_WAITED=0
-CONTROL_PLANE_ENDPOINT=""
-
-while [ -z "$CONTROL_PLANE_ENDPOINT" ] || [ "$CONTROL_PLANE_ENDPOINT" = "None" ]; do
-    CONTROL_PLANE_ENDPOINT=$(aws ssm get-parameter \\
-        --name "${controlPlaneEndpointSsmPath}" \\
-        --query "Parameter.Value" \\
-        --output text \\
-        --region "$REGION" 2>/dev/null || echo "")
-
-    if [ -n "$CONTROL_PLANE_ENDPOINT" ] && [ "$CONTROL_PLANE_ENDPOINT" != "None" ]; then
-        echo "Control plane endpoint: $CONTROL_PLANE_ENDPOINT"
-        break
-    fi
-
-    if [ $CP_WAITED -ge $CP_MAX_WAIT ]; then
-        echo "ERROR: Control plane endpoint not found in SSM after \${CP_MAX_WAIT}s"
-        echo "The control plane must be running and have published its endpoint to ${controlPlaneEndpointSsmPath}"
-        exit 1
-    fi
-
-    echo "Waiting for control plane endpoint... (\${CP_WAITED}s / \${CP_MAX_WAIT}s)"
-    sleep 10
-    CP_WAITED=$((CP_WAITED + 10))
-done
-
-# Enable IP forwarding (required for kubeadm preflight)
-echo "Configuring networking prerequisites..."
-modprobe overlay 2>/dev/null || true
-modprobe br_netfilter 2>/dev/null || true
-
-cat > /etc/modules-load.d/k8s.conf <<MODULES
-overlay
-br_netfilter
-MODULES
-
-cat > /etc/sysctl.d/k8s.conf <<SYSCTL
-net.bridge.bridge-nf-call-iptables  = 1
-net.bridge.bridge-nf-call-ip6tables = 1
-net.ipv4.ip_forward                 = 1
-SYSCTL
-
-sysctl --system > /dev/null 2>&1
-echo "Networking prerequisites configured"
-`);
-
-        // Join the cluster (label only — Hybrid-HA, no taints)
-        builder.joinKubeadmCluster({
-            controlPlaneEndpoint: '$CONTROL_PLANE_ENDPOINT',
-            tokenSsmPath,
-            caHashSsmPath,
-            nodeLabel: workerConfig.nodeLabel,
-        });
-
         // =====================================================================
-        // Launch Template + ASG
+        // Launch Template + ASG (created first so asgLogicalId is available
+        // for user data interpolation below)
         // =====================================================================
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup,
@@ -220,6 +151,9 @@ echo "Networking prerequisites configured"
                 `${ssmPrefix}/golden-ami/latest`,
             ),
         });
+
+        const logGroupName = launchTemplateConstruct.logGroup?.logGroupName
+            ?? `/ec2/${workerPrefix}/instances`;
 
         // Grant SSM parameter read for join token + CA hash
         launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
@@ -246,6 +180,9 @@ echo "Networking prerequisites configured"
             },
         }));
 
+        // Grant S3 read for boot script download
+        scriptsBucket.grantRead(launchTemplateConstruct.instanceRole);
+
         // ASG: min=0 allows scaling down to save costs, max=1 for single worker
         const asgConstruct = new AutoScalingGroupConstruct(this, 'WorkerAsg', {
             vpc,
@@ -262,19 +199,58 @@ echo "Networking prerequisites configured"
             },
         });
 
-        // Get ASG logical ID for cfn-signal
         const asgCfnResource = asgConstruct.autoScalingGroup.node
             .defaultChild as cdk.CfnResource;
         const asgLogicalId = asgCfnResource.logicalId;
 
-        // Add cfn-signal AFTER kubeadm join
-        builder.sendCfnSignal({
-            stackName: this.stackName,
-            asgLogicalId,
-            region: this.region,
-        });
+        // =====================================================================
+        // User Data — slim bootstrap stub
+        //
+        // Heavy logic lives in boot-worker.sh (uploaded to S3 via CI sync).
+        // Inline user data just installs AWS CLI, exports env vars with CDK
+        // token values, then downloads & executes the boot script. This keeps
+        // user data well under CloudFormation's 16 KB limit.
+        // =====================================================================
+        userData.addCommands(
+            'set -euxo pipefail',
+            '',
+            'exec > >(tee /var/log/user-data.log) 2>&1',
+            'echo "=== Worker user data script started at $(date) ==="',
+        );
 
-        builder.addCompletionMarker();
+        new UserDataBuilder(userData, { skipPreamble: true })
+            .installAwsCli()
+            .addCustomScript(`
+# Export runtime values (CDK tokens resolved at synth time)
+export STACK_NAME="${this.stackName}"
+export ASG_LOGICAL_ID="${asgLogicalId}"
+export AWS_REGION="${this.region}"
+export SSM_PREFIX="${ssmPrefix}"
+export NODE_LABEL="${workerConfig.nodeLabel}"
+export S3_BUCKET="${scriptsBucket.bucketName}"
+export LOG_GROUP_NAME="${logGroupName}"
+
+# Download boot script from S3 — "Patient" retry for Day-1 coordination
+# On first-ever deploy, the Sync pipeline may not have uploaded boot-worker.sh
+# yet. Retry for up to 10 minutes (30 × 20s) before giving up.
+BOOT_SCRIPT="/tmp/boot-worker.sh"
+S3_BOOT_PATH="s3://${scriptsBucket.bucketName}/k8s-bootstrap/boot/boot-worker.sh"
+MAX_RETRIES=30
+RETRY_INTERVAL=20
+
+for i in $(seq 1 $MAX_RETRIES); do
+  if aws s3 cp "$S3_BOOT_PATH" "$BOOT_SCRIPT" --region ${this.region} 2>/dev/null; then
+    echo "✓ Boot script downloaded (attempt $i/$MAX_RETRIES)"
+    chmod +x "$BOOT_SCRIPT"
+    exec "$BOOT_SCRIPT"
+  fi
+  echo "Boot script not in S3 yet (attempt $i/$MAX_RETRIES). Retrying in \${RETRY_INTERVAL}s..."
+  sleep $RETRY_INTERVAL
+done
+
+echo "ERROR: Boot script not found at $S3_BOOT_PATH after $((MAX_RETRIES * RETRY_INTERVAL))s"
+exit 1
+`);
 
         // Expose properties
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
