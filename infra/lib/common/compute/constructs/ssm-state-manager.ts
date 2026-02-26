@@ -101,7 +101,12 @@ export class SsmStateManagerConstruct extends Construct {
         // user-data completes (and cfn-signal is sent). It's designed
         // to be idempotent so it can re-run safely on every schedule tick.
         // -----------------------------------------------------------------
-        this.document = new ssm.CfnDocument(this, 'ConfigDocument', {
+        // Changed construct ID from 'ConfigDocument' to 'PostBootDoc' to force
+        // CloudFormation to DELETE the old custom-named resource and CREATE a
+        // new auto-named one. CFn cannot replace custom-named resources
+        // in-place (create-before-delete name conflict), so changing the
+        // logical ID is the only way to escape the deadlock permanently.
+        this.document = new ssm.CfnDocument(this, 'PostBootDoc', {
             // No custom name — let CloudFormation auto-generate.
             // Custom-named SSM documents cannot be replaced in-place by CFn
             // (name conflict during create-before-delete). Auto-generated
@@ -260,9 +265,10 @@ export class SsmStateManagerConstruct extends Construct {
         // remediation. First execution happens immediately on instance
         // registration with SSM.
         // -----------------------------------------------------------------
-        this.association = new ssm.CfnAssociation(this, 'Association', {
+        this.association = new ssm.CfnAssociation(this, 'PostBootAssoc', {
             name: this.document.name!,
-            associationName: `${namePrefix}-k8s-post-boot`,
+            // No custom associationName — auto-generated to prevent future
+            // CFn replacement conflicts (same pattern as the document above).
             targets: [
                 {
                     key: `tag:${targetTag.key}`,
