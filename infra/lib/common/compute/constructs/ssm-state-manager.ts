@@ -102,7 +102,7 @@ export class SsmStateManagerConstruct extends Construct {
         // to be idempotent so it can re-run safely on every schedule tick.
         // -----------------------------------------------------------------
         this.document = new ssm.CfnDocument(this, 'ConfigDocument', {
-            name: `${namePrefix}-k8s-post-boot-config`,
+            name: `${namePrefix}-k8s-post-boot-config-v2`,
             documentType: 'Command',
             documentFormat: 'YAML',
             targetType: '/AWS::EC2::Instance',
