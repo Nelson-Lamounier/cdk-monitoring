@@ -554,6 +554,7 @@ jobs:
         run: |
           POLL_INTERVAL=30
           MAX_POLLS=50  # 25 minutes max monitoring window
+          STALE_THRESHOLD=5  # Mark stack as NOT STARTED after 5 consecutive PENDING polls (2.5 min)
           STACKS=("$APP_WORKER_STACK" "$MON_WORKER_STACK")
 
           echo "## Worker Join Monitor"
@@ -563,12 +564,19 @@ jobs:
           echo "  - Monitoring Worker: $MON_WORKER_STACK"
           echo "  - Poll interval:     ${POLL_INTERVAL}s"
           echo "  - Max duration:      $(( MAX_POLLS * POLL_INTERVAL ))s"
+          echo "  - Stale threshold:   ${STALE_THRESHOLD} polls ($(( STALE_THRESHOLD * POLL_INTERVAL ))s)"
           echo ""
           echo "---"
 
-          # Track completion per stack
+          # Track completion and stale counters per stack
           declare -A STACK_DONE
-          for S in "${STACKS[@]}"; do STACK_DONE[$S]=false; done
+          declare -A STACK_STALE_COUNT
+          declare -A STACK_LAST_STATUS
+          for S in "${STACKS[@]}"; do
+            STACK_DONE[$S]=false
+            STACK_STALE_COUNT[$S]=0
+            STACK_LAST_STATUS[$S]=""
+          done
 
           for POLL in $(seq 1 $MAX_POLLS); do
             TIMESTAMP=$(date -u +"%H:%M:%S")
@@ -603,6 +611,40 @@ jobs:
                 --query "Stacks[0].StackStatus" \
                 --output text \
                 --region "$AWS_REGION" 2>/dev/null || echo "PENDING")
+
+              # ---------------------------------------------------------------
+              # Stale detection: if the stack stays in a non-progress state
+              # (e.g. PENDING, CREATE_COMPLETE from a previous run) for too
+              # many consecutive polls, the deploy job likely failed at CI
+              # level and CloudFormation was never invoked.
+              # ---------------------------------------------------------------
+              case "$STACK_STATUS" in
+                *_IN_PROGRESS)
+                  # Stack is actively updating — reset stale counter
+                  STACK_STALE_COUNT[$STACK_NAME]=0
+                  ;;
+                PENDING)
+                  # Stack not found or API error — increment stale counter
+                  STACK_STALE_COUNT[$STACK_NAME]=$(( ${STACK_STALE_COUNT[$STACK_NAME]} + 1 ))
+                  ;;
+                *)
+                  # Terminal state from a PREVIOUS deployment (no new update started)
+                  if [ "${STACK_LAST_STATUS[$STACK_NAME]}" = "$STACK_STATUS" ]; then
+                    STACK_STALE_COUNT[$STACK_NAME]=$(( ${STACK_STALE_COUNT[$STACK_NAME]} + 1 ))
+                  else
+                    STACK_STALE_COUNT[$STACK_NAME]=0
+                  fi
+                  ;;
+              esac
+              STACK_LAST_STATUS[$STACK_NAME]="$STACK_STATUS"
+
+              # Check if stack is stale (deploy job never started CloudFormation)
+              if [ "${STACK_STALE_COUNT[$STACK_NAME]}" -ge "$STALE_THRESHOLD" ]; then
+                STACK_DONE[$STACK_NAME]=true
+                echo "[$TIMESTAMP] $LABEL | ⚠️  NOT STARTED — no CloudFormation activity after ${STALE_THRESHOLD} polls"
+                echo "[$TIMESTAMP] $LABEL |    Deploy job may have failed at CI level before reaching CDK deploy"
+                continue
+              fi
 
               # Check for signal-related events
               SIGNAL_INFO=$(echo "$EVENTS" | jq -r '
@@ -651,12 +693,16 @@ jobs:
           echo "|-------|-------------|"
           for STACK_NAME in "${STACKS[@]}"; do
             LABEL=$(echo "$STACK_NAME" | grep -oE '(App|Monitoring)Worker' || echo "$STACK_NAME")
-            FINAL=$(aws cloudformation describe-stacks \
-              --stack-name "$STACK_NAME" \
-              --query "Stacks[0].StackStatus" \
-              --output text \
-              --region "$AWS_REGION" 2>/dev/null || echo "UNKNOWN")
-            echo "| $LABEL | $FINAL |"
+            if [ "${STACK_STALE_COUNT[$STACK_NAME]}" -ge "$STALE_THRESHOLD" ]; then
+              echo "| $LABEL | ⚠️ NOT STARTED (deploy job failed at CI level) |"
+            else
+              FINAL=$(aws cloudformation describe-stacks \
+                --stack-name "$STACK_NAME" \
+                --query "Stacks[0].StackStatus" \
+                --output text \
+                --region "$AWS_REGION" 2>/dev/null || echo "UNKNOWN")
+              echo "| $LABEL | $FINAL |"
+            fi
           done
 
   # ===========================================================================
