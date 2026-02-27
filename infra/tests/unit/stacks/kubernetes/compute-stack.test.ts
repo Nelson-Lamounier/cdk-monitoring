@@ -155,8 +155,8 @@ describe('KubernetesControlPlaneStack', () => {
     // User Data — slim bootstrap stub (16 KB limit enforcement)
     //
     // Heavy logic was externalized to k8s/boot/boot-k8s.sh (uploaded to S3).
-    // Inline user data only: installs AWS CLI, exports CDK token env vars,
-    // downloads the boot script from S3, and executes it.
+    // Inline user data only: exports CDK token env vars, downloads the boot
+    // script from S3, and executes it. AWS CLI is baked into the Golden AMI.
     // This reduced user data from ~18 KB → ~1.2 KB (93% reduction).
     // =========================================================================
     describe('User Data', () => {
@@ -175,9 +175,10 @@ describe('KubernetesControlPlaneStack', () => {
             expect(sizeBytes).toBeLessThan(CF_USER_DATA_MAX_BYTES);
         });
 
-        it('should install AWS CLI as part of the bootstrap', () => {
-            // UserDataBuilder.installAwsCli() downloads from awscli.amazonaws.com
-            expect(containsPattern('awscli')).toBe(true);
+        it('should NOT install AWS CLI inline (baked into Golden AMI)', () => {
+            // AWS CLI is pre-installed in the Golden AMI and stock AL2023.
+            // UserData must not contain the awscli download to stay slim.
+            expect(containsPattern('awscli')).toBe(false);
         });
 
         describe('CDK token env var exports', () => {
@@ -223,6 +224,8 @@ describe('KubernetesControlPlaneStack', () => {
             'containerd config',
             'kubectl apply',
             'calicoctl',
+            'dnf install',
+            'dnf update',
         ];
 
         it.each(heavyPatterns)(

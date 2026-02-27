@@ -359,7 +359,6 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
         );
 
         new UserDataBuilder(userData, { skipPreamble: true })
-            .installAwsCli()
             .addCustomScript(`
 # Export runtime values (CDK tokens resolved at synth time)
 export VOLUME_ID="${ebsVolume.volumeId}"

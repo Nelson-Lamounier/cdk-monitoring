@@ -210,9 +210,9 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
         // User Data — slim bootstrap stub
         //
         // Heavy logic lives in boot-worker.sh (uploaded to S3 via CI sync).
-        // Inline user data just installs AWS CLI, exports env vars with CDK
-        // token values, then downloads & executes the boot script. This keeps
-        // user data well under CloudFormation's 16 KB limit.
+        // Inline user data exports env vars with CDK token values, then
+        // downloads & executes the boot script. AWS CLI is baked into the
+        // Golden AMI. This keeps user data well under CloudFormation's 16 KB limit.
         // =====================================================================
         userData.addCommands(
             'set -euxo pipefail',
@@ -222,7 +222,6 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
         );
 
         new UserDataBuilder(userData, { skipPreamble: true })
-            .installAwsCli()
             .addCustomScript(`
 # Export runtime values (CDK tokens resolved at synth time)
 export STACK_NAME="${this.stackName}"
@@ -245,7 +244,7 @@ send_stub_failure() {
   [ \$rc -eq 0 ] && return
   echo "FATAL: user-data stub exited with code \$rc before exec boot-worker.sh"
   if ! command -v /opt/aws/bin/cfn-signal &> /dev/null; then
-    dnf install -y aws-cfn-bootstrap 2>/dev/null || true
+    echo "WARNING: cfn-signal not found — expected in Golden AMI"
   fi
   /opt/aws/bin/cfn-signal --success false \\
     --stack "\${STACK_NAME}" \\

@@ -219,7 +219,6 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
         );
 
         new UserDataBuilder(userData, { skipPreamble: true })
-            .installAwsCli()
             .addCustomScript(`
 # Export runtime values (CDK tokens resolved at synth time)
 export STACK_NAME="${this.stackName}"
@@ -242,7 +241,7 @@ send_stub_failure() {
   [ \$rc -eq 0 ] && return
   echo "FATAL: user-data stub exited with code \$rc before exec boot-worker.sh"
   if ! command -v /opt/aws/bin/cfn-signal &> /dev/null; then
-    dnf install -y aws-cfn-bootstrap 2>/dev/null || true
+    echo "WARNING: cfn-signal not found — expected in Golden AMI"
   fi
   /opt/aws/bin/cfn-signal --success false \\
     --stack "\${STACK_NAME}" \\
