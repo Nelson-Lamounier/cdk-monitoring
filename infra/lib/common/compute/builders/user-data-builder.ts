@@ -764,6 +764,12 @@ echo "Instance: $INSTANCE_ID, Private IP: $PRIVATE_IP"
 systemctl start containerd
 echo "containerd started"
 
+# Configure kubelet with node labels BEFORE joining
+# kubeadm join does NOT support --node-labels; labels must be set via kubelet extra args
+echo "Configuring kubelet with node label: ${config.nodeLabel}"
+echo "KUBELET_EXTRA_ARGS=--node-labels=${config.nodeLabel}" > /etc/sysconfig/kubelet
+echo "Kubelet extra args configured"
+
 # Retry loop: re-fetch token + join on each attempt
 JOIN_SUCCESS=false
 for ATTEMPT in $(seq 1 ${maxRetries}); do
@@ -817,7 +823,6 @@ for ATTEMPT in $(seq 1 ${maxRetries}); do
     kubeadm join "${config.controlPlaneEndpoint}" \\
         --token "$JOIN_TOKEN" \\
         --discovery-token-ca-cert-hash "$CA_HASH" \\
-        --node-labels "${config.nodeLabel}" \\
         2>&1 | tee /tmp/kubeadm-join.log
 
     if [ \${PIPESTATUS[0]} -eq 0 ]; then
