@@ -2,16 +2,17 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: node-exporter
-  namespace: { { .Values.namespace } }
-  labels: { { - include "monitoring.fullLabels" "node-exporter" | nindent 4 } }
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "monitoring.fullLabels" "node-exporter" | nindent 4 }}
 spec:
   selector:
     matchLabels:
-      { { - include "monitoring.selectorLabels" "node-exporter" | nindent 6 } }
+      {{- include "monitoring.selectorLabels" "node-exporter" | nindent 6 }}
   template:
     metadata:
       labels:
-        { { - include "monitoring.fullLabels" "node-exporter" | nindent 8 } }
+        {{- include "monitoring.fullLabels" "node-exporter" | nindent 8 }}
     spec:
       hostNetwork: true
       hostPID: true
@@ -21,7 +22,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: node-exporter
-          image: { { .Values.nodeExporter.image } }
+          image: {{ .Values.nodeExporter.image }}
           args:
             - "--web.listen-address=:{{ .Values.nodeExporter.service.port }}"
             - "--path.procfs=/host/proc"
@@ -29,9 +30,9 @@ spec:
             - "--path.rootfs=/host/root"
             - "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)"
           ports:
-            - containerPort: { { .Values.nodeExporter.service.port } }
+            - containerPort: {{ .Values.nodeExporter.service.port }}
               name: metrics
-              hostPort: { { .Values.nodeExporter.service.port } }
+              hostPort: {{ .Values.nodeExporter.service.port }}
           volumeMounts:
             - name: proc
               mountPath: /host/proc
@@ -44,7 +45,7 @@ spec:
               mountPropagation: HostToContainer
               readOnly: true
           resources:
-            { { - toYaml .Values.nodeExporter.resources | nindent 12 } }
+            {{- toYaml .Values.nodeExporter.resources | nindent 12 }}
       volumes:
         - name: proc
           hostPath:
