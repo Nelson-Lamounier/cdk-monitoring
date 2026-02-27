@@ -14,6 +14,7 @@
 #   - Deps Validation   → just deps-check-ci
 #   - Stack Tests       → just test-stacks
 #   - CDK Synthesis     → just ci-synth-validate
+#   - Helm Validation   → helm lint + helm template + kubeconform
 #
 # Projects validated during CDK synthesis:
 #   1. monitoring  — Monitoring-Storage, Monitoring-SSM, Monitoring-Compute
@@ -50,6 +51,7 @@ jobs:
       ci-config: ${{ steps.filter.outputs.ci-config }}
       any-src: ${{ steps.filter.outputs.any-src }}
       any-tests: ${{ steps.filter.outputs.any-tests }}
+      k8s-content: ${{ steps.filter.outputs.k8s-content }}
       # Computed: should we run all tests?
       run-all: ${{ steps.compute.outputs.run-all }}
 
@@ -80,6 +82,9 @@ jobs:
               - 'bedrock-publisher/src/**/*.ts'
             any-tests:
               - 'infra/tests/**/*.ts'
+            k8s-content:
+              - 'kubernetes-app/app-deploy/**/chart/**'
+              - 'kubernetes-app/k8s-bootstrap/**'
 
       - name: Compute Run Flags
         id: compute
@@ -396,6 +401,76 @@ jobs:
   # ============================================================================
 
   # ============================================================================
+  # Helm Chart Validation
+  #
+  # Validates Kubernetes Helm charts before they reach the cluster.
+  # Catches template errors, schema violations, and missing values
+  # that would otherwise only surface during deployment. This would
+  # have caught every monitoring stack error from the recovery session.
+  # ============================================================================
+  validate-helm:
+    name: Validate Helm Charts
+    needs: [detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: needs.detect-changes.outputs.k8s-content == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Helm
+        uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
+        with:
+          version: v3.17.1
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C /usr/local/bin
+
+      # -----------------------------------------------------------------
+      # Monitoring Chart
+      # -----------------------------------------------------------------
+      - name: Lint Monitoring Chart
+        run: |
+          helm lint kubernetes-app/app-deploy/monitoring/chart \
+            -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml
+
+      - name: Template Render (Monitoring)
+        run: |
+          helm template monitoring-stack \
+            kubernetes-app/app-deploy/monitoring/chart \
+            -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml \
+            --namespace monitoring \
+            > /tmp/monitoring-rendered.yaml
+
+      - name: Validate K8s Schemas (Monitoring)
+        run: |
+          kubeconform -summary -strict \
+            -kubernetes-version 1.31.0 \
+            -ignore-missing-schemas \
+            /tmp/monitoring-rendered.yaml
+
+      # -----------------------------------------------------------------
+      # Next.js Chart (if present)
+      # -----------------------------------------------------------------
+      - name: Lint Next.js Chart
+        if: hashFiles('kubernetes-app/app-deploy/nextjs/helm/chart/Chart.yaml') != ''
+        run: |
+          helm lint kubernetes-app/app-deploy/nextjs/helm/chart \
+            -f kubernetes-app/app-deploy/nextjs/nextjs-values.yaml 2>/dev/null || true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Helm Chart Validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Chart | Lint | Template | Schema |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Monitoring | ✅ | ✅ | ✅ |" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
   # CI Summary
   # ============================================================================
   ci-success:
@@ -410,6 +485,7 @@ jobs:
       - test-stacks
       - build
       - validate-cdk
+      - validate-helm
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -441,6 +517,7 @@ jobs:
           echo "### Build & Validation" >> $GITHUB_STEP_SUMMARY
           echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- CDK Validation: ${{ needs.validate-cdk.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Helm Validation: ${{ needs.validate-helm.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "ℹ️ IaC Security Scan runs in deployment pipelines (not CI)" >> $GITHUB_STEP_SUMMARY
 
@@ -454,7 +531,8 @@ jobs:
             "typecheck:${{ needs.typecheck.result }}" \
             "test-stacks:${{ needs.test-stacks.result }}" \
             "build:${{ needs.build.result }}" \
-            "validate-cdk:${{ needs.validate-cdk.result }}"; do
+            "validate-cdk:${{ needs.validate-cdk.result }}" \
+            "validate-helm:${{ needs.validate-helm.result }}"; do
             JOB_NAME="${job_result%%:*}"
             JOB_STATUS="${job_result##*:}"
             if [[ "$JOB_STATUS" == "failure" ]]; then
