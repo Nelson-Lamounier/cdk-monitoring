@@ -32,6 +32,10 @@ on:
       - "infra/bin/app.ts"
       # Bootstrap scripts (synced to S3 inside _deploy-kubernetes.yml)
       - "kubernetes-app/k8s-bootstrap/**"
+      # Application manifests (synced to S3, picked up by ArgoCD)
+      - "kubernetes-app/app-deploy/**"
+      # Golden AMI pipeline construct
+      - "infra/lib/common/compute/constructs/golden-ami-pipeline.ts"
       # Golden AMI recipes
       - "kubernetes-app/infra-ami/**"
       # Pipeline definitions
@@ -39,6 +43,7 @@ on:
       - ".github/workflows/_deploy-kubernetes.yml"
       - ".github/workflows/_deploy-stack.yml"
       - ".github/workflows/_build-golden-ami.yml"
+      - ".github/workflows/_sync-k8s-content.yml"
       - ".github/workflows/_iac-security-scan.yml"
       - ".github/actions/**"
   # Weekly: AMI refresh for OS security patches
