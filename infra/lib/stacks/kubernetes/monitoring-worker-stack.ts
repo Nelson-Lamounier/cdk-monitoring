@@ -240,9 +240,9 @@ export LOG_GROUP_NAME="${logGroupName}"
 # this trap is no longer active.
 # ──────────────────────────────────────────────────────────────────────
 send_stub_failure() {
-  local rc=\$?
-  [ \$rc -eq 0 ] && return
-  echo "FATAL: user-data stub exited with code \$rc before exec boot-worker.sh"
+  local rc=$?
+  [ $rc -eq 0 ] && return
+  echo "FATAL: user-data stub exited with code $rc before exec boot-worker.sh"
   if ! command -v /opt/aws/bin/cfn-signal &> /dev/null; then
     echo "WARNING: cfn-signal not found — expected in Golden AMI"
   fi
@@ -250,7 +250,7 @@ send_stub_failure() {
     --stack "\${STACK_NAME}" \\
     --resource "\${ASG_LOGICAL_ID}" \\
     --region "\${AWS_REGION}" \\
-    --reason "boot-worker.sh download failed (exit \$rc)" 2>/dev/null || true
+    --reason "boot-worker.sh download failed (exit $rc)" 2>/dev/null || true
 }
 trap send_stub_failure EXIT
 
