@@ -307,19 +307,35 @@ def create_k8s_secrets(
 
 
 def _ensure_namespace(v1: k8s_client.CoreV1Api, namespace: str) -> None:
-    """Create the namespace if it doesn't exist."""
+    """Create the namespace if it doesn't exist, with Helm ownership labels."""
+    helm_meta = _helm_ownership_meta(namespace)
     try:
         v1.read_namespace(name=namespace)
     except k8s_client.ApiException as exc:
         if exc.status == 404:
             v1.create_namespace(
                 body=k8s_client.V1Namespace(
-                    metadata=k8s_client.V1ObjectMeta(name=namespace)
+                    metadata=k8s_client.V1ObjectMeta(
+                        name=namespace,
+                        labels=helm_meta["labels"],
+                        annotations=helm_meta["annotations"],
+                    )
                 )
             )
             log.info("  ✓ Namespace '%s' created", namespace)
         else:
             raise
+
+
+def _helm_ownership_meta(namespace: str) -> dict:
+    """Return Helm ownership labels and annotations for pre-created resources."""
+    return {
+        "labels": {"app.kubernetes.io/managed-by": "Helm"},
+        "annotations": {
+            "meta.helm.sh/release-name": "monitoring-stack",
+            "meta.helm.sh/release-namespace": namespace,
+        },
+    }
 
 
 def _upsert_secret(
@@ -328,10 +344,16 @@ def _upsert_secret(
     namespace: str,
     data: dict[str, str],
 ) -> None:
-    """Create or replace a Kubernetes Secret (idempotent)."""
+    """Create or replace a Kubernetes Secret with Helm ownership labels."""
+    helm_meta = _helm_ownership_meta(namespace)
     encoded = {k: base64.b64encode(v.encode()).decode() for k, v in data.items()}
     secret = k8s_client.V1Secret(
-        metadata=k8s_client.V1ObjectMeta(name=name, namespace=namespace),
+        metadata=k8s_client.V1ObjectMeta(
+            name=name,
+            namespace=namespace,
+            labels=helm_meta["labels"],
+            annotations=helm_meta["annotations"],
+        ),
         type="Opaque",
         data=encoded,
     )

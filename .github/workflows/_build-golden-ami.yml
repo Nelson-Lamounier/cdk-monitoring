@@ -63,6 +63,31 @@ jobs:
       # Step 1: Check if Golden AMI already exists
       # If SSM parameter differs from the parent AMI, a Golden AMI was
       # already built — skip the build entirely.
+      #
+      # ⚠️  IMPORTANT — Forcing a Golden AMI Rebuild:
+      #
+      # This check only compares SSM value vs parent AMI. It does NOT
+      # detect changes to the build steps (e.g., adding python3-pip,
+      # boto3, or other dependencies to golden-ami-pipeline.ts).
+      #
+      # If you modify the Image Builder component (build steps), the
+      # existing Golden AMI becomes STALE but this check still skips
+      # because SSM ≠ parent.
+      #
+      # To force a rebuild after changing build steps:
+      #   1. Reset SSM to the parent AMI value:
+      #      aws ssm put-parameter \
+      #        --name "/k8s/<env>/golden-ami/latest" \
+      #        --value "<parent-ami-id>" \
+      #        --type "String" --overwrite \
+      #        --region eu-west-1
+      #   2. Re-run this pipeline — it will detect SSM = parent and
+      #      trigger a fresh Image Builder build with updated steps.
+      #   3. The new Golden AMI ID will be written back to SSM.
+      #
+      # TODO: Improve this by hashing the build component definition
+      #       and comparing against a stored hash in SSM. This would
+      #       auto-detect build step changes without manual intervention.
       # -----------------------------------------------------------------
       - name: Check if Golden AMI Already Exists
         id: check-ami
