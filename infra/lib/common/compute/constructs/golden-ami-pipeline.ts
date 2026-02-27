@@ -498,6 +498,28 @@ phases:
               echo "\${CALICO_VERSION}" > /opt/calico/version.txt
               echo "Calico \${CALICO_VERSION} manifests cached (operator + standalone)"
 
+      - name: InstallCfnBootstrap
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              # Install aws-cfn-bootstrap for CloudFormation signaling (cfn-signal)
+              # Previously installed at runtime in both boot-k8s.sh and boot-worker.sh
+              dnf install -y aws-cfn-bootstrap
+              test -f /opt/aws/bin/cfn-signal
+              echo "aws-cfn-bootstrap installed (cfn-signal available)"
+
+      - name: InstallHelm
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              # Install Helm for Traefik ingress controller deployment
+              # Previously downloaded at runtime in boot-k8s.sh via get-helm-3 script
+              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+              helm version --short
+              echo "Helm installed"
+
       - name: CreateDataDirectory
         action: ExecuteBash
         inputs:
@@ -523,6 +545,8 @@ phases:
             - test -f /opt/calico/calico.yaml
             - test -f /etc/containerd/config.toml
             - test -f /etc/sysctl.d/k8s.conf
+            - test -f /opt/aws/bin/cfn-signal
+            - helm version --short
             - echo "All kubeadm components verified"
 `;
     }
