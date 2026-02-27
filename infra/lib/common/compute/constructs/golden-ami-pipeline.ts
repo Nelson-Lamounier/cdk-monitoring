@@ -520,6 +520,17 @@ phases:
               helm version --short
               echo "Helm installed"
 
+      - name: InstallPythonDependencies
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              # Install pip and Python packages required by deploy.py and bootstrap_argocd.py
+              dnf install -y python3-pip
+              pip3 install boto3 pyyaml
+              python3 -c "import boto3; print('boto3', boto3.__version__)"
+              echo "Python dependencies installed"
+
       - name: CreateDataDirectory
         action: ExecuteBash
         inputs:
@@ -547,6 +558,8 @@ phases:
             - test -f /etc/sysctl.d/k8s.conf
             - test -f /opt/aws/bin/cfn-signal
             - helm version --short
+            - python3 -c "import boto3; print('boto3', boto3.__version__)"
+            - python3 -c "import yaml; print('pyyaml available')"
             - echo "All kubeadm components verified"
 `;
     }
