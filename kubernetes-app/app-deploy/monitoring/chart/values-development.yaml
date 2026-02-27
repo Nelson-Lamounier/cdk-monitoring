@@ -53,3 +53,16 @@ resourceQuota:
     limits.cpu: "3"
     limits.memory: 4Gi
     persistentvolumeclaims: "6"
+
+# Node Exporter — use port 9101 to avoid conflict with Traefik metrics (9100)
+nodeExporter:
+  service:
+    port: 9101
+
+# GitHub Actions Exporter — disabled until GITHUB_TOKEN is in SSM
+githubActionsExporter:
+  replicas: 0
+
+# Steampipe — disabled until AWS credentials/config are set up
+steampipe:
+  replicas: 0
