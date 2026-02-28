@@ -48,6 +48,7 @@ export const STACK_REGISTRY = {
     kubernetes: {
         data: 'Data',
         base: 'Base',
+        ssmAutomation: 'SsmAutomation',
         controlPlane: 'ControlPlane',
         appWorker: 'AppWorker',
         monitoringWorker: 'MonitoringWorker',
