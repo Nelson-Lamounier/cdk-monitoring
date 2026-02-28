@@ -74,20 +74,20 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      # Synthesize only the ssmAutomation stack
+      # Synthesize all stacks (synthesize-ci.ts writes stack names to $GITHUB_OUTPUT)
       - name: CDK Synth
         id: synth
         working-directory: infra
-        run: |
-          SSM_STACK_NAME=$(npx tsx scripts/deployment/synthesize-ci.ts kubernetes ${{ inputs.cdk-environment }} 2>/dev/null | grep -oP 'ssmAutomation=\K.*')
-          echo "stack-name=$SSM_STACK_NAME" >> $GITHUB_OUTPUT
+        run: npx tsx scripts/deployment/synthesize-ci.ts kubernetes ${{ inputs.cdk-environment }}
 
-      # Deploy
+      # Deploy only the SSM Automation stack
       - name: CDK Deploy — SSM Automation
         id: deploy-stack
         working-directory: infra
         run: |
-          npx cdk deploy "${{ steps.synth.outputs.stack-name }}" \
+          echo "Deploying stack: ${{ steps.synth.outputs.ssmAutomation }}"
+          npx cdk deploy "${{ steps.synth.outputs.ssmAutomation }}" \
+            --exclusively \
             --require-approval ${{ inputs.require-approval }} \
             --outputs-file /tmp/ssm-outputs.json \
             --context project=kubernetes \
