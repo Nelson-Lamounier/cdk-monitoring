@@ -611,6 +611,52 @@ sync-k8s-all environment="development" profile="dev-account":
 ec2-session instance-id profile="dev-account":
     aws ssm start-session --target {{instance-id}} --profile {{profile}}
 
+# Generate ArgoCD CI bot token and store in Secrets Manager.
+# Run AFTER Pipeline A (deploy-kubernetes) Day-1 completes and ArgoCD pods are Running.
+# Prerequisites:
+#   - SSM session to the control plane node
+#   - ArgoCD pods in Running state
+#   - ci-bot account registered (done by bootstrap_argocd.py Step 9)
+# On the control plane node, run:
+#   kubectl config set-context --current --namespace=argocd
+#   argocd account generate-token --account ci-bot --core --grpc-web
+# Then store the token:
+[group('ops')]
+argocd-ci-token region="eu-west-1" profile="dev-account" environment="development":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=== ArgoCD CI Bot Token ==="
+    echo ""
+    echo "This command stores a pre-generated token in Secrets Manager."
+    echo "To generate the token, SSM into the control plane and run:"
+    echo ""
+    echo "  kubectl config set-context --current --namespace=argocd"
+    echo "  argocd account generate-token --account ci-bot --core --grpc-web"
+    echo ""
+    read -p "Paste the token: " TOKEN
+    if [ -z "$TOKEN" ]; then
+      echo "✗ No token provided"
+      exit 1
+    fi
+    SECRET_ID="k8s/{{environment}}/argocd-ci-token"
+    # Create or update the secret
+    if aws secretsmanager describe-secret --secret-id "$SECRET_ID" \
+         --profile "{{profile}}" --region "{{region}}" &>/dev/null; then
+      aws secretsmanager put-secret-value \
+        --secret-id "$SECRET_ID" \
+        --secret-string "$TOKEN" \
+        --profile "{{profile}}" \
+        --region "{{region}}"
+      echo "✓ Secret updated: $SECRET_ID"
+    else
+      aws secretsmanager create-secret \
+        --name "$SECRET_ID" \
+        --secret-string "$TOKEN" \
+        --profile "{{profile}}" \
+        --region "{{region}}"
+      echo "✓ Secret created: $SECRET_ID"
+    fi
+
 # =============================================================================
 # DOCUMENTATION
 # =============================================================================
