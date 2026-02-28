@@ -590,7 +590,7 @@ jobs:
           LOG_GROUP: /ssm/k8s/${{ inputs.environment }}/bootstrap
         run: |
           echo "=== Watching SSM Automation Bootstrap ==="
-          WATCH_START=$(date -u +%s)000  # epoch millis for CloudWatch
+          WATCH_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)  # ISO 8601 for aws logs tail --since
 
           # Clear stale execution ID from previous runs.
           aws ssm delete-parameter \
