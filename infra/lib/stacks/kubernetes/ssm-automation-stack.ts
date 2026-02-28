@@ -175,6 +175,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
                 'ssm:SendCommand',
                 'ssm:GetCommandInvocation',
                 'ssm:ListCommandInvocations',
+                'ssm:DescribeInstanceInformation',
             ],
             resources: ['*'], // Scoped by instance tags in production
         }));
