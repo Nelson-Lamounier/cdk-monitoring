@@ -467,6 +467,23 @@ delete-stack stack region profile:
       --profile "{{profile}}"
     echo "✓ Stack '{{stack}}' deleted successfully."
 
+# Delete a CloudWatch log group (e.g., just delete-log-group /aws/lambda/my-fn eu-west-1 dev-account)
+[group('ops')]
+delete-log-group log-group region profile:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "⚠  About to DELETE log group '{{log-group}}' in region '{{region}}' using profile '{{profile}}'"
+    read -rp "Are you sure? (yes/no): " confirm
+    if [[ "$confirm" != "yes" ]]; then
+      echo "Aborted."
+      exit 0
+    fi
+    aws logs delete-log-group \
+      --log-group-name "{{log-group}}" \
+      --region "{{region}}" \
+      --profile "{{profile}}"
+    echo "✓ Log group '{{log-group}}' deleted."
+
 # Sync monitoring configs to S3 + EC2
 [group('ops')]
 sync-configs *ARGS:
@@ -626,6 +643,12 @@ clean-untracked-force:
 [group('util')]
 clean-duplicates:
     find . -name "* 2*" -not -path "./.git/*" -not -path "./node_modules/*" -delete
+
+# Delete log files (e.g., cluster-overview.log, boot.log)
+[group('util')]
+clean-logs:
+    find . -name "*.log" -not -path "./.git/*" -not -path "./node_modules/*" -not -path "./infra/cdk.out/*" -delete
+    echo "✓ Log files removed"
 
 # Install dependencies (all workspaces)
 [group('util')]
