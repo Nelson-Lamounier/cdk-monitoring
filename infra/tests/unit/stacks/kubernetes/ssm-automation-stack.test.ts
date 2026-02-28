@@ -152,7 +152,7 @@ describe('K8sSsmAutomationStack', () => {
                         }),
                         Match.objectLike({
                             name: 'bootstrapArgoCD',
-                            timeoutSeconds: 600,
+                            timeoutSeconds: 900,
                         }),
                     ]),
                 }),

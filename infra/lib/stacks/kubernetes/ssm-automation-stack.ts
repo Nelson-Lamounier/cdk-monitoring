@@ -106,7 +106,7 @@ const CONTROL_PLANE_STEPS: AutomationStep[] = [
     {
         name: 'bootstrapArgoCD',
         scriptPath: 'boot/steps/06_bootstrap_argocd.py',
-        timeoutSeconds: 600,
+        timeoutSeconds: 900,
         description: 'Install ArgoCD and apply App-of-Apps root application',
     },
     {
