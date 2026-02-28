@@ -5,7 +5,7 @@
  * Creates shared Kubernetes infrastructure hosting both monitoring and
  * application workloads on a kubeadm Kubernetes cluster.
  *
- * Stack Architecture (7 stacks):
+ * Stack Architecture (9 stacks):
  *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
  *   2. Kubernetes-Base: VPC, Security Group, KMS, EBS, Elastic IP
  *   3. Kubernetes-ControlPlane: Control plane EC2 (t3.medium), ASG, IAM,
@@ -43,6 +43,7 @@ import {
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import {
+    K8sSsmAutomationStack,
     KubernetesAppIamStack,
     KubernetesBaseStack,
     KubernetesControlPlaneStack,
@@ -219,6 +220,30 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         );
         stacks.push(baseStack);
         stackMap.base = baseStack;
+
+        // =================================================================
+        // Stack 2b: SSM AUTOMATION STACK (Bootstrap Documents)
+        //
+        // SSM Automation documents for control plane and worker bootstrap.
+        // Deployed independently so bootstrap scripts can be updated
+        // without redeploying EC2 instances.
+        // =================================================================
+        const ssmAutomationStack = new K8sSsmAutomationStack(
+            scope,
+            stackId(this.namespace, 'SsmAutomation', environment),
+            {
+                env,
+                description: `SSM Automation documents for K8s bootstrap — ${environment}`,
+                targetEnvironment: environment,
+                configs,
+                namePrefix,
+                ssmPrefix,
+                scriptsBucketName: baseStack.scriptsBucket.bucketName,
+            },
+        );
+        ssmAutomationStack.addDependency(baseStack);
+        stacks.push(ssmAutomationStack);
+        stackMap.ssmAutomation = ssmAutomationStack;
 
         // =================================================================
         // Stack 3: CONTROL PLANE STACK (ASG + Launch Template + Runtime)
