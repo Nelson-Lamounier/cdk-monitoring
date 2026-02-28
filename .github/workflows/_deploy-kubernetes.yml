@@ -590,8 +590,17 @@ jobs:
         run: |
           echo "=== Watching SSM Automation Bootstrap ==="
 
-          # Read execution ID from SSM (set by EC2 user data)
-          MAX_WAIT=120
+          # Clear stale execution ID from previous runs.
+          # This watcher starts in parallel with deploy-controlplane, so the
+          # old parameter value from a prior (possibly failed) run would be
+          # picked up immediately. Delete it and wait for the new EC2 instance
+          # to publish a fresh execution ID.
+          aws ssm delete-parameter \
+            --name "${SSM_PREFIX}/bootstrap/execution-id" \
+            --region "$REGION" 2>/dev/null || true
+
+          # Wait for the new execution ID (EC2 must boot + user data must run)
+          MAX_WAIT=300
           WAITED=0
           EXECUTION_ID=""
 
@@ -603,8 +612,8 @@ jobs:
             if [ "$EXECUTION_ID" = "None" ] || [ -z "$EXECUTION_ID" ]; then
               EXECUTION_ID=""
               echo "Waiting for SSM Automation execution ID... (${WAITED}s / ${MAX_WAIT}s)"
-              sleep 10
-              WAITED=$((WAITED + 10))
+              sleep 15
+              WAITED=$((WAITED + 15))
             fi
           done
 
