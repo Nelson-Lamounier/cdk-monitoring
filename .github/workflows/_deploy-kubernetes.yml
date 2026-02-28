@@ -554,22 +554,23 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Watch SSM Bootstrap — Monitor SSM Automation Execution
+  # Watch SSM Bootstrap — Monitor SSM Automation Execution (parallel)
   #
-  # After Compute + Worker stacks deploy (which trigger SSM Automation
-  # via user data), poll SSM Automation execution status and display
-  # step-level progress in GitHub Actions logs.
+  # Starts in parallel with Compute deploys. Once an EC2 instance boots
+  # and publishes its SSM Automation execution ID, this job polls
+  # step-level progress and streams logs directly into GitHub Actions.
+  # Observational only — does not block the pipeline.
   # ===========================================================================
   watch-ssm-bootstrap:
     name: Watch SSM Bootstrap
-    needs:
-      [setup, deploy-controlplane, deploy-app-worker, deploy-monitoring-worker]
+    needs: [setup, deploy-ssm-automation]
     if: >-
       always()
-      && needs.deploy-controlplane.result == 'success'
+      && needs.deploy-ssm-automation.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: ${{ inputs.environment }}
+    continue-on-error: true
 
     steps:
       - name: Checkout
