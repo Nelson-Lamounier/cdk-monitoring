@@ -758,6 +758,10 @@ jobs:
 
   # ===========================================================================
   # Sync Static Assets to S3 + CloudFront Cache Invalidation
+  #
+  # Stays in Pipeline A: .next/static/ is a BUILD ARTIFACT extracted from
+  # the Docker image during CDK synth. It only exists in the cdk-out artifact,
+  # which Pipeline B does not produce.
   # ===========================================================================
   sync-static-assets:
     name: Sync Static Assets
@@ -887,12 +891,15 @@ jobs:
           echo "::warning::ArgoCD token not found after ${MAX_ATTEMPTS} attempts — Day-0 bootstrap; skipping ArgoCD verification"
 
       # -----------------------------------------------------------------------
-      # ArgoCD Health Gate (hard failure if ArgoCD reports degraded after sync)
+      # ArgoCD Server Health (Infrastructure Check)
+      #
+      # Verifies the ArgoCD SERVER is reachable — this is an infra concern.
+      # Per-application health (monitoring, nextjs, traefik) is verified
+      # by Pipeline B (gitops-k8s-dev.yml → verify-argocd job).
+      #
       # On Day-0 (no token), this step is skipped gracefully.
-      # After Day-0, this is a BLOCKING check — pipeline fails if apps
-      # are not Synced+Healthy within the timeout.
       # -----------------------------------------------------------------------
-      - name: "ArgoCD Health Gate"
+      - name: "ArgoCD Server Health"
         if: steps.argocd-token.outputs.token != '' && steps.argocd-token.outcome == 'success'
         env:
           ARGOCD_TOKEN: ${{ steps.argocd-token.outputs.token }}
@@ -910,63 +917,28 @@ jobs:
 
           ARGOCD_SERVER="https://${EIP}/argocd"
           echo "ArgoCD server: ${ARGOCD_SERVER}"
-          echo ""
 
-          # Poll until all apps are Synced+Healthy or timeout
-          APPS=(monitoring nextjs)
-          MAX_POLL=10
-          POLL_INTERVAL=30
-          echo "Waiting for ArgoCD apps to reach Synced+Healthy (timeout: $(( MAX_POLL * POLL_INTERVAL ))s)..."
-          echo ""
+          # Verify ArgoCD API is reachable (infra check — is the pod alive?)
+          MAX_POLL=6
+          POLL_INTERVAL=20
+          echo "Verifying ArgoCD server is reachable (timeout: $(( MAX_POLL * POLL_INTERVAL ))s)..."
 
           for ATTEMPT in $(seq 1 $MAX_POLL); do
-            ALL_HEALTHY=true
-            echo "--- Poll $ATTEMPT/$MAX_POLL ---"
+            HTTP_CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
+              -H "Authorization: Bearer ${ARGOCD_TOKEN}" \
+              "${ARGOCD_SERVER}/api/v1/applications" 2>/dev/null || echo "000")
 
-            for APP in "${APPS[@]}"; do
-              RESPONSE=$(curl -sk --max-time 10 \
-                -H "Authorization: Bearer ${ARGOCD_TOKEN}" \
-                "${ARGOCD_SERVER}/api/v1/applications/${APP}" 2>/dev/null || echo "{}")
-
-              SYNC=$(echo "$RESPONSE" | jq -r '.status.sync.status // "Unknown"')
-              HEALTH=$(echo "$RESPONSE" | jq -r '.status.health.status // "Unknown"')
-              echo "  ${APP}: sync=${SYNC} health=${HEALTH}"
-
-              if [ "$SYNC" != "Synced" ] || [ "$HEALTH" != "Healthy" ]; then
-                ALL_HEALTHY=false
-              fi
-            done
-
-            if [ "$ALL_HEALTHY" = true ]; then
-              echo ""
-              echo "All ArgoCD apps are Synced+Healthy"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ ArgoCD server is reachable (HTTP ${HTTP_CODE})"
+              echo "   Per-application health will be verified by Pipeline B (GitOps pipeline)."
               exit 0
             fi
 
-            if [ "$ATTEMPT" -lt "$MAX_POLL" ]; then
-              echo "  ⏳ Not all apps healthy yet, waiting ${POLL_INTERVAL}s..."
-              echo ""
-              sleep $POLL_INTERVAL
-            fi
+            echo "  Attempt $ATTEMPT/$MAX_POLL — HTTP ${HTTP_CODE}, retrying in ${POLL_INTERVAL}s..."
+            sleep $POLL_INTERVAL
           done
 
-          # Timeout — fail with diagnostic output
-          echo ""
-          echo "## ArgoCD Health Gate Failed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Apps did not reach Synced+Healthy within $(( MAX_POLL * POLL_INTERVAL ))s:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          for APP in "${APPS[@]}"; do
-            RESPONSE=$(curl -sk --max-time 10 \
-              -H "Authorization: Bearer ${ARGOCD_TOKEN}" \
-              "${ARGOCD_SERVER}/api/v1/applications/${APP}" 2>/dev/null || echo "{}")
-            SYNC=$(echo "$RESPONSE" | jq -r '.status.sync.status // "Unknown"')
-            HEALTH=$(echo "$RESPONSE" | jq -r '.status.health.status // "Unknown"')
-            MSG=$(echo "$RESPONSE" | jq -r '.status.conditions[]?.message // empty' 2>/dev/null | head -3)
-            echo "| ${APP} | ${SYNC} | ${HEALTH} | ${MSG:-—} |" >> $GITHUB_STEP_SUMMARY
-          done
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "::error::ArgoCD apps are not healthy — check the ArgoCD dashboard for details"
+          echo "::error::ArgoCD server unreachable after $(( MAX_POLL * POLL_INTERVAL ))s — the ArgoCD seed may have failed to install"
           exit 1
 
       - name: Run K8s App Smoke Tests

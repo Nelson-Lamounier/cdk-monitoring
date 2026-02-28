@@ -6,8 +6,8 @@
 # and runs verification — all in one pipeline.
 #
 # 8-Stack Architecture: Data → Base → Compute → AppIam → Api → Edge.
-# Application manifests (monitoring, nextjs) are deployed separately
-# by the sync-k8s-app-deploy-dev.yml pipeline.
+# Application workloads (monitoring, nextjs, traefik, metrics-server)
+# are managed by ArgoCD via Pipeline B (gitops-k8s-dev.yml).
 #
 # Prerequisites:
 #   - Shared VPC from deploy-shared workflow
@@ -32,8 +32,6 @@ on:
       - "infra/bin/app.ts"
       # Bootstrap scripts (synced to S3 inside _deploy-kubernetes.yml)
       - "kubernetes-app/k8s-bootstrap/**"
-      # Application manifests (synced to S3, picked up by ArgoCD)
-      - "kubernetes-app/app-deploy/**"
       # Golden AMI pipeline construct
       - "infra/lib/common/compute/constructs/golden-ami-pipeline.ts"
       # Golden AMI recipes
@@ -43,7 +41,6 @@ on:
       - ".github/workflows/_deploy-kubernetes.yml"
       - ".github/workflows/_deploy-stack.yml"
       - ".github/workflows/_build-golden-ami.yml"
-      - ".github/workflows/_sync-k8s-content.yml"
       - ".github/workflows/_iac-security-scan.yml"
       - ".github/actions/**"
   # Weekly: AMI refresh for OS security patches
