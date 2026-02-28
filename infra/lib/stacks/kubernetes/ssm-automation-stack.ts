@@ -167,17 +167,30 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             description: 'Allows SSM Automation to run commands on EC2 instances',
         });
 
-        // Permission: Send commands to instances
+        // Permission: RunCommand lifecycle (send, poll, list, cancel)
         automationRole.addToPolicy(new iam.PolicyStatement({
             sid: 'AllowRunCommand',
             effect: iam.Effect.ALLOW,
             actions: [
                 'ssm:SendCommand',
-                'ssm:GetCommandInvocation',
+                'ssm:ListCommands',
                 'ssm:ListCommandInvocations',
+                'ssm:GetCommandInvocation',
+                'ssm:CancelCommand',
                 'ssm:DescribeInstanceInformation',
             ],
             resources: ['*'], // Scoped by instance tags in production
+        }));
+
+        // Permission: Automation execution self-introspection
+        automationRole.addToPolicy(new iam.PolicyStatement({
+            sid: 'AllowAutomationIntrospection',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:GetAutomationExecution',
+                'ssm:DescribeAutomationStepExecutions',
+            ],
+            resources: ['*'],
         }));
 
         // Permission: Read/write SSM parameters (for step status)
