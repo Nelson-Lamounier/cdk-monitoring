@@ -676,7 +676,7 @@ jobs:
             aws logs tail "$LOG_GROUP" \
               --since "${WATCH_START}" \
               --format short \
-              --region "$REGION" 2>/dev/null || true
+              --region "$REGION" 2>&1 || true
             echo "::endgroup::"
           else
             echo "❌ SSM Automation $FINAL_STATUS"
