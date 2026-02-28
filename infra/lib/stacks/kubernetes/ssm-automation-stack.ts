@@ -88,7 +88,7 @@ const CONTROL_PLANE_STEPS: AutomationStep[] = [
     {
         name: 'installCalicoCNI',
         scriptPath: 'boot/steps/03_install_calico.py',
-        timeoutSeconds: 180,
+        timeoutSeconds: 300,
         description: 'Install Calico CNI operator and configure IP pools',
     },
     {
