@@ -361,9 +361,16 @@ export class K8sSsmAutomationStack extends cdk.Stack {
                 inputs: {
                     DocumentName: 'AWS-RunShellScript',
                     InstanceIds: ['{{ InstanceId }}'],
+                    CloudWatchOutputConfig: {
+                        CloudWatchOutputEnabled: true,
+                        CloudWatchLogGroupName: `/ssm${opts.ssmPrefix}/bootstrap`,
+                    },
                     Parameters: {
                         commands: [
                             `# Step: ${step.name} — ${step.description}`,
+                            ``,
+                            `# Ensure PATH includes all standard binary locations`,
+                            `export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"`,
                             `set -euo pipefail`,
                             ``,
                             `# Ensure step scripts are available locally`,
@@ -372,6 +379,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
                             ``,
                             `if [ ! -f "$SCRIPT" ]; then`,
                             `  echo "Step script not found locally, syncing from S3..."`,
+                            `  mkdir -p "$STEPS_DIR"`,
                             `  aws s3 sync "s3://{{ S3Bucket }}/k8s-bootstrap/boot/steps/" "$STEPS_DIR/" --region {{ Region }}`,
                             `fi`,
                             ``,
@@ -382,7 +390,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
                             `export MOUNT_POINT="/data"`,
                             ``,
                             `cd "$STEPS_DIR"`,
-                            `python3 "$SCRIPT"`,
+                            `python3 "$SCRIPT" 2>&1`,
                             `echo "=== Completed: ${step.name} ==="`,
                         ],
                         workingDirectory: ['/tmp'],
