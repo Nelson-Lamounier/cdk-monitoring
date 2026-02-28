@@ -183,9 +183,48 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
             },
         }));
 
-        // Grant S3 read for boot script download
+        // Grant S3 read for boot script download + orchestrator fallback
         scriptsBucket.grantRead(launchTemplateConstruct.instanceRole);
 
+        // Grant SSM Automation permissions — start/poll/publish execution ID
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SsmAutomationExecution',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:StartAutomationExecution',
+                'ssm:GetAutomationExecution',
+                'ssm:DescribeAutomationStepExecutions',
+            ],
+            resources: [
+                `arn:aws:ssm:${this.region}:${this.account}:automation-definition/*`,
+                `arn:aws:ssm:${this.region}:${this.account}:automation-execution/*`,
+            ],
+        }));
+
+        // Grant SSM PutParameter for publishing execution ID
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SsmPublishExecutionId',
+            effect: iam.Effect.ALLOW,
+            actions: ['ssm:PutParameter'],
+            resources: [
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${ssmPrefix}/bootstrap/*`,
+            ],
+        }));
+
+        // Grant iam:PassRole for the SSM Automation execution role
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'PassSsmAutomationRole',
+            effect: iam.Effect.ALLOW,
+            actions: ['iam:PassRole'],
+            resources: [
+                `arn:aws:iam::${this.account}:role/*-SsmAutomation-*`,
+            ],
+            conditions: {
+                StringEquals: {
+                    'iam:PassedToService': 'ssm.amazonaws.com',
+                },
+            },
+        }));
         // ASG: min=0 allows scaling down to save costs, max=1 for single monitoring worker
         const asgConstruct = new AutoScalingGroupConstruct(this, 'MonWorkerAsg', {
             vpc,
@@ -209,10 +248,10 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
         // =====================================================================
         // User Data — slim bootstrap stub
         //
-        // Heavy logic lives in boot-worker.sh (uploaded to S3 via CI sync).
-        // Inline user data exports env vars with CDK token values, then
-        // downloads & executes the boot script. AWS CLI is baked into the
-        // Golden AMI. This keeps user data well under CloudFormation's 16 KB limit.
+        // Triggers SSM Automation for the monitoring worker bootstrap process.
+        // User data exports CDK-resolved env vars, resolves the SSM Automation
+        // document name from SSM, starts the automation, publishes the execution
+        // ID, then polls until completion and sends cfn-signal with the result.
         // =====================================================================
         userData.addCommands(
             'set -euxo pipefail',
@@ -232,48 +271,93 @@ export NODE_LABEL="${monitoringWorkerConfig.nodeLabel}"
 export S3_BUCKET="${scriptsBucket.bucketName}"
 export LOG_GROUP_NAME="${logGroupName}"
 
-# ─── Fail-safe trap ───────────────────────────────────────────────────
-# If boot-worker.sh never downloads (S3 sync race / missing file),
-# send cfn-signal --success false so CloudFormation fails fast instead
-# of waiting the full signalsTimeoutMinutes.
-# boot-worker.sh has its own trap; once exec replaces this shell,
-# this trap is no longer active.
-# ──────────────────────────────────────────────────────────────────────
-send_stub_failure() {
-  local rc=$?
-  [ $rc -eq 0 ] && return
-  echo "FATAL: user-data stub exited with code $rc before exec boot-worker.sh"
-  if ! command -v /opt/aws/bin/cfn-signal &> /dev/null; then
-    echo "WARNING: cfn-signal not found — expected in Golden AMI"
-  fi
-  /opt/aws/bin/cfn-signal --success false \\
+# ─── Resolve instance ID via IMDSv2 ──────────────────────────────────
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \\
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \\
+  http://169.254.169.254/latest/meta-data/instance-id)
+
+# ─── Resolve SSM Automation document name ─────────────────────────────
+DOC_NAME=$(aws ssm get-parameter \\
+  --name "\${SSM_PREFIX}/bootstrap/worker-doc-name" \\
+  --query "Parameter.Value" --output text \\
+  --region "\${AWS_REGION}" 2>/dev/null || echo "")
+
+if [ -z "$DOC_NAME" ]; then
+  echo "ERROR: SSM Automation document name not found at \${SSM_PREFIX}/bootstrap/worker-doc-name"
+  echo "Falling back to local orchestrator..."
+  
+  # Fallback: download and run Python orchestrator directly
+  STEPS_DIR="/data/k8s-bootstrap/boot/steps"
+  mkdir -p "$STEPS_DIR"
+  aws s3 sync "s3://\${S3_BUCKET}/k8s-bootstrap/boot/steps/" "$STEPS_DIR/" --region "\${AWS_REGION}"
+  cd "$STEPS_DIR"
+  python3 orchestrator.py --mode worker
+  BOOT_RESULT=$?
+  
+  /opt/aws/bin/cfn-signal --success $([ $BOOT_RESULT -eq 0 ] && echo true || echo false) \\
     --stack "\${STACK_NAME}" \\
     --resource "\${ASG_LOGICAL_ID}" \\
+    --region "\${AWS_REGION}" 2>/dev/null || true
+  exit $BOOT_RESULT
+fi
+
+# ─── Start SSM Automation execution ──────────────────────────────────
+echo "Starting SSM Automation: $DOC_NAME for instance $INSTANCE_ID"
+EXECUTION_ID=$(aws ssm start-automation-execution \\
+  --document-name "$DOC_NAME" \\
+  --parameters "InstanceId=$INSTANCE_ID,SsmPrefix=\${SSM_PREFIX},S3Bucket=\${S3_BUCKET},Region=\${AWS_REGION}" \\
+  --region "\${AWS_REGION}" \\
+  --query "AutomationExecutionId" --output text)
+
+echo "SSM Automation execution started: $EXECUTION_ID"
+
+# Publish execution ID so the pipeline watcher can track it
+aws ssm put-parameter \\
+  --name "\${SSM_PREFIX}/bootstrap/mon-worker-execution-id" \\
+  --value "$EXECUTION_ID" \\
+  --type String \\
+  --overwrite \\
+  --region "\${AWS_REGION}" 2>/dev/null || true
+
+# ─── Poll SSM Automation until completion ─────────────────────────────
+while true; do
+  STATUS=$(aws ssm get-automation-execution \\
+    --automation-execution-id "$EXECUTION_ID" \\
     --region "\${AWS_REGION}" \\
-    --reason "boot-worker.sh download failed (exit $rc)" 2>/dev/null || true
-}
-trap send_stub_failure EXIT
+    --query "AutomationExecution.AutomationExecutionStatus" \\
+    --output text 2>/dev/null || echo "Pending")
 
-# Download boot script from S3 — "Patient" retry for Day-1 coordination
-# On first-ever deploy, the Sync pipeline may not have uploaded boot-worker.sh
-# yet. Retry for up to 10 minutes (30 × 20s) before giving up.
-BOOT_SCRIPT="/tmp/boot-worker.sh"
-S3_BOOT_PATH="s3://${scriptsBucket.bucketName}/k8s-bootstrap/boot/boot-worker.sh"
-MAX_RETRIES=30
-RETRY_INTERVAL=20
+  echo "SSM Automation status: $STATUS ($(date))"
 
-for i in $(seq 1 $MAX_RETRIES); do
-  if aws s3 cp "$S3_BOOT_PATH" "$BOOT_SCRIPT" --region ${this.region} 2>/dev/null; then
-    echo "✓ Boot script downloaded (attempt $i/$MAX_RETRIES)"
-    chmod +x "$BOOT_SCRIPT"
-    exec "$BOOT_SCRIPT"
-  fi
-  echo "Boot script not in S3 yet (attempt $i/$MAX_RETRIES). Retrying in \${RETRY_INTERVAL}s..."
-  sleep $RETRY_INTERVAL
+  case "$STATUS" in
+    Success)
+      echo "✅ SSM Automation completed successfully"
+      /opt/aws/bin/cfn-signal --success true \\
+        --stack "\${STACK_NAME}" \\
+        --resource "\${ASG_LOGICAL_ID}" \\
+        --region "\${AWS_REGION}" 2>/dev/null || true
+      exit 0
+      ;;
+    Failed|Cancelled|TimedOut)
+      echo "❌ SSM Automation $STATUS"
+      aws ssm get-automation-execution \\
+        --automation-execution-id "$EXECUTION_ID" \\
+        --region "\${AWS_REGION}" \\
+        --query "AutomationExecution.StepExecutions[?StepStatus=='Failed'].[StepName,FailureMessage]" \\
+        --output table 2>/dev/null || true
+      /opt/aws/bin/cfn-signal --success false \\
+        --stack "\${STACK_NAME}" \\
+        --resource "\${ASG_LOGICAL_ID}" \\
+        --region "\${AWS_REGION}" \\
+        --reason "SSM Automation $STATUS (execution: $EXECUTION_ID)" 2>/dev/null || true
+      exit 1
+      ;;
+    *)
+      sleep 15
+      ;;
+  esac
 done
-
-echo "ERROR: Boot script not found at $S3_BOOT_PATH after $((MAX_RETRIES * RETRY_INTERVAL))s"
-exit 1
 `);
 
         // Expose properties

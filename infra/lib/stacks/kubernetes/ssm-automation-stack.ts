@@ -230,7 +230,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
 
         const cpDocName = `${prefix}-bootstrap-control-plane`;
 
-        const cpDocument = new ssm.CfnDocument(this, 'ControlPlaneAutomation', {
+        const _cpDocument = new ssm.CfnDocument(this, 'ControlPlaneAutomation', {
             documentType: 'Automation',
             name: cpDocName,
             content: this.buildAutomationContent({
@@ -252,7 +252,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
 
         const workerDocName = `${prefix}-bootstrap-worker`;
 
-        const workerDocument = new ssm.CfnDocument(this, 'WorkerAutomation', {
+        const _workerDocument = new ssm.CfnDocument(this, 'WorkerAutomation', {
             documentType: 'Automation',
             name: workerDocName,
             content: this.buildAutomationContent({
