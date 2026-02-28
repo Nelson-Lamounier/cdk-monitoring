@@ -1,0 +1,246 @@
+# @format
+# @description Pipeline B: GitOps Application Pipeline (Development)
+#
+# CI gate for application-layer changes managed by ArgoCD.
+# ArgoCD watches this Git repo and auto-syncs Helm chart changes (~3 min).
+# This pipeline adds validation BEFORE ArgoCD picks up changes and
+# post-merge verification to confirm sync succeeded.
+#
+# Separation from Pipeline A:
+#   Pipeline A (Infra): infra/ + k8s-bootstrap/ → CDK, EC2, S3 sync, AMI build
+#   Pipeline B (GitOps): app-deploy/ → Validate, ArgoCD auto-sync from Git
+#
+#   boot-k8s.sh, ArgoCD manifests, and Calico config are INFRASTRUCTURE.
+#   They are synced to S3 by Pipeline A's sync-bootstrap-content job.
+#   This pipeline does NOT touch S3 or EC2.
+#
+# What ArgoCD syncs from Git (managed by App-of-Apps root):
+#   - kubernetes-app/k8s-bootstrap/system/argocd/applications/ → child Application manifests
+#   - kubernetes-app/app-deploy/monitoring/chart    → monitoring Application
+#   - kubernetes-app/app-deploy/nextjs/helm/chart   → nextjs Application
+#   - kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml → traefik Application
+#
+# Prerequisites:
+#   - ArgoCD running on the control plane node
+#   - SSH deploy key configured in ArgoCD (allows Git pull)
+
+name: "GitOps: K8s Applications (Dev)"
+
+on:
+  push:
+    branches:
+      - develop
+      - feature/k3s-kubernetes-migration
+    paths:
+      # Helm charts (ArgoCD watches these paths in Git)
+      - "kubernetes-app/app-deploy/monitoring/**"
+      - "kubernetes-app/app-deploy/nextjs/**"
+      # Traefik values (ArgoCD multi-source references this from Git)
+      - "kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml"
+      # App-of-Apps child Application manifests
+      - "kubernetes-app/k8s-bootstrap/system/argocd/applications/**"
+      # Pipeline definition
+      - ".github/workflows/gitops-k8s-dev.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: gitops-k8s-development
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  # ===========================================================================
+  # 1. Validate — Catch errors BEFORE ArgoCD auto-syncs from Git
+  # ===========================================================================
+  validate:
+    name: Validate Charts & Manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Helm
+        uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
+        with:
+          version: "v3.17.1"
+
+      - name: Lint Monitoring Helm Chart
+        run: |
+          echo "=== Linting monitoring chart ==="
+          helm lint kubernetes-app/app-deploy/monitoring/chart \
+            --values kubernetes-app/app-deploy/monitoring/chart/values.yaml
+          echo "✓ Monitoring chart passed"
+
+      - name: Lint Next.js Helm Chart
+        run: |
+          echo "=== Linting Next.js chart ==="
+          helm lint kubernetes-app/app-deploy/nextjs/helm/chart \
+            --values kubernetes-app/app-deploy/nextjs/helm/chart/values.yaml
+          echo "✓ Next.js chart passed"
+
+      - name: Validate YAML Syntax
+        run: |
+          echo "=== Validating YAML syntax ==="
+          ERRORS=0
+
+          # Validate Traefik values (ArgoCD sources this from Git)
+          TRAEFIK_VALUES="kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml"
+          if [ -f "$TRAEFIK_VALUES" ]; then
+            if python3 -c "import yaml; yaml.safe_load(open('$TRAEFIK_VALUES'))" 2>/dev/null; then
+              echo "  ✓ traefik-values.yaml"
+            else
+              echo "  ✗ traefik-values.yaml — invalid YAML"
+              ERRORS=$((ERRORS + 1))
+            fi
+          fi
+
+          # Validate Helm values files
+          for f in $(find kubernetes-app/app-deploy -name 'values*.yaml' -type f 2>/dev/null); do
+            if python3 -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null; then
+              echo "  ✓ $f"
+            else
+              echo "  ✗ $f — invalid YAML"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          if [ $ERRORS -gt 0 ]; then
+            echo "ERROR: $ERRORS YAML files failed validation"
+            exit 1
+          fi
+          echo "✓ All YAML files passed validation"
+
+  # ===========================================================================
+  # 2. Verify ArgoCD Sync Status
+  #
+  # After Git push, ArgoCD auto-syncs within ~3 minutes.
+  # This job polls the ArgoCD API via the CI bot token (stored in
+  # Secrets Manager by bootstrap_argocd.py) to confirm all Applications
+  # reached Synced + Healthy state.
+  #
+  # This is observational — it does NOT block the pipeline.
+  # No S3 sync needed — ArgoCD pulls directly from Git.
+  # ===========================================================================
+  verify-argocd:
+    name: Verify ArgoCD Sync
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: development
+    continue-on-error: true
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Resolve ArgoCD Endpoint
+        id: argocd
+        run: |
+          SSM_PREFIX="/k8s/development"
+
+          # Resolve the EIP (ArgoCD is behind Traefik on the control plane)
+          EIP=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/eip-address" \
+            --query 'Parameter.Value' --output text \
+            --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
+
+          if [ -z "$EIP" ]; then
+            echo "WARNING: Could not resolve EIP — ArgoCD verification skipped"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "argocd-url=https://${EIP}/argocd" >> $GITHUB_OUTPUT
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: Retrieve CI Bot Token
+        id: token
+        if: steps.argocd.outputs.skip != 'true'
+        run: |
+          TOKEN=$(aws secretsmanager get-secret-value \
+            --secret-id "k8s/development/argocd-ci-token" \
+            --query 'SecretString' --output text \
+            --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
+
+          if [ -z "$TOKEN" ]; then
+            echo "WARNING: ArgoCD CI token not found — skipping verification"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: Wait for ArgoCD Sync
+        if: steps.argocd.outputs.skip != 'true' && steps.token.outputs.skip != 'true'
+        env:
+          ARGOCD_URL: ${{ steps.argocd.outputs.argocd-url }}
+          ARGOCD_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          # Only verify Applications whose source paths were changed
+          EXPECTED_APPS=("monitoring" "nextjs" "traefik" "metrics-server" "local-path-provisioner")
+          POLL_INTERVAL=30
+          MAX_POLLS=12  # 6 minutes (ArgoCD syncs every ~3 min)
+
+          echo "## ArgoCD Sync Verification"
+          echo ""
+          echo "Endpoint: $ARGOCD_URL"
+          echo "Expected Applications: ${EXPECTED_APPS[*]}"
+          echo ""
+
+          for POLL in $(seq 1 $MAX_POLLS); do
+            TIMESTAMP=$(date -u +"%H:%M:%S")
+            ALL_SYNCED=true
+
+            echo "--- Poll $POLL/$MAX_POLLS ($TIMESTAMP) ---"
+
+            for APP in "${EXPECTED_APPS[@]}"; do
+              RESPONSE=$(curl -sk \
+                -H "Authorization: Bearer $ARGOCD_TOKEN" \
+                "${ARGOCD_URL}/api/v1/applications/${APP}" 2>/dev/null || echo "")
+
+              if [ -z "$RESPONSE" ]; then
+                echo "  $APP: ⚠️  API unreachable"
+                ALL_SYNCED=false
+                continue
+              fi
+
+              SYNC_STATUS=$(echo "$RESPONSE" | jq -r '.status.sync.status // "Unknown"' 2>/dev/null)
+              HEALTH_STATUS=$(echo "$RESPONSE" | jq -r '.status.health.status // "Unknown"' 2>/dev/null)
+
+              if [ "$SYNC_STATUS" = "Synced" ] && [ "$HEALTH_STATUS" = "Healthy" ]; then
+                echo "  $APP: ✅ Synced + Healthy"
+              else
+                echo "  $APP: ⏳ Sync=$SYNC_STATUS Health=$HEALTH_STATUS"
+                ALL_SYNCED=false
+              fi
+            done
+
+            if [ "$ALL_SYNCED" = "true" ]; then
+              echo ""
+              echo "## ✅ All ${#EXPECTED_APPS[@]} Applications are Synced and Healthy"
+              exit 0
+            fi
+
+            if [ "$POLL" -lt "$MAX_POLLS" ]; then
+              sleep $POLL_INTERVAL
+            fi
+          done
+
+          echo ""
+          echo "## ⚠️  Some Applications did not reach Synced+Healthy within $((MAX_POLLS * POLL_INTERVAL))s"
+          echo "This is informational — ArgoCD will continue retrying."
+          echo "Check: $ARGOCD_URL for details."
