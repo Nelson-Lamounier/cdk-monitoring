@@ -152,7 +152,7 @@ jobs:
 
           # Resolve the EIP (ArgoCD is behind Traefik on the control plane)
           EIP=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/eip-address" \
+            --name "${SSM_PREFIX}/elastic-ip" \
             --query 'Parameter.Value' --output text \
             --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
 

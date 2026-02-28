@@ -606,10 +606,10 @@ sync-k8s-all environment="development" profile="dev-account":
     echo ""
     echo "✓ All K8s content synced"
 
-# Start an SSM session to an EC2 instance (e.g., just ec2-session i-09c7e747aad57520b development)
+# Start an SSM session to an EC2 instance (e.g., just ec2-session i-09c7e747aad57520b dev-account)
 [group('ops')]
-ec2-session instance-id environment="development":
-    aws ssm start-session --target {{instance-id}} --profile $(just _profile {{environment}})
+ec2-session instance-id profile="dev-account":
+    aws ssm start-session --target {{instance-id}} --profile {{profile}}
 
 # =============================================================================
 # DOCUMENTATION
