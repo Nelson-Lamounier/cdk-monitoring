@@ -4,11 +4,12 @@
 # Infra-only pipeline for the K8s (kubeadm) infrastructure.
 # Bootstrap/app manifests synced by independent S3 pipelines.
 #
-# 8-Stack Deployment Order:
+# 9-Stack Deployment Order:
 #   1.  Data             (DynamoDB + S3 + SSM Parameters)
 #   2.  Base             (VPC networking + SG + KMS + EBS + EIP + S3 Scripts)
 #   2b. Sync             (Seed boot scripts to S3 — Day-1 safety)
 #   2c. Golden AMI       (Bake containerd + kubeadm into AMI)
+#  2d.  SSM Automation   (Bootstrap orchestration documents)
 #   3.  Compute          (Control plane EC2 + ASG + SSM Docs)
 #   3b. AppWorker        (Application worker node)
 #   3c. MonitoringWorker (Monitoring worker node)
@@ -115,6 +116,7 @@ jobs:
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
       controlplane-stack: ${{ steps.synth.outputs.controlPlane }}
+      ssmautomation-stack: ${{ steps.synth.outputs.ssmAutomation }}
       worker-stack: ${{ steps.synth.outputs.appWorker }}
       monitoring-worker-stack: ${{ steps.synth.outputs.monitoringWorker }}
       appiam-stack: ${{ steps.synth.outputs.appIam }}
@@ -462,19 +464,48 @@ jobs:
           echo "✓ ${FILE_COUNT} bootstrap files seeded — EC2 instances can now boot safely"
 
   # ===========================================================================
+  # Deploy SSM Automation Stack — Bootstrap Orchestration Documents
+  #
+  # Must deploy before Compute so SSM Automation documents exist when
+  # EC2 user data tries to trigger them.
+  # ===========================================================================
+  deploy-ssm-automation:
+    name: Deploy SSM Automation
+    needs: [setup, deploy-base]
+    if: always() && needs.deploy-base.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.ssmautomation-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
   # Deploy Compute Stack (3/8) — Control Plane EC2 + ASG + SSM Docs
   #
-  # Waits for Golden AMI bake (or skip) so the Launch Template resolves
-  # to the latest baked AMI. If Golden AMI is disabled, the stack uses
-  # the parent AMI directly.
+  # Waits for Golden AMI bake (or skip) AND SSM Automation so the
+  # Launch Template resolves to the latest baked AMI and the bootstrap
+  # documents exist when user data triggers them.
   # ===========================================================================
   deploy-controlplane:
     name: Deploy Control Plane
-    needs: [setup, deploy-base, sync-bootstrap-content, build-golden-ami]
+    needs:
+      [
+        setup,
+        deploy-base,
+        sync-bootstrap-content,
+        build-golden-ami,
+        deploy-ssm-automation,
+      ]
     if: >-
       always()
       && needs.sync-bootstrap-content.result == 'success'
       && (needs.build-golden-ami.result == 'success' || needs.build-golden-ami.result == 'skipped')
+      && needs.deploy-ssm-automation.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.controlplane-stack }}
@@ -521,6 +552,95 @@ jobs:
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
     secrets: inherit
+
+  # ===========================================================================
+  # Watch SSM Bootstrap — Monitor SSM Automation Execution
+  #
+  # After Compute + Worker stacks deploy (which trigger SSM Automation
+  # via user data), poll SSM Automation execution status and display
+  # step-level progress in GitHub Actions logs.
+  # ===========================================================================
+  watch-ssm-bootstrap:
+    name: Watch SSM Bootstrap
+    needs:
+      [setup, deploy-controlplane, deploy-app-worker, deploy-monitoring-worker]
+    if: >-
+      always()
+      && needs.deploy-controlplane.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Watch SSM Bootstrap Progress
+        env:
+          SSM_PREFIX: /k8s/${{ inputs.environment }}
+          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: |
+          echo "=== Watching SSM Automation Bootstrap ==="
+
+          # Read execution ID from SSM (set by EC2 user data)
+          MAX_WAIT=120
+          WAITED=0
+          EXECUTION_ID=""
+
+          while [ -z "$EXECUTION_ID" ] && [ $WAITED -lt $MAX_WAIT ]; do
+            EXECUTION_ID=$(aws ssm get-parameter \
+              --name "${SSM_PREFIX}/bootstrap/execution-id" \
+              --query "Parameter.Value" --output text \
+              --region "$REGION" 2>/dev/null || echo "")
+            if [ "$EXECUTION_ID" = "None" ] || [ -z "$EXECUTION_ID" ]; then
+              EXECUTION_ID=""
+              echo "Waiting for SSM Automation execution ID... (${WAITED}s / ${MAX_WAIT}s)"
+              sleep 10
+              WAITED=$((WAITED + 10))
+            fi
+          done
+
+          if [ -z "$EXECUTION_ID" ]; then
+            echo "::warning::SSM Automation execution ID not found after ${MAX_WAIT}s — bootstrap may not have started"
+            exit 0
+          fi
+
+          echo "Tracking execution: $EXECUTION_ID"
+
+          # Poll until completion
+          while true; do
+            EXECUTION=$(aws ssm get-automation-execution \
+              --automation-execution-id "$EXECUTION_ID" \
+              --region "$REGION" 2>/dev/null)
+
+            STATUS=$(echo "$EXECUTION" | jq -r '.AutomationExecution.AutomationExecutionStatus')
+
+            echo "::group::SSM Bootstrap Steps (Status: $STATUS)"
+            echo "$EXECUTION" | jq -r '.AutomationExecution.StepExecutions[] | "\(.StepName): \(.StepStatus) (\(.ExecutionStartDateTime // "pending") → \(.ExecutionEndDateTime // "running"))"' 2>/dev/null || true
+            echo "::endgroup::"
+
+            case "$STATUS" in
+              Success)
+                echo "✅ SSM Automation completed successfully"
+                break
+                ;;
+              Failed|Cancelled|TimedOut)
+                echo "❌ SSM Automation $STATUS"
+                echo "$EXECUTION" | jq -r '.AutomationExecution.StepExecutions[] | select(.StepStatus == "Failed") | "FAILED STEP: \(.StepName)\nReason: \(.FailureMessage // "unknown")"' 2>/dev/null || true
+                exit 1
+                ;;
+              *)
+                sleep 15
+                ;;
+            esac
+          done
 
   # ===========================================================================
   # Monitor Worker Join (real-time observability)

@@ -1,0 +1,53 @@
+# @format
+# @description Deploy SSM Automation to Development
+#
+# Dedicated pipeline for the SSM Automation stack.
+# Can be triggered independently from the main K8s pipeline.
+#
+# Triggers:
+#   - Push to main/develop when step scripts change
+#   - Manual dispatch (workflow_dispatch)
+#
+# This pipeline deploys SSM Automation documents that orchestrate
+# Kubernetes bootstrap. Changes to step scripts update the documents
+# without needing a full CDK pipeline run.
+
+name: Deploy SSM Automation to Development
+
+on:
+  push:
+    branches:
+      - develop
+      - feature/k3s-kubernetes-migration
+    paths:
+      # Python step scripts
+      - "kubernetes-app/k8s-bootstrap/boot/steps/**"
+      # CDK stack definition
+      - "infra/lib/stacks/kubernetes/ssm-automation-stack.ts"
+      # Pipeline definitions
+      - ".github/workflows/deploy-ssm-automation-dev.yml"
+      - ".github/workflows/_deploy-ssm-automation.yml"
+  workflow_dispatch:
+    inputs:
+      skip_deploy:
+        description: "Skip deployment (synth only)"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-ssm-automation-development
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Development
+    uses: ./.github/workflows/_deploy-ssm-automation.yml
+    with:
+      environment: development
+      cdk-environment: development
+      require-approval: never
+    secrets: inherit

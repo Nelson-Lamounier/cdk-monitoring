@@ -1,0 +1,108 @@
+# @format
+# @description Reusable SSM Automation Deployment Workflow
+#
+# Deploys the SSM Automation CDK stack independently from the main
+# Kubernetes infrastructure pipeline. This stack contains the SSM
+# Automation documents that orchestrate K8s bootstrap processes.
+#
+# Lifecycle:
+#   - Day-1: Called by _deploy-kubernetes.yml before Compute stack
+#   - Day-2+: Triggered independently when step scripts change
+#
+# Stack: ssmAutomation (SSM Automation documents + IAM role)
+
+name: Deploy SSM Automation (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+      cdk-environment:
+        description: "CDK environment name"
+        required: true
+        type: string
+      require-approval:
+        description: "CDK deployment approval mode"
+        required: false
+        default: "never"
+        type: string
+    outputs:
+      control-plane-doc-name:
+        description: "SSM Automation document name for control plane bootstrap"
+        value: ${{ jobs.deploy.outputs.control-plane-doc-name }}
+      worker-doc-name:
+        description: "SSM Automation document name for worker bootstrap"
+        value: ${{ jobs.deploy.outputs.worker-doc-name }}
+    secrets:
+      AWS_OIDC_ROLE:
+        description: "AWS OIDC role ARN"
+        required: false
+
+env:
+  NODE_VERSION: "22"
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  deploy:
+    name: Deploy SSM Automation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    outputs:
+      control-plane-doc-name: ${{ steps.deploy-stack.outputs.control-plane-doc-name }}
+      worker-doc-name: ${{ steps.deploy-stack.outputs.worker-doc-name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build TypeScript
+        run: just build
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      # Synthesize only the ssmAutomation stack
+      - name: CDK Synth
+        id: synth
+        working-directory: infra
+        run: |
+          SSM_STACK_NAME=$(npx tsx scripts/deployment/synthesize-ci.ts kubernetes ${{ inputs.cdk-environment }} 2>/dev/null | grep -oP 'ssmAutomation=\K.*')
+          echo "stack-name=$SSM_STACK_NAME" >> $GITHUB_OUTPUT
+
+      # Deploy
+      - name: CDK Deploy — SSM Automation
+        id: deploy-stack
+        working-directory: infra
+        run: |
+          npx cdk deploy "${{ steps.synth.outputs.stack-name }}" \
+            --require-approval ${{ inputs.require-approval }} \
+            --outputs-file /tmp/ssm-outputs.json \
+            --context project=kubernetes \
+            --context environment=${{ inputs.cdk-environment }} \
+            2>&1
+
+          # Extract document names from stack outputs
+          echo "control-plane-doc-name=$(jq -r '.[] | .ControlPlaneDocName // empty' /tmp/ssm-outputs.json 2>/dev/null || echo '')" >> $GITHUB_OUTPUT
+          echo "worker-doc-name=$(jq -r '.[] | .WorkerDocName // empty' /tmp/ssm-outputs.json 2>/dev/null || echo '')" >> $GITHUB_OUTPUT
+
+      - name: Summary
+        run: |
+          echo "### SSM Automation Stack Deployed ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Document | Name |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Control Plane | ${{ steps.deploy-stack.outputs.control-plane-doc-name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Worker | ${{ steps.deploy-stack.outputs.worker-doc-name }} |" >> $GITHUB_STEP_SUMMARY
