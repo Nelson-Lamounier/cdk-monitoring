@@ -472,6 +472,46 @@ delete-stack stack region profile:
 sync-configs *ARGS:
     npx tsx infra/scripts/deployment/sync-monitoring-configs.ts {{ARGS}}
 
+# ---------------------------------------------------------------------------
+# GitHub Workflow Dispatch (gh CLI)
+# ---------------------------------------------------------------------------
+
+# Trigger Pipeline A: K8s Infrastructure (e.g., just pipeline-infra develop)
+[group('ops')]
+pipeline-infra ref="develop":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "→ Triggering Pipeline A (Infrastructure) on ref: {{ref}}"
+    gh workflow run deploy-kubernetes-dev.yml --ref {{ref}}
+    sleep 2
+    gh run list --workflow=deploy-kubernetes-dev.yml --limit=1
+
+# Trigger Pipeline B: GitOps Applications (e.g., just pipeline-gitops develop)
+[group('ops')]
+pipeline-gitops ref="develop":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "→ Triggering Pipeline B (GitOps) on ref: {{ref}}"
+    gh workflow run gitops-k8s-dev.yml --ref {{ref}}
+    sleep 2
+    gh run list --workflow=gitops-k8s-dev.yml --limit=1
+
+# Watch the latest workflow run (blocks until complete)
+[group('ops')]
+pipeline-watch:
+    gh run watch
+
+# List recent workflow runs (all pipelines)
+[group('ops')]
+pipeline-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=== Pipeline A (Infrastructure) ==="
+    gh run list --workflow=deploy-kubernetes-dev.yml --limit=3
+    echo ""
+    echo "=== Pipeline B (GitOps) ==="
+    gh run list --workflow=gitops-k8s-dev.yml --limit=3
+
 # Sync k8s-bootstrap scripts to S3 (e.g., just sync-k8s-bootstrap development dev-account)
 [group('k8s')]
 sync-k8s-bootstrap environment="development" profile="dev-account":
