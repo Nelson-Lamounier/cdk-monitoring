@@ -214,7 +214,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             workerCount: 2,
         },
         compute: {
-            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
             rootVolumeSizeGb: 30,
             detailedMonitoring: false,
             useSignals: true,

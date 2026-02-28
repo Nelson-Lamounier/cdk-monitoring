@@ -17,6 +17,10 @@
 default:
     @just --list --unsorted
 
+# Shorthand alias for listing recipes
+ls:
+    @just --list --unsorted
+
 # =============================================================================
 # INTERNAL HELPERS
 # =============================================================================
@@ -483,6 +487,22 @@ delete-log-group log-group region profile:
       --region "{{region}}" \
       --profile "{{profile}}"
     echo "✓ Log group '{{log-group}}' deleted."
+
+# Update an inline IAM policy on a role (e.g., just update-oidc-policy eu-west-1 dev-account DevAccountOIDCRole ArgocdHealthCheckPolicy argocdHealthcheck.json)
+[group('ops')]
+update-oidc-policy region profile role-name policy-name policy-file:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    POLICY_FILE="infra/scripts/bootstrap/policies/{{policy-file}}"
+    echo "→ Updating inline policy '{{policy-name}}' on role '{{role-name}}'"
+    echo "  Source: ${POLICY_FILE}"
+    aws iam put-role-policy \
+      --role-name "{{role-name}}" \
+      --policy-name "{{policy-name}}" \
+      --policy-document "file://${POLICY_FILE}" \
+      --profile "{{profile}}" \
+      --region "{{region}}"
+    echo "✓ Inline policy '{{policy-name}}' updated on role '{{role-name}}'."
 
 # Sync monitoring configs to S3 + EC2
 [group('ops')]
