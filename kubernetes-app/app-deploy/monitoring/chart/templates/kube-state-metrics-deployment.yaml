@@ -19,6 +19,8 @@ spec:
       securityContext:
         runAsUser: 65534
         runAsNonRoot: true
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
       containers:
         - name: kube-state-metrics
           image: {{ .Values.kubeStateMetrics.image }}
