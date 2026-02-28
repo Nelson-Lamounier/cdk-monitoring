@@ -649,7 +649,7 @@ jobs:
             aws logs tail "$LOG_GROUP" \
               --since "${WATCH_START}" \
               --format short \
-              --region "$REGION" 2>/dev/null || echo "(log group not yet created)"
+              --region "$REGION" 2>&1 || echo "  (log group not yet created)"
             echo "::endgroup::"
 
             case "$STATUS" in
@@ -693,7 +693,7 @@ jobs:
             aws logs tail "$LOG_GROUP" \
               --since "${WATCH_START}" \
               --format short \
-              --region "$REGION" 2>/dev/null || echo "(no logs available)"
+              --region "$REGION" 2>&1 || echo "  (no logs available)"
             echo "::endgroup::"
 
             # Also try to get the RunCommand output directly
