@@ -273,11 +273,18 @@ const k8sStacks: StackConfig[] = [
     dependsOn: ['data'],
   },
   {
+    id: 'ssmAutomation',
+    name: 'SSM Automation Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'ssmAutomation', env),
+    description: 'SSM Automation documents for K8s bootstrap orchestration (control plane + worker)',
+    dependsOn: ['base'],
+  },
+  {
     id: 'controlPlane',
     name: 'Control Plane Stack',
     getStackName: (env) => getStackId(Project.KUBERNETES, 'controlPlane', env),
     description: 'kubeadm Kubernetes control plane: EC2 + ASG + SSM documents + S3 scripts bucket',
-    dependsOn: ['base'],
+    dependsOn: ['base', 'ssmAutomation'],
   },
   {
     id: 'appWorker',
