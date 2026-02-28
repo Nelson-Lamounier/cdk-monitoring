@@ -21,7 +21,7 @@
 #   7.  Sync Static Assets          (S3 + CloudFront invalidation)
 #   8.  ArgoCD Health Gate          (wait for GitOps sync)
 #   9.  Verify & Smoke Tests
-#  10.  Deployment Failure Alert    (halt + preserve + alert)
+#  10.  Deployment Failure Alert    (halt + preserve + alert) - Test
 #  11.  Summary
 #
 # Concurrency:
