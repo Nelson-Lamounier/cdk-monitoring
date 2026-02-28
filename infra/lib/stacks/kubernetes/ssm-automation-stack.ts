@@ -228,6 +228,23 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             resources: ['*'],
         }));
 
+        // Permission: CloudWatch Logs for RunCommand output
+        automationRole.addToPolicy(new iam.PolicyStatement({
+            sid: 'AllowCloudWatchLogs',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'logs:CreateLogGroup',
+                'logs:CreateLogStream',
+                'logs:PutLogEvents',
+                'logs:DescribeLogGroups',
+                'logs:DescribeLogStreams',
+            ],
+            resources: [
+                `arn:aws:logs:${this.region}:${this.account}:log-group:/ssm${props.ssmPrefix}/*`,
+                `arn:aws:logs:${this.region}:${this.account}:log-group:/ssm${props.ssmPrefix}/*:*`,
+            ],
+        }));
+
         // TODO: SNS alerting (future)
         // Permission: Publish to SNS topic on step failure
         // automationRole.addToPolicy(new iam.PolicyStatement({
@@ -380,7 +397,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
                             `if [ ! -f "$SCRIPT" ]; then`,
                             `  echo "Step script not found locally, syncing from S3..."`,
                             `  mkdir -p "$STEPS_DIR"`,
-                            `  aws s3 sync "s3://{{ S3Bucket }}/k8s-bootstrap/boot/steps/" "$STEPS_DIR/" --region {{ Region }}`,
+                            `  aws s3 sync "s3://{{ S3Bucket }}/k8s-bootstrap/boot/steps/" "$STEPS_DIR/" --region {{ Region }} --quiet`,
                             `fi`,
                             ``,
                             `echo "=== Executing: ${step.name} ==="`,
