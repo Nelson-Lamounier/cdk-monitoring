@@ -235,9 +235,7 @@ describe('K8sSsmAutomationStack', () => {
                                 'ssm:GetParameter',
                                 'ssm:PutParameter',
                             ]),
-                            Resource: Match.arrayWith([
-                                Match.stringLikeRegexp('/k8s/development'),
-                            ]),
+                            Resource: Match.stringLikeRegexp('/k8s/development'),
                         }),
                     ]),
                 }),

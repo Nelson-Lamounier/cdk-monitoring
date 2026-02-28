@@ -205,14 +205,14 @@ describe('KubernetesControlPlaneStack', () => {
             });
         });
 
-        it('should download the boot script from S3', () => {
-            expect(containsPattern('aws s3 cp')).toBe(true);
-            expect(containsPattern('boot-k8s.sh')).toBe(true);
+        it('should look up SSM Automation document name', () => {
+            expect(containsPattern('ssm get-parameter')).toBe(true);
+            expect(containsPattern('bootstrap/control-plane-doc-name')).toBe(true);
         });
 
-        it('should execute the downloaded boot script', () => {
-            expect(containsPattern('exec')).toBe(true);
-            expect(containsPattern('BOOT_SCRIPT')).toBe(true);
+        it('should start SSM Automation execution', () => {
+            expect(containsPattern('ssm start-automation-execution')).toBe(true);
+            expect(containsPattern('DOC_NAME')).toBe(true);
         });
 
         // Ensure the externalization is maintained: no heavy bootstrap
