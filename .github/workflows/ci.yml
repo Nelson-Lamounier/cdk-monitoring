@@ -14,6 +14,9 @@
 #   - Deps Validation   → just deps-check-ci
 #   - Stack Tests       → just test-stacks
 #   - CDK Synthesis     → just ci-synth-validate
+#   - Helm Lint (all)   → just helm-lint
+#   - Helm Lint (mon)   → just helm-lint-monitoring
+#   - Helm Lint (next)  → just helm-lint-nextjs
 #   - Helm Validation   → helm lint + helm template + kubeconform
 #
 # Projects validated during CDK synthesis:
@@ -424,19 +427,26 @@ jobs:
         with:
           version: v3.17.1
 
+      - name: Install just
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
+
       - name: Install kubeconform
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
             | tar xz -C /usr/local/bin
 
       # -----------------------------------------------------------------
-      # Monitoring Chart
+      # Lint (via justfile recipes)
       # -----------------------------------------------------------------
       - name: Lint Monitoring Chart
-        run: |
-          helm lint kubernetes-app/app-deploy/monitoring/chart \
-            -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml
+        run: just helm-lint-monitoring
 
+      - name: Lint Next.js Chart
+        run: just helm-lint-nextjs
+
+      # -----------------------------------------------------------------
+      # Template Render + Schema Validation
+      # -----------------------------------------------------------------
       - name: Template Render (Monitoring)
         run: |
           helm template monitoring-stack \
@@ -452,14 +462,20 @@ jobs:
             -ignore-missing-schemas \
             /tmp/monitoring-rendered.yaml
 
-      # -----------------------------------------------------------------
-      # Next.js Chart (if present)
-      # -----------------------------------------------------------------
-      - name: Lint Next.js Chart
-        if: hashFiles('kubernetes-app/app-deploy/nextjs/helm/chart/Chart.yaml') != ''
+      - name: Template Render (Next.js)
         run: |
-          helm lint kubernetes-app/app-deploy/nextjs/helm/chart \
-            -f kubernetes-app/app-deploy/nextjs/nextjs-values.yaml 2>/dev/null || true
+          helm template nextjs-app \
+            kubernetes-app/app-deploy/nextjs/helm/chart \
+            -f kubernetes-app/app-deploy/nextjs/helm/nextjs-values.yaml \
+            --namespace nextjs-app \
+            > /tmp/nextjs-rendered.yaml
+
+      - name: Validate K8s Schemas (Next.js)
+        run: |
+          kubeconform -summary -strict \
+            -kubernetes-version 1.31.0 \
+            -ignore-missing-schemas \
+            /tmp/nextjs-rendered.yaml
 
       - name: Summary
         if: always()
@@ -469,6 +485,7 @@ jobs:
           echo "| Chart | Lint | Template | Schema |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Monitoring | ✅ | ✅ | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Next.js | ✅ | ✅ | ✅ |" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
   # CI Summary

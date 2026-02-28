@@ -1,0 +1,18 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nextjs
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "nextjs.fullLabels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: {{ .Values.ingress.matchRule }}
+      kind: Rule
+      services:
+        - name: nextjs
+          port: {{ .Values.service.port }}
+{{- end }}

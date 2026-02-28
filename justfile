@@ -382,6 +382,41 @@ k8s-reconfigure *ARGS:
 k8s-build-golden-ami env="development" region="eu-west-1":
     npx tsx kubernetes-app/infra-ami/scripts/build-golden-ami.ts {{env}} --region {{region}}
 
+# Lint all Helm charts (NextJS + Monitoring)
+[group('k8s')]
+helm-lint: helm-lint-nextjs helm-lint-monitoring
+
+# Lint NextJS Helm chart
+[group('k8s')]
+helm-lint-nextjs:
+    helm lint kubernetes-app/app-deploy/nextjs/helm/chart \
+      -f kubernetes-app/app-deploy/nextjs/helm/nextjs-values.yaml
+
+# Lint Monitoring Helm chart
+[group('k8s')]
+helm-lint-monitoring:
+    helm lint kubernetes-app/app-deploy/monitoring/chart \
+      -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml
+
+# Render templates and verify nodeSelector placement (role=application / role=monitoring)
+[group('k8s')]
+helm-verify-selectors:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=== NextJS Chart ==="
+    helm template nextjs-app \
+      kubernetes-app/app-deploy/nextjs/helm/chart \
+      -f kubernetes-app/app-deploy/nextjs/helm/nextjs-values.yaml \
+      --namespace nextjs-app | grep -c "role: application" | \
+      xargs -I{} echo "  nodeSelector entries: {} (expected 1)"
+    echo "=== Monitoring Chart ==="
+    helm template monitoring-stack \
+      kubernetes-app/app-deploy/monitoring/chart \
+      -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml \
+      --namespace monitoring | grep -c "role: monitoring" | \
+      xargs -I{} echo "  nodeSelector entries: {} (expected 7)"
+    echo "Done."
+
 # =============================================================================
 # CROSS-ACCOUNT & OPS (delegates to standalone scripts)
 # =============================================================================
@@ -409,10 +444,95 @@ deploy-steampipe-roles monitoring-account *ARGS:
       --monitoring-account {{monitoring-account}} \
       {{ARGS}}
 
+# Delete a CloudFormation stack (e.g., just delete-stack MyStack eu-west-1 dev-account)
+[group('ops')]
+delete-stack stack region profile:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "⚠  About to DELETE stack '{{stack}}' in region '{{region}}' using profile '{{profile}}'"
+    read -rp "Are you sure? (yes/no): " confirm
+    if [[ "$confirm" != "yes" ]]; then
+      echo "Aborted."
+      exit 0
+    fi
+    echo "→ Deleting stack '{{stack}}'…"
+    aws cloudformation delete-stack \
+      --stack-name "{{stack}}" \
+      --region "{{region}}" \
+      --profile "{{profile}}"
+    echo "→ Waiting for stack deletion to complete…"
+    aws cloudformation wait stack-delete-complete \
+      --stack-name "{{stack}}" \
+      --region "{{region}}" \
+      --profile "{{profile}}"
+    echo "✓ Stack '{{stack}}' deleted successfully."
+
 # Sync monitoring configs to S3 + EC2
 [group('ops')]
 sync-configs *ARGS:
     npx tsx infra/scripts/deployment/sync-monitoring-configs.ts {{ARGS}}
+
+# Sync k8s-bootstrap scripts to S3 (e.g., just sync-k8s-bootstrap development dev-account)
+[group('k8s')]
+sync-k8s-bootstrap environment="development" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_KEY="/k8s/{{environment}}/scripts-bucket"
+    echo "→ Looking up S3 bucket from SSM: ${SSM_KEY}"
+    BUCKET=$(aws ssm get-parameter \
+      --name "${SSM_KEY}" \
+      --query 'Parameter.Value' --output text \
+      --region eu-west-1 \
+      --profile "{{profile}}" 2>/dev/null | sed 's|^s3://||;s|/$||')
+    if [ -z "$BUCKET" ]; then
+      echo "❌ SSM parameter ${SSM_KEY} not found. Has the Infra pipeline been deployed?"
+      exit 1
+    fi
+    echo "→ Syncing kubernetes-app/k8s-bootstrap → s3://${BUCKET}/k8s-bootstrap/"
+    aws s3 sync kubernetes-app/k8s-bootstrap "s3://${BUCKET}/k8s-bootstrap/" \
+      --delete --region eu-west-1 --profile "{{profile}}"
+    FILE_COUNT=$(aws s3 ls "s3://${BUCKET}/k8s-bootstrap/" --recursive --profile "{{profile}}" | wc -l | tr -d ' ')
+    echo "✓ Bootstrap sync complete (${FILE_COUNT} files on S3)"
+
+# Sync app-deploy manifests (Helm charts) to S3 (e.g., just sync-k8s-app-deploy development dev-account)
+[group('k8s')]
+sync-k8s-app-deploy environment="development" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_KEY="/k8s/{{environment}}/scripts-bucket"
+    echo "→ Looking up S3 bucket from SSM: ${SSM_KEY}"
+    BUCKET=$(aws ssm get-parameter \
+      --name "${SSM_KEY}" \
+      --query 'Parameter.Value' --output text \
+      --region eu-west-1 \
+      --profile "{{profile}}" 2>/dev/null | sed 's|^s3://||;s|/$||')
+    if [ -z "$BUCKET" ]; then
+      echo "❌ SSM parameter ${SSM_KEY} not found. Has the Infra pipeline been deployed?"
+      exit 1
+    fi
+    echo "→ Syncing kubernetes-app/app-deploy → s3://${BUCKET}/app-deploy/"
+    aws s3 sync kubernetes-app/app-deploy "s3://${BUCKET}/app-deploy/" \
+      --delete --region eu-west-1 --profile "{{profile}}"
+    FILE_COUNT=$(aws s3 ls "s3://${BUCKET}/app-deploy/" --recursive --profile "{{profile}}" | wc -l | tr -d ' ')
+    echo "✓ App-deploy sync complete (${FILE_COUNT} files on S3)"
+
+# Sync ALL k8s content (bootstrap + app-deploy) to S3
+[group('k8s')]
+sync-k8s-all environment="development" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=== Syncing all K8s content to S3 ==="
+    echo ""
+    just sync-k8s-bootstrap "{{environment}}" "{{profile}}"
+    echo ""
+    just sync-k8s-app-deploy "{{environment}}" "{{profile}}"
+    echo ""
+    echo "✓ All K8s content synced"
+
+# Start an SSM session to an EC2 instance (e.g., just ec2-session i-09c7e747aad57520b development)
+[group('ops')]
+ec2-session instance-id environment="development":
+    aws ssm start-session --target {{instance-id}} --profile $(just _profile {{environment}})
 
 # =============================================================================
 # DOCUMENTATION
@@ -452,7 +572,23 @@ clean:
 clean-backups:
     find . \( -name '*.backup' -o -name '*.bak' -o -name '*.backup.ts' \) -not -path './node_modules/*' -delete
 
+# Preview untracked files that would be removed (dry run)
+[group('util')]
+clean-untracked:
+    git clean -fd --dry-run
+
+# Remove all untracked files and directories
+[group('util')]
+clean-untracked-force:
+    git clean -fd
+
+# Remove macOS duplicate " 2" files (created by Finder copy conflicts)
+[group('util')]
+clean-duplicates:
+    find . -name "* 2*" -not -path "./.git/*" -not -path "./node_modules/*" -delete
+
 # Install dependencies (all workspaces)
 [group('util')]
 install:
     yarn install
+
