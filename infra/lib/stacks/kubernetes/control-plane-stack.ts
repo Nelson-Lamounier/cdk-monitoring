@@ -177,7 +177,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
         // S3 Bucket (consumed from BaseStack — Day-1 safety)
         //
         // The scripts bucket lives in BaseStack so that the CI sync job can
-        // seed boot-k8s.sh BEFORE the Compute stack launches EC2 instances.
+        // seed bootstrap scripts BEFORE the Compute stack launches EC2 instances.
         // Content sync (k8s-bootstrap/, app-deploy/) is handled by CI via
         // `aws s3 sync`, NOT by CDK BucketDeployment.
         // =====================================================================

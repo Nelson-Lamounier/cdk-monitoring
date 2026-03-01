@@ -123,13 +123,13 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
         //
         // Steps:
         //   1. Export env vars (CDK tokens resolved at synth time)
-        //   2. Download boot-worker.sh from S3
+        //   2. Resolve SSM Automation document or fallback to Python orchestrator
         //   3. exec into boot script (handles join + cfn-signal)
         // =====================================================================
         const userData = ec2.UserData.forLinux();
         const { scriptsBucket } = baseStack;
 
-        // SSM paths used by boot-worker.sh for discovery
+        // SSM paths used by Python orchestrator for discovery
         const ssmPrefix = props.controlPlaneSsmPrefix;
         const tokenSsmPath = `${ssmPrefix}/join-token`;
         const caHashSsmPath = `${ssmPrefix}/ca-hash`;
@@ -185,6 +185,25 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
 
         // Grant S3 read for boot script download + orchestrator fallback
         scriptsBucket.grantRead(launchTemplateConstruct.instanceRole);
+
+        // Grant ECR pull for container images (Next.js from ECR)
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'EcrPullImages',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ecr:GetDownloadUrlForLayer',
+                'ecr:BatchGetImage',
+                'ecr:BatchCheckLayerAvailability',
+            ],
+            resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/*`],
+        }));
+
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'EcrAuthToken',
+            effect: iam.Effect.ALLOW,
+            actions: ['ecr:GetAuthorizationToken'],
+            resources: ['*'],
+        }));
 
         // Grant SSM Automation permissions — start/poll/publish execution ID
         launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({

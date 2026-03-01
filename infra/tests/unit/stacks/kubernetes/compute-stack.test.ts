@@ -154,7 +154,7 @@ describe('KubernetesControlPlaneStack', () => {
     // =========================================================================
     // User Data — slim bootstrap stub (16 KB limit enforcement)
     //
-    // Heavy logic was externalized to k8s/boot/boot-k8s.sh (uploaded to S3).
+    // Heavy logic was externalized to Python steps orchestrator (uploaded to S3).
     // Inline user data only: exports CDK token env vars, downloads the boot
     // script from S3, and executes it. AWS CLI is baked into the Golden AMI.
     // This reduced user data from ~18 KB → ~1.2 KB (93% reduction).

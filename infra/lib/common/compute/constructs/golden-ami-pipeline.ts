@@ -485,6 +485,36 @@ phases:
               echo "kubelet  — enabled (will start after kubeadm init/join)"
               echo "kubectl $(kubectl version --client -o yaml | grep gitVersion)"
 
+      - name: InstallEcrCredentialProvider
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              source /etc/environment  # ARCH set by DetectArchitecture step
+
+              # Install ecr-credential-provider for kubelet ECR authentication
+              # This allows kubelet to pull container images from private ECR repositories
+              # without pre-configured docker credentials or cron-based token refresh.
+              ECR_PROVIDER_VERSION="v1.31.1"
+              curl -fsSL "https://artifacts.k8s.io/binaries/cloud-provider-aws/\${ECR_PROVIDER_VERSION}/linux/\${ARCH}/ecr-credential-provider-linux-\${ARCH}" \
+                -o /usr/local/bin/ecr-credential-provider
+              chmod +x /usr/local/bin/ecr-credential-provider
+              echo "ecr-credential-provider \${ECR_PROVIDER_VERSION} installed"
+
+              # Create kubelet credential provider config
+              mkdir -p /etc/kubernetes
+              cat > /etc/kubernetes/image-credential-provider-config.yaml <<CREDEOF
+              apiVersion: kubelet.config.k8s.io/v1
+              kind: CredentialProviderConfig
+              providers:
+                - name: ecr-credential-provider
+                  matchImages:
+                    - "*.dkr.ecr.*.amazonaws.com"
+                  defaultCacheDuration: "12h"
+                  apiVersion: credentialprovider.kubelet.k8s.io/v1
+              CREDEOF
+              echo "Kubelet credential provider config created"
+
       - name: PreloadCalicoCNI
         action: ExecuteBash
         inputs:
@@ -504,7 +534,7 @@ phases:
           commands:
             - |
               # Install aws-cfn-bootstrap for CloudFormation signaling (cfn-signal)
-              # Previously installed at runtime in both boot-k8s.sh and boot-worker.sh
+              # Previously installed at runtime by bootstrap scripts
               dnf install -y aws-cfn-bootstrap
               test -f /opt/aws/bin/cfn-signal
               echo "aws-cfn-bootstrap installed (cfn-signal available)"
@@ -515,7 +545,7 @@ phases:
           commands:
             - |
               # Install Helm for Traefik ingress controller deployment
-              # Previously downloaded at runtime in boot-k8s.sh via get-helm-3 script
+              # Previously downloaded at runtime by bootstrap scripts via get-helm-3 script
               curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
               helm version --short
               echo "Helm installed"
@@ -560,6 +590,8 @@ phases:
             - helm version --short
             - python3 -c "import boto3; print('boto3', boto3.__version__)"
             - python3 -c "import yaml; print('pyyaml available')"
+            - test -f /usr/local/bin/ecr-credential-provider
+            - test -f /etc/kubernetes/image-credential-provider-config.yaml
             - echo "All kubeadm components verified"
 `;
     }
