@@ -150,6 +150,9 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
             machineImage: ec2.MachineImage.fromSsmParameter(
                 `${ssmPrefix}/golden-ami/latest`,
             ),
+            // Required: Kubernetes pod overlay networking (Calico) uses pod IPs
+            // that don't match ENI IPs — AWS drops this traffic unless disabled.
+            disableSourceDestCheck: true,
         });
 
         const logGroupName = launchTemplateConstruct.logGroup?.logGroupName

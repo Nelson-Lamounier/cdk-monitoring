@@ -145,6 +145,17 @@ export interface LaunchTemplateConstructProps {
 
     /** Log retention period @default ONE_MONTH */
     readonly logRetention?: logs.RetentionDays;
+
+    /**
+     * Disable Source/Destination Check on the network interface.
+     *
+     * Required for Kubernetes pod overlay networking (Calico, Flannel, etc.).
+     * Without this, AWS drops cross-node pod traffic because pod IPs
+     * don't match the ENI's private IP.
+     *
+     * @default false (AWS default: source/dest check enabled)
+     */
+    readonly disableSourceDestCheck?: boolean;
 }
 
 /**
@@ -251,6 +262,31 @@ export class LaunchTemplateConstruct extends Construct {
             // UserData.forLinux() would add a shebang-only script to every instance.
             userData: props.userData,
         });
+
+        // =================================================================
+        // SOURCE/DEST CHECK OVERRIDE (Kubernetes overlay networking)
+        //
+        // When disableSourceDestCheck is true, we use a CloudFormation
+        // escape hatch to set SourceDestCheck: false via NetworkInterfaces.
+        // CloudFormation requires SecurityGroupIds to be removed when
+        // NetworkInterfaces is present (they are mutually exclusive).
+        // =================================================================
+        if (props.disableSourceDestCheck) {
+            const cfnLaunchTemplate = this.launchTemplate.node.defaultChild as ec2.CfnLaunchTemplate;
+
+            // Remove top-level SecurityGroupIds (mutually exclusive with NetworkInterfaces)
+            cfnLaunchTemplate.addPropertyDeletionOverride('LaunchTemplateData.SecurityGroupIds');
+
+            // Add NetworkInterfaces with SourceDestCheck disabled
+            cfnLaunchTemplate.addPropertyOverride(
+                'LaunchTemplateData.NetworkInterfaces',
+                [{
+                    DeviceIndex: 0,
+                    Groups: [props.securityGroup.securityGroupId],
+                    SourceDestCheck: false,
+                }],
+            );
+        }
 
         // =================================================================
         // TAGS
