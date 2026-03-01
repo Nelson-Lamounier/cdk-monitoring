@@ -191,7 +191,7 @@ jobs:
           echo "domain-name=$DOMAIN" >> $GITHUB_OUTPUT
           echo "hosted-zone-id=$HZ_ID" >> $GITHUB_OUTPUT
           echo "cross-account-role-arn=$ROLE_ARN" >> $GITHUB_OUTPUT
-          echo "✓ Edge config: $DOMAIN (Zone: $HZ_ID)"
+          echo "[OK] Edge config: $DOMAIN (Zone: $HZ_ID)"
 
       - name: Synthesize & Determine Stack Names
         id: synth
@@ -461,7 +461,7 @@ jobs:
           aws s3 sync "$SOURCE_DIR" "s3://${BUCKET}/k8s-bootstrap/" \
             --delete --region "${REGION}"
 
-          echo "✓ ${FILE_COUNT} bootstrap files seeded — EC2 instances can now boot safely"
+          echo "[OK] ${FILE_COUNT} bootstrap files seeded — EC2 instances can now boot safely"
 
   # ===========================================================================
   # Deploy SSM Automation Stack — Bootstrap Orchestration Documents
@@ -562,7 +562,7 @@ jobs:
   # Observational only — does not block the pipeline.
   # ===========================================================================
   watch-ssm-bootstrap:
-    name: Watch SSM Bootstrap
+    name: SSM Bootstrap Observer
     needs: [setup, deploy-ssm-automation]
     if: >-
       always()
@@ -583,11 +583,12 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
           audience: sts.amazonaws.com
 
-      - name: Watch SSM Bootstrap Progress
+      - name: Stream SSM Bootstrap Logs
         env:
           SSM_PREFIX: /k8s/${{ inputs.environment }}
           REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
           LOG_GROUP: /ssm/k8s/${{ inputs.environment }}/bootstrap
+          EC2_LOG_GROUP: /ec2/k8s-${{ inputs.cdk-environment || inputs.environment }}/instances
         run: |
           echo "=== Watching SSM Automation Bootstrap ==="
           WATCH_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)  # ISO 8601 for aws logs tail --since
@@ -633,20 +634,28 @@ jobs:
             STATUS=$(echo "$EXECUTION" | jq -r '.AutomationExecution.AutomationExecutionStatus')
 
             # Show step-level progress
-            echo "::group::📋 SSM Bootstrap Steps (Status: $STATUS)"
+            echo "::group::SSM Bootstrap Steps (Status: $STATUS)"
             echo "$EXECUTION" | jq -r '
               .AutomationExecution.StepExecutions[] |
-              if .StepStatus == "Success" then "  ✅ \(.StepName)"
-              elif .StepStatus == "Failed" then "  ❌ \(.StepName): \(.FailureMessage // "unknown")"
-              elif .StepStatus == "InProgress" then "  🔄 \(.StepName) (running...)"
-              else "  ⏳ \(.StepName) (\(.StepStatus))"
+              if .StepStatus == "Success" then "  [PASS] \(.StepName)"
+              elif .StepStatus == "Failed" then "  [FAIL] \(.StepName): \(.FailureMessage // "unknown")"
+              elif .StepStatus == "InProgress" then "  [RUN]  \(.StepName)"
+              else "  [WAIT] \(.StepName) (\(.StepStatus))"
               end
             ' 2>/dev/null || true
             echo "::endgroup::"
 
             # Stream recent CloudWatch logs for this run
-            echo "::group::📜 Bootstrap Logs (CloudWatch)"
+            echo "::group::Bootstrap Logs (CloudWatch)"
             aws logs tail "$LOG_GROUP" \
+              --since "${WATCH_START}" \
+              --format short \
+              --region "$REGION" 2>&1 || echo "  (log group not yet created)"
+            echo "::endgroup::"
+
+            # Stream EC2 boot logs (cloud-init, kubelet, boot-k8s.sh output)
+            echo "::group::EC2 Boot Logs (CloudWatch)"
+            aws logs tail "$EC2_LOG_GROUP" \
               --since "${WATCH_START}" \
               --format short \
               --region "$REGION" 2>&1 || echo "  (log group not yet created)"
@@ -670,16 +679,23 @@ jobs:
           echo ""
           # ── Final result ────────────────────────────────────────────
           if [ "$FINAL_STATUS" = "success" ]; then
-            echo "✅ SSM Automation completed successfully"
+            echo "[PASS] SSM Automation completed successfully"
 
-            echo "::group::📜 Full Bootstrap Logs"
+            echo "::group::Full Bootstrap Logs"
             aws logs tail "$LOG_GROUP" \
               --since "${WATCH_START}" \
               --format short \
               --region "$REGION" 2>&1 || true
             echo "::endgroup::"
+
+            echo "::group::Full EC2 Boot Logs"
+            aws logs tail "$EC2_LOG_GROUP" \
+              --since "${WATCH_START}" \
+              --format short \
+              --region "$REGION" 2>&1 || true
+            echo "::endgroup::"
           else
-            echo "❌ SSM Automation $FINAL_STATUS"
+            echo "[FAIL] SSM Automation $FINAL_STATUS"
 
             # Show failed step details
             echo "$EXECUTION" | jq -r '
@@ -689,8 +705,15 @@ jobs:
             ' 2>/dev/null || true
 
             # Dump full CloudWatch logs for debugging
-            echo "::group::📜 Full Bootstrap Logs (for debugging)"
+            echo "::group::Full Bootstrap Logs (for debugging)"
             aws logs tail "$LOG_GROUP" \
+              --since "${WATCH_START}" \
+              --format short \
+              --region "$REGION" 2>&1 || echo "  (no logs available)"
+            echo "::endgroup::"
+
+            echo "::group::Full EC2 Boot Logs (for debugging)"
+            aws logs tail "$EC2_LOG_GROUP" \
               --since "${WATCH_START}" \
               --format short \
               --region "$REGION" 2>&1 || echo "  (no logs available)"
@@ -702,7 +725,7 @@ jobs:
             if [ -n "$COMMAND_ID" ]; then
               INSTANCE_ID=$(echo "$EXECUTION" | jq -r '.AutomationExecution.Parameters.InstanceId[0] // empty' 2>/dev/null || echo "")
               if [ -n "$INSTANCE_ID" ]; then
-                echo "::group::📋 RunCommand Output ($FAILED_STEP)"
+                echo "::group::RunCommand Output ($FAILED_STEP)"
                 aws ssm get-command-invocation \
                   --command-id "$COMMAND_ID" \
                   --instance-id "$INSTANCE_ID" \
@@ -722,7 +745,7 @@ jobs:
   # Observational only — does not block the pipeline.
   # ===========================================================================
   monitor-worker-join:
-    name: Monitor Worker Join
+    name: Worker Stack Observer
     needs: [setup, deploy-controlplane]
     if: always() && needs.deploy-controlplane.result == 'success'
     runs-on: ubuntu-latest
@@ -738,7 +761,7 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
           audience: sts.amazonaws.com
 
-      - name: Monitor Worker Stack Progress
+      - name: Stream Worker Stack Events
         env:
           APP_WORKER_STACK: ${{ needs.setup.outputs.worker-stack }}
           MON_WORKER_STACK: ${{ needs.setup.outputs.monitoring-worker-stack }}
@@ -833,7 +856,7 @@ jobs:
               # Check if stack is stale (deploy job never started CloudFormation)
               if [ "${STACK_STALE_COUNT[$STACK_NAME]}" -ge "$STALE_THRESHOLD" ]; then
                 STACK_DONE[$STACK_NAME]=true
-                echo "[$TIMESTAMP] $LABEL | ⚠️  NOT STARTED — no CloudFormation activity after ${STALE_THRESHOLD} polls"
+                echo "[$TIMESTAMP] $LABEL | [WARN] NOT STARTED — no CloudFormation activity after ${STALE_THRESHOLD} polls"
                 echo "[$TIMESTAMP] $LABEL |    Deploy job may have failed at CI level before reaching CDK deploy"
                 continue
               fi
@@ -856,9 +879,9 @@ jobs:
                 *COMPLETE|*FAILED|*ROLLBACK_COMPLETE)
                   STACK_DONE[$STACK_NAME]=true
                   if [[ "$STACK_STATUS" == *"COMPLETE" ]] && [[ "$STACK_STATUS" != *"ROLLBACK"* ]]; then
-                    echo "[$TIMESTAMP] $LABEL | ✅ Stack update completed successfully"
+                    echo "[$TIMESTAMP] $LABEL | [PASS] Stack update completed successfully"
                   else
-                    echo "[$TIMESTAMP] $LABEL | ❌ Stack update failed: $STACK_STATUS"
+                    echo "[$TIMESTAMP] $LABEL | [FAIL] Stack update failed: $STACK_STATUS"
                   fi
                   ;;
                 *)
@@ -886,7 +909,7 @@ jobs:
           for STACK_NAME in "${STACKS[@]}"; do
             LABEL=$(echo "$STACK_NAME" | grep -oE '(App|Monitoring)Worker' || echo "$STACK_NAME")
             if [ "${STACK_STALE_COUNT[$STACK_NAME]}" -ge "$STALE_THRESHOLD" ]; then
-              echo "| $LABEL | ⚠️ NOT STARTED (deploy job failed at CI level) |"
+              echo "| $LABEL | [WARN] NOT STARTED (deploy job failed at CI level) |"
             else
               FINAL=$(aws cloudformation describe-stacks \
                 --stack-name "$STACK_NAME" \
@@ -1072,7 +1095,7 @@ jobs:
             if [ -n "$TOKEN" ]; then
               echo "::add-mask::$TOKEN"
               echo "token=$TOKEN" >> $GITHUB_OUTPUT
-              echo "✓ ArgoCD token retrieved (attempt $i/${MAX_ATTEMPTS})"
+              echo "[OK] ArgoCD token retrieved (attempt $i/${MAX_ATTEMPTS})"
               exit 0
             fi
 
@@ -1121,7 +1144,7 @@ jobs:
               "${ARGOCD_SERVER}/api/v1/applications" 2>/dev/null || echo "000")
 
             if [ "$HTTP_CODE" = "200" ]; then
-              echo "✅ ArgoCD server is reachable (HTTP ${HTTP_CODE})"
+              echo "[PASS] ArgoCD server is reachable (HTTP ${HTTP_CODE})"
               echo "   Per-application health will be verified by Pipeline B (GitOps pipeline)."
               exit 0
             fi
@@ -1302,7 +1325,7 @@ jobs:
               echo "$EVENTS" >> $GITHUB_STEP_SUMMARY
               echo '```' >> $GITHUB_STEP_SUMMARY
             else
-              echo "✅ No failed events" >> $GITHUB_STEP_SUMMARY
+              echo "[PASS] No failed events" >> $GITHUB_STEP_SUMMARY
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
           done
