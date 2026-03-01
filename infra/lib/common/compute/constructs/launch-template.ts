@@ -266,26 +266,35 @@ export class LaunchTemplateConstruct extends Construct {
         // =================================================================
         // SOURCE/DEST CHECK OVERRIDE (Kubernetes overlay networking)
         //
-        // When disableSourceDestCheck is true, we use a CloudFormation
-        // escape hatch to set SourceDestCheck: false via NetworkInterfaces.
-        // CloudFormation requires SecurityGroupIds to be removed when
-        // NetworkInterfaces is present (they are mutually exclusive).
+        // CloudFormation's LaunchTemplate NetworkInterfaces does NOT
+        // support the SourceDestCheck property — it's only available on
+        // AWS::EC2::Instance and via the EC2 ModifyInstanceAttribute API.
+        //
+        // Instead, we prepend a user data script that disables source/dest
+        // check via the EC2 API on boot using IMDSv2. This runs before
+        // any Kubernetes networking starts.
         // =================================================================
-        if (props.disableSourceDestCheck) {
-            const cfnLaunchTemplate = this.launchTemplate.node.defaultChild as ec2.CfnLaunchTemplate;
-
-            // Remove top-level SecurityGroupIds (mutually exclusive with NetworkInterfaces)
-            cfnLaunchTemplate.addPropertyDeletionOverride('LaunchTemplateData.SecurityGroupIds');
-
-            // Add NetworkInterfaces with SourceDestCheck disabled
-            cfnLaunchTemplate.addPropertyOverride(
-                'LaunchTemplateData.NetworkInterfaces',
-                [{
-                    DeviceIndex: 0,
-                    Groups: [props.securityGroup.securityGroupId],
-                    SourceDestCheck: false,
-                }],
+        if (props.disableSourceDestCheck && props.userData) {
+            props.userData.addCommands(
+                '# --- Disable Source/Dest Check (required for Kubernetes overlay networking) ---',
+                '# Calico uses pod IPs (e.g. 192.168.x.x) that differ from the ENI IP.',
+                '# Without this, AWS drops cross-node pod traffic.',
+                'TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")',
+                'INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)',
+                'REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)',
+                'aws ec2 modify-instance-attribute --instance-id "$INSTANCE_ID" --no-source-dest-check --region "$REGION"',
+                'echo "Source/Dest Check disabled for $INSTANCE_ID"',
+                '',
             );
+
+            // Grant ec2:ModifyInstanceAttribute so the user data script can
+            // disable source/dest check on the instance it's running on.
+            this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+                sid: 'DisableSourceDestCheck',
+                effect: iam.Effect.ALLOW,
+                actions: ['ec2:ModifyInstanceAttribute'],
+                resources: ['*'],
+            }));
         }
 
         // =================================================================
