@@ -206,6 +206,28 @@ jobs:
           echo "Expected Applications: ${EXPECTED_APPS[*]}"
           echo ""
 
+          # ── Diagnostic probe (first app only) to surface auth/network errors ──
+          PROBE_APP="${EXPECTED_APPS[0]}"
+          PROBE_URL="${ARGOCD_URL}/api/v1/applications/${PROBE_APP}"
+          echo "Diagnostic probe: GET ${PROBE_URL}"
+          HTTP_CODE=$(curl -sk --max-time 10 -o /tmp/argocd_probe.json -w '%{http_code}' \
+            -H "Authorization: Bearer $ARGOCD_TOKEN" \
+            "$PROBE_URL" 2>/dev/null || echo "000")
+          echo "  HTTP Status: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "  Response body (first 500 chars):"
+            head -c 500 /tmp/argocd_probe.json 2>/dev/null || true
+            echo ""
+            if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
+              echo ""
+              echo "  [ERROR] Authentication failed. The CI bot token may be expired or revoked."
+              echo "  Regenerate it: just argocd-ci-token"
+            elif [ "$HTTP_CODE" = "000" ]; then
+              echo "  [ERROR] ArgoCD API is unreachable (connection refused or timeout)."
+            fi
+          fi
+          echo ""
+
           for POLL in $(seq 1 $MAX_POLLS); do
             TIMESTAMP=$(date -u +"%H:%M:%S")
             ALL_SYNCED=true
@@ -219,6 +241,14 @@ jobs:
 
               if [ -z "$RESPONSE" ]; then
                 echo "  $APP: [WARN] API unreachable"
+                ALL_SYNCED=false
+                continue
+              fi
+
+              # Check for API errors (auth failures, not-found, etc.)
+              ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error // empty' 2>/dev/null || true)
+              if [ -n "$ERROR_MSG" ]; then
+                echo "  $APP: [ERROR] $ERROR_MSG"
                 ALL_SYNCED=false
                 continue
               fi
