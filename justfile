@@ -421,6 +421,30 @@ helm-verify-selectors:
       xargs -I{} echo "  nodeSelector entries: {} (expected 7)"
     echo "Done."
 
+# Check SourceDestCheck status on all K8s compute instances
+# Filters by Stack tag to show only K8s nodes (control-plane, app-worker, mon-worker).
+# SourceDestCheck must be false for Calico direct routing (VXLANCrossSubnet + same subnet).
+[group('k8s')]
+k8s-check-source-dest region="eu-west-1" profile="dev-account":
+    aws ec2 describe-instances \
+      --filters \
+        "Name=tag:Stack,Values=KubernetesCompute,KubernetesWorkerApp,KubernetesWorkerMonitoring" \
+        "Name=instance-state-name,Values=running" \
+      --query 'Reservations[].Instances[].[InstanceId,Tags[?Key==`Name`].Value|[0],NetworkInterfaces[0].SourceDestCheck]' \
+      --output table \
+      --region {{region}} \
+      --profile {{profile}}
+
+# List all running EC2 instances with private IP and SourceDestCheck
+[group('k8s')]
+ec2-list-instances region="eu-west-1" profile="dev-account":
+    aws ec2 describe-instances \
+      --filters "Name=instance-state-name,Values=running" \
+      --query 'Reservations[].Instances[].[InstanceId,PrivateIpAddress,Tags[?Key==`Name`].Value|[0],NetworkInterfaces[0].SourceDestCheck]' \
+      --output table \
+      --region {{region}} \
+      --profile {{profile}}
+
 # =============================================================================
 # CROSS-ACCOUNT & OPS (delegates to standalone scripts)
 # =============================================================================
