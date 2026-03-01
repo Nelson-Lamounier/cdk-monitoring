@@ -162,7 +162,7 @@ jobs:
             exit 0
           fi
 
-          echo "argocd-url=https://${EIP}/argocd" >> $GITHUB_OUTPUT
+          echo "argocd-url=http://${EIP}/argocd" >> $GITHUB_OUTPUT
           echo "skip=false" >> $GITHUB_OUTPUT
 
       - name: Retrieve CI Bot Token
@@ -210,7 +210,7 @@ jobs:
           PROBE_APP="${EXPECTED_APPS[0]}"
           PROBE_URL="${ARGOCD_URL}/api/v1/applications/${PROBE_APP}"
           echo "Diagnostic probe: GET ${PROBE_URL}"
-          HTTP_CODE=$(curl -sk --max-time 10 -o /tmp/argocd_probe.json -w '%{http_code}' \
+          HTTP_CODE=$(curl -s --max-time 10 -o /tmp/argocd_probe.json -w '%{http_code}' \
             -H "Authorization: Bearer $ARGOCD_TOKEN" \
             "$PROBE_URL" 2>/dev/null || echo "000")
           echo "  HTTP Status: $HTTP_CODE"
@@ -235,7 +235,7 @@ jobs:
             echo "--- Poll $POLL/$MAX_POLLS ($TIMESTAMP) ---"
 
             for APP in "${EXPECTED_APPS[@]}"; do
-              RESPONSE=$(curl -sk --max-time 10 \
+              RESPONSE=$(curl -s --max-time 10 \
                 -H "Authorization: Bearer $ARGOCD_TOKEN" \
                 "${ARGOCD_URL}/api/v1/applications/${APP}" 2>/dev/null || true)
 
