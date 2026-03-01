@@ -445,6 +445,17 @@ ec2-list-instances region="eu-west-1" profile="dev-account":
       --region {{region}} \
       --profile {{profile}}
 
+# Disable SourceDestCheck on a specific EC2 instance
+# Required for Kubernetes pod networking (Calico direct routing / VXLANCrossSubnet).
+# Usage: just ec2-disable-source-dest-check i-069286d4c9098608b
+[group('k8s')]
+ec2-disable-source-dest-check instance-id region="eu-west-1" profile="dev-account":
+    aws ec2 modify-instance-attribute \
+      --instance-id {{instance-id}} \
+      --no-source-dest-check \
+      --region {{region}} \
+      --profile {{profile}}
+
 # =============================================================================
 # CROSS-ACCOUNT & OPS (delegates to standalone scripts)
 # =============================================================================
