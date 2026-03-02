@@ -393,6 +393,26 @@ jobs:
           echo "Monitoring Image Builder build triggered by CloudFormation..."
           echo ""
 
+          STACK_NAME="${{ needs.setup.outputs.goldenami-stack }}"
+
+          # ── Pre-check: is CloudFormation actually building an image? ──
+          # Query the stack for an ImageBuilder::Image resource in CREATE_IN_PROGRESS
+          # or UPDATE_IN_PROGRESS. If the stack is already COMPLETE, exit early.
+          CFN_IMAGE_STATUS=$(aws cloudformation describe-stack-events \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query "StackEvents[?ResourceType=='AWS::ImageBuilder::Image' && (ResourceStatus=='CREATE_IN_PROGRESS' || ResourceStatus=='UPDATE_IN_PROGRESS')].ResourceStatus" \
+            --output text 2>/dev/null | head -1 || echo "")
+
+          if [ -z "$CFN_IMAGE_STATUS" ]; then
+            echo "[INFO] No CfnImage resource is being created/updated in $STACK_NAME"
+            echo "  Stack has no active Image Builder build — skipping observer."
+            exit 0
+          fi
+
+          echo "CfnImage resource is $CFN_IMAGE_STATUS — monitoring build..."
+          echo ""
+
           # ── Resolve S3 log prefix ───────────────────────────────────
           SSM_PREFIX="/k8s/${CDK_ENV}"
           S3_BUCKET=$(aws ssm get-parameter \
