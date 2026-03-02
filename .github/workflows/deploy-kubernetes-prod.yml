@@ -37,7 +37,6 @@ on:
       - ".github/workflows/deploy-kubernetes-prod.yml"
       - ".github/workflows/_deploy-kubernetes.yml"
       - ".github/workflows/_deploy-stack.yml"
-      - ".github/workflows/_build-golden-ami.yml"
       - ".github/workflows/_iac-security-scan.yml"
       - ".github/actions/**"
   workflow_dispatch:

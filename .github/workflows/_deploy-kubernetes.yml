@@ -77,11 +77,7 @@ on:
         required: false
         type: string
         default: ""
-      enable-golden-ami-build:
-        description: "Trigger Golden AMI build after Data stack deploys"
-        required: false
-        default: true
-        type: boolean
+
     secrets:
       AWS_OIDC_ROLE:
         description: "AWS OIDC role ARN"
@@ -362,48 +358,19 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Build Golden AMI (2c — BEFORE Compute)
+  # Golden AMI Deploy Observer — Real-time build log streaming (parallel)
   #
-  # Triggers Image Builder to bake containerd + kubeadm into a Golden AMI.
-  # Runs AFTER S3 bootstrap sync so the boot script is available, but
-  # BEFORE Compute so the control plane launches from the baked AMI.
-  #
-  # Rebuild detection:
-  #   Day-0: SSM matches parent → first bake triggered
-  #   Day-1+: Compares component hash (CDK) vs last-built hash (pipeline)
-  #           Hash mismatch → stale AMI deregistered → fresh bake
-  #           Hash match    → skip (AMI is current)
-  # ===========================================================================
-  build-golden-ami:
-    name: Build Golden AMI
-    needs: [setup, sync-bootstrap-content, deploy-goldenami]
-    if: >-
-      always()
-      && needs.sync-bootstrap-content.result == 'success'
-      && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
-      && inputs.enable-golden-ami-build
-    uses: ./.github/workflows/_build-golden-ami.yml
-    with:
-      environment: ${{ inputs.environment }}
-      cdk-environment: ${{ inputs.cdk-environment }}
-    secrets:
-      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
-
-  # ===========================================================================
-  # AMI Build Observer — Real-time build log streaming (parallel)
-  #
-  # Runs alongside build-golden-ami. Polls Image Builder status every 60s
-  # and streams S3 build logs directly into GitHub Actions output.
+  # Runs alongside deploy-goldenami. CloudFormation's CfnImage triggers
+  # Image Builder inline (~15-25 min). This observer polls the build status
+  # every 60s and streams S3 + CloudWatch logs into GitHub Actions output.
   # Observational only — does not block the pipeline.
   # ===========================================================================
-  ami-build-observer:
-    name: AMI Build Observer
-    needs: [setup, sync-bootstrap-content, deploy-goldenami]
+  goldenami-deploy-observer:
+    name: Golden AMI Deploy Observer
+    needs: [setup, deploy-base]
     if: >-
       always()
-      && needs.sync-bootstrap-content.result == 'success'
-      && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
-      && inputs.enable-golden-ami-build
+      && needs.deploy-base.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: ${{ inputs.environment }}
@@ -417,57 +384,13 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
           audience: sts.amazonaws.com
 
-      - name: Stream AMI Build Logs
+      - name: Stream Image Builder Logs
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
         run: |
-          echo "=== AMI Build Observer ==="
-          PIPELINE_NAME="k8s-${CDK_ENV}-golden-ami-pipeline"
-          WATCH_START=$(date -u +%s)
-
-          # ── Wait for an active Image Builder build ──────────────────
-          MAX_WAIT=300
-          WAITED=0
-          BUILD_ARN=""
-
-          # Find the pipeline ARN
-          PIPELINE_ARN=$(aws imagebuilder list-image-pipelines \
-            --query "imagePipelineList[?name=='${PIPELINE_NAME}'].arn | [0]" \
-            --output text --region "$REGION" 2>/dev/null || echo "None")
-
-          if [ "$PIPELINE_ARN" = "None" ] || [ -z "$PIPELINE_ARN" ]; then
-            echo "[WARN] Image Builder pipeline not found: $PIPELINE_NAME"
-            echo "  Deploy the Compute stack first."
-            exit 0
-          fi
-
-          echo "Pipeline: $PIPELINE_ARN"
-          echo "Waiting for active build..."
-
-          while [ -z "$BUILD_ARN" ] && [ $WAITED -lt $MAX_WAIT ]; do
-            # Look for builds started after this observer began
-            BUILD_ARN=$(aws imagebuilder list-image-pipeline-images \
-              --image-pipeline-arn "$PIPELINE_ARN" \
-              --query "imageSummaryList[?state.status=='BUILDING' || state.status=='TESTING' || state.status=='DISTRIBUTING'].arn | [0]" \
-              --output text --region "$REGION" 2>/dev/null || echo "")
-
-            if [ "$BUILD_ARN" = "None" ] || [ -z "$BUILD_ARN" ]; then
-              BUILD_ARN=""
-              echo "  Waiting for build to start... (${WAITED}s / ${MAX_WAIT}s)"
-              sleep 15
-              WAITED=$((WAITED + 15))
-            fi
-          done
-
-          if [ -z "$BUILD_ARN" ]; then
-            echo "[INFO] No active build detected after ${MAX_WAIT}s"
-            echo "  Build may have been skipped (AMI already current) or completed quickly."
-            exit 0
-          fi
-
-          echo ""
-          echo "Tracking build: $BUILD_ARN"
+          echo "=== Golden AMI Deploy Observer ==="
+          echo "Monitoring Image Builder build triggered by CloudFormation..."
           echo ""
 
           # ── Resolve S3 log prefix ───────────────────────────────────
@@ -477,7 +400,53 @@ jobs:
             --query 'Parameter.Value' --output text \
             --region "$REGION" 2>/dev/null || echo "")
           S3_LOG_PREFIX="s3://${S3_BUCKET}/image-builder-logs/"
-          LAST_LOG_COUNT=0
+
+          # ── Wait for an active Image Builder build ──────────────────
+          MAX_WAIT=300
+          WAITED=0
+          BUILD_ARN=""
+
+          echo "Waiting for Image Builder build to start (CFN creates it)..."
+
+          while [ -z "$BUILD_ARN" ] && [ $WAITED -lt $MAX_WAIT ]; do
+            # Find any active builds across all Image Builder images
+            BUILD_ARN=$(aws imagebuilder list-images \
+              --query "imageVersionList[*].arn" \
+              --output text --region "$REGION" 2>/dev/null | tr '\t' '\n' | head -1 || echo "")
+
+            # Check for building/testing/distributing images
+            for IMG_ARN in $(aws imagebuilder list-images \
+              --query "imageVersionList[*].arn" \
+              --output text --region "$REGION" 2>/dev/null || echo ""); do
+
+              IMG_STATUS=$(aws imagebuilder get-image \
+                --image-build-version-arn "$IMG_ARN" \
+                --query 'image.state.status' --output text \
+                --region "$REGION" 2>/dev/null || echo "")
+
+              case "$IMG_STATUS" in
+                BUILDING|TESTING|DISTRIBUTING|INTEGRATING)
+                  BUILD_ARN="$IMG_ARN"
+                  break 2
+                  ;;
+              esac
+            done
+
+            BUILD_ARN=""
+            echo "  Waiting for build to start... (${WAITED}s / ${MAX_WAIT}s)"
+            sleep 15
+            WAITED=$((WAITED + 15))
+          done
+
+          if [ -z "$BUILD_ARN" ]; then
+            echo "[INFO] No active build detected after ${MAX_WAIT}s"
+            echo "  CloudFormation may have detected no changes (AMI already current)."
+            exit 0
+          fi
+
+          echo ""
+          echo "Tracking build: $BUILD_ARN"
+          echo ""
 
           # ── Poll build status + stream logs ─────────────────────────
           MAX_POLLS=35
@@ -565,7 +534,7 @@ jobs:
           done
 
           echo ""
-          echo "::warning::AMI Build Observer timed out after ${MAX_POLLS}m"
+          echo "::warning::Golden AMI Deploy Observer timed out after ${MAX_POLLS}m"
 
   # ===========================================================================
   # Deploy Base Stack (2/6) — VPC networking + SG + KMS + EBS + EIP
@@ -588,10 +557,9 @@ jobs:
   # ===========================================================================
   # Deploy Golden AMI Stack (Image Builder Pipeline)
   #
-  # Creates the EC2 Image Builder pipeline as a standalone stack.
-  # Must deploy BEFORE build-golden-ami so the pipeline resource exists
-  # when the AMI build job tries to trigger it. This eliminates the
-  # Day-1 chicken-and-egg.
+  # Creates the CfnImage resource that builds the Golden AMI inline.
+  # CloudFormation triggers Image Builder and waits for the AMI to be
+  # built (~15-25 min). The AMI ID is stored in SSM by CloudFormation.
   # ===========================================================================
   deploy-goldenami:
     name: Deploy Golden AMI
@@ -599,7 +567,6 @@ jobs:
     if: >-
       always()
       && needs.deploy-base.result == 'success'
-      && inputs.enable-golden-ami-build
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.goldenami-stack }}
@@ -708,13 +675,13 @@ jobs:
         setup,
         deploy-base,
         sync-bootstrap-content,
-        build-golden-ami,
+        deploy-goldenami,
         deploy-ssm-automation,
       ]
     if: >-
       always()
       && needs.sync-bootstrap-content.result == 'success'
-      && (needs.build-golden-ami.result == 'success' || needs.build-golden-ami.result == 'skipped')
+      && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
       && needs.deploy-ssm-automation.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
@@ -1754,7 +1721,7 @@ jobs:
       - drift-detection
       - deploy-data
       - deploy-controlplane
-      - build-golden-ami
+      - deploy-goldenami
       - deploy-app-worker
       - deploy-monitoring-worker
       - deploy-edge

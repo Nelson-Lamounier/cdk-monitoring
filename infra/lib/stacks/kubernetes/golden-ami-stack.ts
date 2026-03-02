@@ -67,6 +67,8 @@ export interface GoldenAmiStackProps extends cdk.StackProps {
 export class GoldenAmiStack extends cdk.Stack {
     /** The underlying pipeline construct (for cross-stack references if needed) */
     public readonly pipeline: GoldenAmiPipelineConstruct;
+    /** The AMI ID produced by Image Builder */
+    public readonly imageId: string;
 
     constructor(scope: Construct, id: string, props: GoldenAmiStackProps) {
         super(scope, id, props);
@@ -82,5 +84,6 @@ export class GoldenAmiStack extends cdk.Stack {
             securityGroupId: baseStack.securityGroup.securityGroupId,
             scriptsBucket: baseStack.scriptsBucket,
         });
+        this.imageId = this.pipeline.imageId;
     }
 }

@@ -71,8 +71,12 @@ export interface GoldenAmiPipelineProps {
 
 export class GoldenAmiPipelineConstruct extends Construct {
 
-    /** The Image Builder pipeline */
-    public readonly pipeline: imagebuilder.CfnImagePipeline;
+    /** The Image Builder image (CloudFormation-built) */
+    public readonly image: imagebuilder.CfnImage;
+    /** The AMI ID produced by Image Builder */
+    public readonly imageId: string;
+    /** SSM parameter storing the latest AMI ID */
+    public readonly amiSsmParameter: ssm.StringParameter;
     /** IAM role used by Image Builder instances */
     public readonly instanceRole: iam.Role;
     /** Instance profile used by Image Builder */
@@ -187,53 +191,11 @@ export class GoldenAmiPipelineConstruct extends Construct {
         scriptsBucket.grantWrite(this.instanceRole, 'image-builder-logs/*');
 
         // -----------------------------------------------------------------
-        // 5. SSM Parameter — stores latest AMI ID
-        //
-        // The SSM parameter (dataType 'aws:ec2:image') is seeded by the
-        // DATA STACK (deployed first) to avoid a Day-0 circular dependency:
-        // - LaunchTemplate uses fromSsmParameter() → {{resolve:ssm:...}}
-        // - CloudFormation resolves this BEFORE creating any resources
-        // - If the parameter doesn't exist → ValidationError
-        //
-        // Image Builder overwrites the parameter value after each
-        // successful build via ssmParameterConfigurations in the
-        // distribution config below.
-        // -----------------------------------------------------------------
-
-        // Grant Image Builder permission to write the AMI ID to SSM.
-        // NOTE: We build the ARN manually instead of using
-        // ssm.StringParameter.fromStringParameterName() + grantWrite() because
-        // the import creates a {{resolve:ssm:...}} token that CloudFormation
-        // tries to resolve at deploy time — failing if the parameter doesn't
-        // exist yet (Day-0 or after parameter deletion).
-        this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
-            sid: 'SsmWriteGoldenAmi',
-            effect: iam.Effect.ALLOW,
-            actions: [
-                'ssm:PutParameter',
-                'ssm:AddTagsToResource',
-                'ssm:GetParameters',
-            ],
-            resources: [
-                cdk.Arn.format({
-                    service: 'ssm',
-                    resource: 'parameter',
-                    resourceName: imageConfig.amiSsmPath.replace(/^\//, ''),
-                }, cdk.Stack.of(this)),
-            ],
-        }));
-
-        // -----------------------------------------------------------------
-        // 6. Distribution Configuration — AMI tagging & naming
+        // 5. Distribution Configuration — AMI tagging & naming
         //
         // NOTE: amiDistributionConfiguration uses PascalCase raw JSON due to
         // a known CDK/CloudFormation binding issue where camelCase properties
         // fail CloudFormation validation.
-        //
-        // SSM parameter update is handled by the CI pipeline
-        // (_build-golden-ami.yml) after a successful build, because the
-        // Image Builder service-linked role (AWSServiceRoleForImageBuilder)
-        // does not have ssm:PutParameter on custom parameter paths.
         // -----------------------------------------------------------------
         const distribution = new imagebuilder.CfnDistributionConfiguration(
             this,
@@ -258,35 +220,46 @@ export class GoldenAmiPipelineConstruct extends Construct {
         );
 
         // -----------------------------------------------------------------
-        // 7. Image Pipeline (on-demand — no schedule)
+        // 6. CfnImage — CloudFormation-managed AMI build
+        //
+        // CloudFormation creates and builds the AMI inline during cdk deploy.
+        // When the component/recipe changes, CFN replaces this resource,
+        // triggering a new build automatically. When the stack is deleted,
+        // CFN deregisters the AMI — no orphaned images or stale SSM params.
+        //
+        // NOTE: This resource takes ~15-25 minutes to create. This is
+        // acceptable because the Compute stacks (ControlPlane, Workers)
+        // depend on this stack completing before they deploy.
         // -----------------------------------------------------------------
-        this.pipeline = new imagebuilder.CfnImagePipeline(this, 'Pipeline', {
-            name: `${namePrefix}-golden-ami-pipeline`,
+        this.image = new imagebuilder.CfnImage(this, 'Image', {
             imageRecipeArn: recipe.attrArn,
             infrastructureConfigurationArn: infraConfig.attrArn,
             distributionConfigurationArn: distribution.attrArn,
-            status: 'ENABLED',
             imageTestsConfiguration: {
                 imageTestsEnabled: true,
                 timeoutMinutes: 60,
             },
-            // No schedule — on-demand builds only
         });
 
+        // The AMI ID is extracted from the CfnImage output
+        this.imageId = this.image.attrImageId;
+
         // -----------------------------------------------------------------
-        // 8. Component Hash SSM Parameter — staleness detection
+        // 7. SSM Parameter — stores the AMI ID for Launch Template discovery
         //
-        // Publishes the SHA-256 hex hash of the component document to SSM.
-        // The CI pipeline (_build-golden-ami.yml) compares this hash against
-        // the deployed Image Builder component version to detect when build
-        // steps have changed. If the hashes differ, the pipeline deregisters
-        // the stale AMI and triggers a fresh build automatically.
+        // The Launch Template uses ec2.MachineImage.fromSsmParameter() which
+        // resolves to {{resolve:ssm:/k8s/{env}/golden-ami/latest}}. This
+        // parameter is now fully lifecycle-managed by CloudFormation:
+        //   - Created when the stack deploys
+        //   - Updated when the image changes (component/recipe changes)
+        //   - Deleted when the stack is deleted
+        //
+        // No more stale SSM references to deregistered AMIs.
         // -----------------------------------------------------------------
-        const fullHash = crypto.createHash('sha256').update(componentDoc).digest('hex');
-        new ssm.StringParameter(this, 'ComponentHashParam', {
-            parameterName: imageConfig.amiSsmPath.replace('/latest', '/component-hash'),
-            stringValue: fullHash,
-            description: 'SHA-256 hash of the Image Builder component document (for staleness detection)',
+        this.amiSsmParameter = new ssm.StringParameter(this, 'AmiIdParam', {
+            parameterName: imageConfig.amiSsmPath,
+            stringValue: this.imageId,
+            description: `Golden AMI ID for ${namePrefix} (managed by CloudFormation)`,
         });
 
         // Tag for identification
