@@ -80,6 +80,11 @@ on:
         required: false
         type: string
         default: ""
+      timeout-minutes:
+        description: "Job timeout in minutes (increase for long-running stacks like Golden AMI)"
+        required: false
+        type: number
+        default: 20
     secrets:
       AWS_OIDC_ROLE:
         description: "AWS OIDC role ARN for authentication (resolved from environment if not passed)"
@@ -106,7 +111,7 @@ jobs:
   deploy:
     name: ${{ inputs.stack-name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     environment: ${{ inputs.environment }}
     outputs:
       status: ${{ steps.deploy-stack.outputs.deployment-status }}

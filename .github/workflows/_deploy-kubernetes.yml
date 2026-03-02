@@ -582,6 +582,7 @@ jobs:
       aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
+      timeout-minutes: 35
       outputs-directory: "deployment-outputs"
     secrets: inherit
 
