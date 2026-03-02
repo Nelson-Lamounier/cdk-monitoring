@@ -111,8 +111,41 @@ jobs:
             exit 0
           fi
 
-          # --- Case 3: AMI exists — check component hash for staleness ---
-          echo "[INFO] Golden AMI exists: $CURRENT_AMI"
+          # --- Case 3: AMI ID differs from parent — verify it exists ---
+          echo "[INFO] Golden AMI in SSM: $CURRENT_AMI"
+
+          AMI_STATE=$(aws ec2 describe-images --image-ids "$CURRENT_AMI" \
+            --query 'Images[0].State' --output text 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$AMI_STATE" != "available" ]; then
+            echo "[WARN] AMI $CURRENT_AMI does NOT exist in EC2 (state: $AMI_STATE)"
+            echo "  SSM is stale — resetting to parent and triggering rebuild"
+
+            # Clean up stale snapshot (best-effort)
+            SNAPSHOT_ID=$(aws ec2 describe-images --image-ids "$CURRENT_AMI" \
+              --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId' \
+              --output text 2>/dev/null || echo "")
+            if [ -n "$SNAPSHOT_ID" ] && [ "$SNAPSHOT_ID" != "None" ]; then
+              aws ec2 delete-snapshot --snapshot-id "$SNAPSHOT_ID" 2>/dev/null || true
+              echo "  Deleted snapshot: $SNAPSHOT_ID"
+            fi
+
+            # Reset SSM to parent so Image Builder treats this as Day-0
+            aws ssm put-parameter --name "$SSM_PATH" --value "$PARENT_AMI" \
+              --type String --overwrite 2>/dev/null || true
+            echo "  SSM reset to parent: $PARENT_AMI"
+
+            # Clear the last-built-hash so hash comparison doesn't short-circuit
+            aws ssm delete-parameter \
+              --name "/k8s/${{ inputs.cdk-environment }}/golden-ami/last-built-hash" \
+              2>/dev/null || true
+            echo "  Cleared last-built-hash"
+
+            echo "needs-build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # --- Case 4: AMI exists — check component hash for staleness ---
 
           if [ "$EXPECTED_HASH" = "NOT_FOUND" ]; then
             # Hash parameter doesn't exist yet (CDK hasn't been deployed with
