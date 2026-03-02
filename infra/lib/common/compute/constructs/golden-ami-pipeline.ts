@@ -36,6 +36,8 @@ import * as crypto from 'crypto';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as imagebuilder from 'aws-cdk-lib/aws-imagebuilder';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -59,6 +61,8 @@ export interface GoldenAmiPipelineProps {
     readonly subnetId: string;
     /** Security group ID for Image Builder instances */
     readonly securityGroupId: string;
+    /** S3 bucket for build logs and bootstrap scripts */
+    readonly scriptsBucket: s3.IBucket;
 }
 
 // =============================================================================
@@ -84,6 +88,7 @@ export class GoldenAmiPipelineConstruct extends Construct {
             vpc: _vpc,
             subnetId,
             securityGroupId,
+            scriptsBucket,
         } = props;
 
         // -----------------------------------------------------------------
@@ -168,9 +173,18 @@ export class GoldenAmiPipelineConstruct extends Construct {
                 subnetId,
                 securityGroupIds: [securityGroupId],
                 terminateInstanceOnFailure: true,
+                logging: {
+                    s3Logs: {
+                        s3BucketName: scriptsBucket.bucketName,
+                        s3KeyPrefix: 'image-builder-logs',
+                    },
+                },
             },
         );
         infraConfig.addDependency(this.instanceProfile);
+
+        // Grant Image Builder instances permission to write build logs to S3
+        scriptsBucket.grantWrite(this.instanceRole, 'image-builder-logs/*');
 
         // -----------------------------------------------------------------
         // 5. SSM Parameter — stores latest AMI ID
@@ -257,6 +271,22 @@ export class GoldenAmiPipelineConstruct extends Construct {
                 timeoutMinutes: 60,
             },
             // No schedule — on-demand builds only
+        });
+
+        // -----------------------------------------------------------------
+        // 8. Component Hash SSM Parameter — staleness detection
+        //
+        // Publishes the SHA-256 hex hash of the component document to SSM.
+        // The CI pipeline (_build-golden-ami.yml) compares this hash against
+        // the deployed Image Builder component version to detect when build
+        // steps have changed. If the hashes differ, the pipeline deregisters
+        // the stale AMI and triggers a fresh build automatically.
+        // -----------------------------------------------------------------
+        const fullHash = crypto.createHash('sha256').update(componentDoc).digest('hex');
+        new ssm.StringParameter(this, 'ComponentHashParam', {
+            parameterName: imageConfig.amiSsmPath.replace('/latest', '/component-hash'),
+            stringValue: fullHash,
+            description: 'SHA-256 hash of the Image Builder component document (for staleness detection)',
         });
 
         // Tag for identification

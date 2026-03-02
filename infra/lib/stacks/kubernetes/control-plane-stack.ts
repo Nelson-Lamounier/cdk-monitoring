@@ -317,6 +317,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
                 vpc,
                 subnetId: vpc.publicSubnets[0].subnetId,
                 securityGroupId: securityGroup.securityGroupId,
+                scriptsBucket,
             });
         }
 
