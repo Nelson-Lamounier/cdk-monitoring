@@ -406,6 +406,62 @@ ec2-disable-source-dest-check instance-id region="eu-west-1" profile="dev-accoun
       --region {{region}} \
       --profile {{profile}}
 
+# Trigger SSM Automation — Control Plane bootstrap (7 steps)
+# Runs: validateGoldenAMI → initKubeadm → installCalicoCNI → configureKubectl
+#       → syncManifests → bootstrapArgoCD → verifyCluster
+# Usage: just ssm-run-controlplane i-0f1491fd3dc63fd66
+[group('k8s')]
+ssm-run-controlplane instance-id env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_PREFIX="/k8s/{{env}}"
+    S3_BUCKET=$(aws ssm get-parameter \
+      --name "${SSM_PREFIX}/scripts-bucket" \
+      --query "Parameter.Value" --output text \
+      --region {{region}} --profile {{profile}})
+    echo "Starting control-plane bootstrap on {{instance-id}}..."
+    EXEC_ID=$(aws ssm start-automation-execution \
+      --document-name "k8s-{{env}}-bootstrap-control-plane" \
+      --parameters "InstanceId={{instance-id}},SsmPrefix=${SSM_PREFIX},S3Bucket=${S3_BUCKET},Region={{region}}" \
+      --region {{region}} --profile {{profile}} \
+      --query "AutomationExecutionId" --output text)
+    echo "Execution ID: ${EXEC_ID}"
+    echo "Monitor:  just ssm-status ${EXEC_ID} {{region}} {{profile}}"
+
+# Trigger SSM Automation — Worker node bootstrap (2 steps)
+# Runs: validateGoldenAMI → joinCluster
+# Run AFTER control-plane has completed (workers need join credentials).
+# Usage: just ssm-run-worker i-071c910118e0c0beb
+[group('k8s')]
+ssm-run-worker instance-id env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_PREFIX="/k8s/{{env}}"
+    S3_BUCKET=$(aws ssm get-parameter \
+      --name "${SSM_PREFIX}/scripts-bucket" \
+      --query "Parameter.Value" --output text \
+      --region {{region}} --profile {{profile}})
+    echo "Starting worker bootstrap on {{instance-id}}..."
+    EXEC_ID=$(aws ssm start-automation-execution \
+      --document-name "k8s-{{env}}-bootstrap-worker" \
+      --parameters "InstanceId={{instance-id}},SsmPrefix=${SSM_PREFIX},S3Bucket=${S3_BUCKET},Region={{region}}" \
+      --region {{region}} --profile {{profile}} \
+      --query "AutomationExecutionId" --output text)
+    echo "Execution ID: ${EXEC_ID}"
+    echo "Monitor:  just ssm-status ${EXEC_ID} {{region}} {{profile}}"
+
+# Check SSM Automation execution status and step progress
+# Usage: just ssm-status <execution-id>
+[group('k8s')]
+ssm-status execution-id region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    aws ssm get-automation-execution \
+      --automation-execution-id {{execution-id}} \
+      --query "AutomationExecution.{Status:AutomationExecutionStatus,Steps:StepExecutions[*].{Step:StepName,Status:StepStatus,Start:ExecutionStartTime,End:ExecutionEndTime}}" \
+      --output table \
+      --region {{region}} --profile {{profile}}
+
 # =============================================================================
 # CROSS-ACCOUNT & OPS (delegates to standalone scripts)
 # =============================================================================
