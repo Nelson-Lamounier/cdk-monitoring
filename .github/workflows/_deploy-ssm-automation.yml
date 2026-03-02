@@ -1,14 +1,56 @@
 # @format
 # @description Reusable SSM Automation Deployment + Bootstrap Workflow
 #
-# Deploys the SSM Automation CDK stack and optionally triggers
-# bootstrap on existing K8s nodes. Fully decoupled from the main
-# CDK Kubernetes pipeline.
+# ─── Purpose ───────────────────────────────────────────────────────
+# Deploys the SSM Automation CDK stack and triggers Kubernetes
+# bootstrap on existing EC2 nodes. This is the second pipeline in the
+# two-pipeline architecture, fully decoupled from the CDK infra pipeline.
 #
-# Lifecycle:
-#   - Day-1: Called by _deploy-kubernetes.yml (deploy-only, trigger-bootstrap: false)
-#   - Day-2+: Triggered independently when step scripts change
-#             (trigger-bootstrap: true — the default)
+# ─── Two-Pipeline Architecture ─────────────────────────────────────
+# Kubernetes bootstrapping is split across two independent pipelines:
+#
+#   Pipeline 1: _deploy-kubernetes.yml
+#     - Deploys CDK stacks: networking, compute, IAM, API, edge
+#     - EC2 user data exports env vars, publishes instance IDs to SSM,
+#       and signals CloudFormation. Does NOT trigger SSM Automation.
+#
+#   Pipeline 2: _deploy-ssm-automation.yml (this file)
+#     - Deploys the SSM Automation CDK stack (documents + IAM role)
+#     - Syncs latest bootstrap scripts (Python steps) to S3
+#     - Triggers SSM Automation: control-plane first → waits for
+#       completion → then triggers workers (need join credentials)
+#     - Observes bootstrap with step-level polling and CloudWatch logs
+#
+# ─── Job Flow ──────────────────────────────────────────────────────
+#   deploy → sync-scripts → trigger-bootstrap → watch-bootstrap
+#
+#   1. deploy           - CDK deploy of the ssmAutomation stack
+#   2. sync-scripts     - aws s3 sync of k8s-bootstrap/ to S3
+#   3. trigger-bootstrap - Resolves instance IDs from SSM parameters,
+#                          triggers SSM Automation per node role
+#   4. watch-bootstrap   - Polls SSM step status, streams CloudWatch logs
+#
+#   Jobs 2-4 are gated behind the `trigger-bootstrap` input.
+#   Set to false when deploying the stack without re-bootstrapping.
+#
+# ─── How Instance Discovery Works ─────────────────────────────────
+# EC2 user data publishes instance IDs to SSM parameters on boot:
+#   - /k8s/<env>/bootstrap/control-plane-instance-id
+#   - /k8s/<env>/bootstrap/app-worker-instance-id
+#   - /k8s/<env>/bootstrap/mon-worker-instance-id
+#
+# The trigger job reads these to target SSM Automation. If a parameter
+# is missing, that node role is skipped (not yet deployed).
+#
+# ─── Day-1 Deployment ──────────────────────────────────────────────
+# Run after the CDK infra pipeline completes:
+#   1. deploy-kubernetes-dev.yml  → provisions infrastructure
+#   2. deploy-ssm-automation-dev.yml → bootstrap (this pipeline)
+#
+# ─── Day-2+ Updates ───────────────────────────────────────────────
+# Push changes to boot/steps/ or ssm-automation-stack.ts to trigger
+# automatically. The pipeline re-deploys SSM docs, syncs the latest
+# scripts, and re-runs bootstrap on all running nodes.
 #
 # Stack: ssmAutomation (SSM Automation documents + IAM role)
 

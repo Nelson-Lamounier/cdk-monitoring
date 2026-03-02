@@ -1,29 +1,55 @@
 # @format
-# @description Reusable Kubernetes Deployment Workflow (Centralized)
+# @description Reusable Kubernetes Infrastructure Deployment Workflow
 #
-# Infra-only pipeline for the K8s (kubeadm) infrastructure.
-# Bootstrap/app manifests synced by independent S3 pipelines.
+# ─── Purpose ───────────────────────────────────────────────────────
+# Deploys the K8s (kubeadm) infrastructure stacks via CDK.
+# This pipeline is infrastructure-only — it provisions AWS resources
+# but does NOT bootstrap Kubernetes or trigger SSM Automation.
 #
-# 9-Stack Deployment Order:
+# ─── Two-Pipeline Architecture ─────────────────────────────────────
+# Kubernetes bootstrapping is split across two independent pipelines:
+#
+#   Pipeline 1: _deploy-kubernetes.yml (this file)
+#     - Deploys CDK stacks: networking, compute, IAM, API, edge
+#     - EC2 user data exports env vars, publishes instance IDs to SSM,
+#       and sends cfn-signal to confirm infrastructure readiness
+#     - Does NOT download scripts from S3 or trigger SSM Automation
+#
+#   Pipeline 2: _deploy-ssm-automation.yml
+#     - Deploys the SSM Automation CDK stack (documents + IAM role)
+#     - Syncs bootstrap scripts (Python steps) to S3
+#     - Triggers SSM Automation on existing nodes (control-plane first,
+#       then workers after CP completes)
+#     - Observes bootstrap progress with CloudWatch log streaming
+#
+# ─── Day-1 Deployment ──────────────────────────────────────────────
+# For a fresh cluster, run both pipelines in sequence:
+#   1. deploy-kubernetes-dev.yml  → provisions all infrastructure
+#   2. deploy-ssm-automation-dev.yml → deploys SSM stack + triggers bootstrap
+#
+# ─── Day-2+ Updates ───────────────────────────────────────────────
+# - Infrastructure changes: push to trigger deploy-kubernetes-dev.yml
+# - Bootstrap script changes: push to trigger deploy-ssm-automation-dev.yml
+#   (deploys SSM docs, syncs scripts, re-triggers bootstrap automatically)
+#
+# ─── Stack Deployment Order ────────────────────────────────────────
 #   1.  Data             (DynamoDB + S3 + SSM Parameters)
 #   2.  Base             (VPC networking + SG + KMS + EBS + EIP + S3 Scripts)
-#   2b. Sync             (Seed boot scripts to S3 — Day-1 safety)
-#   2c. Golden AMI       (Bake containerd + kubeadm into AMI)
-#  2d.  SSM Automation   (Bootstrap orchestration documents)
-#   3.  Compute          (Control plane EC2 + ASG + SSM Docs)
+#   2b. Golden AMI       (Bake containerd + kubeadm into AMI)
+#   3.  Compute          (Control Plane EC2 + ASG)
 #   3b. AppWorker        (Application worker node)
 #   3c. MonitoringWorker (Monitoring worker node)
 #   4.  AppIam           (Application-tier IAM grants)
 #   5.  Api              (API Gateway + Lambda)
 #   6.  Edge             (CloudFront + ACM + WAF in us-east-1)
 #
-# Post-Deploy (manifests managed by ArgoCD GitOps):
+# ─── Post-Deploy (manifests managed by ArgoCD GitOps) ──────────────
 #   7.  ArgoCD Health Gate          (wait for GitOps sync)
 #   8.  Verify & Smoke Tests
-#   9.  Deployment Failure Alert    (halt + preserve + alert) - Test
+#   9.  Deployment Failure Alert    (halt + preserve + alert)
 #  10.  Summary
 #
-# Concurrency:
+# ─── Concurrency ───────────────────────────────────────────────────
 #   This is a workflow_call (reusable) workflow — concurrency MUST be set
 #   on the caller (e.g., deploy-kubernetes-dev.yml, deploy-kubernetes-prod.yml).
 #   Each caller defines: concurrency: { group: deploy-k8s-<env>, cancel-in-progress: false }
