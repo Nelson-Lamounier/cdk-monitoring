@@ -60,68 +60,129 @@ jobs:
           audience: sts.amazonaws.com
 
       # -----------------------------------------------------------------
-      # Step 1: Check if Golden AMI already exists
-      # If SSM parameter differs from the parent AMI, a Golden AMI was
-      # already built — skip the build entirely.
+      # Step 1: Check if Golden AMI needs building
       #
-      # ⚠️  IMPORTANT — Forcing a Golden AMI Rebuild:
+      # Decision matrix:
+      #   SSM = parent AMI           → Day-0, first build needed
+      #   SSM ≠ parent, hash match   → AMI is current, skip
+      #   SSM ≠ parent, hash differs → AMI is STALE:
+      #     → deregister old AMI + delete snapshot
+      #     → reset SSM to parent value
+      #     → fall through to trigger fresh build
       #
-      # This check only compares SSM value vs parent AMI. It does NOT
-      # detect changes to the build steps (e.g., adding python3-pip,
-      # boto3, or other dependencies to golden-ami-pipeline.ts).
-      #
-      # If you modify the Image Builder component (build steps), the
-      # existing Golden AMI becomes STALE but this check still skips
-      # because SSM ≠ parent.
-      #
-      # To force a rebuild after changing build steps:
-      #   1. Reset SSM to the parent AMI value:
-      #      aws ssm put-parameter \
-      #        --name "/k8s/<env>/golden-ami/latest" \
-      #        --value "<parent-ami-id>" \
-      #        --type "String" --overwrite \
-      #        --region eu-west-1
-      #   2. Re-run this pipeline — it will detect SSM = parent and
-      #      trigger a fresh Image Builder build with updated steps.
-      #   3. The new Golden AMI ID will be written back to SSM.
-      #
-      # TODO: Improve this by hashing the build component definition
-      #       and comparing against a stored hash in SSM. This would
-      #       auto-detect build step changes without manual intervention.
+      # The component hash is published to SSM by CDK during cdk deploy.
+      # It changes automatically whenever the build steps in
+      # golden-ami-pipeline.ts are modified.
       # -----------------------------------------------------------------
-      - name: Check if Golden AMI Already Exists
+      - name: Check if Golden AMI Needs Building
         id: check-ami
         run: |
           SSM_PATH="/k8s/${{ inputs.cdk-environment }}/golden-ami/latest"
+          HASH_SSM_PATH="/k8s/${{ inputs.cdk-environment }}/golden-ami/component-hash"
           PARENT_SSM_PATH="/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
 
-          echo "Checking SSM parameter: $SSM_PATH"
+          echo "Checking SSM parameters..."
+          echo "  AMI path:  $SSM_PATH"
+          echo "  Hash path: $HASH_SSM_PATH"
 
           CURRENT_AMI=$(aws ssm get-parameter --name "$SSM_PATH" \
             --query 'Parameter.Value' --output text 2>/dev/null || echo "NOT_FOUND")
           PARENT_AMI=$(aws ssm get-parameter --name "$PARENT_SSM_PATH" \
             --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+          EXPECTED_HASH=$(aws ssm get-parameter --name "$HASH_SSM_PATH" \
+            --query 'Parameter.Value' --output text 2>/dev/null || echo "NOT_FOUND")
 
           echo "current-ami=$CURRENT_AMI" >> $GITHUB_OUTPUT
           echo "parent-ami=$PARENT_AMI" >> $GITHUB_OUTPUT
 
+          # --- Case 1: SSM parameter not found (pre-deployment) ---
           if [ "$CURRENT_AMI" = "NOT_FOUND" ]; then
             echo "needs-build=true" >> $GITHUB_OUTPUT
-            echo "⚠ SSM parameter not found — Image Builder pipeline not yet deployed"
-            echo "   Deploy the Compute stack first: deploy-kubernetes-dev.yml"
+            echo "[WARN] SSM parameter not found — deploy Compute stack first"
             exit 0
           fi
 
-          if [ "$CURRENT_AMI" != "$PARENT_AMI" ]; then
-            echo "needs-build=false" >> $GITHUB_OUTPUT
-            echo "✓ Golden AMI already exists: $CURRENT_AMI"
-            echo "  (differs from parent: $PARENT_AMI)"
-          else
+          # --- Case 2: Day-0 — SSM still points to parent ---
+          if [ "$CURRENT_AMI" = "$PARENT_AMI" ]; then
             echo "needs-build=true" >> $GITHUB_OUTPUT
-            echo "⚠ Golden AMI matches parent AMI — build required"
+            echo "[INFO] Golden AMI matches parent — first build needed"
             echo "  Current: $CURRENT_AMI"
             echo "  Parent:  $PARENT_AMI"
+            exit 0
           fi
+
+          # --- Case 3: AMI exists — check component hash for staleness ---
+          echo "[INFO] Golden AMI exists: $CURRENT_AMI"
+
+          if [ "$EXPECTED_HASH" = "NOT_FOUND" ]; then
+            echo "needs-build=false" >> $GITHUB_OUTPUT
+            echo "[INFO] Component hash SSM not found — deploy CDK first to enable hash detection"
+            echo "  Skipping build (existing AMI assumed current)"
+            exit 0
+          fi
+
+          # Get the deployed component version from Image Builder
+          PIPELINE_NAME="k8s-${{ inputs.cdk-environment }}-golden-ami-pipeline"
+          COMPONENT_NAME="k8s-${{ inputs.cdk-environment }}-golden-ami-install"
+
+          DEPLOYED_HASH=""
+          COMPONENT_ARNS=$(aws imagebuilder list-components \
+            --filters "name=name,values=${COMPONENT_NAME}" \
+            --query 'componentVersionList[].arn' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$COMPONENT_ARNS" ] && [ "$COMPONENT_ARNS" != "None" ]; then
+            # Get the latest component version — the version IS derived from the hash
+            LATEST_ARN=$(echo "$COMPONENT_ARNS" | tr '\t' '\n' | head -1)
+            echo "  Latest component: $LATEST_ARN"
+          fi
+
+          # Compare expected vs stored hash
+          echo "  Expected hash (CDK): ${EXPECTED_HASH:0:16}..."
+
+          # The definitive comparison: if the CDK hash changed, rebuild
+          STORED_HASH=$(aws ssm get-parameter \
+            --name "/k8s/${{ inputs.cdk-environment }}/golden-ami/last-built-hash" \
+            --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+
+          if [ "$STORED_HASH" = "$EXPECTED_HASH" ]; then
+            echo "needs-build=false" >> $GITHUB_OUTPUT
+            echo "[OK] Component hash matches — AMI is current, skipping build"
+            exit 0
+          fi
+
+          # --- Hashes differ: AMI is STALE ---
+          echo ""
+          echo "[WARN] Component hash MISMATCH — AMI is stale"
+          echo "  Expected: ${EXPECTED_HASH:0:16}..."
+          echo "  Stored:   ${STORED_HASH:0:16}..."
+          echo ""
+
+          # Deregister the stale AMI and delete its EBS snapshot
+          echo "Deregistering stale AMI: $CURRENT_AMI"
+          SNAPSHOT_ID=$(aws ec2 describe-images --image-ids "$CURRENT_AMI" \
+            --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId' \
+            --output text 2>/dev/null || echo "")
+
+          aws ec2 deregister-image --image-id "$CURRENT_AMI" 2>/dev/null || true
+          echo "  AMI deregistered"
+
+          if [ -n "$SNAPSHOT_ID" ] && [ "$SNAPSHOT_ID" != "None" ]; then
+            echo "  Deleting snapshot: $SNAPSHOT_ID"
+            aws ec2 delete-snapshot --snapshot-id "$SNAPSHOT_ID" 2>/dev/null || true
+          fi
+
+          # Reset SSM to parent AMI so the build triggers
+          echo "  Resetting SSM parameter to parent AMI"
+          aws ssm put-parameter \
+            --name "$SSM_PATH" \
+            --value "$PARENT_AMI" \
+            --type "String" \
+            --overwrite 2>/dev/null || true
+
+          echo "needs-build=true" >> $GITHUB_OUTPUT
+          echo ""
+          echo "[INFO] Stale AMI cleaned up — fresh build will start"
 
       # -----------------------------------------------------------------
       # Step 2: Find the Image Builder pipeline
@@ -268,6 +329,9 @@ jobs:
                 # (Handled here instead of via Image Builder ssmParameterConfigurations
                 #  because the Image Builder SLR lacks ssm:PutParameter on custom paths)
                 SSM_PATH="/k8s/${{ inputs.cdk-environment }}/golden-ami/latest"
+                HASH_SSM_PATH="/k8s/${{ inputs.cdk-environment }}/golden-ami/component-hash"
+                LAST_BUILT_HASH_PATH="/k8s/${{ inputs.cdk-environment }}/golden-ami/last-built-hash"
+
                 if [ "$AMI_ID" != "unknown" ]; then
                   echo "  Writing AMI ID to SSM: $SSM_PATH"
                   aws ssm put-parameter \
@@ -277,6 +341,20 @@ jobs:
                     --overwrite \
                     --region "$AWS_DEFAULT_REGION" 2>&1 || echo "::warning::Failed to update SSM parameter"
                   echo "  ✓ SSM parameter updated"
+
+                  # Record the component hash that was used for this build
+                  # so future runs skip rebuild when nothing changed
+                  CURRENT_HASH=$(aws ssm get-parameter --name "$HASH_SSM_PATH" \
+                    --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+                  if [ -n "$CURRENT_HASH" ]; then
+                    aws ssm put-parameter \
+                      --name "$LAST_BUILT_HASH_PATH" \
+                      --value "$CURRENT_HASH" \
+                      --type "String" \
+                      --overwrite \
+                      --region "$AWS_DEFAULT_REGION" 2>&1 || echo "::warning::Failed to store build hash"
+                    echo "  ✓ Component hash recorded: ${CURRENT_HASH:0:16}..."
+                  fi
                 else
                   echo "::warning::Could not extract AMI ID — SSM parameter not updated"
                 fi

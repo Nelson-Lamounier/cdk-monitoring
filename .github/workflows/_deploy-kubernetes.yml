@@ -366,8 +366,12 @@ jobs:
   # Triggers Image Builder to bake containerd + kubeadm into a Golden AMI.
   # Runs AFTER S3 bootstrap sync so the boot script is available, but
   # BEFORE Compute so the control plane launches from the baked AMI.
-  # On Day-0: AMI matches parent → build triggered (first bake).
-  # On Day-1+: AMI differs from parent → skipped (already baked).
+  #
+  # Rebuild detection:
+  #   Day-0: SSM matches parent → first bake triggered
+  #   Day-1+: Compares component hash (CDK) vs last-built hash (pipeline)
+  #           Hash mismatch → stale AMI deregistered → fresh bake
+  #           Hash match    → skip (AMI is current)
   # ===========================================================================
   build-golden-ami:
     name: Build Golden AMI
@@ -382,6 +386,183 @@ jobs:
       cdk-environment: ${{ inputs.cdk-environment }}
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # AMI Build Observer — Real-time build log streaming (parallel)
+  #
+  # Runs alongside build-golden-ami. Polls Image Builder status every 60s
+  # and streams S3 build logs directly into GitHub Actions output.
+  # Observational only — does not block the pipeline.
+  # ===========================================================================
+  ami-build-observer:
+    name: AMI Build Observer
+    needs: [setup, sync-bootstrap-content]
+    if: >-
+      always()
+      && needs.sync-bootstrap-content.result == 'success'
+      && inputs.enable-golden-ami-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: ${{ inputs.environment }}
+    continue-on-error: true
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Stream AMI Build Logs
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: |
+          echo "=== AMI Build Observer ==="
+          PIPELINE_NAME="k8s-${CDK_ENV}-golden-ami-pipeline"
+          WATCH_START=$(date -u +%s)
+
+          # ── Wait for an active Image Builder build ──────────────────
+          MAX_WAIT=300
+          WAITED=0
+          BUILD_ARN=""
+
+          # Find the pipeline ARN
+          PIPELINE_ARN=$(aws imagebuilder list-image-pipelines \
+            --query "imagePipelineList[?name=='${PIPELINE_NAME}'].arn | [0]" \
+            --output text --region "$REGION" 2>/dev/null || echo "None")
+
+          if [ "$PIPELINE_ARN" = "None" ] || [ -z "$PIPELINE_ARN" ]; then
+            echo "[WARN] Image Builder pipeline not found: $PIPELINE_NAME"
+            echo "  Deploy the Compute stack first."
+            exit 0
+          fi
+
+          echo "Pipeline: $PIPELINE_ARN"
+          echo "Waiting for active build..."
+
+          while [ -z "$BUILD_ARN" ] && [ $WAITED -lt $MAX_WAIT ]; do
+            # Look for builds started after this observer began
+            BUILD_ARN=$(aws imagebuilder list-image-pipeline-images \
+              --image-pipeline-arn "$PIPELINE_ARN" \
+              --query "imageSummaryList[?state.status=='BUILDING' || state.status=='TESTING' || state.status=='DISTRIBUTING'].arn | [0]" \
+              --output text --region "$REGION" 2>/dev/null || echo "")
+
+            if [ "$BUILD_ARN" = "None" ] || [ -z "$BUILD_ARN" ]; then
+              BUILD_ARN=""
+              echo "  Waiting for build to start... (${WAITED}s / ${MAX_WAIT}s)"
+              sleep 15
+              WAITED=$((WAITED + 15))
+            fi
+          done
+
+          if [ -z "$BUILD_ARN" ]; then
+            echo "[INFO] No active build detected after ${MAX_WAIT}s"
+            echo "  Build may have been skipped (AMI already current) or completed quickly."
+            exit 0
+          fi
+
+          echo ""
+          echo "Tracking build: $BUILD_ARN"
+          echo ""
+
+          # ── Resolve S3 log prefix ───────────────────────────────────
+          SSM_PREFIX="/k8s/${CDK_ENV}"
+          S3_BUCKET=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/scripts-bucket" \
+            --query 'Parameter.Value' --output text \
+            --region "$REGION" 2>/dev/null || echo "")
+          S3_LOG_PREFIX="s3://${S3_BUCKET}/image-builder-logs/"
+          LAST_LOG_COUNT=0
+
+          # ── Poll build status + stream logs ─────────────────────────
+          MAX_POLLS=35
+          INTERVAL=60
+
+          for i in $(seq 1 $MAX_POLLS); do
+            STATUS=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
+              --query 'image.state.status' --output text --region "$REGION" 2>/dev/null || echo "UNKNOWN")
+
+            TIMESTAMP=$(date '+%H:%M:%S')
+            echo "[$TIMESTAMP] Poll $i/$MAX_POLLS — Status: $STATUS"
+
+            # Stream S3 build logs (incremental)
+            if [ -n "$S3_BUCKET" ]; then
+              echo "::group::Build Logs (S3 — poll $i)"
+              LOG_FILES=$(aws s3 ls "$S3_LOG_PREFIX" --recursive --region "$REGION" 2>/dev/null | awk '{print $NF}' || echo "")
+              LOG_COUNT=$(echo "$LOG_FILES" | grep -c . 2>/dev/null || echo "0")
+
+              if [ "$LOG_COUNT" -gt 0 ] 2>/dev/null; then
+                for LOG_FILE in $LOG_FILES; do
+                  echo "--- s3://${S3_BUCKET}/${LOG_FILE} ---"
+                  aws s3 cp "s3://${S3_BUCKET}/${LOG_FILE}" - --region "$REGION" 2>/dev/null | tail -50
+                  echo ""
+                done
+              else
+                echo "  (no log files yet)"
+              fi
+              echo "::endgroup::"
+            fi
+
+            # Stream CloudWatch logs (Image Builder auto-creates these)
+            echo "::group::CloudWatch Logs (poll $i)"
+            for LG in $(aws logs describe-log-groups \
+              --log-group-name-prefix "/aws/imagebuilder/" \
+              --query 'logGroups[].logGroupName' \
+              --output text --region "$REGION" 2>/dev/null || echo ""); do
+
+              STREAM=$(aws logs describe-log-streams \
+                --log-group-name "$LG" \
+                --order-by LastEventTime --descending --max-items 1 \
+                --query 'logStreams[0].logStreamName' \
+                --output text --region "$REGION" 2>/dev/null || echo "")
+
+              if [ -n "$STREAM" ] && [ "$STREAM" != "None" ]; then
+                aws logs get-log-events \
+                  --log-group-name "$LG" \
+                  --log-stream-name "$STREAM" \
+                  --limit 30 \
+                  --output json --region "$REGION" 2>/dev/null | \
+                  jq -r '.events[].message' 2>/dev/null || true
+              fi
+            done
+            echo "::endgroup::"
+
+            case "$STATUS" in
+              AVAILABLE)
+                echo ""
+                AMI_ID=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
+                  --query 'image.outputResources.amis[0].image' --output text --region "$REGION" 2>/dev/null || echo "unknown")
+                echo "[PASS] Golden AMI built successfully: $AMI_ID"
+                exit 0
+                ;;
+              FAILED|CANCELLED)
+                echo ""
+                REASON=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
+                  --query 'image.state.reason' --output text --region "$REGION" 2>/dev/null || echo "unknown")
+                echo "[FAIL] Build failed: $REASON"
+
+                # Dump full S3 logs on failure
+                if [ -n "$S3_BUCKET" ]; then
+                  echo "::group::Full Build Logs (S3 — for debugging)"
+                  for LOG_FILE in $(aws s3 ls "$S3_LOG_PREFIX" --recursive --region "$REGION" 2>/dev/null | awk '{print $NF}' || echo ""); do
+                    echo "--- s3://${S3_BUCKET}/${LOG_FILE} ---"
+                    aws s3 cp "s3://${S3_BUCKET}/${LOG_FILE}" - --region "$REGION" 2>/dev/null || echo "(failed to download)"
+                    echo ""
+                  done
+                  echo "::endgroup::"
+                fi
+
+                exit 1
+                ;;
+            esac
+
+            sleep $INTERVAL
+          done
+
+          echo ""
+          echo "::warning::AMI Build Observer timed out after ${MAX_POLLS}m"
 
   # ===========================================================================
   # Deploy Base Stack (2/6) — VPC networking + SG + KMS + EBS + EIP
