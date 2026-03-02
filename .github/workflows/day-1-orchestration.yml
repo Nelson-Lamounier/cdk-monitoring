@@ -6,8 +6,10 @@
 #
 #   Phase 1: Foundation     →  Shared VPC + ECR          (_deploy-stack.yml)
 #   Phase 2: K8s Infra      →  5-stack K8s deployment    (_deploy-kubernetes.yml)
-#   Phase 3: Content Sync   →  Bootstrap + App manifests (_sync-k8s-content.yml)
-#   Phase 4: Summary        →  Aggregated results        (inline)
+#   Phase 3: Summary        →  Aggregated results        (inline)
+#
+# Content sync (bootstrap scripts → S3) is handled by the SSM pipeline
+# (_deploy-ssm-automation.yml) and is NOT part of this orchestration.
 #
 # Each phase is gated on the previous phase's success.
 # Each phase is independently toggleable via workflow_dispatch inputs.
@@ -42,11 +44,6 @@ on:
         default: true
       deploy-kubernetes:
         description: "Phase 2: Deploy K8s Infrastructure (5-stack)"
-        required: false
-        type: boolean
-        default: true
-      sync-content:
-        description: "Phase 3: Sync bootstrap + app manifests to S3"
         required: false
         type: boolean
         default: true
@@ -124,7 +121,6 @@ jobs:
           echo "| **Environment** | $ENV |" >> $GITHUB_STEP_SUMMARY
           echo "| **Deploy Shared** | ${{ inputs.deploy-shared }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Deploy K8s** | ${{ inputs.deploy-kubernetes }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Sync Content** | ${{ inputs.sync-content }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Skip Verification** | ${{ inputs.skip-verification }} |" >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
@@ -169,58 +165,11 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Phase 3a: Sync Bootstrap Scripts to S3
-  #
-  # Ensures latest k8s-bootstrap/ content is in S3.
-  # The K8s infra pipeline already seeds these at step 2b, but this sync
-  # guarantees the latest scripts are present after a full orchestration.
-  # ===========================================================================
-  sync-bootstrap:
-    name: "Phase 3a: Bootstrap Sync"
-    needs: [gate, deploy-kubernetes]
-    if: >-
-      always()
-      && inputs.sync-content
-      && (needs.deploy-kubernetes.result == 'success' || needs.deploy-kubernetes.result == 'skipped')
-    uses: ./.github/workflows/_sync-k8s-content.yml
-    with:
-      environment: ${{ inputs.environment }}
-      cdk-environment: ${{ needs.gate.outputs.cdk-environment }}
-      content-type: bootstrap
-      source-dir: ./kubernetes-app/k8s-bootstrap
-      s3-prefix: k8s-bootstrap
-      ssm-document: k8s-${{ needs.gate.outputs.cdk-environment }}-deploy-manifests
-      association-name: k8s-${{ needs.gate.outputs.cdk-environment }}-bootstrap-sync
-    secrets: inherit
-
-  # ===========================================================================
-  # Phase 3b: Sync App Manifests to S3 (parallel with 3a)
-  # ===========================================================================
-  sync-app-deploy:
-    name: "Phase 3b: App Manifest Sync"
-    needs: [gate, deploy-kubernetes]
-    if: >-
-      always()
-      && inputs.sync-content
-      && (needs.deploy-kubernetes.result == 'success' || needs.deploy-kubernetes.result == 'skipped')
-    uses: ./.github/workflows/_sync-k8s-content.yml
-    with:
-      environment: ${{ inputs.environment }}
-      cdk-environment: ${{ needs.gate.outputs.cdk-environment }}
-      content-type: app
-      source-dir: ./kubernetes-app/app-deploy
-      s3-prefix: app-deploy
-      ssm-document: k8s-${{ needs.gate.outputs.cdk-environment }}-deploy-app-manifests
-      association-name: k8s-${{ needs.gate.outputs.cdk-environment }}-app-deploy-sync
-    secrets: inherit
-
-  # ===========================================================================
-  # Phase 4: Orchestration Summary
+  # Phase 3: Orchestration Summary
   # ===========================================================================
   summary:
     name: "Orchestration Summary"
-    needs:
-      [gate, deploy-shared, deploy-kubernetes, sync-bootstrap, sync-app-deploy]
+    needs: [gate, deploy-shared, deploy-kubernetes]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     if: always()
@@ -235,16 +184,12 @@ jobs:
           echo "| Gate | Confirm & Resolve | \`${{ needs.gate.result }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| 1. Foundation | Shared VPC + ECR | \`${{ needs.deploy-shared.result }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| 2. K8s Infra | 5-Stack Deploy | \`${{ needs.deploy-kubernetes.result }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| 3a. Content | Bootstrap Sync | \`${{ needs.sync-bootstrap.result }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| 3b. Content | App Manifest Sync | \`${{ needs.sync-app-deploy.result }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Overall verdict
           if [[ "${{ needs.gate.result }}" == "success" ]] \
             && [[ "${{ needs.deploy-shared.result }}" =~ ^(success|skipped)$ ]] \
-            && [[ "${{ needs.deploy-kubernetes.result }}" =~ ^(success|skipped)$ ]] \
-            && [[ "${{ needs.sync-bootstrap.result }}" =~ ^(success|skipped)$ ]] \
-            && [[ "${{ needs.sync-app-deploy.result }}" =~ ^(success|skipped)$ ]]; then
+            && [[ "${{ needs.deploy-kubernetes.result }}" =~ ^(success|skipped)$ ]]; then
             echo "### ✅ Day-1 Orchestration Complete" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "All phases completed successfully for **${{ inputs.environment }}**." >> $GITHUB_STEP_SUMMARY
