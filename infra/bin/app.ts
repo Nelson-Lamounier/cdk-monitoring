@@ -9,13 +9,13 @@
  *
  * Usage:
  *   npx cdk synth -c project=monitoring -c environment=dev
- *   npx cdk synth -c project=nextjs -c environment=prod
+ *   npx cdk synth -c project=kubernetes -c environment=dev
  *   npx cdk synth -c project=org -c environment=prod -c hostedZoneIds=Z123 -c trustedAccountIds=111,222
  */
 
 import * as cdk from 'aws-cdk-lib/core';
 
-import { applyCdkNag, applyCommonSuppressions, CompliancePack, TaggingAspect, EnforceReadOnlyDynamoDbAspect } from '../lib/aspects';
+import { applyCdkNag, applyCommonSuppressions, CompliancePack, TaggingAspect } from '../lib/aspects';
 import { Environment, isValidEnvironment } from '../lib/config';
 import { isValidProject, getProjectConfig, Project } from '../lib/config/projects';
 import { getProjectFactoryFromContext } from '../lib/factories/project-registry';
@@ -31,7 +31,7 @@ const environmentContext = app.node.tryGetContext('environment') as string | und
 
 if (!projectContext || !isValidProject(projectContext)) {
     throw new Error(
-        'Project context required. Use: -c project=monitoring|nextjs|shared|org -c environment=dev|staging|prod'
+        'Project context required. Use: -c project=kubernetes|shared|org|bedrock -c environment=dev|staging|prod'
     );
 }
 
@@ -75,15 +75,6 @@ cdk.Aspects.of(app).add(new TaggingAspect({
     owner: process.env.PROJECT_OWNER ?? 'Nelson Lamounier',
     costCenter: process.env.COST_CENTER,
 }));
-
-// DynamoDB guard — prevents accidental write permissions on ECS task roles
-// SSR (task role) = read-only | API Gateway → Lambda = read-write
-if (projectContext === 'nextjs') {
-    cdk.Aspects.of(app).add(new EnforceReadOnlyDynamoDbAspect({
-        failOnViolation: true,
-        roleNamePattern: 'taskrole',
-    }));
-}
 
 // CDK-Nag compliance checks
 const enableNagChecks = app.node.tryGetContext('nagChecks') !== 'false';

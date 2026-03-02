@@ -3,8 +3,8 @@
 #
 # Usage:
 #   just              List all recipes
-#   just synth monitoring development
-#   just deploy monitoring development
+#   just synth kubernetes development
+#   just deploy kubernetes development
 #   just test          Run all tests
 #
 # Prerequisites:
@@ -40,7 +40,7 @@ _profile env:
 # CDK COMMANDS (run from infra/ — no interactive CLI layer)
 # =============================================================================
 
-# Synthesize CDK stacks (e.g., just synth monitoring development)
+# Synthesize CDK stacks (e.g., just synth kubernetes development)
 [group('cdk')]
 synth project environment *ARGS:
     cd infra && npx cdk synth --all \
@@ -48,7 +48,7 @@ synth project environment *ARGS:
       --profile $(just _profile {{environment}}) \
       {{ARGS}}
 
-# Deploy CDK stacks (e.g., just deploy monitoring development)
+# Deploy CDK stacks (e.g., just deploy kubernetes development)
 [group('cdk')]
 deploy project environment *ARGS:
     cd infra && npx cdk deploy --all \
@@ -101,24 +101,13 @@ bootstrap account profile *ARGS:
 # CI synth-validate: synthesize all projects for CI validation
 # Validates that all CDK stacks synthesize correctly without AWS API calls.
 # Uses --no-lookups to rely on cached cdk.context.json instead of live AWS lookups.
-# Covers: monitoring (3 stacks), k8s (8 stacks), nextjs (multi-stack), bedrock (4 stacks).
+# Covers: k8s (8 stacks), bedrock (4 stacks), shared (1 stack).
 # Called by: .github/workflows/ci.yml → validate-cdk job
 [group('ci')]
 ci-synth-validate:
     #!/usr/bin/env bash
     set -euo pipefail
     cd infra
-    echo "==========================================="
-    echo "Validating Monitoring Project (dev)"
-    echo "==========================================="
-    npx cdk list -c project=monitoring -c environment=dev --no-lookups || {
-      echo "Note: Some stacks may require cached context in cdk.context.json"
-    }
-    npx cdk synth -c project=monitoring -c environment=dev --no-lookups --quiet || {
-      echo "⚠ Monitoring synth requires cached context — run locally to update cdk.context.json"
-    }
-
-    echo ""
     echo "==========================================="
     echo "Validating K8s Project (dev)"
     echo "==========================================="
@@ -132,15 +121,6 @@ ci-synth-validate:
 
     echo ""
     echo "==========================================="
-    echo "Validating NextJS Project (dev)"
-    echo "==========================================="
-    # NextJS stacks resolve VPC via Vpc.fromLookup() internally (no cross-stack exports)
-    npx cdk synth -c project=nextjs -c environment=dev --no-lookups --quiet 2>&1 || {
-      echo "⚠ NextJS synth requires cached VPC context — run locally to update cdk.context.json"
-    }
-
-    echo ""
-    echo "==========================================="
     echo "Validating Bedrock Project (dev)"
     echo "==========================================="
     npx cdk synth -c project=bedrock -c environment=dev --no-lookups --quiet || {
@@ -148,11 +128,19 @@ ci-synth-validate:
     }
 
     echo ""
+    echo "==========================================="
+    echo "Validating Shared Project (dev)"
+    echo "==========================================="
+    npx cdk synth -c project=shared -c environment=dev --no-lookups --quiet || {
+      echo "⚠ Shared synth failed"
+    }
+
+    echo ""
     echo "✓ CDK synthesis validation complete (all projects)"
 
 # CI synth: synthesize + output stack names (e.g., just ci-synth kubernetes development)
 # Used by deployment pipelines to get ordered stack names for targeted deploys.
-# Called by: .github/workflows/_deploy-monitoring.yml, _deploy-nextjs.yml
+# Called by: .github/workflows/_deploy-kubernetes.yml
 [group('ci')]
 ci-synth project environment:
     npx tsx infra/scripts/deployment/synthesize-ci.ts {{project}} {{environment}}
@@ -193,8 +181,7 @@ ci-deploy-summary *ARGS:
     npx tsx infra/scripts/deployment/deploy-summary.ts {{ARGS}}
 
 # CI deploy-manifests: deploy K8s manifests via SSM Run Command
-# Usage: just ci-deploy-manifests monitoring development
-#        just ci-deploy-manifests nextjs production --region eu-west-1
+# Usage: just ci-deploy-manifests kubernetes development --region eu-west-1
 [group('ci')]
 ci-deploy-manifests *ARGS:
     npx tsx infra/scripts/deployment/deploy-manifests.ts {{ARGS}}
@@ -204,20 +191,10 @@ ci-deploy-manifests *ARGS:
 ci-verify *ARGS:
     npx tsx infra/scripts/deployment/verify-deployment.ts {{ARGS}}
 
-# CI smoke tests (NextJS ECS)
+# CI smoke tests (Kubernetes Infrastructure — application endpoints)
 [group('ci')]
 ci-smoke *ARGS:
-    npx tsx infra/scripts/deployment/smoke-tests-nextjs.ts {{ARGS}}
-
-# CI smoke tests (NextJS K8s)
-[group('ci')]
-ci-smoke-kubernetes *ARGS:
     npx tsx infra/scripts/deployment/smoke-tests-nextjs-kubernetes.ts {{ARGS}}
-
-# CI smoke tests (Monitoring K8s)
-[group('ci')]
-ci-smoke-monitoring-kubernetes *ARGS:
-    npx tsx infra/scripts/deployment/smoke-tests-monitoring-kubernetes.ts {{ARGS}}
 
 # CI smoke tests (Kubernetes Infrastructure — full kubeadm deployment)
 [group('ci')]
@@ -245,11 +222,7 @@ ci-stack-names *ARGS:
 ci-summary *ARGS:
     npx tsx infra/scripts/deployment/deployment-summary.ts {{ARGS}}
 
-# CI verify NextJS deployment (ECS health, ALB, endpoints)
-# Called by: .github/workflows/_deploy-nextjs.yml → verify job
-[group('ci')]
-ci-verify-nextjs *ARGS:
-    npx tsx infra/scripts/deployment/verify-nextjs.ts {{ARGS}}
+
 
 # =============================================================================
 # TESTING
@@ -376,33 +349,20 @@ security-scan *ARGS:
 k8s-dashboards *ARGS:
     npx tsx infra/scripts/deployment/sync-dashboards.ts {{ARGS}}
 
-# Reconfigure monitoring stack via SSM
-[group('k8s')]
-k8s-reconfigure *ARGS:
-    npx tsx infra/scripts/deployment/reconfigure-monitoring.ts {{ARGS}}
+
 
 # Trigger Golden AMI build (Image Builder)
 [group('k8s')]
 k8s-build-golden-ami env="development" region="eu-west-1":
     npx tsx kubernetes-app/infra-ami/scripts/build-golden-ami.ts {{env}} --region {{region}}
 
-# Lint all Helm charts (NextJS + Monitoring)
+# Lint all Helm charts
 [group('k8s')]
-helm-lint: helm-lint-nextjs helm-lint-monitoring
-
-# Lint NextJS Helm chart
-[group('k8s')]
-helm-lint-nextjs:
+helm-lint:
     helm lint kubernetes-app/app-deploy/nextjs/helm/chart \
       -f kubernetes-app/app-deploy/nextjs/helm/nextjs-values.yaml
 
-# Lint Monitoring Helm chart
-[group('k8s')]
-helm-lint-monitoring:
-    helm lint kubernetes-app/app-deploy/monitoring/chart \
-      -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml
-
-# Render templates and verify nodeSelector placement (role=application / role=monitoring)
+# Render templates and verify nodeSelector placement (role=application)
 [group('k8s')]
 helm-verify-selectors:
     #!/usr/bin/env bash
@@ -413,12 +373,6 @@ helm-verify-selectors:
       -f kubernetes-app/app-deploy/nextjs/helm/nextjs-values.yaml \
       --namespace nextjs-app | grep -c "role: application" | \
       xargs -I{} echo "  nodeSelector entries: {} (expected 1)"
-    echo "=== Monitoring Chart ==="
-    helm template monitoring-stack \
-      kubernetes-app/app-deploy/monitoring/chart \
-      -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml \
-      --namespace monitoring | grep -c "role: monitoring" | \
-      xargs -I{} echo "  nodeSelector entries: {} (expected 7)"
     echo "Done."
 
 # Check SourceDestCheck status on all K8s compute instances
@@ -539,10 +493,7 @@ update-oidc-policy region profile role-name policy-name policy-file:
       --region "{{region}}"
     echo "✓ Inline policy '{{policy-name}}' updated on role '{{role-name}}'."
 
-# Sync monitoring configs to S3 + EC2
-[group('ops')]
-sync-configs *ARGS:
-    npx tsx infra/scripts/deployment/sync-monitoring-configs.ts {{ARGS}}
+
 
 # ---------------------------------------------------------------------------
 # GitHub Workflow Dispatch (gh CLI)

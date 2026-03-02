@@ -6,8 +6,8 @@
  * to $GITHUB_STEP_SUMMARY. Informational only — never blocks deployment.
  *
  * Usage:
- *   npx tsx scripts/deployment/drift-detection.ts monitoring staging --region eu-west-1
- *   npx tsx scripts/deployment/drift-detection.ts nextjs production --region eu-west-1
+ *   npx tsx scripts/deployment/drift-detection.ts kubernetes staging --region eu-west-1
+ *   npx tsx scripts/deployment/drift-detection.ts bedrock production --region eu-west-1
  *
  * Exit codes:
  *   0 = always (informational — does not block)

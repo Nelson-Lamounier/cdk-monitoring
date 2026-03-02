@@ -17,3 +17,5 @@ export { KubernetesEdgeStack } from './edge-stack';
 export type { KubernetesEdgeStackProps } from './edge-stack';
 export { KubernetesDataStack } from './data-stack';
 export type { KubernetesDataStackProps } from './data-stack';
+export { NextJsApiStack } from './api-stack';
+export type { NextJsApiStackProps } from './api-stack';

@@ -4,17 +4,9 @@
  *
  * Modular Stacks Approach:
  * - SharedVpcStack (lib/shared/): Shared networking infrastructure
- * - Monitoring (lib/stacks/monitoring/): Modular SG + EBS + Compute + Lifecycle stacks
- * - NextJS (lib/stacks/nextjs/): ECR and ECS containers
- *
- * @deprecated MonitoringInfraStack - Use modular stacks from './monitoring' instead
+ * - Kubernetes (lib/stacks/kubernetes/): K8s cluster, workers, edge, API
+ * - Bedrock (lib/stacks/bedrock/): AI agent stacks
  */
-
-// New modular monitoring stacks (recommended)
-export * from './monitoring';
-
-// NextJS stacks
-export * from './nextjs';
 
 // Shared stacks (cross-account resources)
 export * from './shared';

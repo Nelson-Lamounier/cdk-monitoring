@@ -53,9 +53,9 @@
     "docs": "typedoc",
     "docs:watch": "typedoc --watch",
     "docs:serve": "npx serve docs/api",
-    "docs:monitoring": "typedoc --entryPoints ./lib/projects/monitoring ./lib/stacks/monitoring --out docs/monitoring --name 'Monitoring Stack'",
+
     "docs:compute": "typedoc --entryPoints ./lib/common/compute --out docs/compute --name 'Compute Constructs'",
-    "docs:nextjs": "typedoc --entryPoints ./lib/projects/nextjs ./lib/stacks/nextjs --out docs/nextjs --name 'Next.js Stack'",
+
     "// === CDK CLI (deprecated — use 'just' task runner) ===": ""
   },
   "lint-staged": {

@@ -31,20 +31,6 @@ export const STACK_REGISTRY = {
     shared: {
         infra: 'Infra',
     },
-    monitoring: {
-        storage: 'Storage',
-        ssm: 'SSM',
-        compute: 'Compute',
-    },
-    nextjs: {
-        data: 'Data',
-        compute: 'Compute',
-        networking: 'Networking',
-        application: 'Application',
-        k8sCompute: 'K8s-Compute',
-        api: 'Api',
-        edge: 'Edge',
-    },
     kubernetes: {
         data: 'Data',
         base: 'Base',
@@ -113,8 +99,6 @@ export function stackId(
  */
 const PROJECT_TO_REGISTRY: Record<Project, RegistryProject> = {
     [Project.SHARED]: 'shared',
-    [Project.MONITORING]: 'monitoring',
-    [Project.NEXTJS]: 'nextjs',
     [Project.KUBERNETES]: 'kubernetes',
     [Project.ORG]: 'org',
     [Project.BEDROCK]: 'bedrock',
@@ -135,9 +119,6 @@ const PROJECT_TO_REGISTRY: Record<Project, RegistryProject> = {
  * @example
  * getStackId(Project.KUBERNETES, 'controlPlane', 'development')
  * // Returns: 'ControlPlane-development'
- *
- * getStackId(Project.MONITORING, 'storage', 'production')
- * // Returns: 'Monitoring-Storage-production'
  */
 export function getStackId(
     project: Project,

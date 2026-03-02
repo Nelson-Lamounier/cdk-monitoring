@@ -15,15 +15,12 @@
 #   - Stack Tests       → just test-stacks
 #   - CDK Synthesis     → just ci-synth-validate
 #   - Helm Lint (all)   → just helm-lint
-#   - Helm Lint (mon)   → just helm-lint-monitoring
-#   - Helm Lint (next)  → just helm-lint-nextjs
 #   - Helm Validation   → helm lint + helm template + kubeconform
 #
 # Projects validated during CDK synthesis:
-#   1. monitoring  — Monitoring-Storage, Monitoring-SSM, Monitoring-Compute
-#   2. k8s         — K8s-Compute (EC2/ASG/EBS), K8s-Edge (CloudFront/WAF/ACM)
-#   3. nextjs      — NextJS application stacks (ECS, API Gateway, Edge)
-#   4. bedrock     — Bedrock-Data, Bedrock-Agent, Bedrock-Api, Bedrock-Content
+#   1. k8s         — K8s cluster stacks (Base, ControlPlane, Workers, Edge, API)
+#   2. bedrock     — Bedrock-Data, Bedrock-Agent, Bedrock-Api, Bedrock-Content
+#   3. shared      — Shared-Infra (VPC, ECR)
 
 name: Continuous Integration
 
@@ -313,7 +310,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       # Runs all CDK stack unit tests (snapshot + fine-grained assertions).
-      # Covers: monitoring, k8s, nextjs, shared, and org stacks.
+      # Covers: k8s, shared, org, and bedrock stacks.
       # Recipe: justfile → test-stacks → yarn test tests/unit/stacks
       - name: Run Stack Tests
         run: just test-stacks
@@ -358,19 +355,19 @@ jobs:
       # Uses --no-lookups to skip AWS API calls (relies on cached cdk.context.json).
       #
       # Projects synthesized:
-      #   1. monitoring  → 3 stacks (Storage, SSM, Compute)
-      #   2. k8s         → 2 stacks (Compute, Edge)
-      #   3. nextjs      → multi-stack (ECS, API, Edge + supporting stacks)
+      #   1. k8s         → cluster stacks (Base, ControlPlane, Workers, Edge, API)
+      #   2. bedrock     → 4 stacks (Data, Agent, Api, Content)
+      #   3. shared      → 1 stack (Infra)
       #
       # If synth fails with "Cannot determine scope" errors, run locally to
       # refresh cdk.context.json: just synth <project> development
       #
-      # Recipe: justfile → ci-synth-validate (bash script with all 3 projects)
+      # Recipe: justfile → ci-synth-validate
       - name: Synthesize CDK Stacks
         run: just ci-synth-validate
         env:
           AWS_REGION: eu-west-1
-          # Required by NextJS API stack validation (actual values come from
+          # Required by Kubernetes API stack validation (actual values come from
           # GitHub environment vars during deploy — see deployment pipelines)
           NOTIFICATION_EMAIL: ci-validation@placeholder.local
           SES_FROM_EMAIL: ci-validation@placeholder.local
@@ -408,8 +405,7 @@ jobs:
   #
   # Validates Kubernetes Helm charts before they reach the cluster.
   # Catches template errors, schema violations, and missing values
-  # that would otherwise only surface during deployment. This would
-  # have caught every monitoring stack error from the recovery session.
+  # that would otherwise only surface during deployment.
   # ============================================================================
   validate-helm:
     name: Validate Helm Charts
@@ -438,30 +434,12 @@ jobs:
       # -----------------------------------------------------------------
       # Lint (via justfile recipes)
       # -----------------------------------------------------------------
-      - name: Lint Monitoring Chart
-        run: just helm-lint-monitoring
-
-      - name: Lint Next.js Chart
-        run: just helm-lint-nextjs
+      - name: Lint Helm Charts
+        run: just helm-lint
 
       # -----------------------------------------------------------------
       # Template Render + Schema Validation
       # -----------------------------------------------------------------
-      - name: Template Render (Monitoring)
-        run: |
-          helm template monitoring-stack \
-            kubernetes-app/app-deploy/monitoring/chart \
-            -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml \
-            --namespace monitoring \
-            > /tmp/monitoring-rendered.yaml
-
-      - name: Validate K8s Schemas (Monitoring)
-        run: |
-          kubeconform -summary -strict \
-            -kubernetes-version 1.31.0 \
-            -ignore-missing-schemas \
-            /tmp/monitoring-rendered.yaml
-
       - name: Template Render (Next.js)
         run: |
           helm template nextjs-app \
@@ -484,7 +462,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Chart | Lint | Template | Schema |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Monitoring | ✅ | ✅ | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| Next.js | ✅ | ✅ | ✅ |" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================

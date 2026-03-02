@@ -37,12 +37,10 @@
  * If this ordering is ever broken (e.g. parallelising edge with base),
  * the AwsCustomResource SSM readers will fail with ParameterNotFound.
  *
- * ## Differences from NextJs Edge Stack
- * - EIP origin instead of ALB origin (Traefik Ingress handles routing)
- * - No ALB DNS SSM path — reads EIP from SSM instead
- * - Same S3 origin for static assets and CloudFront behaviors
- *
- * @see NextJsEdgeStack (original ECS-based version in lib/stacks/nextjs/edge/)
+ * ## Origin Architecture
+ * - EIP origin (Traefik Ingress handles routing)
+ * - Reads EIP from SSM (no ALB)
+ * - S3 origin for static assets
  */
 
 import { NagSuppressions } from 'cdk-nag';

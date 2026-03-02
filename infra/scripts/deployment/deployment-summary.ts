@@ -2,12 +2,12 @@
 /**
  * Deployment Summary Script
  *
- * Generates a GitHub Actions step summary for monitoring deployments.
+ * Generates a GitHub Actions step summary for CDK deployments.
  * Reads deployment results from environment variables and writes
  * formatted markdown to $GITHUB_STEP_SUMMARY.
  *
  * Usage:
- *   npx tsx scripts/deployment/deployment-summary.ts monitoring development
+ *   npx tsx scripts/deployment/deployment-summary.ts kubernetes development
  *
  * Environment variables read (set by GitHub Actions `needs` context):
  *   DEPLOY_<STACK_ID>_RESULT  - 'success', 'failure', 'skipped', 'cancelled'

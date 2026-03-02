@@ -16,7 +16,6 @@
 #
 # What ArgoCD syncs from Git (managed by App-of-Apps root):
 #   - kubernetes-app/k8s-bootstrap/system/argocd/applications/ → child Application manifests
-#   - kubernetes-app/app-deploy/monitoring/chart    → monitoring Application
 #   - kubernetes-app/app-deploy/nextjs/helm/chart   → nextjs Application
 #   - kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml → traefik Application
 #
@@ -33,7 +32,6 @@ on:
       - feature/k3s-kubernetes-migration
     paths:
       # Helm charts (ArgoCD watches these paths in Git)
-      - "kubernetes-app/app-deploy/monitoring/**"
       - "kubernetes-app/app-deploy/nextjs/**"
       # Traefik values (ArgoCD multi-source references this from Git)
       - "kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml"
@@ -71,13 +69,6 @@ jobs:
         uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
         with:
           version: "v3.17.1"
-
-      - name: Lint Monitoring Helm Chart
-        run: |
-          echo "=== Linting monitoring chart ==="
-          helm lint kubernetes-app/app-deploy/monitoring/chart \
-            --values kubernetes-app/app-deploy/monitoring/chart/values.yaml
-          echo "✓ Monitoring chart passed"
 
       - name: Lint Next.js Helm Chart
         run: |
@@ -196,7 +187,7 @@ jobs:
           set +e +o pipefail
 
           # Only verify Applications whose source paths were changed
-          EXPECTED_APPS=("monitoring" "nextjs" "traefik" "metrics-server" "local-path-provisioner")
+          EXPECTED_APPS=("nextjs" "traefik" "metrics-server" "local-path-provisioner")
           POLL_INTERVAL=30
           MAX_POLLS=12  # 6 minutes (ArgoCD syncs every ~3 min)
 

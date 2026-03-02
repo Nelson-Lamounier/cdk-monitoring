@@ -43,17 +43,17 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
-import { LambdaFunctionConstruct } from '../../../common/compute/constructs/lambda-function';
-import { ApiGatewayConstruct } from '../../../common/networking/api/api-gateway';
-import { buildWafRules } from '../../../common/security/waf-rules';
+import { LambdaFunctionConstruct } from '../../common/compute/constructs/lambda-function';
+import { ApiGatewayConstruct } from '../../common/networking/api/api-gateway';
+import { buildWafRules } from '../../common/security/waf-rules';
 import {
     Environment,
-} from '../../../config/environments';
+} from '../../config/environments';
 import {
     getNextJsAllocations,
     getNextJsConfigs,
-} from '../../../config/nextjs';
-import { nextjsSsmPaths } from '../../../config/ssm-paths';
+} from '../../config/nextjs';
+import { nextjsSsmPaths } from '../../config/ssm-paths';
 
 // =============================================================================
 // STACK PROPS

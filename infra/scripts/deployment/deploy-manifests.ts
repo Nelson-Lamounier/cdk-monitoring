@@ -3,7 +3,7 @@
  * Deploy K8s Manifests via SSM
  *
  * Shared script for deploying Kubernetes manifests to the kubeadm cluster
- * via SSM Run Command. Used by both monitoring and NextJS K8s pipelines.
+ * via SSM Run Command. Used by the K8s pipeline.
  *
  * Steps:
  *   1. Find the Kubernetes control plane instance (ASG query → SSM fallback)
@@ -15,8 +15,8 @@
  *   7. Collect deployment logs and write to GITHUB_STEP_SUMMARY
  *
  * Usage:
- *   npx tsx scripts/deployment/deploy-manifests.ts monitoring development
- *   npx tsx scripts/deployment/deploy-manifests.ts nextjs production --region eu-west-1
+ *   npx tsx scripts/deployment/deploy-manifests.ts kubernetes development
+ *   npx tsx scripts/deployment/deploy-manifests.ts kubernetes production --region eu-west-1
  *
  * Environment:
  *   AWS_REGION            Override region (default: eu-west-1)
@@ -48,7 +48,7 @@ import logger from './logger.js';
 // Types
 // =============================================================================
 
-type Project = 'monitoring' | 'nextjs';
+type Project = 'kubernetes';
 type Environment = 'development' | 'production';
 
 interface ProjectConfig {
@@ -74,13 +74,13 @@ const region = regionFlag !== -1 ? args[regionFlag + 1] : (process.env.AWS_REGIO
 
 if (!project || !environment) {
   console.error('Usage: deploy-manifests.ts <project> <environment> [--region <region>]');
-  console.error('  project:     monitoring | nextjs');
+  console.error('  project:     kubernetes');
   console.error('  environment: development | production');
   process.exit(1);
 }
 
-if (!['monitoring', 'nextjs'].includes(project)) {
-  console.error(`Unknown project: ${project}. Must be "monitoring" or "nextjs".`);
+if (!['kubernetes'].includes(project)) {
+  console.error(`Unknown project: ${project}. Must be "kubernetes".`);
   process.exit(1);
 }
 
@@ -96,32 +96,21 @@ if (!['development', 'production'].includes(environment)) {
 /**
  * Build project-specific configuration.
  *
- * Both projects target the same Kubernetes control plane instance (where kubectl runs).
+ * Targets the Kubernetes control plane instance (where kubectl runs).
  * The ASG and SSM paths reference the control plane node.
  *
  * SSM document naming (from unified CDK compute-stack, namePrefix = 'k8s-{env}'):
- *   - Monitoring: k8s-{env}-deploy-manifests
- *   - NextJS:     k8s-{env}-deploy-app-manifests
+ *   - k8s-{env}-deploy-app-manifests
  */
 function getProjectConfig(project: Project, env: Environment): ProjectConfig {
   const asgName = `k8s-${env}-asg`;
   const ssmInstancePath = `/k8s/${env}/instance-id`;
 
-  if (project === 'monitoring') {
-    return {
-      asgName,
-      ssmInstancePath,
-      ssmDocumentName: `k8s-${env}-deploy-manifests`,
-      argoAppName: 'monitoring',
-    };
-  }
-
-  // NextJS: uses the dedicated app-manifests SSM document
   return {
     asgName,
     ssmInstancePath,
     ssmDocumentName: `k8s-${env}-deploy-app-manifests`,
-    argoAppName: 'nextjs',
+    argoAppName: 'kubernetes',
   };
 }
 

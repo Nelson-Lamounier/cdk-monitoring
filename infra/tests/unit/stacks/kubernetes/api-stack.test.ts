@@ -21,7 +21,7 @@ import { Environment } from '../../../../lib/config';
 import {
     NextJsApiStack,
     NextJsApiStackProps,
-} from '../../../../lib/stacks/nextjs/networking/api-stack';
+} from '../../../../lib/stacks/kubernetes/api-stack';
 import {
     TEST_ENV_EU,
     createTestApp,

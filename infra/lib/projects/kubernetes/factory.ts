@@ -54,7 +54,7 @@ import {
     KubernetesMonitoringWorkerStack,
     KubernetesAppWorkerStack,
 } from '../../stacks/kubernetes';
-import { NextJsApiStack } from '../../stacks/nextjs/networking/api-stack';
+import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId } from '../../utilities/naming';
 
 // =============================================================================
@@ -134,7 +134,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // The shared Kubernetes cluster hosts the Next.js application, so we need
         // the Next.js resource names, SSM paths, and edge configuration.
         // =================================================================
-        const nextjsNamePrefix = getProjectConfig(Project.NEXTJS).namespace.toLowerCase();
+        const nextjsNamePrefix = 'nextjs';
         const resourceNames = nextjsResourceNames(nextjsNamePrefix, environment);
         const ssmPaths = nextjsSsmPaths(environment, nextjsNamePrefix);
 

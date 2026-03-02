@@ -13,7 +13,7 @@
  *   npx tsx scripts/deployment/diagnose-stack.ts <stack-name> [--region <region>]
  *
  * Examples:
- *   npx tsx scripts/deployment/diagnose-stack.ts Monitoring-Compute-development
+ *   npx tsx scripts/deployment/diagnose-stack.ts K8s-ControlPlane-development
  *   npx tsx scripts/deployment/diagnose-stack.ts K8s-Edge-development --region eu-west-1
  *
  * Environment variables:

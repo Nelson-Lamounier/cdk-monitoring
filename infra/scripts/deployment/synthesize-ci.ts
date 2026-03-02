@@ -6,8 +6,8 @@
  * for GitHub Actions workflows. Replaces inline bash in CI workflows.
  *
  * Usage:
- *   npx tsx scripts/deployment/synthesize-ci.ts monitoring development
- *   npx tsx scripts/deployment/synthesize-ci.ts nextjs staging --region us-east-1
+ *   npx tsx scripts/deployment/synthesize-ci.ts kubernetes development
+ *   npx tsx scripts/deployment/synthesize-ci.ts bedrock staging --region us-east-1
  *
  * Outputs (via $GITHUB_OUTPUT):
  *   timestamp, architecture, and stack names (e.g., storage, compute)
@@ -41,7 +41,7 @@ const environment = args[1] as Environment;
 
 if (!projectId || !environment) {
   console.error('Usage: synthesize-ci.ts <project> <environment>');
-  console.error('  Projects: monitoring, nextjs, org, shared');
+  console.error('  Projects: kubernetes, bedrock, org, shared');
   console.error('  Environments: development, staging, production');
   console.error('\n  Synth-time values (domain, secrets, etc.) come from:');
   console.error('    - Typed config files: lib/config/*/configurations.ts');
@@ -126,11 +126,6 @@ async function main(): Promise<void> {
   // 4. Output metadata
   setOutput('timestamp', timestamp);
   setOutput('architecture', metadata.architecture);
-
-  // 5. Output edge_enabled for NextJS projects
-  if (projectId === 'nextjs') {
-    setOutput('edge_enabled', 'true');
-  }
 
   logger.blank();
   logger.success(`Synthesis complete: ${project!.stacks.length} stacks for ${environment}`);

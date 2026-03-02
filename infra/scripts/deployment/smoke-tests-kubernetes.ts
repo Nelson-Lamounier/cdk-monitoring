@@ -4,7 +4,7 @@
  * Kubernetes Infrastructure Smoke Tests
  *
  * Validates the full kubeadm Kubernetes deployment after a CDK deploy.
- * Covers all 8 stacks (Data, Base, ControlPlane, AppWorker, MonitoringWorker,
+ * Covers all stacks (Data, Base, ControlPlane, AppWorker, MonitoringWorker,
  * AppIam, API, Edge) and their resources.
  *
  * Checks performed:
@@ -659,9 +659,9 @@ async function checkCloudFront(): Promise<CheckResult> {
   logger.task(`Testing CloudFront at ${cloudfrontDomain}...`);
 
   // CloudFront root should return:
-  //   200 — Next.js SSR page served successfully
+  //   200 — Application served successfully
   //   301/302 — HTTPS redirect or trailing-slash redirect
-  // 502/503 means CloudFront can't reach origin (Traefik/Next.js down)
+  // 502/503 means CloudFront can't reach origin (Traefik/app down)
   const EXPECTED_CF_CODES = [200, 301, 302];
 
   const rootCode = await httpCheckWithRetry(`https://${cloudfrontDomain}/`, {

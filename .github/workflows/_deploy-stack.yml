@@ -7,11 +7,11 @@ on:
   workflow_call:
     inputs:
       stack-name:
-        description: "Full CDK stack name (e.g., NetworkingStack-monitoring-development)"
+        description: "Full CDK stack name (e.g., ControlPlane-development)"
         required: true
         type: string
       project:
-        description: "Project name (monitoring, nextjs, org)"
+        description: "Project name (kubernetes, shared, org, bedrock)"
         required: true
         type: string
       environment:
@@ -61,7 +61,7 @@ on:
         type: string
         default: ""
       monitor-domain-name:
-        description: "Domain name for monitoring dashboard (optional)"
+        description: "Domain name for dashboard (optional)"
         required: false
         type: string
         default: ""
@@ -90,10 +90,10 @@ on:
         description: "AWS OIDC role ARN for authentication (resolved from environment if not passed)"
         required: false
       VERIFICATION_SECRET:
-        description: "Verification secret for NextJS API stack (scoped — only pass for API stack)"
+        description: "Verification secret for API stack (scoped — only pass for API stack)"
         required: false
       GRAFANA_ADMIN_PASSWORD:
-        description: "Grafana admin password for monitoring stack (scoped — only pass for monitoring stacks)"
+        description: "Grafana admin password (scoped — only pass for stacks that need it)"
         required: false
     outputs:
       deployment-status:

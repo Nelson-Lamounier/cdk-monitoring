@@ -23,15 +23,15 @@ describe('Naming Utilities', () => {
     // =========================================================================
     describe('stackId', () => {
         it('should generate {Namespace}-{Component}-{environment}', () => {
-            expect(stackId('Monitoring', 'Storage', 'development')).toBe('Monitoring-Storage-development');
+            expect(stackId('K8s', 'Storage', 'development')).toBe('K8s-Storage-development');
         });
 
         it('should handle multi-part namespace', () => {
             expect(stackId('Monitoring-K8s', 'Compute', 'production')).toBe('Monitoring-K8s-Compute-production');
         });
 
-        it('should handle multi-part component', () => {
-            expect(stackId('NextJS', 'K8s-Compute', 'staging')).toBe('NextJS-K8s-Compute-staging');
+        it('should handle empty namespace', () => {
+            expect(stackId('', 'ControlPlane', 'development')).toBe('ControlPlane-development');
         });
     });
 
@@ -39,22 +39,6 @@ describe('Naming Utilities', () => {
     // getStackId()
     // =========================================================================
     describe('getStackId', () => {
-        it('should resolve Monitoring project stacks', () => {
-            expect(getStackId(Project.MONITORING, 'storage', 'development')).toBe('Monitoring-Storage-development');
-            expect(getStackId(Project.MONITORING, 'ssm', 'staging')).toBe('Monitoring-SSM-staging');
-            expect(getStackId(Project.MONITORING, 'compute', 'production')).toBe('Monitoring-Compute-production');
-        });
-
-        it('should resolve NextJS project stacks', () => {
-            expect(getStackId(Project.NEXTJS, 'data', 'development')).toBe('NextJS-Data-development');
-            expect(getStackId(Project.NEXTJS, 'compute', 'development')).toBe('NextJS-Compute-development');
-            expect(getStackId(Project.NEXTJS, 'networking', 'development')).toBe('NextJS-Networking-development');
-            expect(getStackId(Project.NEXTJS, 'application', 'development')).toBe('NextJS-Application-development');
-            expect(getStackId(Project.NEXTJS, 'k8sCompute', 'development')).toBe('NextJS-K8s-Compute-development');
-            expect(getStackId(Project.NEXTJS, 'api', 'development')).toBe('NextJS-Api-development');
-            expect(getStackId(Project.NEXTJS, 'edge', 'production')).toBe('NextJS-Edge-production');
-        });
-
         it('should resolve K8s project stacks', () => {
             // K8s project namespace is empty — stack names use component only
             expect(getStackId(Project.KUBERNETES, 'controlPlane', 'development')).toBe('ControlPlane-development');
@@ -77,7 +61,7 @@ describe('Naming Utilities', () => {
         });
 
         it('should throw on invalid stack key', () => {
-            expect(() => getStackId(Project.MONITORING, 'nonexistent', 'development')).toThrow(
+            expect(() => getStackId(Project.KUBERNETES, 'nonexistent', 'development')).toThrow(
                 /Unknown stack key 'nonexistent'/
             );
         });
@@ -89,17 +73,7 @@ describe('Naming Utilities', () => {
     describe('STACK_REGISTRY', () => {
         it('should contain all project entries', () => {
             expect(Object.keys(STACK_REGISTRY)).toEqual(
-                expect.arrayContaining(['shared', 'monitoring', 'nextjs', 'kubernetes', 'org', 'bedrock'])
-            );
-        });
-
-        it('should have expected monitoring stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.monitoring)).toEqual(['storage', 'ssm', 'compute']);
-        });
-
-        it('should have expected nextjs stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.nextjs)).toEqual(
-                ['data', 'compute', 'networking', 'application', 'k8sCompute', 'api', 'edge']
+                expect.arrayContaining(['shared', 'kubernetes', 'org', 'bedrock'])
             );
         });
 
@@ -113,29 +87,29 @@ describe('Naming Utilities', () => {
     });
 
     // =========================================================================
-    // Existing utility functions (unchanged behaviour)
+    // Existing utility functions
     // =========================================================================
     describe('resourceName', () => {
         it('should join parts with hyphens', () => {
-            expect(resourceName({ project: 'monitoring', component: 'vpc', environment: 'development' }))
-                .toBe('monitoring-vpc-development');
+            expect(resourceName({ project: 'k8s', component: 'vpc', environment: 'development' }))
+                .toBe('k8s-vpc-development');
         });
 
         it('should omit missing parts', () => {
-            expect(resourceName({ project: 'monitoring' })).toBe('monitoring');
+            expect(resourceName({ project: 'k8s' })).toBe('k8s');
         });
     });
 
     describe('logGroupName', () => {
         it('should generate /{project}/{component}/{environment}', () => {
-            expect(logGroupName('monitoring', 'compute', 'development')).toBe('/monitoring/compute/development');
+            expect(logGroupName('k8s', 'compute', 'development')).toBe('/k8s/compute/development');
         });
     });
 
     describe('exportName', () => {
         it('should generate {project}-{component}-{output}-{environment}', () => {
-            expect(exportName('monitoring', 'compute', 'role-arn', 'development'))
-                .toBe('monitoring-compute-role-arn-development');
+            expect(exportName('k8s', 'compute', 'role-arn', 'development'))
+                .toBe('k8s-compute-role-arn-development');
         });
     });
 

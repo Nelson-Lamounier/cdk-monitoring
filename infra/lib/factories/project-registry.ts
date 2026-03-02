@@ -10,8 +10,6 @@ import { Environment, isValidEnvironment, resolveEnvironment } from '../config/e
 import { Project, isValidProject, getAvailableProjects } from '../config/projects';
 import { BedrockProjectFactory } from '../projects/bedrock';
 import { KubernetesProjectFactory } from '../projects/kubernetes';
-import { MonitoringProjectFactory } from '../projects/monitoring';
-import { NextJSProjectFactory } from '../projects/nextjs';
 import { OrgProjectFactory } from '../projects/org';
 import { SharedProjectFactory } from '../projects/shared';
 
@@ -22,8 +20,6 @@ import { IProjectFactory, ProjectFactoryConstructor } from './project-interfaces
  */
 const projectFactoryRegistry: Record<Project, ProjectFactoryConstructor> = {
     [Project.SHARED]: SharedProjectFactory,
-    [Project.MONITORING]: MonitoringProjectFactory,
-    [Project.NEXTJS]: NextJSProjectFactory,
     [Project.ORG]: OrgProjectFactory,
 
     [Project.KUBERNETES]: KubernetesProjectFactory,

@@ -51,8 +51,8 @@ if (!stackName || !project || !environment) {
   console.error('Usage: deploy.ts <stack-name> <project> <environment> [--require-approval never|broadening|any-change]');
   console.error('');
   console.error('Examples:');
-  console.error('  deploy.ts Monitoring-K8s-Compute-development k8s development');
-  console.error('  deploy.ts Monitoring-Compute-production monitoring production --require-approval broadening');
+  console.error('  deploy.ts K8s-ControlPlane-development kubernetes development');
+  console.error('  deploy.ts Bedrock-Compute-production bedrock production --require-approval broadening');
   process.exit(1);
 }
 

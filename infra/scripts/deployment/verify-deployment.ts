@@ -3,11 +3,11 @@
  * Verify Deployment Script
  *
  * Checks CloudFormation stack statuses using the AWS SDK and outputs
- * SSM port-forwarding commands for monitoring access.
+ * SSM port-forwarding commands for service access.
  *
  * Usage:
- *   npx tsx scripts/deployment/verify-deployment.ts monitoring development
- *   npx tsx scripts/deployment/verify-deployment.ts monitoring production --region eu-west-1
+ *   npx tsx scripts/deployment/verify-deployment.ts kubernetes development
+ *   npx tsx scripts/deployment/verify-deployment.ts kubernetes production --region eu-west-1
  *
  * Exit codes:
  *   0 = all stacks healthy

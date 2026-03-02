@@ -13,7 +13,7 @@
  *
  * Examples:
  *   npx tsx scripts/deployment/collect-outputs.ts K8s-Compute-development --deploy-status success
- *   npx tsx scripts/deployment/collect-outputs.ts Monitoring-Compute-dev --deploy-status success --outputs-dir stack-outputs
+ *   npx tsx scripts/deployment/collect-outputs.ts K8s-ControlPlane-development --deploy-status success --outputs-dir stack-outputs
  *
  * Outputs (via $GITHUB_OUTPUT):
  *   stack_outputs  - JSON array of {OutputKey, OutputValue} objects

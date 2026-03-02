@@ -12,10 +12,6 @@
 export enum Project {
     /** Shared infrastructure (VPC, etc.) used by multiple projects */
     SHARED = 'shared',
-    /** Grafana/Prometheus monitoring stack */
-    MONITORING = 'monitoring',
-    /** Next.js web application */
-    NEXTJS = 'nextjs',
     /** AWS Organization and root account resources */
     ORG = 'org',
 
@@ -48,18 +44,6 @@ export const PROJECT_CONFIGS: Record<Project, ProjectConfig> = {
         description: 'Shared infrastructure (VPC) used by multiple projects',
         namespace: 'Shared',
         requiresSharedVpc: false, // This project CREATES the shared VPC
-    },
-    [Project.MONITORING]: {
-        displayName: 'Monitoring',
-        description: 'Grafana and Prometheus monitoring infrastructure',
-        namespace: 'Monitoring',
-        requiresSharedVpc: true,
-    },
-    [Project.NEXTJS]: {
-        displayName: 'Next.js',
-        description: 'Next.js web application infrastructure',
-        namespace: 'NextJS',
-        requiresSharedVpc: true,
     },
     [Project.ORG]: {
         displayName: 'Organization',

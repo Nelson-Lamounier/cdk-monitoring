@@ -52,138 +52,6 @@ export interface ProjectConfig {
 }
 
 // =============================================================================
-// MONITORING PROJECT (Consolidated 3-Stack Architecture)
-// =============================================================================
-
-const monitoringStacks: StackConfig[] = [
-  {
-    id: 'storage',
-    name: 'Storage Stack',
-    getStackName: (env) => getStackId(Project.MONITORING, 'storage', env),
-    description: 'EBS volume with DLM backups and lifecycle management',
-  },
-  {
-    id: 'ssm',
-    name: 'SSM Stack',
-    getStackName: (env) => getStackId(Project.MONITORING, 'ssm', env),
-    description: 'SSM Run Command document and S3 scripts bucket for monitoring configuration',
-  },
-  {
-    id: 'compute',
-    name: 'Compute Stack',
-    getStackName: (env) => getStackId(Project.MONITORING, 'compute', env),
-    description: 'Security group + EC2/ASG running Prometheus and Grafana',
-    dependsOn: ['storage'],
-  },
-];
-
-const monitoringProject: ProjectConfig = {
-  id: 'monitoring',
-  name: 'Monitoring',
-  description: 'Prometheus + Grafana monitoring infrastructure (3-stack architecture)',
-  stacks: monitoringStacks,
-  cdkContext: (env) => ({
-    project: 'monitoring',
-    environment: env,
-  }),
-};
-
-// =============================================================================
-// NEXTJS PROJECT (Consolidated Domain-Based Stacks)
-// =============================================================================
-
-const nextjsStacks: StackConfig[] = [
-  // -------------------------------------------------------------------------
-  // Phase 1: Data Layer (ECR, DynamoDB, S3, SSM)
-  // -------------------------------------------------------------------------
-  {
-    id: 'data',
-    name: 'Data Stack',
-    getStackName: (env) => getStackId(Project.NEXTJS, 'data', env),
-    description: 'DynamoDB table, S3 assets bucket, and SSM parameters (ECR is in Shared stack)',
-  },
-
-  // -------------------------------------------------------------------------
-  // Phase 2: Compute Layer (ECS Cluster, IAM Roles, Auto Scaling)
-  // -------------------------------------------------------------------------
-  {
-    id: 'compute',
-    name: 'Compute Stack',
-    getStackName: (env) => getStackId(Project.NEXTJS, 'compute', env),
-    description: 'ECS cluster, IAM roles, launch template, and auto scaling',
-    dependsOn: ['data'],
-  },
-
-  // -------------------------------------------------------------------------
-  // Phase 3: Networking Layer (ALB, Security Groups, Service Discovery)
-  // -------------------------------------------------------------------------
-  {
-    id: 'networking',
-    name: 'Networking Stack',
-    getStackName: (env) => getStackId(Project.NEXTJS, 'networking', env),
-    description: 'Application Load Balancer, target groups, and security groups',
-    dependsOn: ['compute'],
-  },
-
-  // -------------------------------------------------------------------------
-  // Phase 4: Application Layer (ECS Services, Task Definitions)
-  // -------------------------------------------------------------------------
-  {
-    id: 'application',
-    name: 'Application Stack',
-    getStackName: (env) => getStackId(Project.NEXTJS, 'application', env),
-    description: 'ECS service with NextJS task definition and auto-deploy Lambda',
-    dependsOn: ['networking', 'compute'],
-  },
-
-  // -------------------------------------------------------------------------
-  // Phase 4b: K8s Compute Layer (EC2 kubeadm worker + EIP + EBS)
-  // Replaces: ECS Compute + Networking + Application stacks
-  // -------------------------------------------------------------------------
-  {
-    id: 'k8sCompute',
-    name: 'K8s Compute Stack',
-    getStackName: (env) => getStackId(Project.NEXTJS, 'k8sCompute', env),
-    description: 'kubeadm Kubernetes worker node: EC2 + ASG + EBS + EIP for NextJS workloads',
-    dependsOn: ['data'],
-  },
-
-  // -------------------------------------------------------------------------
-  // Phase 5: API Layer (API Gateway, Lambda)
-  // -------------------------------------------------------------------------
-  {
-    id: 'api',
-    name: 'API Stack',
-    getStackName: (env) => getStackId(Project.NEXTJS, 'api', env),
-    description: 'API Gateway with Lambda functions for articles CRUD',
-    dependsOn: ['data'],
-  },
-
-  // -------------------------------------------------------------------------
-  // Phase 6: Edge Layer (CloudFront, ACM, WAF) - us-east-1
-  // -------------------------------------------------------------------------
-  {
-    id: 'edge',
-    name: 'Edge Stack',
-    getStackName: (env) => getStackId(Project.NEXTJS, 'edge', env),
-    description: 'CloudFront distribution with ACM certificate and WAF (deploys to us-east-1)',
-    dependsOn: ['networking', 'application', 'api'],
-    region: 'us-east-1',
-  },
-];
-
-const nextjsProject: ProjectConfig = {
-  id: 'nextjs',
-  name: 'NextJS',
-  description: 'NextJS application on ECS with consolidated domain-based stacks (requires Shared VPC)',
-  stacks: nextjsStacks,
-  cdkContext: (env) => ({
-    project: 'nextjs',
-    environment: env,
-  }),
-};
-
-// =============================================================================
 // SHARED PROJECT (VPC + ECR shared infrastructure)
 // =============================================================================
 
@@ -254,7 +122,7 @@ const orgProject: ProjectConfig = {
 // =============================================================================
 // K8S PROJECT (kubeadm Kubernetes Cluster — 10-Stack Architecture)
 // Synth outputs all 10 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→Compute→Workers→AppIam→Edge.
-// API stack is deployed by the Next.js thin wrapper pipeline.
+// API stack is deployed separately from core infrastructure.
 // Bootstrap/app manifests synced by independent S3 sync pipelines.
 // =============================================================================
 
@@ -334,7 +202,7 @@ const k8sStacks: StackConfig[] = [
 
 const k8sProject: ProjectConfig = {
   id: 'kubernetes',
-  name: 'Monitoring-K8s',
+  name: 'Kubernetes',
   description: 'Self-managed kubeadm Kubernetes cluster for unified workloads (requires Shared VPC)',
   stacks: k8sStacks,
   cdkContext: (env) => ({
@@ -349,8 +217,6 @@ const k8sProject: ProjectConfig = {
 
 export const projects: ProjectConfig[] = [
   sharedProject,
-  monitoringProject,
-  nextjsProject,
   orgProject,
   k8sProject,
 ];

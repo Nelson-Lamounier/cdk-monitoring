@@ -6,11 +6,11 @@
  * This eliminates hardcoded stack names by reading from the TypeScript source of truth.
  *
  * Usage:
- *   npx tsx scripts/deployment/get-stack-names.ts monitoring development
- *   npx tsx scripts/deployment/get-stack-names.ts nextjs development
+ *   npx tsx scripts/deployment/get-stack-names.ts kubernetes development
+ *   npx tsx scripts/deployment/get-stack-names.ts bedrock development
  *
  * Output (JSON):
- *   {"vpc":"Monitoring-Vpc-development","sg":"Monitoring-SecurityGroup-development",...}
+ *   {"data":"K8s-Data-development","base":"K8s-Base-development",...}
  */
 
 import { projects, type Environment } from './stacks.js';
@@ -19,7 +19,7 @@ const [projectId, environment] = process.argv.slice(2);
 
 if (!projectId || !environment) {
   console.error('Usage: get-stack-names.ts <project> <environment>');
-  console.error('  Projects: monitoring, nextjs, org');
+  console.error('  Projects: kubernetes, bedrock, org, shared');
   console.error('  Environments: development, staging, production');
   process.exit(1);
 }
