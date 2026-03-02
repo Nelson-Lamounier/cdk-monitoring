@@ -40,6 +40,9 @@ on:
       AWS_OIDC_ROLE:
         description: "AWS OIDC role ARN"
         required: false
+      VERIFICATION_SECRET:
+        description: "Email verification HMAC secret (needed for CDK synth)"
+        required: false
 
 env:
   NODE_VERSION: "22"
