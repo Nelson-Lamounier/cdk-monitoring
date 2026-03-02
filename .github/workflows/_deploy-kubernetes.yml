@@ -878,7 +878,7 @@ jobs:
             # Start SSM Automation
             EXECUTION_ID=$(aws ssm start-automation-execution \
               --document-name "$DOC_NAME" \
-              --parameters "InstanceId=$INSTANCE_ID,SsmPrefix=${SSM_PREFIX},S3Bucket=$(aws ssm get-parameter --name "${SSM_PREFIX}/base/scripts-bucket" --query "Parameter.Value" --output text --region "$REGION" 2>/dev/null || echo ""),Region=${REGION}" \
+              --parameters "InstanceId=$INSTANCE_ID,SsmPrefix=${SSM_PREFIX},S3Bucket=$(aws ssm get-parameter --name "${SSM_PREFIX}/scripts-bucket" --query "Parameter.Value" --output text --region "$REGION" 2>/dev/null || echo ""),Region=${REGION}" \
               --region "$REGION" \
               --query "AutomationExecutionId" --output text)
 
