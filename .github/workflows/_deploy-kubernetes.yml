@@ -766,17 +766,17 @@ jobs:
   # ===========================================================================
   # Watch SSM Bootstrap — Monitor SSM Automation Execution (parallel)
   #
-  # Starts in parallel with Compute deploys. Once an EC2 instance boots
-  # and publishes its SSM Automation execution ID, this job polls
-  # step-level progress and streams logs directly into GitHub Actions.
+  # Starts alongside the node stack deploys. The ControlPlane ASG triggers
+  # EC2 creation which boots and publishes an SSM Automation execution ID.
+  # This job polls step-level progress and streams logs into GitHub Actions.
   # Observational only — does not block the pipeline.
   # ===========================================================================
   watch-ssm-bootstrap:
     name: SSM Bootstrap Observer
-    needs: [setup, deploy-ssm-automation]
+    needs: [setup, deploy-controlplane]
     if: >-
       always()
-      && needs.deploy-ssm-automation.result == 'success'
+      && needs.deploy-controlplane.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: ${{ inputs.environment }}
