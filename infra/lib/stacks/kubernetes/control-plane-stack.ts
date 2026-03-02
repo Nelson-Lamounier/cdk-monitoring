@@ -48,7 +48,6 @@ import { Construct } from 'constructs';
 
 import {
     AutoScalingGroupConstruct,
-    GoldenAmiPipelineConstruct,
     LaunchTemplateConstruct,
     SsmRunCommandDocument,
     SsmStateManagerConstruct,
@@ -302,24 +301,13 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
         });
 
         // =====================================================================
-        // Golden AMI Pipeline (Layer 1 — pre-baked software)
+        // Golden AMI Pipeline — MOVED to dedicated GoldenAmiStack
         //
-        // Creates an EC2 Image Builder pipeline that bakes Docker, AWS CLI,
-        // kubeadm toolchain, and Calico manifests into a Golden AMI.
-        // Gated by imageConfig.enableImageBuilder flag.
+        // The Image Builder pipeline was decoupled into its own stack to
+        // eliminate the Day-1 chicken-and-egg: the pipeline must exist before
+        // the AMI build job runs, but both used to live in this stack.
+        // See: golden-ami-stack.ts
         // =====================================================================
-        let goldenAmiPipeline: GoldenAmiPipelineConstruct | undefined;
-        if (configs.image.enableImageBuilder) {
-            goldenAmiPipeline = new GoldenAmiPipelineConstruct(this, 'GoldenAmi', {
-                namePrefix,
-                imageConfig: configs.image,
-                clusterConfig: configs.cluster,
-                vpc,
-                subnetId: vpc.publicSubnets[0].subnetId,
-                securityGroupId: securityGroup.securityGroupId,
-                scriptsBucket,
-            });
-        }
 
         // =====================================================================
         // SSM State Manager (Layer 3 — post-boot configuration)
@@ -683,17 +671,7 @@ def handler(event, context):
             description: 'S3 bucket containing k8s scripts and manifests',
         });
 
-        if (goldenAmiPipeline) {
-            new cdk.CfnOutput(this, 'GoldenAmiPipelineName', {
-                value: goldenAmiPipeline.pipeline.name!,
-                description: 'EC2 Image Builder pipeline name for Golden AMI',
-            });
-
-            new cdk.CfnOutput(this, 'GoldenAmiSsmPath', {
-                value: configs.image.amiSsmPath,
-                description: 'SSM parameter path storing the latest Golden AMI ID',
-            });
-        }
+        // Golden AMI outputs are now in GoldenAmiStack
 
         if (stateManager) {
             new cdk.CfnOutput(this, 'SsmDocumentName', {

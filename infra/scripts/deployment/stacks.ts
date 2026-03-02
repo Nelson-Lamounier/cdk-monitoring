@@ -252,8 +252,8 @@ const orgProject: ProjectConfig = {
 };
 
 // =============================================================================
-// K8S PROJECT (kubeadm Kubernetes Cluster — 8-Stack Architecture)
-// Synth outputs all 8 stacks. Infra pipeline deploys Data→Base→GoldenAMI→Compute→AppWorker→MonitoringWorker→AppIam→Edge.
+// K8S PROJECT (kubeadm Kubernetes Cluster — 10-Stack Architecture)
+// Synth outputs all 10 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→Compute→Workers→AppIam→Edge.
 // API stack is deployed by the Next.js thin wrapper pipeline.
 // Bootstrap/app manifests synced by independent S3 sync pipelines.
 // =============================================================================
@@ -271,6 +271,13 @@ const k8sStacks: StackConfig[] = [
     getStackName: (env) => getStackId(Project.KUBERNETES, 'base', env),
     description: 'VPC networking, security group, KMS key, EBS volume, Elastic IP',
     dependsOn: ['data'],
+  },
+  {
+    id: 'goldenAmi',
+    name: 'Golden AMI Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'goldenAmi', env),
+    description: 'EC2 Image Builder pipeline for baking Kubernetes Golden AMI',
+    dependsOn: ['base'],
   },
   {
     id: 'ssmAutomation',

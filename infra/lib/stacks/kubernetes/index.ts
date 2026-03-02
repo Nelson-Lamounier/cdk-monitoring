@@ -1,6 +1,8 @@
 /** @format */
 export { KubernetesBaseStack } from './base-stack';
 export type { KubernetesBaseStackProps } from './base-stack';
+export { GoldenAmiStack } from './golden-ami-stack';
+export type { GoldenAmiStackProps } from './golden-ami-stack';
 export { K8sSsmAutomationStack } from './ssm-automation-stack';
 export type { K8sSsmAutomationStackProps } from './ssm-automation-stack';
 export { KubernetesAppIamStack } from './app-iam-stack';

@@ -112,9 +112,10 @@ jobs:
       domain-name: ${{ steps.resolve-edge.outputs.domain-name }}
       hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
       cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
-      # Stack names from synthesize-ci.ts (8-stack architecture)
+      # Stack names from synthesize-ci.ts (10-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
+      goldenami-stack: ${{ steps.synth.outputs.goldenAmi }}
       controlplane-stack: ${{ steps.synth.outputs.controlPlane }}
       ssmautomation-stack: ${{ steps.synth.outputs.ssmAutomation }}
       worker-stack: ${{ steps.synth.outputs.appWorker }}
@@ -375,10 +376,11 @@ jobs:
   # ===========================================================================
   build-golden-ami:
     name: Build Golden AMI
-    needs: [setup, sync-bootstrap-content]
+    needs: [setup, sync-bootstrap-content, deploy-goldenami]
     if: >-
       always()
       && needs.sync-bootstrap-content.result == 'success'
+      && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
       && inputs.enable-golden-ami-build
     uses: ./.github/workflows/_build-golden-ami.yml
     with:
@@ -396,10 +398,11 @@ jobs:
   # ===========================================================================
   ami-build-observer:
     name: AMI Build Observer
-    needs: [setup, sync-bootstrap-content]
+    needs: [setup, sync-bootstrap-content, deploy-goldenami]
     if: >-
       always()
       && needs.sync-bootstrap-content.result == 'success'
+      && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
       && inputs.enable-golden-ami-build
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -574,6 +577,32 @@ jobs:
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.base-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy Golden AMI Stack (Image Builder Pipeline)
+  #
+  # Creates the EC2 Image Builder pipeline as a standalone stack.
+  # Must deploy BEFORE build-golden-ami so the pipeline resource exists
+  # when the AMI build job tries to trigger it. This eliminates the
+  # Day-1 chicken-and-egg.
+  # ===========================================================================
+  deploy-goldenami:
+    name: Deploy Golden AMI
+    needs: [setup, deploy-base]
+    if: >-
+      always()
+      && needs.deploy-base.result == 'success'
+      && inputs.enable-golden-ami-build
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.goldenami-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
       aws-account-id: ${{ needs.setup.outputs.aws-account-id }}

@@ -5,11 +5,12 @@
  * Creates shared Kubernetes infrastructure hosting both monitoring and
  * application workloads on a kubeadm Kubernetes cluster.
  *
- * Stack Architecture (9 stacks):
+ * Stack Architecture (10 stacks):
  *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
  *   2. Kubernetes-Base: VPC, Security Group, KMS, EBS, Elastic IP
+ *   2b. Kubernetes-GoldenAmi: EC2 Image Builder pipeline (bakes Golden AMI)
+ *   2c. Kubernetes-SsmAutomation: SSM Automation bootstrap documents
  *   3. Kubernetes-ControlPlane: Control plane EC2 (t3.medium), ASG, IAM,
- *      S3 manifests bucket, SSM docs, Golden AMI, State Manager
  *   3b. Kubernetes-AppWorker: Application node EC2 (t3.small), ASG, kubeadm join
  *   3c. Kubernetes-MonitoringWorker: Monitoring node EC2 (t3.small), ASG, kubeadm join
  *   4. Kubernetes-AppIam: Application-tier IAM grants (DynamoDB, S3, Secrets)
@@ -46,6 +47,7 @@ import {
     K8sSsmAutomationStack,
     KubernetesAppIamStack,
     KubernetesBaseStack,
+    GoldenAmiStack,
     KubernetesControlPlaneStack,
     KubernetesDataStack,
     KubernetesEdgeStack,
@@ -222,7 +224,34 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stackMap.base = baseStack;
 
         // =================================================================
-        // Stack 2b: SSM AUTOMATION STACK (Bootstrap Documents)
+        // Stack 2b: GOLDEN AMI STACK (Image Builder Pipeline)
+        //
+        // Dedicated stack for the EC2 Image Builder pipeline.
+        // Deployed before ControlPlane so the AMI can be baked before
+        // any ASG launches EC2 instances.
+        // Gated by imageConfig.enableImageBuilder flag.
+        // =================================================================
+        let goldenAmiStack: GoldenAmiStack | undefined;
+        if (configs.image.enableImageBuilder) {
+            goldenAmiStack = new GoldenAmiStack(
+                scope,
+                stackId(this.namespace, 'GoldenAmi', environment),
+                {
+                    env,
+                    description: `Golden AMI Image Builder pipeline — ${environment}`,
+                    targetEnvironment: environment,
+                    baseStack,
+                    configs,
+                    namePrefix,
+                },
+            );
+            goldenAmiStack.addDependency(baseStack);
+            stacks.push(goldenAmiStack);
+            stackMap.goldenAmi = goldenAmiStack;
+        }
+
+        // =================================================================
+        // Stack 2c: SSM AUTOMATION STACK (Bootstrap Documents)
         //
         // SSM Automation documents for control plane and worker bootstrap.
         // Deployed independently so bootstrap scripts can be updated
