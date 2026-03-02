@@ -395,22 +395,52 @@ jobs:
 
           STACK_NAME="${{ needs.setup.outputs.goldenami-stack }}"
 
-          # ── Pre-check: is CloudFormation actually building an image? ──
-          # Query the stack for an ImageBuilder::Image resource in CREATE_IN_PROGRESS
-          # or UPDATE_IN_PROGRESS. If the stack is already COMPLETE, exit early.
-          CFN_IMAGE_STATUS=$(aws cloudformation describe-stack-events \
+          # ── Pre-check: is the stack actively deploying? ──────────────
+          # describe-stack-events returns ALL historical events, so we
+          # cannot rely on it. Instead, check the stack's current status.
+          STACK_STATUS=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$REGION" \
-            --query "StackEvents[?ResourceType=='AWS::ImageBuilder::Image' && (ResourceStatus=='CREATE_IN_PROGRESS' || ResourceStatus=='UPDATE_IN_PROGRESS')].ResourceStatus" \
-            --output text 2>/dev/null | head -1 || echo "")
+            --query "Stacks[0].StackStatus" \
+            --output text 2>/dev/null || echo "")
 
-          if [ -z "$CFN_IMAGE_STATUS" ]; then
-            echo "[INFO] No CfnImage resource is being created/updated in $STACK_NAME"
-            echo "  Stack has no active Image Builder build — skipping observer."
+          case "$STACK_STATUS" in
+            *_IN_PROGRESS)
+              echo "Stack is $STACK_STATUS — checking for active Image Builder build..."
+              ;;
+            *)
+              echo "[INFO] Stack status is ${STACK_STATUS:-NOT_FOUND} — no active deployment."
+              echo "  Skipping observer."
+              exit 0
+              ;;
+          esac
+
+          # Quick check: is there actually an Image Builder build running?
+          ACTIVE_BUILD=$(aws imagebuilder list-images \
+            --owner Self \
+            --query "imageVersionList[*].arn" \
+            --output text --region "$REGION" 2>/dev/null || echo "")
+
+          HAS_ACTIVE=false
+          for VER_ARN in $ACTIVE_BUILD; do
+            BLD_ARNS=$(aws imagebuilder list-image-build-versions \
+              --image-version-arn "$VER_ARN" \
+              --query "imageSummaryList[?state.status=='BUILDING' || state.status=='TESTING' || state.status=='DISTRIBUTING' || state.status=='INTEGRATING'].arn" \
+              --output text --region "$REGION" 2>/dev/null || echo "")
+            if [ -n "$BLD_ARNS" ] && [ "$BLD_ARNS" != "None" ]; then
+              HAS_ACTIVE=true
+              break
+            fi
+          done
+
+          if [ "$HAS_ACTIVE" = "false" ]; then
+            echo "[INFO] Stack is deploying but no active Image Builder build detected."
+            echo "  CloudFormation may have determined no AMI changes are needed."
+            echo "  Skipping observer."
             exit 0
           fi
 
-          echo "CfnImage resource is $CFN_IMAGE_STATUS — monitoring build..."
+          echo "Active Image Builder build detected — monitoring..."
           echo ""
 
           # ── Resolve S3 log prefix ───────────────────────────────────
