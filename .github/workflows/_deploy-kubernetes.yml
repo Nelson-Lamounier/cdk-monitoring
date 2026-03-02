@@ -811,6 +811,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
+    outputs:
+      cp-execution-id: ${{ steps.trigger.outputs.cp_execution_id }}
+      worker-execution-id: ${{ steps.trigger.outputs.worker_execution_id }}
+      mon-worker-execution-id: ${{ steps.trigger.outputs.mon_worker_execution_id }}
 
     steps:
       - name: Configure AWS Credentials
@@ -821,6 +825,7 @@ jobs:
           audience: sts.amazonaws.com
 
       - name: Trigger SSM Automation on Nodes
+        id: trigger
         env:
           SSM_PREFIX: /k8s/${{ inputs.environment }}
           REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
@@ -892,6 +897,17 @@ jobs:
               --region "$REGION" 2>/dev/null || true
 
             echo "  [PASS] $ROLE SSM Automation triggered"
+
+            # Expose execution ID as GitHub Actions output
+            local OUTPUT_KEY=""
+            case "$ROLE" in
+              control-plane) OUTPUT_KEY="cp_execution_id" ;;
+              app-worker)    OUTPUT_KEY="worker_execution_id" ;;
+              mon-worker)    OUTPUT_KEY="mon_worker_execution_id" ;;
+            esac
+            if [ -n "$OUTPUT_KEY" ]; then
+              echo "${OUTPUT_KEY}=${EXECUTION_ID}" >> "$GITHUB_OUTPUT"
+            fi
           }
 
           # ── Helper: wait for SSM Automation to complete ────────────
@@ -1012,39 +1028,20 @@ jobs:
           REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
           LOG_GROUP: /ssm/k8s/${{ inputs.environment }}/bootstrap
           EC2_LOG_GROUP: /ec2/k8s-${{ inputs.cdk-environment || inputs.environment }}/instances
+          CP_EXECUTION_ID: ${{ needs.trigger-ssm-bootstrap.outputs.cp-execution-id }}
         run: |
           echo "=== Watching SSM Automation Bootstrap ==="
           WATCH_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)  # ISO 8601 for aws logs tail --since
 
-          # Clear stale execution ID from previous runs.
-          aws ssm delete-parameter \
-            --name "${SSM_PREFIX}/bootstrap/execution-id" \
-            --region "$REGION" 2>/dev/null || true
-
-          # Wait for the new execution ID (EC2 must boot + user data must run)
-          MAX_WAIT=300
-          WAITED=0
-          EXECUTION_ID=""
-
-          while [ -z "$EXECUTION_ID" ] && [ $WAITED -lt $MAX_WAIT ]; do
-            EXECUTION_ID=$(aws ssm get-parameter \
-              --name "${SSM_PREFIX}/bootstrap/execution-id" \
-              --query "Parameter.Value" --output text \
-              --region "$REGION" 2>/dev/null || echo "")
-            if [ "$EXECUTION_ID" = "None" ] || [ -z "$EXECUTION_ID" ]; then
-              EXECUTION_ID=""
-              echo "Waiting for SSM Automation execution ID... (${WAITED}s / ${MAX_WAIT}s)"
-              sleep 15
-              WAITED=$((WAITED + 15))
-            fi
-          done
+          # Read execution ID directly from trigger job output
+          EXECUTION_ID="$CP_EXECUTION_ID"
 
           if [ -z "$EXECUTION_ID" ]; then
-            echo "::warning::SSM Automation execution ID not found after ${MAX_WAIT}s — bootstrap may not have started"
+            echo "::warning::No control-plane execution ID received from trigger job — nothing to observe"
             exit 0
           fi
 
-          echo "Tracking execution: $EXECUTION_ID"
+          echo "Tracking control-plane execution: $EXECUTION_ID"
           echo ""
 
           # ── Poll SSM Automation + stream CloudWatch logs ──────────────
