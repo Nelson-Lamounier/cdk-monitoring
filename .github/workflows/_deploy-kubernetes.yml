@@ -402,40 +402,47 @@ jobs:
           S3_LOG_PREFIX="s3://${S3_BUCKET}/image-builder-logs/"
 
           # ── Wait for an active Image Builder build ──────────────────
-          MAX_WAIT=300
+          MAX_WAIT=600
           WAITED=0
           BUILD_ARN=""
 
           echo "Waiting for Image Builder build to start (CFN creates it)..."
 
           while [ -z "$BUILD_ARN" ] && [ $WAITED -lt $MAX_WAIT ]; do
-            # Find any active builds across all Image Builder images
-            BUILD_ARN=$(aws imagebuilder list-images \
+            # List all image version ARNs in this account
+            IMAGE_VERSIONS=$(aws imagebuilder list-images \
+              --owner Self \
               --query "imageVersionList[*].arn" \
-              --output text --region "$REGION" 2>/dev/null | tr '\t' '\n' | head -1 || echo "")
+              --output text --region "$REGION" 2>/dev/null || echo "")
 
-            # Check for building/testing/distributing images
-            for IMG_ARN in $(aws imagebuilder list-images \
-              --query "imageVersionList[*].arn" \
-              --output text --region "$REGION" 2>/dev/null || echo ""); do
+            # For each version, list its build versions and check status
+            for VER_ARN in $IMAGE_VERSIONS; do
+              BUILD_ARNS=$(aws imagebuilder list-image-build-versions \
+                --image-version-arn "$VER_ARN" \
+                --query "imageSummaryList[*].arn" \
+                --output text --region "$REGION" 2>/dev/null || echo "")
 
-              IMG_STATUS=$(aws imagebuilder get-image \
-                --image-build-version-arn "$IMG_ARN" \
-                --query 'image.state.status' --output text \
-                --region "$REGION" 2>/dev/null || echo "")
+              for BLD_ARN in $BUILD_ARNS; do
+                BLD_STATUS=$(aws imagebuilder get-image \
+                  --image-build-version-arn "$BLD_ARN" \
+                  --query 'image.state.status' --output text \
+                  --region "$REGION" 2>/dev/null || echo "")
 
-              case "$IMG_STATUS" in
-                BUILDING|TESTING|DISTRIBUTING|INTEGRATING)
-                  BUILD_ARN="$IMG_ARN"
-                  break 2
-                  ;;
-              esac
+                case "$BLD_STATUS" in
+                  BUILDING|TESTING|DISTRIBUTING|INTEGRATING)
+                    BUILD_ARN="$BLD_ARN"
+                    break 3
+                    ;;
+                esac
+              done
             done
 
-            BUILD_ARN=""
-            echo "  Waiting for build to start... (${WAITED}s / ${MAX_WAIT}s)"
-            sleep 15
-            WAITED=$((WAITED + 15))
+            # If no active build found this iteration, wait
+            if [ -z "$BUILD_ARN" ]; then
+              echo "  Waiting for build to start... (${WAITED}s / ${MAX_WAIT}s)"
+              sleep 15
+              WAITED=$((WAITED + 15))
+            fi
           done
 
           if [ -z "$BUILD_ARN" ]; then
