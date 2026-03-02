@@ -490,16 +490,33 @@ phases:
         inputs:
           commands:
             - |
-              source /etc/environment  # ARCH set by DetectArchitecture step
-
               # Install ecr-credential-provider for kubelet ECR authentication
               # This allows kubelet to pull container images from private ECR repositories
               # without pre-configured docker credentials or cron-based token refresh.
-              ECR_PROVIDER_VERSION="v1.31.1"
-              curl -fsSL "https://artifacts.k8s.io/binaries/cloud-provider-aws/\${ECR_PROVIDER_VERSION}/linux/\${ARCH}/ecr-credential-provider-linux-\${ARCH}" \
-                -o /usr/local/bin/ecr-credential-provider
+              #
+              # The official kubernetes/cloud-provider-aws project does not publish
+              # standalone binaries. We build from source using Go during AMI bake.
+              ECR_PROVIDER_VERSION="v1.35.0"
+
+              # Install Go temporarily for the build
+              if ! command -v go &>/dev/null; then
+                echo "Installing Go for ecr-credential-provider build..."
+                curl -fsSL "https://go.dev/dl/go1.24.9.linux-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" \
+                  -o /tmp/go.tar.gz
+                tar -C /usr/local -xzf /tmp/go.tar.gz
+                export PATH="/usr/local/go/bin:$PATH"
+                rm /tmp/go.tar.gz
+              fi
+
+              echo "Building ecr-credential-provider \${ECR_PROVIDER_VERSION}..."
+              GOBIN=/usr/local/bin go install \
+                "k8s.io/cloud-provider-aws/cmd/ecr-credential-provider@\${ECR_PROVIDER_VERSION}"
+
               chmod +x /usr/local/bin/ecr-credential-provider
               echo "ecr-credential-provider \${ECR_PROVIDER_VERSION} installed"
+
+              # Clean up Go if we installed it
+              rm -rf /usr/local/go /root/go
 
               # Create kubelet credential provider config
               mkdir -p /etc/kubernetes
