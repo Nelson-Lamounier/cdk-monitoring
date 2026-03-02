@@ -20,7 +20,7 @@
  *
  * @example
  * ```typescript
- * const goldenAmi = new GoldenAmiPipelineConstruct(this, 'GoldenAmi', {
+ * const goldenAmi = new GoldenAmiImageConstruct(this, 'GoldenAmi', {
  *     namePrefix: 'k8s-development',
  *     imageConfig: configs.image,
  *     clusterConfig: configs.cluster,
@@ -48,7 +48,7 @@ import { KubernetesClusterConfig, K8sImageConfig } from '../../../config/kuberne
 // PROPS
 // =============================================================================
 
-export interface GoldenAmiPipelineProps {
+export interface GoldenAmiImageProps {
     /** Environment-aware name prefix (e.g., 'k8s-development') */
     readonly namePrefix: string;
     /** Image configuration from K8sConfigs */
@@ -69,7 +69,7 @@ export interface GoldenAmiPipelineProps {
 // CONSTRUCT
 // =============================================================================
 
-export class GoldenAmiPipelineConstruct extends Construct {
+export class GoldenAmiImageConstruct extends Construct {
 
     /** The Image Builder image (CloudFormation-built) */
     public readonly image: imagebuilder.CfnImage;
@@ -82,7 +82,7 @@ export class GoldenAmiPipelineConstruct extends Construct {
     /** Instance profile used by Image Builder */
     public readonly instanceProfile: iam.CfnInstanceProfile;
 
-    constructor(scope: Construct, id: string, props: GoldenAmiPipelineProps) {
+    constructor(scope: Construct, id: string, props: GoldenAmiImageProps) {
         super(scope, id);
 
         const {
@@ -263,7 +263,7 @@ export class GoldenAmiPipelineConstruct extends Construct {
         });
 
         // Tag for identification
-        cdk.Tags.of(this).add('Component', 'GoldenAmiPipeline');
+        cdk.Tags.of(this).add('Component', 'GoldenAmiImage');
     }
 
     // =====================================================================

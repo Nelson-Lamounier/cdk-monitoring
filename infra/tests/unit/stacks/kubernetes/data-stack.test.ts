@@ -27,7 +27,7 @@ import {
 /**
  * Helper to create KubernetesDataStack with sensible defaults.
  */
-function createDataStack(
+function _createDataStack(
     overrides?: Partial<ConstructorParameters<typeof KubernetesDataStack>[2]>,
 ): { stack: KubernetesDataStack; template: Template; app: cdk.App } {
     const app = createTestApp();

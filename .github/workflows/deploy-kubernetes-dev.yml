@@ -32,8 +32,8 @@ on:
       - "infra/bin/app.ts"
       # Bootstrap scripts (synced to S3 inside _deploy-kubernetes.yml)
       - "kubernetes-app/k8s-bootstrap/**"
-      # Golden AMI pipeline construct
-      - "infra/lib/common/compute/constructs/golden-ami-pipeline.ts"
+      # Golden AMI image construct
+      - "infra/lib/common/compute/constructs/golden-ami-image.ts"
       # Golden AMI recipes
       - "kubernetes-app/infra-ami/**"
       # Pipeline definitions

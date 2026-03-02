@@ -28,8 +28,8 @@ import * as cdk from 'aws-cdk-lib/core';
 import { Construct } from 'constructs';
 
 import {
-    GoldenAmiPipelineConstruct,
-} from '../../common/compute/constructs/golden-ami-pipeline';
+    GoldenAmiImageConstruct,
+} from '../../common/compute/constructs/golden-ami-image';
 import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
 
@@ -65,8 +65,8 @@ export interface GoldenAmiStackProps extends cdk.StackProps {
  * before any ASG launches EC2 instances.
  */
 export class GoldenAmiStack extends cdk.Stack {
-    /** The underlying pipeline construct (for cross-stack references if needed) */
-    public readonly pipeline: GoldenAmiPipelineConstruct;
+    /** The underlying image builder construct (for cross-stack references if needed) */
+    public readonly imageBuilder: GoldenAmiImageConstruct;
     /** The AMI ID produced by Image Builder */
     public readonly imageId: string;
 
@@ -75,7 +75,7 @@ export class GoldenAmiStack extends cdk.Stack {
 
         const { baseStack, configs, namePrefix } = props;
 
-        this.pipeline = new GoldenAmiPipelineConstruct(this, 'GoldenAmi', {
+        this.imageBuilder = new GoldenAmiImageConstruct(this, 'GoldenAmi', {
             namePrefix,
             imageConfig: configs.image,
             clusterConfig: configs.cluster,
@@ -84,6 +84,6 @@ export class GoldenAmiStack extends cdk.Stack {
             securityGroupId: baseStack.securityGroup.securityGroupId,
             scriptsBucket: baseStack.scriptsBucket,
         });
-        this.imageId = this.pipeline.imageId;
+        this.imageId = this.imageBuilder.imageId;
     }
 }
