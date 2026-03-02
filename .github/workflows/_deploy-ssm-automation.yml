@@ -75,9 +75,20 @@ jobs:
           audience: sts.amazonaws.com
 
       # Synthesize all stacks (synthesize-ci.ts writes stack names to $GITHUB_OUTPUT)
+      # NOTE: CDK synth is all-or-nothing — it synthesizes every stack in the app,
+      # including Edge which requires DNS config. We bridge these env vars from
+      # GitHub environment variables even though we only deploy the SSM stack.
       - name: CDK Synth
         id: synth
         working-directory: infra
+        env:
+          HOSTED_ZONE_ID: ${{ vars.HOSTED_ZONE_ID }}
+          CROSS_ACCOUNT_ROLE_ARN: ${{ vars.DNS_VALIDATION_ROLE }}
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          NOTIFICATION_EMAIL: ${{ vars.NOTIFICATION_EMAIL || '' }}
+          SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL || '' }}
+          VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET || '' }}
+          VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL || '' }}
         run: npx tsx scripts/deployment/synthesize-ci.ts kubernetes ${{ inputs.cdk-environment }}
 
       # Deploy only the SSM Automation stack
