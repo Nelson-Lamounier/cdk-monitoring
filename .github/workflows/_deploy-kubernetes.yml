@@ -764,19 +764,154 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Trigger SSM Bootstrap — Start SSM Automation on existing nodes
+  #
+  # Runs after all node stacks deploy successfully. User data only signals
+  # cfn-signal (infra ready) and publishes instance IDs to SSM. This job
+  # triggers the actual SSM Automation bootstrap on those instances.
+  # ===========================================================================
+  trigger-ssm-bootstrap:
+    name: Trigger SSM Bootstrap
+    needs:
+      [
+        setup,
+        deploy-controlplane,
+        deploy-app-worker,
+        deploy-monitoring-worker,
+        deploy-ssm-automation,
+      ]
+    if: >-
+      always()
+      && needs.deploy-controlplane.result == 'success'
+      && needs.deploy-ssm-automation.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Trigger SSM Automation on Nodes
+        env:
+          SSM_PREFIX: /k8s/${{ inputs.environment }}
+          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: |
+          echo "=== Triggering SSM Automation Bootstrap ==="
+
+          # ── Helper: wait for instance ID and trigger SSM ──────────────
+          trigger_ssm() {
+            local ROLE="$1"           # control-plane, app-worker, mon-worker
+            local SSM_PARAM="$2"      # SSM param for instance ID
+            local DOC_PARAM="$3"      # SSM param for automation doc name
+            local EXEC_PARAM="$4"     # SSM param to publish execution ID
+            local MAX_WAIT=180
+
+            echo ""
+            echo "--- $ROLE ---"
+
+            # Wait for instance ID (user data publishes it on boot)
+            WAITED=0
+            INSTANCE_ID=""
+            while [ -z "$INSTANCE_ID" ] && [ $WAITED -lt $MAX_WAIT ]; do
+              INSTANCE_ID=$(aws ssm get-parameter \
+                --name "$SSM_PARAM" \
+                --query "Parameter.Value" --output text \
+                --region "$REGION" 2>/dev/null || echo "")
+              if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
+                INSTANCE_ID=""
+                echo "  Waiting for $ROLE instance ID... (${WAITED}s / ${MAX_WAIT}s)"
+                sleep 15
+                WAITED=$((WAITED + 15))
+              fi
+            done
+
+            if [ -z "$INSTANCE_ID" ]; then
+              echo "::warning::$ROLE instance ID not found after ${MAX_WAIT}s — skipping"
+              return 0
+            fi
+
+            echo "  Instance: $INSTANCE_ID"
+
+            # Get SSM Automation document name
+            DOC_NAME=$(aws ssm get-parameter \
+              --name "$DOC_PARAM" \
+              --query "Parameter.Value" --output text \
+              --region "$REGION" 2>/dev/null || echo "")
+
+            if [ -z "$DOC_NAME" ] || [ "$DOC_NAME" = "None" ]; then
+              echo "::warning::SSM doc name not found at $DOC_PARAM — skipping $ROLE"
+              return 0
+            fi
+
+            echo "  Document: $DOC_NAME"
+
+            # Start SSM Automation
+            EXECUTION_ID=$(aws ssm start-automation-execution \
+              --document-name "$DOC_NAME" \
+              --parameters "InstanceId=$INSTANCE_ID,SsmPrefix=${SSM_PREFIX},S3Bucket=$(aws ssm get-parameter --name "${SSM_PREFIX}/base/scripts-bucket" --query "Parameter.Value" --output text --region "$REGION" 2>/dev/null || echo ""),Region=${REGION}" \
+              --region "$REGION" \
+              --query "AutomationExecutionId" --output text)
+
+            echo "  Execution: $EXECUTION_ID"
+
+            # Publish execution ID for the observer
+            aws ssm put-parameter \
+              --name "$EXEC_PARAM" \
+              --value "$EXECUTION_ID" \
+              --type String \
+              --overwrite \
+              --region "$REGION" 2>/dev/null || true
+
+            echo "  [PASS] $ROLE SSM Automation triggered"
+          }
+
+          # ── Trigger ControlPlane ─────────────────────────────────────
+          trigger_ssm "control-plane" \
+            "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
+            "${SSM_PREFIX}/bootstrap/control-plane-doc-name" \
+            "${SSM_PREFIX}/bootstrap/execution-id"
+
+          # ── Trigger App Worker (if deployed) ────────────────────────
+          if [ "${{ needs.deploy-app-worker.result }}" = "success" ]; then
+            trigger_ssm "app-worker" \
+              "${SSM_PREFIX}/bootstrap/app-worker-instance-id" \
+              "${SSM_PREFIX}/bootstrap/worker-doc-name" \
+              "${SSM_PREFIX}/bootstrap/worker-execution-id"
+          else
+            echo "App Worker not deployed — skipping SSM trigger"
+          fi
+
+          # ── Trigger Monitoring Worker (if deployed) ─────────────────
+          if [ "${{ needs.deploy-monitoring-worker.result }}" = "success" ]; then
+            trigger_ssm "mon-worker" \
+              "${SSM_PREFIX}/bootstrap/mon-worker-instance-id" \
+              "${SSM_PREFIX}/bootstrap/worker-doc-name" \
+              "${SSM_PREFIX}/bootstrap/mon-worker-execution-id"
+          else
+            echo "Monitoring Worker not deployed — skipping SSM trigger"
+          fi
+
+          echo ""
+          echo "=== SSM Automation triggers complete ==="
+
+  # ===========================================================================
   # Watch SSM Bootstrap — Monitor SSM Automation Execution (parallel)
   #
-  # Starts alongside the node stack deploys. The ControlPlane ASG triggers
-  # EC2 creation which boots and publishes an SSM Automation execution ID.
-  # This job polls step-level progress and streams logs into GitHub Actions.
+  # Starts after SSM Automation is triggered. Polls step-level progress
+  # and streams logs into GitHub Actions.
   # Observational only — does not block the pipeline.
   # ===========================================================================
   watch-ssm-bootstrap:
     name: SSM Bootstrap Observer
-    needs: [setup, deploy-controlplane]
+    needs: [setup, trigger-ssm-bootstrap]
     if: >-
       always()
-      && needs.deploy-controlplane.result == 'success'
+      && needs.trigger-ssm-bootstrap.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: ${{ inputs.environment }}

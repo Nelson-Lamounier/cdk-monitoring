@@ -205,14 +205,13 @@ describe('KubernetesControlPlaneStack', () => {
             });
         });
 
-        it('should look up SSM Automation document name', () => {
-            expect(containsPattern('ssm get-parameter')).toBe(true);
-            expect(containsPattern('bootstrap/control-plane-doc-name')).toBe(true);
+        it('should publish instance ID to SSM for pipeline SSM trigger', () => {
+            expect(containsPattern('ssm put-parameter')).toBe(true);
+            expect(containsPattern('bootstrap/control-plane-instance-id')).toBe(true);
         });
 
-        it('should start SSM Automation execution', () => {
-            expect(containsPattern('ssm start-automation-execution')).toBe(true);
-            expect(containsPattern('DOC_NAME')).toBe(true);
+        it('should send cfn-signal immediately for infrastructure readiness', () => {
+            expect(containsPattern('cfn-signal --success true')).toBe(true);
         });
 
         // Ensure the externalization is maintained: no heavy bootstrap

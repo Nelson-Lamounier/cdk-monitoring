@@ -335,13 +335,12 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
         }
 
         // =====================================================================
-        // User Data — slim bootstrap stub
+        // User Data — infrastructure readiness stub
         //
-        // Triggers SSM Automation for the control plane bootstrap process.
-        // User data exports CDK-resolved env vars, resolves the SSM Automation
-        // document name from SSM, starts the automation, publishes the execution
-        // ID for the pipeline watcher, then polls until completion and sends
-        // cfn-signal with the result.
+        // Exports CDK-resolved env vars, persists them for SSM Automation,
+        // resolves instance ID, and sends cfn-signal immediately to confirm
+        // EC2 infrastructure is ready. SSM Automation bootstrap is triggered
+        // separately by the CI pipeline after the stack deploys.
         // =====================================================================
         userData.addCommands(
             'set -euxo pipefail',
@@ -368,93 +367,46 @@ export CALICO_VERSION="${configs.image.bakedVersions.calico}"
 export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
 export EIP_ALLOC_ID="${baseStack.elasticIp.attrAllocationId}"
 
+# Persist env vars for SSM Automation to source later
+cat > /etc/profile.d/k8s-env.sh << 'ENVEOF'
+export VOLUME_ID="${ebsVolume.volumeId}"
+export MOUNT_POINT="${configs.storage.mountPoint}"
+export STACK_NAME="${this.stackName}"
+export ASG_LOGICAL_ID="${asgLogicalId}"
+export AWS_REGION="${this.region}"
+export K8S_VERSION="${configs.cluster.kubernetesVersion}"
+export DATA_DIR="${configs.cluster.dataDir}"
+export POD_CIDR="${configs.cluster.podNetworkCidr}"
+export SERVICE_CIDR="${configs.cluster.serviceSubnet}"
+export SSM_PREFIX="${props.ssmPrefix}"
+export S3_BUCKET="${scriptsBucket.bucketName}"
+export CALICO_VERSION="${configs.image.bakedVersions.calico}"
+export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
+export EIP_ALLOC_ID="${baseStack.elasticIp.attrAllocationId}"
+ENVEOF
+
 # ─── Resolve instance ID via IMDSv2 ──────────────────────────────────
-TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \\
   -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
-INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \\
   http://169.254.169.254/latest/meta-data/instance-id)
 
-# ─── Resolve SSM Automation document name ─────────────────────────────
-DOC_NAME=$(aws ssm get-parameter \
-  --name "\${SSM_PREFIX}/bootstrap/control-plane-doc-name" \
-  --query "Parameter.Value" --output text \
-  --region "\${AWS_REGION}" 2>/dev/null || echo "")
-
-if [ -z "$DOC_NAME" ]; then
-  echo "ERROR: SSM Automation document name not found at \${SSM_PREFIX}/bootstrap/control-plane-doc-name"
-  echo "Falling back to local orchestrator..."
-  
-  # Fallback: download and run Python orchestrator directly
-  STEPS_DIR="/data/k8s-bootstrap/boot/steps"
-  mkdir -p "$STEPS_DIR"
-  aws s3 sync "s3://\${S3_BUCKET}/k8s-bootstrap/boot/steps/" "$STEPS_DIR/" --region "\${AWS_REGION}"
-  cd "$STEPS_DIR"
-  python3 orchestrator.py --mode control-plane
-  BOOT_RESULT=$?
-  
-  /opt/aws/bin/cfn-signal --success $([ $BOOT_RESULT -eq 0 ] && echo true || echo false) \
-    --stack "\${STACK_NAME}" \
-    --resource "\${ASG_LOGICAL_ID}" \
-    --region "\${AWS_REGION}" 2>/dev/null || true
-  exit $BOOT_RESULT
-fi
-
-# ─── Start SSM Automation execution ──────────────────────────────────
-echo "Starting SSM Automation: $DOC_NAME for instance $INSTANCE_ID"
-EXECUTION_ID=$(aws ssm start-automation-execution \
-  --document-name "$DOC_NAME" \
-  --parameters "InstanceId=$INSTANCE_ID,SsmPrefix=\${SSM_PREFIX},S3Bucket=\${S3_BUCKET},Region=\${AWS_REGION}" \
-  --region "\${AWS_REGION}" \
-  --query "AutomationExecutionId" --output text)
-
-echo "SSM Automation execution started: $EXECUTION_ID"
-
-# Publish execution ID so the pipeline watcher can track it
-aws ssm put-parameter \
-  --name "\${SSM_PREFIX}/bootstrap/execution-id" \
-  --value "$EXECUTION_ID" \
-  --type String \
-  --overwrite \
+# Publish instance ID so the pipeline can target SSM Automation
+aws ssm put-parameter \\
+  --name "\${SSM_PREFIX}/bootstrap/control-plane-instance-id" \\
+  --value "$INSTANCE_ID" \\
+  --type String \\
+  --overwrite \\
   --region "\${AWS_REGION}" 2>/dev/null || true
 
-# ─── Poll SSM Automation until completion ─────────────────────────────
-while true; do
-  STATUS=$(aws ssm get-automation-execution \
-    --automation-execution-id "$EXECUTION_ID" \
-    --region "\${AWS_REGION}" \
-    --query "AutomationExecution.AutomationExecutionStatus" \
-    --output text 2>/dev/null || echo "Pending")
+echo "Infrastructure ready — instance $INSTANCE_ID"
+echo "SSM Automation will be triggered by the CI pipeline"
 
-  echo "SSM Automation status: $STATUS ($(date))"
-
-  case "$STATUS" in
-    Success)
-      echo "✅ SSM Automation completed successfully"
-      /opt/aws/bin/cfn-signal --success true \
-        --stack "\${STACK_NAME}" \
-        --resource "\${ASG_LOGICAL_ID}" \
-        --region "\${AWS_REGION}" 2>/dev/null || true
-      exit 0
-      ;;
-    Failed|Cancelled|TimedOut)
-      echo "❌ SSM Automation $STATUS"
-      aws ssm get-automation-execution \
-        --automation-execution-id "$EXECUTION_ID" \
-        --region "\${AWS_REGION}" \
-        --query "AutomationExecution.StepExecutions[?StepStatus=='Failed'].[StepName,FailureMessage]" \
-        --output table 2>/dev/null || true
-      /opt/aws/bin/cfn-signal --success false \
-        --stack "\${STACK_NAME}" \
-        --resource "\${ASG_LOGICAL_ID}" \
-        --region "\${AWS_REGION}" \
-        --reason "SSM Automation $STATUS (execution: $EXECUTION_ID)" 2>/dev/null || true
-      exit 1
-      ;;
-    *)
-      sleep 15
-      ;;
-  esac
-done
+# ─── Signal CloudFormation: infrastructure ready ──────────────────────
+/opt/aws/bin/cfn-signal --success true \\
+  --stack "\${STACK_NAME}" \\
+  --resource "\${ASG_LOGICAL_ID}" \\
+  --region "\${AWS_REGION}" 2>/dev/null || true
 `);
 
         this.autoScalingGroup = asgConstruct.autoScalingGroup;

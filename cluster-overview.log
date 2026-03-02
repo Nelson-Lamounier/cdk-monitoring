@@ -1,0 +1,13 @@
+aws ssm get-parameter \
+  --name "/k8s/development/golden-ami/latest" \
+  --query "Parameter.Value" --output text \
+  --region eu-west-1 \
+  --profile dev-account
+
+
+  ami-0d1ff480f9c49eb6a
+
+  aws ec2 deregister-image \
+  --image-id ami-0d1ff480f9c49eb6a \
+  --region eu-west-1 \
+  --profile dev-account
