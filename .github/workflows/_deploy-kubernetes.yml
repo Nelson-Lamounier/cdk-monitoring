@@ -809,7 +809,7 @@ jobs:
       && needs.deploy-controlplane.result == 'success'
       && needs.deploy-ssm-automation.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     environment: ${{ inputs.environment }}
 
     steps:
@@ -894,11 +894,65 @@ jobs:
             echo "  [PASS] $ROLE SSM Automation triggered"
           }
 
+          # ── Helper: wait for SSM Automation to complete ────────────
+          wait_for_automation() {
+            local ROLE="$1"
+            local EXECUTION_ID="$2"
+            local MAX_WAIT=${3:-600}      # default 10 min
+            local POLL_INTERVAL=15
+            local WAITED=0
+
+            echo ""
+            echo "--- Waiting for $ROLE automation ($EXECUTION_ID) ---"
+
+            while [ $WAITED -lt $MAX_WAIT ]; do
+              STATUS=$(aws ssm get-automation-execution \
+                --automation-execution-id "$EXECUTION_ID" \
+                --query "AutomationExecution.AutomationExecutionStatus" \
+                --output text --region "$REGION" 2>/dev/null || echo "Unknown")
+
+              case "$STATUS" in
+                Success)
+                  echo "  [PASS] $ROLE automation completed successfully (${WAITED}s)"
+                  return 0
+                  ;;
+                Failed|Cancelled|TimedOut|CompletedWithFailure)
+                  echo "  [FAIL] $ROLE automation finished with status: $STATUS (${WAITED}s)"
+                  return 1
+                  ;;
+                *)
+                  echo "  $ROLE status: $STATUS (${WAITED}s / ${MAX_WAIT}s)"
+                  sleep $POLL_INTERVAL
+                  WAITED=$((WAITED + POLL_INTERVAL))
+                  ;;
+              esac
+            done
+
+            echo "  [FAIL] $ROLE automation did not complete within ${MAX_WAIT}s"
+            return 1
+          }
+
           # ── Trigger ControlPlane ─────────────────────────────────────
           trigger_ssm "control-plane" \
             "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
             "${SSM_PREFIX}/bootstrap/control-plane-doc-name" \
             "${SSM_PREFIX}/bootstrap/execution-id"
+
+          # ── Wait for control-plane to finish before triggering workers
+          # Workers need the join credentials (token, CA hash, endpoint)
+          # that the control-plane publishes to SSM during initKubeadm.
+          CP_EXEC_ID=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/bootstrap/execution-id" \
+            --query "Parameter.Value" --output text \
+            --region "$REGION" 2>/dev/null || echo "")
+
+          if [ -n "$CP_EXEC_ID" ] && [ "$CP_EXEC_ID" != "None" ]; then
+            if ! wait_for_automation "control-plane" "$CP_EXEC_ID" 600; then
+              echo "::warning::Control-plane bootstrap did not succeed — triggering workers anyway"
+            fi
+          else
+            echo "::warning::Could not read control-plane execution ID — triggering workers immediately"
+          fi
 
           # ── Trigger App Worker (if deployed) ────────────────────────
           if [ "${{ needs.deploy-app-worker.result }}" = "success" ]; then
