@@ -3,7 +3,8 @@
  * KubernetesProjectFactory Unit Tests
  *
  * Tests for the factory that creates shared kubeadm Kubernetes infrastructure.
- * Creates 4 stacks: Data, Compute, API, and Edge.
+ * Creates 10 stacks: Data, Base, GoldenAmi, SsmAutomation, ControlPlane,
+ * Worker, MonitoringWorker, AppIam, API, and Edge.
  *
  * IMPORTANT: Edge config env vars MUST be set before the config module is
  * imported (it evaluates fromEnv() at module load time). The env vars are
@@ -54,7 +55,8 @@ describe('KubernetesProjectFactory', () => {
 
         it('should have correct namespace', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
-            expect(factory.namespace).toBe('Monitoring-K8s');
+            // K8s project namespace is empty — stack names use component only
+            expect(factory.namespace).toBe('');
         });
     });
 
@@ -65,17 +67,19 @@ describe('KubernetesProjectFactory', () => {
             app = new cdk.App();
         });
 
-        it('should create 8 stacks: Data, Base, Compute, Worker, MonWorker, AppIam, API, and Edge', () => {
+        it('should create 10 stacks: Data, Base, GoldenAmi, SsmAutomation, ControlPlane, Worker, MonWorker, AppIam, API, and Edge', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
             const { stacks, stackMap } = factory.createAllStacks(app, context);
 
-            // Shared kubeadm project has 8 stacks: Data, Base, Compute, Worker, MonWorker, AppIam, API, Edge
-            expect(stacks).toHaveLength(8);
+            // Shared kubeadm project has 10 stacks
+            expect(stacks).toHaveLength(10);
             expect(stackMap).toHaveProperty('data');
             expect(stackMap).toHaveProperty('base');
-            expect(stackMap).toHaveProperty('compute');
+            expect(stackMap).toHaveProperty('goldenAmi');
+            expect(stackMap).toHaveProperty('ssmAutomation');
+            expect(stackMap).toHaveProperty('controlPlane');
             expect(stackMap).toHaveProperty('worker');
             expect(stackMap).toHaveProperty('monitoringWorker');
             expect(stackMap).toHaveProperty('appIam');
@@ -83,7 +87,7 @@ describe('KubernetesProjectFactory', () => {
             expect(stackMap).toHaveProperty('edge');
         });
 
-        it('should order stacks as Data → Base → Compute → Worker → MonWorker → AppIam → Api → Edge', () => {
+        it('should order stacks as Data → Base → GoldenAmi → SsmAutomation → ControlPlane → Worker → MonWorker → AppIam → Api → Edge', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
@@ -92,22 +96,23 @@ describe('KubernetesProjectFactory', () => {
             const stackNames = stacks.map((s: cdk.Stack) => s.stackName);
             expect(stackNames[0]).toContain('Data');
             expect(stackNames[1]).toContain('Base');
-            expect(stackNames[2]).toContain('Compute');
-            expect(stackNames[3]).toContain('Worker');
-            expect(stackNames[4]).toContain('MonWorker');
-            expect(stackNames[5]).toContain('AppIam');
-            expect(stackNames[6]).toContain('Api');
-            expect(stackNames[7]).toContain('Edge');
+            expect(stackNames[2]).toContain('GoldenAmi');
+            expect(stackNames[3]).toContain('SsmAutomation');
+            expect(stackNames[4]).toContain('ControlPlane');
+            expect(stackNames[5]).toContain('Worker');
+            expect(stackNames[6]).toContain('MonitoringWorker');
+            expect(stackNames[7]).toContain('AppIam');
+            expect(stackNames[8]).toContain('Api');
+            expect(stackNames[9]).toContain('Edge');
         });
 
-        it('should name stacks correctly with namespace and environment', () => {
+        it('should name stacks correctly with environment suffix', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
             const { stacks } = factory.createAllStacks(app, context);
 
             const stackNames = stacks.map((s: cdk.Stack) => s.stackName);
-            expect(stackNames.some((name: string) => name.includes('K8s'))).toBe(true);
             expect(stackNames.some((name: string) => name.includes('development'))).toBe(true);
         });
 
@@ -120,14 +125,14 @@ describe('KubernetesProjectFactory', () => {
             expect(stackMap.edge.region).toBe('us-east-1');
         });
 
-        it('should deploy Data, Compute, and API stacks in primary region', () => {
+        it('should deploy Data, ControlPlane, and API stacks in primary region', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
             const { stackMap } = factory.createAllStacks(app, context);
 
             expect(stackMap.data.region).toBe('eu-west-1');
-            expect(stackMap.compute.region).toBe('eu-west-1');
+            expect(stackMap.controlPlane.region).toBe('eu-west-1');
             expect(stackMap.api.region).toBe('eu-west-1');
         });
 

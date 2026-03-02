@@ -292,56 +292,34 @@ describe('KubernetesControlPlaneStack', () => {
     });
 
     // =========================================================================
-    // Golden AMI Pipeline (conditional)
+    // Golden AMI Pipeline — MOVED to GoldenAmiStack
+    //
+    // The Image Builder pipeline construct was moved to a dedicated
+    // GoldenAmiStack (golden-ami-stack.ts) to eliminate the Day-1
+    // chicken-and-egg. These tests now verify that the ControlPlane
+    // stack does NOT create any Image Builder resources.
     //
     // NOTE: The SSM parameter (dataType 'aws:ec2:image') has been moved to
     // the Data stack to avoid a Day-0 circular dependency. See data-stack.test.ts.
     // =========================================================================
-    describe('Golden AMI Pipeline', () => {
+    describe('Golden AMI Pipeline (moved to GoldenAmiStack)', () => {
         // Default TEST_CONFIGS has enableImageBuilder: true
         const { template } = createComputeStack();
 
-        it('should create an Image Builder pipeline when enableImageBuilder is true', () => {
-            template.resourceCountIs('AWS::ImageBuilder::ImagePipeline', 1);
+        it('should NOT create an Image Builder pipeline in the ControlPlane stack', () => {
+            template.resourceCountIs('AWS::ImageBuilder::ImagePipeline', 0);
         });
 
-        it('should create an Image Builder recipe with encrypted EBS', () => {
-            template.hasResourceProperties('AWS::ImageBuilder::ImageRecipe', {
-                BlockDeviceMappings: Match.arrayWith([
-                    Match.objectLike({
-                        Ebs: Match.objectLike({
-                            Encrypted: true,
-                            VolumeType: 'gp3',
-                        }),
-                    }),
-                ]),
-            });
+        it('should NOT create an Image Builder recipe in the ControlPlane stack', () => {
+            template.resourceCountIs('AWS::ImageBuilder::ImageRecipe', 0);
         });
 
-        it('should create an Image Builder infrastructure configuration', () => {
-            template.hasResourceProperties(
-                'AWS::ImageBuilder::InfrastructureConfiguration',
-                Match.objectLike({
-                    TerminateInstanceOnFailure: true,
-                }),
-            );
+        it('should NOT create an Image Builder infrastructure configuration in the ControlPlane stack', () => {
+            template.resourceCountIs('AWS::ImageBuilder::InfrastructureConfiguration', 0);
         });
 
-        it('should create an Image Builder distribution with AMI tagging (SSM write handled by CI pipeline)', () => {
-            template.hasResourceProperties(
-                'AWS::ImageBuilder::DistributionConfiguration',
-                {
-                    Distributions: Match.arrayWith([
-                        Match.objectLike({
-                            AmiDistributionConfiguration: Match.objectLike({
-                                AmiTags: Match.objectLike({
-                                    Purpose: 'GoldenAMI',
-                                }),
-                            }),
-                        }),
-                    ]),
-                },
-            );
+        it('should NOT create an Image Builder distribution in the ControlPlane stack', () => {
+            template.resourceCountIs('AWS::ImageBuilder::DistributionConfiguration', 0);
         });
 
         // -----------------------------------------------------------------
@@ -365,7 +343,7 @@ describe('KubernetesControlPlaneStack', () => {
         });
 
         // -----------------------------------------------------------------
-        // Conditional: disabled
+        // Conditional: disabled (should still produce 0 Image Builder resources)
         // -----------------------------------------------------------------
         describe('when enableImageBuilder is false', () => {
             const disabledConfigs = {

@@ -56,8 +56,10 @@ describe('Naming Utilities', () => {
         });
 
         it('should resolve K8s project stacks', () => {
-            expect(getStackId(Project.KUBERNETES, 'compute', 'development')).toBe('Monitoring-K8s-Compute-development');
-            expect(getStackId(Project.KUBERNETES, 'edge', 'production')).toBe('Monitoring-K8s-Edge-production');
+            // K8s project namespace is empty — stack names use component only
+            expect(getStackId(Project.KUBERNETES, 'controlPlane', 'development')).toBe('ControlPlane-development');
+            expect(getStackId(Project.KUBERNETES, 'goldenAmi', 'development')).toBe('GoldenAmi-development');
+            expect(getStackId(Project.KUBERNETES, 'edge', 'production')).toBe('Edge-production');
         });
 
         it('should resolve Shared project stacks', () => {
@@ -102,11 +104,11 @@ describe('Naming Utilities', () => {
         });
 
         it('should have expected k8s stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.kubernetes)).toEqual(['data', 'base', 'compute', 'worker', 'monitoringWorker', 'appIam', 'api', 'edge']);
+            expect(Object.keys(STACK_REGISTRY.kubernetes)).toEqual(['data', 'base', 'goldenAmi', 'ssmAutomation', 'controlPlane', 'appWorker', 'monitoringWorker', 'appIam', 'api', 'edge']);
         });
 
         it('should have expected bedrock stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.bedrock)).toEqual(['data', 'agent', 'api']);
+            expect(Object.keys(STACK_REGISTRY.bedrock)).toEqual(['data', 'agent', 'api', 'content']);
         });
     });
 
