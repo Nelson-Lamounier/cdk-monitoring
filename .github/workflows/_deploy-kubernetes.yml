@@ -636,41 +636,19 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Deploy SSM Automation Stack — Bootstrap Orchestration Documents
+  # Deploy Compute Stack — Control Plane EC2 + ASG
   #
-  # Must deploy before Compute so SSM Automation documents exist when
-  # EC2 user data tries to trigger them.
-  # ===========================================================================
-  deploy-ssm-automation:
-    name: Deploy SSM Automation
-    needs: [setup, deploy-base]
-    if: always() && needs.deploy-base.result == 'success'
-    uses: ./.github/workflows/_deploy-stack.yml
-    with:
-      stack-name: ${{ needs.setup.outputs.ssmautomation-stack }}
-      project: kubernetes
-      environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
-      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-      require-approval: ${{ inputs.require-approval }}
-      outputs-directory: "deployment-outputs"
-    secrets: inherit
-
-  # ===========================================================================
-  # Deploy Compute Stack (3/8) — Control Plane EC2 + ASG + SSM Docs
-  #
-  # Waits for Golden AMI bake (or skip) AND SSM Automation so the
-  # Launch Template resolves to the latest baked AMI and the bootstrap
-  # documents exist when user data triggers them.
+  # Waits for Golden AMI bake (or skip) so the Launch Template
+  # resolves to the latest baked AMI.
+  # SSM Automation stack is deployed separately via _deploy-ssm-automation.yml.
   # ===========================================================================
   deploy-controlplane:
     name: Deploy Control Plane
-    needs: [setup, deploy-base, deploy-goldenami, deploy-ssm-automation]
+    needs: [setup, deploy-base, deploy-goldenami]
     if: >-
       always()
       && needs.deploy-base.result == 'success'
       && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
-      && needs.deploy-ssm-automation.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.controlplane-stack }}
