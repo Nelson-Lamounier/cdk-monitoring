@@ -206,10 +206,6 @@ ci-smoke-kubernetes-infra *ARGS:
 ci-fetch-boot-logs *ARGS:
     npx tsx infra/scripts/deployment/fetch-boot-logs.ts {{ARGS}}
 
-# CI sync S3 assets
-[group('ci')]
-ci-sync-assets *ARGS:
-    npx tsx infra/scripts/deployment/sync-assets-ci.ts {{ARGS}}
 
 # CI get stack names
 [group('ci')]

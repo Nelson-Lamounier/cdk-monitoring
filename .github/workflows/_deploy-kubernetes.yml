@@ -18,11 +18,10 @@
 #   6.  Edge             (CloudFront + ACM + WAF in us-east-1)
 #
 # Post-Deploy (manifests managed by ArgoCD GitOps):
-#   7.  Sync Static Assets          (S3 + CloudFront invalidation)
-#   8.  ArgoCD Health Gate          (wait for GitOps sync)
-#   9.  Verify & Smoke Tests
-#  10.  Deployment Failure Alert    (halt + preserve + alert) - Test
-#  11.  Summary
+#   7.  ArgoCD Health Gate          (wait for GitOps sync)
+#   8.  Verify & Smoke Tests
+#   9.  Deployment Failure Alert    (halt + preserve + alert) - Test
+#  10.  Summary
 #
 # Concurrency:
 #   This is a workflow_call (reusable) workflow — concurrency MUST be set
@@ -1342,62 +1341,6 @@ jobs:
   # ===========================================================================
 
   # ===========================================================================
-  # Sync Static Assets to S3 + CloudFront Cache Invalidation
-  #
-  # Stays in Pipeline A: .next/static/ is a BUILD ARTIFACT extracted from
-  # the Docker image during CDK synth. It only exists in the cdk-out artifact,
-  # which Pipeline B does not produce.
-  # ===========================================================================
-  sync-static-assets:
-    name: Sync Static Assets
-    needs: [setup, deploy-data, deploy-edge]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: ${{ inputs.environment }}
-    if: always() && needs.deploy-data.result == 'success' && (needs.deploy-edge.result == 'success' || needs.deploy-edge.result == 'skipped')
-    outputs:
-      s3-bucket: ${{ steps.sync.outputs.bucket }}
-      files-synced: ${{ steps.sync.outputs.files_synced }}
-      invalidation-id: ${{ steps.sync.outputs.invalidation_id }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Node.js and Yarn
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        run: yarn install --frozen-lockfile
-        working-directory: infra
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-
-      - name: Download Build Artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
-          path: cdk.out/
-
-      - name: Sync Assets & Invalidate Cache
-        id: sync
-        run: |
-          SYNC_CMD="just ci-sync-assets ${{ inputs.cdk-environment }}"
-          SYNC_CMD="$SYNC_CMD --region ${{ env.AWS_REGION }}"
-
-          if [ -n "${{ needs.setup.outputs.domain-name }}" ]; then
-            SYNC_CMD="$SYNC_CMD --domain ${{ needs.setup.outputs.domain-name }}"
-          fi
-
-          eval $SYNC_CMD
-
   # ===========================================================================
   # Verify & Smoke Tests
   # ===========================================================================
@@ -1410,7 +1353,6 @@ jobs:
         deploy-app-worker,
         deploy-monitoring-worker,
         deploy-edge,
-        sync-static-assets,
       ]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1783,7 +1725,7 @@ jobs:
       - deploy-app-worker
       - deploy-monitoring-worker
       - deploy-edge
-      - sync-static-assets
+
       - verify-and-test
       - deployment-failure-alert
     runs-on: ubuntu-latest
