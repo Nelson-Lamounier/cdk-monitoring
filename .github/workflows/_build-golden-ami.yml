@@ -359,6 +359,95 @@ jobs:
                   echo "::warning::Could not extract AMI ID — SSM parameter not updated"
                 fi
 
+                # ---------------------------------------------------------
+                # ASG Instance Refresh — roll new AMI to running instances
+                #
+                # WHY THIS IS NEEDED:
+                # The Launch Template references the AMI via an SSM dynamic
+                # reference: {{resolve:ssm:/k8s/{env}/golden-ami/latest}}.
+                # CloudFormation resolves this token at deploy time. When
+                # Image Builder writes a new AMI ID to SSM, the CFN template
+                # itself has NOT changed (the SSM path is the same), so
+                # CloudFormation sees "no drift" and skips the ASG update.
+                # Running instances continue using the OLD AMI indefinitely.
+                #
+                # Instance Refresh instructs the ASG to replace instances
+                # with the latest Launch Template version. The ASG resolves
+                # the SSM reference again, picking up the new AMI ID.
+                #
+                # PRODUCTION CONSIDERATIONS:
+                # - MinHealthyPercentage=0 allows the single-node ASG to
+                #   terminate its only instance before launching a new one.
+                #   This CAUSES DOWNTIME during the refresh window.
+                # - For production clusters with multiple nodes, increase
+                #   MinHealthyPercentage to 50-90% for rolling replacement.
+                # - Control plane refresh happens first. Workers follow.
+                #   Worker joins may fail if the control plane is mid-refresh.
+                #   Consider adding a delay or dependency between refreshes.
+                # - Instance Refresh is idempotent — if no instances exist
+                #   in the ASG (desiredCapacity=0), the refresh completes
+                #   immediately with no effect.
+                # - If an Instance Refresh is already in progress, the API
+                #   returns an error. We use '|| true' to avoid failing the
+                #   pipeline in this case.
+                # ---------------------------------------------------------
+                if [ "$AMI_ID" != "unknown" ]; then
+                  echo ""
+                  echo "--- Instance Refresh: Rolling new AMI to ASGs ---"
+                  ENV="${{ inputs.cdk-environment }}"
+                  ASG_NAMES=(
+                    "k8s-${ENV}-asg"            # Control plane
+                    "k8s-${ENV}-worker-asg"     # App worker
+                    "k8s-${ENV}-mon-worker-asg" # Monitoring worker
+                  )
+
+                  for ASG_NAME in "${ASG_NAMES[@]}"; do
+                    echo ""
+                    echo "  Refreshing: $ASG_NAME"
+
+                    # Check if ASG exists and has instances
+                    ASG_EXISTS=$(aws autoscaling describe-auto-scaling-groups \
+                      --auto-scaling-group-names "$ASG_NAME" \
+                      --query 'AutoScalingGroups[0].AutoScalingGroupName' \
+                      --output text 2>/dev/null || echo "None")
+
+                    if [ "$ASG_EXISTS" = "None" ] || [ -z "$ASG_EXISTS" ]; then
+                      echo "    [SKIP] ASG not found (stack may not be deployed yet)"
+                      continue
+                    fi
+
+                    INSTANCE_COUNT=$(aws autoscaling describe-auto-scaling-groups \
+                      --auto-scaling-group-names "$ASG_NAME" \
+                      --query 'AutoScalingGroups[0].Instances | length(@)' \
+                      --output text 2>/dev/null || echo "0")
+
+                    if [ "$INSTANCE_COUNT" = "0" ]; then
+                      echo "    [SKIP] No running instances (desired=0)"
+                      continue
+                    fi
+
+                    # Trigger Instance Refresh
+                    # MinHealthyPercentage=0: allows single-node ASGs to refresh
+                    # (terminates the only instance before launching replacement)
+                    REFRESH_ID=$(aws autoscaling start-instance-refresh \
+                      --auto-scaling-group-name "$ASG_NAME" \
+                      --preferences '{"MinHealthyPercentage":0,"InstanceWarmup":300}' \
+                      --query 'InstanceRefreshId' \
+                      --output text 2>&1) || {
+                        echo "    [WARN] Could not start refresh: $REFRESH_ID"
+                        echo "    (An Instance Refresh may already be in progress)"
+                        continue
+                      }
+
+                    echo "    [OK] Instance Refresh started: $REFRESH_ID"
+                    echo "    Instances will be replaced with AMI: $AMI_ID"
+                  done
+
+                  echo ""
+                  echo "Instance Refresh initiated for all available ASGs."
+                  echo "Monitor progress in the AWS Console → EC2 → Auto Scaling Groups."
+                fi
+
                 exit 0
                 ;;
               FAILED|CANCELLED)
