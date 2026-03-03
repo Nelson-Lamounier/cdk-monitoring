@@ -109,12 +109,12 @@ class Config:
 
     @property
     def frontend_ssm_prefix(self) -> str:
-        """Derive frontend SSM prefix: /k8s/development → /frontend/development."""
+        """Derive frontend SSM prefix: /k8s/development → /nextjs/development."""
         override = os.getenv("FRONTEND_SSM_PREFIX", "")
         if override:
             return override
         env = self.ssm_prefix.rsplit("/", 1)[-1]
-        return f"/frontend/{env}"
+        return f"/nextjs/{env}"
 
     @property
     def helm_chart(self) -> Path:
@@ -166,9 +166,9 @@ def sync_from_s3(cfg: Config) -> None:
 # Step 2: Resolve secrets from SSM
 # ---------------------------------------------------------------------------
 FRONTEND_SECRET_MAP = {
-    "dynamodb/table-name": "DYNAMODB_TABLE_NAME",
-    "s3/assets-bucket-name": "ASSETS_BUCKET_NAME",
-    "api/gateway-url": "NEXT_PUBLIC_API_URL",
+    "dynamodb-table-name": "DYNAMODB_TABLE_NAME",
+    "assets-bucket-name": "ASSETS_BUCKET_NAME",
+    "api-gateway-url": "NEXT_PUBLIC_API_URL",
 }
 
 
