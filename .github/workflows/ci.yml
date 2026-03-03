@@ -14,7 +14,7 @@
 #   - Deps Validation   → just deps-check-ci
 #   - Stack Tests       → just test-stacks
 #   - CDK Synthesis     → just ci-synth-validate
-#   - Helm Lint (all)   → just helm-lint
+#   - Helm Validate (all) → just helm-validate-charts
 #   - Helm Validation   → helm lint + helm template + kubeconform
 #
 # Projects validated during CDK synthesis:
@@ -435,7 +435,7 @@ jobs:
       # Lint (via justfile recipes)
       # -----------------------------------------------------------------
       - name: Lint Helm Charts
-        run: just helm-lint
+        run: just helm-validate-charts
 
       # -----------------------------------------------------------------
       # Template Render + Schema Validation

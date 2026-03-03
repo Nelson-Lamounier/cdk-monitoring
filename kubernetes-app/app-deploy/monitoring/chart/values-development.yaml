@@ -12,6 +12,8 @@ prometheus:
   pvc:
     size: 5Gi
   retention: 7d
+  ingress:
+    enabled: true
 
 grafana:
   resources:
@@ -23,6 +25,8 @@ grafana:
       memory: 128Mi
   pvc:
     size: 2Gi
+  ingress:
+    enabled: true
 
 loki:
   resources:

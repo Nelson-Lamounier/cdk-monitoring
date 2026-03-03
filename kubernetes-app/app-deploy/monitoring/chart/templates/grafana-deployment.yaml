@@ -2,28 +2,25 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: grafana
-  namespace: {{ .Values.namespace }}
-  labels:
-    {{- include "monitoring.fullLabels" "grafana" | nindent 4 }}
+  namespace: {{.Values.namespace}}
+  labels: {{- include "monitoring.fullLabels" "grafana" | nindent 4}}
 spec:
-  replicas: {{ .Values.grafana.replicas }}
+  replicas: {{.Values.grafana.replicas}}
   selector:
     matchLabels:
-      {{- include "monitoring.selectorLabels" "grafana" | nindent 6 }}
+      {{- include "monitoring.selectorLabels" "grafana" | nindent 6}}
   template:
     metadata:
-      labels:
-        {{- include "monitoring.fullLabels" "grafana" | nindent 8 }}
+      labels: {{- include "monitoring.fullLabels" "grafana" | nindent 8}}
     spec:
       securityContext:
         fsGroup: 472
         runAsUser: 472
         runAsNonRoot: true
-      nodeSelector:
-        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      nodeSelector: {{- toYaml .Values.nodeSelector | nindent 8}}
       containers:
         - name: grafana
-          image: {{ .Values.grafana.image }}
+          image: {{.Values.grafana.image}}
           env:
             - name: GF_SECURITY_ADMIN_USER
               valueFrom:
@@ -37,6 +34,10 @@ spec:
                   key: admin-password
             - name: GF_PATHS_PROVISIONING
               value: /etc/grafana/provisioning
+            - name: GF_SERVER_ROOT_URL
+              value: "%(protocol)s://%(domain)s/grafana/"
+            - name: GF_SERVER_SERVE_FROM_SUB_PATH
+              value: "true"
           ports:
             - containerPort: 3000
               name: http
@@ -45,8 +46,7 @@ spec:
               mountPath: /var/lib/grafana
             - name: datasources
               mountPath: /etc/grafana/provisioning/datasources
-          resources:
-            {{- toYaml .Values.grafana.resources | nindent 12 }}
+          resources: {{- toYaml .Values.grafana.resources | nindent 12}}
           readinessProbe:
             httpGet:
               path: /api/health
