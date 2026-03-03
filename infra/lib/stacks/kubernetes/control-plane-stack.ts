@@ -280,7 +280,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
                 DeployScript: {
                     type: 'String',
                     description: 'Local path to the deploy script',
-                    default: '/data/app-deploy/nextjs/deploy-manifests.sh',
+                    default: '/data/app-deploy/nextjs/deploy.py',
                 },
             },
             steps: [{
@@ -294,7 +294,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
                     'export MANIFESTS_DIR="{{ManifestsDir}}"',
                     '',
                     '# Re-sync manifests from S3 and run Next.js deploy script',
-                    '"{{DeployScript}}"',
+                    'python3 "{{DeployScript}}"',
                 ],
                 timeoutSeconds: 600,
             }],

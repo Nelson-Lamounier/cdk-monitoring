@@ -648,10 +648,9 @@ jobs:
             --query "Parameter.Value" --output text \
             --region "$REGION" 2>/dev/null || echo "")
 
-          # ── Run deploy-manifests.sh via SSM send-command ──────────────
+          # ── Run deploy.py via SSM send-command ────────────────────────
           # 1. Re-sync deploy scripts from S3 to /data/app-deploy/nextjs/
-          # 2. Install Python deps (requirements.txt)
-          # 3. Execute deploy.py (creates K8s secrets + Helm upgrade)
+          # 2. Execute deploy.py (creates K8s secrets + Helm upgrade)
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
@@ -674,7 +673,7 @@ jobs:
               '',
               '# Run deploy script',
               'cd /data/app-deploy/nextjs',
-              'bash deploy-manifests.sh'
+              'python3 deploy.py'
             ]" \
             --query 'Command.CommandId' --output text \
             --region "$REGION")
