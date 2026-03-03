@@ -352,11 +352,65 @@ k8s-dashboards *ARGS:
 k8s-build-golden-ami env="development" region="eu-west-1":
     npx tsx kubernetes-app/infra-ami/scripts/build-golden-ami.ts {{env}} --region {{region}}
 
-# Lint all Helm charts
+# Validate all Helm charts (lint + template render)
+# Catches rendering errors (broken delimiters, missing values) BEFORE ArgoCD sync.
+# Called by: .github/workflows/gitops-k8s-dev.yml → validate job
 [group('k8s')]
-helm-lint:
-    helm lint kubernetes-app/app-deploy/nextjs/chart \
-      -f kubernetes-app/app-deploy/nextjs/nextjs-values.yaml
+helm-validate-charts:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ERRORS=0
+
+    echo "=== Helm Chart Validation ==="
+    echo ""
+
+    # --- Next.js chart ---
+    echo "--- Next.js chart ---"
+    if helm lint kubernetes-app/app-deploy/nextjs/chart \
+         -f kubernetes-app/app-deploy/nextjs/chart/values.yaml 2>&1; then
+      echo "  ✓ lint passed"
+    else
+      echo "  ✗ lint FAILED"
+      ERRORS=$((ERRORS + 1))
+    fi
+
+    if helm template nextjs-app kubernetes-app/app-deploy/nextjs/chart \
+         -f kubernetes-app/app-deploy/nextjs/chart/values.yaml > /dev/null 2>&1; then
+      echo "  ✓ template render passed"
+    else
+      echo "  ✗ template render FAILED"
+      helm template nextjs-app kubernetes-app/app-deploy/nextjs/chart \
+        -f kubernetes-app/app-deploy/nextjs/chart/values.yaml 2>&1 || true
+      ERRORS=$((ERRORS + 1))
+    fi
+    echo ""
+
+    # --- Monitoring chart ---
+    echo "--- Monitoring chart ---"
+    if helm lint kubernetes-app/app-deploy/monitoring/chart \
+         -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml 2>&1; then
+      echo "  ✓ lint passed"
+    else
+      echo "  ✗ lint FAILED"
+      ERRORS=$((ERRORS + 1))
+    fi
+
+    if helm template monitoring-stack kubernetes-app/app-deploy/monitoring/chart \
+         -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml > /dev/null 2>&1; then
+      echo "  ✓ template render passed"
+    else
+      echo "  ✗ template render FAILED"
+      helm template monitoring-stack kubernetes-app/app-deploy/monitoring/chart \
+        -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml 2>&1 || true
+      ERRORS=$((ERRORS + 1))
+    fi
+    echo ""
+
+    if [ $ERRORS -gt 0 ]; then
+      echo "✗ $ERRORS chart validations FAILED"
+      exit 1
+    fi
+    echo "✓ All Helm charts validated successfully"
 
 # Render templates and verify nodeSelector placement (workload=frontend)
 [group('k8s')]
@@ -366,7 +420,7 @@ helm-verify-selectors:
     echo "=== NextJS Chart ==="
     helm template nextjs-app \
       kubernetes-app/app-deploy/nextjs/chart \
-      -f kubernetes-app/app-deploy/nextjs/nextjs-values.yaml \
+      -f kubernetes-app/app-deploy/nextjs/chart/values.yaml \
       --namespace nextjs-app | grep -c "workload: frontend" | \
       xargs -I{} echo "  nodeSelector entries: {} (expected 1)"
     echo "Done."
