@@ -57,3 +57,4 @@ deploy-key
 deploy-key.pub
 
 __pycache__/
+nextjs-troubleshoot.md
