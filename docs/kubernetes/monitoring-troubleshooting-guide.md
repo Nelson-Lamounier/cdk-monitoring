@@ -33,6 +33,7 @@ A beginner-friendly, step-by-step guide to verifying that your monitoring stack 
   - [Issue 14: RWO PVC Deadlocks on Rolling Updates — Recreate Strategy Fix](#issue-14-rwo-pvc-deadlocks-on-rolling-updates--recreate-strategy-fix)
   - [Issue 15: Prometheus CrashLoopBackOff — TSDB Lock Conflict](#issue-15-prometheus-crashloopbackoff--tsdb-lock-conflict)
   - [Issue 16: Traefik IngressRoute Returns 504 — NetworkPolicy Blocks hostNetwork Traffic](#issue-16-traefik-ingressroute-returns-504--networkpolicy-blocks-hostnetwork-traffic)
+  - [Issue 17: ArgoCD Sync Fails — Recreate Strategy Rejects Leftover rollingUpdate Settings](#issue-17-argocd-sync-fails--recreate-strategy-rejects-leftover-rollingupdate-settings)
 - [Glossary](#glossary)
 
 ---
@@ -1410,6 +1411,106 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost/prometheus
 > [!NOTE]
 > **Resolved.** After updating the NetworkPolicy, both Grafana
 > and Prometheus became accessible via Traefik IngressRoutes.
+
+---
+
+### Issue 17: ArgoCD Sync Fails — Recreate Strategy Rejects Leftover rollingUpdate Settings
+
+**Symptom:** ArgoCD sync fails with:
+
+```
+Deployment.apps "grafana" is invalid: spec.strategy.rollingUpdate:
+Forbidden: may not be specified when strategy `type` is 'Recreate'
+```
+
+This error appears for all four stateful deployments (Grafana,
+Loki, Prometheus, Tempo).
+
+**Root Cause:** When Kubernetes has an existing `RollingUpdate`
+deployment, adding `type: Recreate` doesn't automatically remove
+the `rollingUpdate` settings. Kubernetes rejects the apply because
+both `type: Recreate` and `rollingUpdate` config cannot coexist.
+
+**Fix:** Explicitly null out `rollingUpdate` in the deployment
+templates:
+
+```yaml
+spec:
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+```
+
+**Files changed:**
+- `prometheus-deployment.yaml`
+- `loki-deployment.yaml`
+- `grafana-deployment.yaml`
+- `tempo-deployment.yaml`
+
+**Workarounds while waiting for ArgoCD sync:**
+
+Scale down the old crashing ReplicaSet directly:
+
+```bash
+sudo kubectl scale replicaset <old-replicaset-name> \
+  -n monitoring --replicas=0
+```
+
+Or force ArgoCD to refresh and re-read Git:
+
+```bash
+sudo kubectl -n argocd patch application monitoring \
+  --type merge \
+  -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}'
+```
+
+> [!NOTE]
+> Scaling down the old ReplicaSet manually may not persist
+> because ArgoCD's reconciliation loop (`selfHeal: true`) will
+> restore it. The permanent fix requires the `rollingUpdate: null`
+> in Git.
+
+**Why `rollingUpdate: null` still failed:**
+
+The monitoring ArgoCD application has auto-sync enabled:
+
+```yaml
+syncPolicy:
+  automated:
+    prune: true
+    selfHeal: true
+  syncOptions:
+    - ServerSideApply=true
+```
+
+Despite using `ServerSideApply=true`, the `rollingUpdate: null`
+in the Helm-rendered YAML didn't clear the existing `rollingUpdate`
+field from the live deployment. Kubernetes still saw both
+`type: Recreate` and the leftover `rollingUpdate` config, rejecting
+the apply.
+
+**Definitive fix — delete the deployments for a clean CREATE:**
+
+```bash
+# Delete all four stateful deployments
+sudo kubectl delete deployment grafana loki prometheus tempo \
+  -n monitoring
+
+# ArgoCD (selfHeal: true) detects missing resources and
+# recreates them via CREATE (not PATCH), avoiding the conflict
+sudo kubectl get application monitoring -n argocd -w
+sudo kubectl get pods -n monitoring -w
+```
+
+This works because a `CREATE` operation builds the resource from
+scratch — there is no existing `rollingUpdate` field to conflict
+with. ArgoCD auto-sync will detect the missing deployments and
+recreate them within ~1 minute.
+
+> [!NOTE]
+> **Resolved.** After deleting the four deployments, ArgoCD
+> auto-synced and recreated them with the `Recreate` strategy.
+> No more `rollingUpdate` conflicts.
 
 ---
 
