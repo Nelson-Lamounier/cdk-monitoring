@@ -146,17 +146,27 @@ export interface KubernetesEdgeStackProps extends cdk.StackProps {
     readonly namePrefix?: string;
 
     /**
-     * IP addresses allowed to access the site when restrictAccess is enabled.
+     * Whether to restrict CloudFront access to allowlisted IPs only.
+     * When true, only IPs in allowedIps/allowedIpv6s can reach the site.
+     * All other traffic is blocked at the CloudFront edge.
+     *
+     * To go live: set RESTRICT_ACCESS=false in GitHub Environment variables
+     * and re-run the pipeline. No code change, commit, or PR needed.
+     *
+     * @default false
+     */
+    readonly restrictAccess?: boolean;
+
+    /**
+     * IPv4 addresses allowed to access the site when restrictAccess is enabled.
      * CIDR notation (e.g., `['203.0.113.42/32']`).
-     * Only effective when CDK context `restrictAccess` is true.
-     * @default [] (no IPs allowed — set before enabling restrictAccess)
+     * @default []
      */
     readonly allowedIps?: string[];
 
     /**
      * IPv6 addresses allowed to access the site when restrictAccess is enabled.
      * CIDR notation (e.g., `['2a02:8084::/32']`).
-     * Only effective when CDK context `restrictAccess` is true.
      * @default []
      */
     readonly allowedIpv6s?: string[];
@@ -298,14 +308,14 @@ export class KubernetesEdgeStack extends cdk.Stack {
         // =====================================================================
         // IP Allowlist — Pre-launch access restriction
         //
-        // When CDK context `restrictAccess` is true (default), only IPs in
-        // the allowedIps prop can reach the site. All other traffic is
-        // blocked at the CloudFront edge before hitting the origin.
+        // When restrictAccess is true, only IPs in the allowedIps/allowedIpv6s
+        // props can reach the site. All other traffic is blocked at the
+        // CloudFront edge before hitting the origin.
         //
-        // To go live:  cdk deploy --context restrictAccess=false
-        // To lock down: cdk deploy --context restrictAccess=true
+        // To go live:     set RESTRICT_ACCESS=false in GitHub Environment
+        // To lock down:   set RESTRICT_ACCESS=true  in GitHub Environment
         // =====================================================================
-        const restrictAccess = this.node.tryGetContext('restrictAccess') !== 'false';
+        const restrictAccess = props.restrictAccess ?? false;
         const allowedIps = props.allowedIps ?? [];
         const allowedIpv6s = props.allowedIpv6s ?? [];
         const hasAllowlist = allowedIps.length > 0 || allowedIpv6s.length > 0;

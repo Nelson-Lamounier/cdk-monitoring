@@ -214,6 +214,30 @@ export interface NextJsConfigs {
     readonly crossAccountRoleArn?: string;
 
     // =========================================================================
+    // Synth-time context — WAF Access Restriction (Pre-launch)
+    //
+    // Controls CloudFront IP allowlist for pre-launch access restriction.
+    //
+    // To go live: set RESTRICT_ACCESS to "false" in GitHub Environment
+    // variables and re-run the pipeline. No code change, commit, or PR
+    // needed — the WAF default action flips from BLOCK to ALLOW.
+    //
+    // To lock down again: set RESTRICT_ACCESS back to "true".
+    //
+    // GitHub Environment settings (Settings → Environments → development):
+    //   Variable: RESTRICT_ACCESS = "true" | "false"
+    //   Secret:   ALLOW_IPV4 = "<your-ipv4>/32"  (e.g., "203.0.113.42/32")
+    //   Secret:   ALLOW_IPV6 = "<your-ipv6>/128" (e.g., "2a02:8084::/128")
+    // =========================================================================
+
+    /** Whether to restrict CloudFront access to allowlisted IPs only */
+    readonly restrictAccess?: boolean;
+    /** IPv4 address in CIDR notation to allowlist (e.g., "203.0.113.42/32") */
+    readonly allowedIpv4?: string;
+    /** IPv6 address in CIDR notation to allowlist (e.g., "2a02:8084::/128") */
+    readonly allowedIpv6?: string;
+
+    // =========================================================================
     // Synth-time context — Email/Secrets
     // =========================================================================
 
@@ -282,6 +306,11 @@ export const NEXTJS_CONFIGS: Record<Environment, NextJsConfigs> = {
         domainName: fromEnv('DOMAIN_NAME') ?? 'dev.nelsonlamounier.com',
         hostedZoneId: fromEnv('HOSTED_ZONE_ID'),
         crossAccountRoleArn: fromEnv('CROSS_ACCOUNT_ROLE_ARN'),
+
+        // WAF access restriction (env var at synth time)
+        restrictAccess: fromEnv('RESTRICT_ACCESS') !== 'false',
+        allowedIpv4: fromEnv('ALLOW_IPV4'),
+        allowedIpv6: fromEnv('ALLOW_IPV6'),
 
         // Synth-time context — Email (env var at synth time)
         notificationEmail: fromEnv('NOTIFICATION_EMAIL'),
@@ -369,6 +398,11 @@ export const NEXTJS_CONFIGS: Record<Environment, NextJsConfigs> = {
         hostedZoneId: fromEnv('HOSTED_ZONE_ID'),
         crossAccountRoleArn: fromEnv('CROSS_ACCOUNT_ROLE_ARN'),
 
+        // WAF access restriction (env var at synth time)
+        restrictAccess: fromEnv('RESTRICT_ACCESS') !== 'false',
+        allowedIpv4: fromEnv('ALLOW_IPV4'),
+        allowedIpv6: fromEnv('ALLOW_IPV6'),
+
         // Synth-time context — Email (env var at synth time)
         notificationEmail: fromEnv('NOTIFICATION_EMAIL'),
         sesFromEmail: fromEnv('SES_FROM_EMAIL'),
@@ -452,6 +486,11 @@ export const NEXTJS_CONFIGS: Record<Environment, NextJsConfigs> = {
         domainName: fromEnv('DOMAIN_NAME') ?? 'nelsonlamounier.com',
         hostedZoneId: fromEnv('HOSTED_ZONE_ID'),
         crossAccountRoleArn: fromEnv('CROSS_ACCOUNT_ROLE_ARN'),
+
+        // WAF access restriction (env var at synth time)
+        restrictAccess: fromEnv('RESTRICT_ACCESS') !== 'false',
+        allowedIpv4: fromEnv('ALLOW_IPV4'),
+        allowedIpv6: fromEnv('ALLOW_IPV6'),
 
         // Synth-time context — Email (env var at synth time)
         notificationEmail: fromEnv('NOTIFICATION_EMAIL'),
