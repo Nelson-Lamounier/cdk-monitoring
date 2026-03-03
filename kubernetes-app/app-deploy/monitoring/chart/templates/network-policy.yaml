@@ -27,13 +27,18 @@ spec:
           protocol: TCP
         - port: 4318
           protocol: TCP
+    # Grafana and Prometheus need ipBlock instead of namespaceSelector
+    # because Traefik runs with hostNetwork: true — its traffic comes
+    # from the node IP, which doesn't match namespace-based selectors.
     - from:
-        - namespaceSelector: {}
+        - ipBlock:
+            cidr: 0.0.0.0/0
       ports:
         - port: 3000
           protocol: TCP
     - from:
-        - namespaceSelector: {}
+        - ipBlock:
+            cidr: 0.0.0.0/0
       ports:
         - port: 9090
           protocol: TCP
