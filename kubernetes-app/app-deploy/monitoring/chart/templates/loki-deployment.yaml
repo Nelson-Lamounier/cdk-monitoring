@@ -8,6 +8,7 @@ spec:
   replicas: {{.Values.loki.replicas}}
   strategy:
     type: Recreate
+    rollingUpdate: null
   selector:
     matchLabels:
       {{- include "monitoring.selectorLabels" "loki" | nindent 6}}

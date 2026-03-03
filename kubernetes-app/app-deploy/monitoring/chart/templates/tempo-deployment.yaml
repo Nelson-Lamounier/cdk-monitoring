@@ -8,6 +8,7 @@ spec:
   replicas: {{.Values.tempo.replicas}}
   strategy:
     type: Recreate
+    rollingUpdate: null
   selector:
     matchLabels:
       {{- include "monitoring.selectorLabels" "tempo" | nindent 6}}

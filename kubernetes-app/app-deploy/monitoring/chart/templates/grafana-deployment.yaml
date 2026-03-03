@@ -8,6 +8,7 @@ spec:
   replicas: {{.Values.grafana.replicas}}
   strategy:
     type: Recreate
+    rollingUpdate: null
   selector:
     matchLabels:
       {{- include "monitoring.selectorLabels" "grafana" | nindent 6}}
