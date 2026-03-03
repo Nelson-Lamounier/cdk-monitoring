@@ -6,7 +6,9 @@
     "lib": [
       "ES2022"
     ],
+    "composite": true,
     "declaration": true,
+    "declarationMap": true,
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,

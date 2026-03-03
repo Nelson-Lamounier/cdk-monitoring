@@ -37,24 +37,21 @@ Thumbs.db
 # Environment
 .env
 .env.local
+.env.bootstrap
 
+# Logs
+*.log
+
+# Generated docs & reports
 docs/
-*.txt
+security-reports/
 
+# AI tooling
 .gemini/
 .agent/
 
-portfolio-articles.md
-
-.env.bootstrap
-
-
-resume-data.ts
-resume-data-esc.ts
-
-
-deploy-key
-deploy-key.pub
-
+# Python
 __pycache__/
-nextjs-troubleshoot.md
+
+# Scratch / one-off files
+*.txt
