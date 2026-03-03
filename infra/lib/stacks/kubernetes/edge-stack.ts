@@ -751,6 +751,12 @@ export class KubernetesEdgeStack extends cdk.Stack {
 
     /**
      * Reads an SSM parameter from a remote region via AwsCustomResource.
+     *
+     * IMPORTANT: The onUpdate handler uses a timestamp-based physicalResourceId
+     * so that every `cdk deploy` triggers a fresh SSM read. Without this,
+     * CloudFormation caches the value from the first deploy — if the underlying
+     * SSM parameter changes (e.g., EIP re-allocation), CloudFront would continue
+     * using the stale origin until the custom resource is manually deleted.
      */
     private readSsmParameter(
         id: string,
@@ -771,7 +777,9 @@ export class KubernetesEdgeStack extends cdk.Stack {
                 action: 'getParameter',
                 parameters: { Name: parameterPath },
                 region,
-                physicalResourceId: cr.PhysicalResourceId.of(`read-${parameterPath}`),
+                physicalResourceId: cr.PhysicalResourceId.of(
+                    `read-${parameterPath}-${Date.now()}`
+                ),
             },
             policy,
         });
