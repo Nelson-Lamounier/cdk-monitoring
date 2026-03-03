@@ -12,7 +12,7 @@
 #   Pipeline 1: _deploy-kubernetes.yml
 #     - Deploys CDK stacks: networking, compute, IAM, API, edge
 #     - EC2 user data exports env vars, publishes instance IDs to SSM,
-#       and signals CloudFormation. Does NOT trigger SSM Automation.
+#       and signals CloudFormation. Does NOT trigger SSM Automation. - Test
 #
 #   Pipeline 2: _deploy-ssm-automation.yml (this file)
 #     - Deploys the SSM Automation CDK stack (documents + IAM role)
