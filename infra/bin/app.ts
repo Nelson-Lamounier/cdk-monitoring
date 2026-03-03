@@ -14,11 +14,15 @@
  */
 
 import * as cdk from 'aws-cdk-lib/core';
+import * as dotenv from 'dotenv';
 
 import { applyCdkNag, applyCommonSuppressions, CompliancePack, TaggingAspect } from '../lib/aspects';
 import { Environment, isValidEnvironment } from '../lib/config';
 import { isValidProject, getProjectConfig, Project } from '../lib/config/projects';
 import { getProjectFactoryFromContext } from '../lib/factories/project-registry';
+
+// Load .env for local development (CI sets env vars via workflow env: blocks)
+dotenv.config();
 
 const app = new cdk.App();
 
