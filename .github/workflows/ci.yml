@@ -443,8 +443,8 @@ jobs:
       - name: Template Render (Next.js)
         run: |
           helm template nextjs-app \
-            kubernetes-app/app-deploy/nextjs/helm/chart \
-            -f kubernetes-app/app-deploy/nextjs/helm/nextjs-values.yaml \
+            kubernetes-app/app-deploy/nextjs/chart \
+            -f kubernetes-app/app-deploy/nextjs/nextjs-values.yaml \
             --namespace nextjs-app \
             > /tmp/nextjs-rendered.yaml
 
