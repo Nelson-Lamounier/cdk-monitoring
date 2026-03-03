@@ -49,7 +49,6 @@ import { Construct } from 'constructs';
 import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
-    SsmRunCommandDocument,
     SsmStateManagerConstruct,
     UserDataBuilder,
 } from '../../common/index';
@@ -182,63 +181,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
         // =====================================================================
         const scriptsBucket = baseStack.scriptsBucket;
 
-        // =====================================================================
-        // SSM Run Command Document (unified manifest deployment)
-        //
-        // Deploys BOTH monitoring and application manifests.
-        // Triggered by GitHub Actions pipeline or manual SSM send-command.
-        // =====================================================================
-        const manifestDeployDoc = new SsmRunCommandDocument(this, 'ManifestDeployDocument', {
-            documentName: `${namePrefix}-deploy-manifests`,
-            description: 'Deploy all k8s manifests (monitoring + application) — re-syncs from S3, applies via kubectl',
-            parameters: {
-                S3Bucket: {
-                    type: 'String',
-                    description: 'S3 bucket containing k8s manifests',
-                    default: scriptsBucket.bucketName,
-                },
-                S3KeyPrefix: {
-                    type: 'String',
-                    description: 'S3 key prefix',
-                    default: 'app-deploy',
-                },
-                SsmPrefix: {
-                    type: 'String',
-                    description: 'SSM parameter prefix for secrets',
-                    default: props.ssmPrefix,
-                },
-                Region: {
-                    type: 'String',
-                    description: 'AWS region',
-                    default: this.region,
-                },
-                ChartDir: {
-                    type: 'String',
-                    description: 'Local path to Helm chart directory',
-                    default: '/data/app-deploy/monitoring/chart',
-                },
-                DeployScript: {
-                    type: 'String',
-                    description: 'Local path to the deploy script',
-                    default: '/data/app-deploy/monitoring/deploy-manifests.sh',
-                },
-            },
-            steps: [{
-                name: 'deployManifests',
-                commands: [
-                    'export KUBECONFIG=/etc/kubernetes/admin.conf',
-                    'export S3_BUCKET="{{S3Bucket}}"',
-                    'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
-                    'export SSM_PREFIX="{{SsmPrefix}}"',
-                    'export AWS_REGION="{{Region}}"',
-                    'export CHART_DIR="{{ChartDir}}"',
-                    '',
-                    '# Re-sync all manifests from S3 and run deploy script',
-                    '"{{DeployScript}}"',
-                ],
-                timeoutSeconds: 600,
-            }],
-        });
+
 
 
         // =====================================================================
@@ -554,10 +497,7 @@ def handler(event, context):
             description: 'Port-forward K8s API via SSM (replace <instance-id>)',
         });
 
-        new cdk.CfnOutput(this, 'ManifestDeployDocumentName', {
-            value: manifestDeployDoc.documentName,
-            description: 'SSM document name for manifest deployment (use with aws ssm send-command)',
-        });
+
 
         new cdk.CfnOutput(this, 'ScriptsBucketName', {
             value: scriptsBucket.bucketName,
