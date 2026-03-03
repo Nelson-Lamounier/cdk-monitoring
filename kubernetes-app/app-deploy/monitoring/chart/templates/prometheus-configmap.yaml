@@ -110,3 +110,8 @@ data:
           - source_labels: [__meta_kubernetes_pod_ip]
             target_label: __address__
             replacement: ${1}:9100
+
+      - job_name: nextjs-app
+        metrics_path: /api/metrics
+        static_configs:
+          - targets: ["nextjs.nextjs-app.svc.cluster.local:3000"]
