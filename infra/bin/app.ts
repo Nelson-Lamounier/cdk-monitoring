@@ -14,12 +14,13 @@
  */
 
 import * as cdk from 'aws-cdk-lib/core';
+import * as path from 'path';
 
-// Load .env FIRST — must be before any app imports that call fromEnv() at
-// module load time (e.g., configurations.ts evaluates NEXTJS_CONFIGS eagerly).
-// Side-effect import ensures .env is loaded before other modules evaluate.
+// Load .env from monorepo root — must be before any app imports that call
+// fromEnv() at module load time (configurations.ts evaluates eagerly).
 // CI sets env vars via workflow env: blocks, so this is a no-op in CI.
-import 'dotenv/config';
+import * as dotenv from 'dotenv';
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 import { applyCdkNag, applyCommonSuppressions, CompliancePack, TaggingAspect } from '../lib/aspects';
 import { Environment, isValidEnvironment } from '../lib/config';

@@ -26,12 +26,13 @@
 import { appendFileSync, mkdirSync } from 'fs';
 
 import * as dotenv from 'dotenv';
+import * as path from 'path';
 
 import { buildCdkArgs, runCdk } from './exec.js';
 import logger from './logger.js';
 
-// Load .env for local development (CI sets env vars via workflow env: blocks)
-dotenv.config();
+// Load .env from monorepo root (CI sets env vars via workflow env: blocks)
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
