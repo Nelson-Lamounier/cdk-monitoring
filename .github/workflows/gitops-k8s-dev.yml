@@ -187,7 +187,7 @@ jobs:
           set +e +o pipefail
 
           # Only verify Applications whose source paths were changed
-          EXPECTED_APPS=("nextjs" "traefik" "metrics-server" "local-path-provisioner")
+          EXPECTED_APPS=("nextjs" "traefik" "metrics-server" "local-path-provisioner" "monitoring")
           POLL_INTERVAL=30
           MAX_POLLS=12  # 6 minutes (ArgoCD syncs every ~3 min)
 
