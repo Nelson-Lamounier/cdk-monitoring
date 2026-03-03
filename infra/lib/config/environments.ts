@@ -197,10 +197,12 @@ export function resolveEnvironment(contextValue?: string): Environment {
     // Check if it's a short name and map to full name
     if (envValue in SHORT_TO_FULL) {
         const fullName = SHORT_TO_FULL[envValue];
+        // eslint-disable-next-line no-console -- runs before CDK constructs exist; no Annotations target available
         console.log(`Mapping short environment name '${envValue}' to '${fullName}'`);
         return fullName;
     }
 
+    // eslint-disable-next-line no-console -- runs before CDK constructs exist; no Annotations target available
     console.warn(`Unknown environment '${envValue}', defaulting to '${Environment.DEVELOPMENT}'`);
     return Environment.DEVELOPMENT;
 }

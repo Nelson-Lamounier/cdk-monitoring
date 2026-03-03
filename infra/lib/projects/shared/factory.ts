@@ -44,7 +44,7 @@ export class SharedProjectFactory implements IProjectFactory {
         const env = context.environment;
         const stackMap: Record<string, cdk.Stack> = {};
 
-        console.log(`\n🏗️  Creating Shared infrastructure for ${env}...\n`);
+        cdk.Annotations.of(scope).addInfo(`Creating Shared infrastructure for ${env}`);
 
         // =================================================================
         // Infrastructure Stack - VPC + ECR shared by all projects
@@ -61,10 +61,10 @@ export class SharedProjectFactory implements IProjectFactory {
 
         stackMap['infra'] = infraStack;
 
-        console.log(`✅ Shared factory created 1 stack for ${env}:`);
-        console.log(`   - ${stackName}`);
-        console.log(`\nOther projects can reference this VPC using:`);
-        console.log(`   -c useSharedVpc=Shared`);
+        cdk.Annotations.of(infraStack).addInfo(
+            `Shared factory created 1 stack (${stackName}). ` +
+            `Other projects can reference this VPC using: -c useSharedVpc=Shared`,
+        );
 
         return {
             stacks: [infraStack],
