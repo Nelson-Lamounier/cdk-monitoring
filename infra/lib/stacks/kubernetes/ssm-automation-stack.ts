@@ -133,6 +133,19 @@ const WORKER_STEPS: AutomationStep[] = [
 ];
 
 // =============================================================================
+// NEXTJS SECRETS STEP DEFINITION
+// =============================================================================
+
+const NEXTJS_SECRETS_STEPS: AutomationStep[] = [
+    {
+        name: 'deployNextjsSecrets',
+        scriptPath: 'app-deploy/nextjs/deploy.py',
+        timeoutSeconds: 300,
+        description: 'Resolve SSM parameters and create/update nextjs-secrets K8s Secret',
+    },
+];
+
+// =============================================================================
 // STACK
 // =============================================================================
 
@@ -148,6 +161,9 @@ export class K8sSsmAutomationStack extends cdk.Stack {
 
     /** Worker node SSM Automation document name */
     public readonly workerDocName: string;
+
+    /** Next.js secrets SSM Automation document name */
+    public readonly nextjsSecretsDocName: string;
 
     /** Automation execution role ARN */
     public readonly automationRoleArn: string;
@@ -300,6 +316,32 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         this.workerDocName = workerDocName;
 
         // =====================================================================
+        // SSM Automation Document — Next.js Secrets Deployment
+        //
+        // Single-step automation that syncs deploy scripts from S3 and runs
+        // deploy.py to create/update the nextjs-secrets K8s Secret.
+        // Triggered by the SSM Automation pipeline after bootstrap completes.
+        // =====================================================================
+
+        const nextjsDocName = `${prefix}-deploy-nextjs-secrets`;
+
+        const _nextjsDocument = new ssm.CfnDocument(this, 'NextjsSecretsAutomation', {
+            documentType: 'Automation',
+            name: nextjsDocName,
+            content: this.buildNextjsSecretsContent({
+                description: 'Deploy Next.js K8s secrets — syncs from S3, resolves SSM parameters, creates Secret',
+                steps: NEXTJS_SECRETS_STEPS,
+                ssmPrefix: props.ssmPrefix,
+                s3Bucket: props.scriptsBucketName,
+                automationRoleArn: automationRole.roleArn,
+            }),
+            documentFormat: 'JSON',
+            updateMethod: 'NewVersion',
+        });
+
+        this.nextjsSecretsDocName = nextjsDocName;
+
+        // =====================================================================
         // SSM Parameters — Document Discovery
         //
         // EC2 user data reads these parameters to find the document names
@@ -316,6 +358,12 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             parameterName: `${props.ssmPrefix}/bootstrap/worker-doc-name`,
             stringValue: workerDocName,
             description: 'SSM Automation document name for worker node bootstrap',
+        });
+
+        new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
+            parameterName: `${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`,
+            stringValue: nextjsDocName,
+            description: 'SSM Automation document name for Next.js secrets deployment',
         });
 
         new ssm.StringParameter(this, 'AutomationRoleArnParam', {
@@ -404,6 +452,92 @@ export class K8sSsmAutomationStack extends cdk.Stack {
                             `export MOUNT_POINT="/data"`,
                             ``,
                             `cd "$STEPS_DIR"`,
+                            `python3 "$SCRIPT" 2>&1`,
+                            `echo "=== Completed: ${step.name} ==="`,
+                        ],
+                        workingDirectory: ['/tmp'],
+                        executionTimeout: [String(step.timeoutSeconds)],
+                    },
+                },
+            })),
+        };
+    }
+
+    // =========================================================================
+    // Build Next.js Secrets Automation Document Content
+    //
+    // Separate from buildAutomationContent because:
+    //   - S3 sync path: app-deploy/nextjs/ (not k8s-bootstrap/boot/steps/)
+    //   - CloudWatch log group: /deploy (not /bootstrap)
+    //   - Requires KUBECONFIG for kubectl access
+    // =========================================================================
+
+    private buildNextjsSecretsContent(opts: {
+        description: string;
+        steps: AutomationStep[];
+        ssmPrefix: string;
+        s3Bucket: string;
+        automationRoleArn: string;
+    }): Record<string, unknown> {
+        return {
+            schemaVersion: '0.3',
+            description: opts.description,
+            assumeRole: opts.automationRoleArn,
+            parameters: {
+                InstanceId: {
+                    type: 'String',
+                    description: 'Target EC2 instance ID',
+                },
+                SsmPrefix: {
+                    type: 'String',
+                    description: 'SSM parameter prefix for cluster info',
+                    default: opts.ssmPrefix,
+                },
+                S3Bucket: {
+                    type: 'String',
+                    description: 'S3 bucket containing deploy scripts',
+                    default: opts.s3Bucket,
+                },
+                Region: {
+                    type: 'String',
+                    description: 'AWS region',
+                    default: this.region,
+                },
+            },
+            mainSteps: opts.steps.map((step) => ({
+                name: step.name,
+                action: 'aws:runCommand',
+                timeoutSeconds: step.timeoutSeconds,
+                onFailure: 'Abort',
+                inputs: {
+                    DocumentName: 'AWS-RunShellScript',
+                    InstanceIds: ['{{ InstanceId }}'],
+                    CloudWatchOutputConfig: {
+                        CloudWatchOutputEnabled: true,
+                        CloudWatchLogGroupName: `/ssm${opts.ssmPrefix}/deploy`,
+                    },
+                    Parameters: {
+                        commands: [
+                            `# Step: ${step.name} — ${step.description}`,
+                            ``,
+                            `# Ensure PATH includes all standard binary locations`,
+                            `export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"`,
+                            `set -euo pipefail`,
+                            ``,
+                            `# Sync deploy scripts from S3`,
+                            `DEPLOY_DIR="/data/${step.scriptPath.replace(/\/[^/]+$/, '')}"`,
+                            `SCRIPT="/data/${step.scriptPath}"`,
+                            ``,
+                            `mkdir -p "$DEPLOY_DIR"`,
+                            `aws s3 sync "s3://{{ S3Bucket }}/${step.scriptPath.replace(/\/[^/]+$/, '')}/" "$DEPLOY_DIR/" --region {{ Region }} --quiet`,
+                            ``,
+                            `echo "=== Executing: ${step.name} ==="`,
+                            `export KUBECONFIG="/etc/kubernetes/admin.conf"`,
+                            `export SSM_PREFIX="{{ SsmPrefix }}"`,
+                            `export AWS_REGION="{{ Region }}"`,
+                            `export S3_BUCKET="{{ S3Bucket }}"`,
+                            ``,
+                            `cd "$DEPLOY_DIR"`,
                             `python3 "$SCRIPT" 2>&1`,
                             `echo "=== Completed: ${step.name} ==="`,
                         ],
