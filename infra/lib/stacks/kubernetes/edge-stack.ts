@@ -144,6 +144,22 @@ export interface KubernetesEdgeStackProps extends cdk.StackProps {
 
     /** Resource name prefix @default 'k8s' */
     readonly namePrefix?: string;
+
+    /**
+     * IP addresses allowed to access the site when restrictAccess is enabled.
+     * CIDR notation (e.g., `['203.0.113.42/32']`).
+     * Only effective when CDK context `restrictAccess` is true.
+     * @default [] (no IPs allowed — set before enabling restrictAccess)
+     */
+    readonly allowedIps?: string[];
+
+    /**
+     * IPv6 addresses allowed to access the site when restrictAccess is enabled.
+     * CIDR notation (e.g., `['2a02:8084::/32']`).
+     * Only effective when CDK context `restrictAccess` is true.
+     * @default []
+     */
+    readonly allowedIpv6s?: string[];
 }
 
 // =============================================================================
@@ -279,11 +295,83 @@ export class KubernetesEdgeStack extends cdk.Stack {
             enableRateLimiting: props.enableRateLimiting ?? true,
         });
 
+        // =====================================================================
+        // IP Allowlist — Pre-launch access restriction
+        //
+        // When CDK context `restrictAccess` is true (default), only IPs in
+        // the allowedIps prop can reach the site. All other traffic is
+        // blocked at the CloudFront edge before hitting the origin.
+        //
+        // To go live:  cdk deploy --context restrictAccess=false
+        // To lock down: cdk deploy --context restrictAccess=true
+        // =====================================================================
+        const restrictAccess = this.node.tryGetContext('restrictAccess') !== 'false';
+        const allowedIps = props.allowedIps ?? [];
+        const allowedIpv6s = props.allowedIpv6s ?? [];
+        const hasAllowlist = allowedIps.length > 0 || allowedIpv6s.length > 0;
+
+        if (restrictAccess && hasAllowlist) {
+            // WAF requires separate IP sets per address family.
+            // We combine them with an OR statement in one rule.
+            const ipSetStatements: wafv2.CfnWebACL.StatementProperty[] = [];
+
+            if (allowedIps.length > 0) {
+                const ipv4Set = new wafv2.CfnIPSet(this, 'AllowedIpv4Set', {
+                    name: `${envName}-${namePrefix}-allowed-ipv4`,
+                    description: 'IPv4 addresses allowed during pre-launch restricted access',
+                    scope: 'CLOUDFRONT',
+                    ipAddressVersion: 'IPV4',
+                    addresses: allowedIps,
+                });
+                ipSetStatements.push({
+                    ipSetReferenceStatement: { arn: ipv4Set.attrArn },
+                });
+            }
+
+            if (allowedIpv6s.length > 0) {
+                const ipv6Set = new wafv2.CfnIPSet(this, 'AllowedIpv6Set', {
+                    name: `${envName}-${namePrefix}-allowed-ipv6`,
+                    description: 'IPv6 addresses allowed during pre-launch restricted access',
+                    scope: 'CLOUDFRONT',
+                    ipAddressVersion: 'IPV6',
+                    addresses: allowedIpv6s,
+                });
+                ipSetStatements.push({
+                    ipSetReferenceStatement: { arn: ipv6Set.attrArn },
+                });
+            }
+
+            // Single IP set → direct reference; dual → OR statement
+            const allowStatement: wafv2.CfnWebACL.StatementProperty =
+                ipSetStatements.length === 1
+                    ? ipSetStatements[0]
+                    : { orStatement: { statements: ipSetStatements } };
+
+            // Insert as the highest-priority rule (priority 0) — evaluated first.
+            // Matching IPs are ALLOWed; the default action (BLOCK) handles the rest.
+            wafRules.unshift({
+                name: 'AllowListedIPs',
+                priority: 0,
+                action: { allow: {} },
+                statement: allowStatement,
+                visibilityConfig: {
+                    cloudWatchMetricsEnabled: true,
+                    metricName: `${envName}-${namePrefix}-allowed-ips`,
+                    sampledRequestsEnabled: true,
+                },
+            });
+        }
+
         this.webAcl = new wafv2.CfnWebACL(this, 'CloudFrontWebAcl', {
             name: `${envName}-${namePrefix}-cloudfront-waf`,
             description: `WAF for ${namePrefix} CloudFront distribution - ${envName}`,
             scope: 'CLOUDFRONT',
-            defaultAction: { allow: {} },
+            // When restrictAccess is true AND allowedIps are set: block everything
+            // except the allowlisted IPs. Otherwise: allow all (WAF managed rules
+            // still apply for XSS, SQLi, rate limiting, etc.)
+            defaultAction: restrictAccess && hasAllowlist
+                ? { block: {} }
+                : { allow: {} },
             rules: wafRules,
             visibilityConfig: {
                 cloudWatchMetricsEnabled: true,

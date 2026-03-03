@@ -58,6 +58,26 @@ import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId } from '../../utilities/naming';
 
 // =============================================================================
+// HELPERS
+// =============================================================================
+
+/**
+ * Parse a CDK context value that can be either a JSON string or an array.
+ * - From `--context key='["a","b"]'` → string → needs JSON.parse
+ * - From `cdk.json` context         → already an array
+ * - Missing / undefined              → empty array
+ */
+function parseContextArray(value: unknown): string[] {
+    if (!value) return [];
+    if (Array.isArray(value)) return value as string[];
+    if (typeof value === 'string') {
+        try { return JSON.parse(value) as string[]; }
+        catch { return []; }
+    }
+    return [];
+}
+
+// =============================================================================
 // FACTORY CONTEXT
 // =============================================================================
 
@@ -437,6 +457,12 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 enableRateLimiting: true,
                 createDnsRecords: true,
                 namePrefix: nextjsNamePrefix,
+                // Pre-launch IP restriction — IPs come from GitHub Secrets
+                // (ALLOW_IPV4 / ALLOW_IPV6) via CDK context at synth time.
+                // Context values may be a JSON string (from --context) or an
+                // array (from cdk.json), so we normalise both.
+                allowedIps: parseContextArray(scope.node.tryGetContext('allowedIps')),
+                allowedIpv6s: parseContextArray(scope.node.tryGetContext('allowedIpv6s')),
                 env: edgeEnv,
             },
         );

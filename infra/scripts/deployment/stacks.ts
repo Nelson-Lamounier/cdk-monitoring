@@ -205,10 +205,25 @@ const k8sProject: ProjectConfig = {
   name: 'Kubernetes',
   description: 'Self-managed kubeadm Kubernetes cluster for unified workloads (requires Shared VPC)',
   stacks: k8sStacks,
-  cdkContext: (env) => ({
-    project: 'kubernetes',
-    environment: env,
-  }),
+  cdkContext: (env) => {
+    const context: Record<string, string> = {
+      project: 'kubernetes',
+      environment: env,
+    };
+
+    // WAF IP allowlist — bridged from GitHub Environment
+    // RESTRICT_ACCESS (variable): "true"/"false" toggle
+    // ALLOW_IPV4 / ALLOW_IPV6 (secrets): IPs in CIDR notation
+    const restrictAccess = process.env.RESTRICT_ACCESS;
+    if (restrictAccess) context.restrictAccess = restrictAccess;
+
+    const ipv4 = process.env.ALLOW_IPV4;
+    const ipv6 = process.env.ALLOW_IPV6;
+    if (ipv4) context.allowedIps = JSON.stringify([ipv4]);
+    if (ipv6) context.allowedIpv6s = JSON.stringify([ipv6]);
+
+    return context;
+  },
 };
 
 // =============================================================================

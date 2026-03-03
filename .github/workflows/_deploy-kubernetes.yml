@@ -225,6 +225,23 @@ jobs:
           SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
           VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL }}
+          # ── WAF IP Allowlist (Pre-launch Access Restriction) ─────────
+          # Restricts CloudFront access to listed IPs only.
+          #
+          # GitHub Environment settings (Settings → Environments → development):
+          #   Variable: RESTRICT_ACCESS = "true" | "false"
+          #   Secret:   ALLOW_IPV4 = "<your-ipv4>/32"  (e.g., "203.0.113.42/32")
+          #   Secret:   ALLOW_IPV6 = "<your-ipv6>/128"  (e.g., "2a02:8084::/128")
+          #
+          # To go live: set RESTRICT_ACCESS to "false" in GitHub Environment
+          # variables and re-run the pipeline. No code change, commit, or PR
+          # needed — the WAF default action flips from BLOCK to ALLOW.
+          #
+          # To lock down again: set RESTRICT_ACCESS back to "true".
+          # ──────────────────────────────────────────────────────────────
+          RESTRICT_ACCESS: ${{ vars.RESTRICT_ACCESS }}
+          ALLOW_IPV4: ${{ secrets.ALLOW_IPV4 }}
+          ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
         run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
 
       - name: Upload Synthesized Templates
