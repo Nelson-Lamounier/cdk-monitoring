@@ -6,6 +6,8 @@ metadata:
   labels: {{- include "monitoring.fullLabels" "prometheus" | nindent 4}}
 spec:
   replicas: {{.Values.prometheus.replicas}}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "monitoring.selectorLabels" "prometheus" | nindent 6}}
