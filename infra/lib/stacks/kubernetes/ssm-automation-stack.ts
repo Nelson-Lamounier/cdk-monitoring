@@ -154,7 +154,7 @@ const MONITORING_SECRETS_STEPS: AutomationStep[] = [
         name: 'deployMonitoringSecrets',
         scriptPath: 'app-deploy/monitoring/deploy.py',
         timeoutSeconds: 600,
-        description: 'Resolve SSM parameters, create monitoring K8s Secrets, deploy Helm chart',
+        description: 'Resolve SSM parameters and create monitoring K8s Secrets',
     },
 ];
 
