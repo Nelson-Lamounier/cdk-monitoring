@@ -68,10 +68,26 @@ runs:
       run: |
         if ! command -v just &> /dev/null; then
           echo "Installing just via GitHub Releases..."
-          JUST_VERSION="1.40.0"
-          curl -sSL "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            | tar xz -C /usr/local/bin just
-          chmod +x /usr/local/bin/just
+          JUST_VERSION="1.46.0"
+          JUST_URL="https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          JUST_TMP="/tmp/just-${JUST_VERSION}.tar.gz"
+
+          for ATTEMPT in 1 2 3; do
+            echo "Download attempt ${ATTEMPT}/3..."
+            if curl -fSL --retry 2 -o "$JUST_TMP" "$JUST_URL"; then
+              tar xzf "$JUST_TMP" -C /usr/local/bin just
+              chmod +x /usr/local/bin/just
+              rm -f "$JUST_TMP"
+              break
+            else
+              echo "Download failed (attempt ${ATTEMPT}), retrying in 5s..."
+              sleep 5
+            fi
+            if [ "$ATTEMPT" -eq 3 ]; then
+              echo "::error::Failed to download just after 3 attempts"
+              exit 1
+            fi
+          done
         fi
         echo "Just version: $(just --version)"
 
