@@ -19,9 +19,9 @@
 
 import { writeFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
+import * as path from 'path';
 
 import * as dotenv from 'dotenv';
-import * as path from 'path';
 
 import { buildCdkArgs, runCdk, getCdkProjectRoot } from './exec.js';
 import logger from './logger.js';

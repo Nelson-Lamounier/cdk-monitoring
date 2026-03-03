@@ -13,7 +13,6 @@
  *   npx cdk synth -c project=org -c environment=prod -c hostedZoneIds=Z123 -c trustedAccountIds=111,222
  */
 
-import * as cdk from 'aws-cdk-lib/core';
 import * as path from 'path';
 
 // Load .env from monorepo root — must be before any app imports that call
@@ -21,6 +20,8 @@ import * as path from 'path';
 // CI sets env vars via workflow env: blocks, so this is a no-op in CI.
 import * as dotenv from 'dotenv';
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+
+import * as cdk from 'aws-cdk-lib/core';
 
 import { applyCdkNag, applyCommonSuppressions, CompliancePack, TaggingAspect } from '../lib/aspects';
 import { Environment, isValidEnvironment } from '../lib/config';
