@@ -355,19 +355,19 @@ k8s-build-golden-ami env="development" region="eu-west-1":
 # Lint all Helm charts
 [group('k8s')]
 helm-lint:
-    helm lint kubernetes-app/app-deploy/nextjs/helm/chart \
-      -f kubernetes-app/app-deploy/nextjs/helm/nextjs-values.yaml
+    helm lint kubernetes-app/app-deploy/nextjs/chart \
+      -f kubernetes-app/app-deploy/nextjs/nextjs-values.yaml
 
-# Render templates and verify nodeSelector placement (role=application)
+# Render templates and verify nodeSelector placement (workload=frontend)
 [group('k8s')]
 helm-verify-selectors:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "=== NextJS Chart ==="
     helm template nextjs-app \
-      kubernetes-app/app-deploy/nextjs/helm/chart \
-      -f kubernetes-app/app-deploy/nextjs/helm/nextjs-values.yaml \
-      --namespace nextjs-app | grep -c "role: application" | \
+      kubernetes-app/app-deploy/nextjs/chart \
+      -f kubernetes-app/app-deploy/nextjs/nextjs-values.yaml \
+      --namespace nextjs-app | grep -c "workload: frontend" | \
       xargs -I{} echo "  nodeSelector entries: {} (expected 1)"
     echo "Done."
 
