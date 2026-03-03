@@ -38,4 +38,4 @@ data:
       storage:
         path: /var/tempo/generator/wal
         remote_write:
-          - url: http://prometheus.{{ .Values.namespace }}.svc.cluster.local:9090/api/v1/write
+          - url: http://prometheus.{{ .Values.namespace }}.svc.cluster.local:9090/prometheus/api/v1/write
