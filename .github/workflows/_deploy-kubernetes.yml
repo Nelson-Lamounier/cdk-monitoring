@@ -109,6 +109,12 @@ on:
         required: false
       VERIFICATION_SECRET:
         required: false
+      ALLOW_IPV4:
+        description: "IPv4 CIDR to allowlist in WAF (e.g., 203.0.113.42/32)"
+        required: false
+      ALLOW_IPV6:
+        description: "IPv6 CIDR to allowlist in WAF (e.g., 2a02:8084::/128)"
+        required: false
 
 env:
   NODE_VERSION: "22"
