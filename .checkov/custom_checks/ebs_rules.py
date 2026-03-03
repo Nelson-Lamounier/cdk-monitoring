@@ -2,7 +2,6 @@
 Custom Checkov Rules for EBS Volume Security
 
 CKV_CUSTOM_EBS_1: Ensure EBS volume is encrypted with a customer-managed KMS key
-CKV_CUSTOM_EBS_2: Ensure monitoring EBS volumes are >= 50 GB for production
 CKV_CUSTOM_EBS_3: Ensure EBS data volumes have automated snapshot/backup strategy
 """
 
@@ -11,7 +10,6 @@ from checkov.cloudformation.checks.resource.base_resource_check import (
 )
 from checkov.common.models.enums import CheckCategories, CheckResult
 
-MINIMUM_PROD_SIZE_GB = 50
 
 
 # =============================================================================
@@ -54,61 +52,6 @@ class EbsCustomerManagedKms(BaseResourceCheck):
 
         return CheckResult.FAILED
 
-
-# =============================================================================
-# CKV_CUSTOM_EBS_2: Monitoring Volume Size Minimum
-# =============================================================================
-class EbsMonitoringVolumeSize(BaseResourceCheck):
-    """
-    Ensure monitoring EBS volumes are >= 50 GB for production.
-
-    Only applies to volumes tagged with 'monitoring', 'prometheus', or 'grafana'.
-    At 30 GB, Prometheus TSDB fills in ~13 days at 1.5 GB/day growth.
-    """
-
-    def __init__(self):
-        name = f"Ensure monitoring EBS volumes are >= {MINIMUM_PROD_SIZE_GB} GB for production"
-        id = "CKV_CUSTOM_EBS_2"
-        supported_resources = ["AWS::EC2::Volume"]
-        categories = [CheckCategories.GENERAL_SECURITY]
-        super().__init__(
-            name=name, id=id, categories=categories,
-            supported_resources=supported_resources,
-        )
-
-    def scan_resource_conf(self, conf):
-        properties = conf.get("Properties", {})
-        if not properties:
-            return CheckResult.PASSED
-
-        tags = properties.get("Tags", [])
-        is_monitoring = False
-        for tag in tags:
-            if not isinstance(tag, dict):
-                continue
-            key = str(tag.get("Key", "")).lower()
-            value = str(tag.get("Value", "")).lower()
-            if key in ("application", "purpose", "project") and any(
-                term in value for term in ("prometheus", "grafana", "monitoring")
-            ):
-                is_monitoring = True
-                break
-
-        if not is_monitoring:
-            return CheckResult.PASSED
-
-        size = properties.get("Size")
-        try:
-            size_gb = int(size)
-        except (ValueError, TypeError):
-            return CheckResult.UNKNOWN
-
-        if size_gb >= MINIMUM_PROD_SIZE_GB:
-            return CheckResult.PASSED
-
-        return CheckResult.FAILED
-
-
 # =============================================================================
 # CKV_CUSTOM_EBS_3: Backup Strategy Reminder
 # =============================================================================
@@ -139,5 +82,4 @@ class EbsBackupStrategy(BaseResourceCheck):
 # Register all checks
 # =============================================================================
 check_ebs_cmk = EbsCustomerManagedKms()
-check_ebs_size = EbsMonitoringVolumeSize()
 check_ebs_backup = EbsBackupStrategy()

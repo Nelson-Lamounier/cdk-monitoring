@@ -45,11 +45,6 @@ compact: true
 #   CKV_AWS_19 - Enable S3 server-side encryption
 #   CKV_AWS_21 - Enable S3 versioning
 #
-# EC2 User Data:
-#   CKV_AWS_46 - No hard-coded secrets in user data
-#              → MonitoringInstance suppressed via inline CFN Metadata
-#                (GrafanaPassword is a dev default 'admin', not a real secret)
-#
 # API Gateway:
 #   CKV_AWS_59 - API Gateway authorizer set
 #              → All methods suppressed via inline CFN Metadata
