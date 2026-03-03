@@ -53,9 +53,7 @@
     "docs": "typedoc",
     "docs:watch": "typedoc --watch",
     "docs:serve": "npx serve docs/api",
-
     "docs:compute": "typedoc --entryPoints ./lib/common/compute --out docs/compute --name 'Compute Constructs'",
-
     "// === CDK CLI (deprecated — use 'just' task runner) ===": ""
   },
   "lint-staged": {
