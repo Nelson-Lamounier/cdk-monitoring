@@ -3,7 +3,7 @@
  * SSM Automation Stack Unit Tests
  *
  * Tests for K8sSsmAutomationStack:
- * - SSM Automation Documents (control plane + worker)
+ * - SSM Automation Documents (control plane, worker, nextjs secrets, monitoring secrets)
  * - IAM Role for automation execution
  * - SSM Parameters for document discovery
  * - Step configuration and ordering
@@ -60,8 +60,8 @@ describe('K8sSsmAutomationStack', () => {
     describe('SSM Automation Documents', () => {
         const { template } = createSsmAutomationStack();
 
-        it('should create 2 SSM Automation documents', () => {
-            template.resourceCountIs('AWS::SSM::Document', 2);
+        it('should create 4 SSM Automation documents', () => {
+            template.resourceCountIs('AWS::SSM::Document', 4);
         });
 
         it('should create a control plane automation document', () => {
@@ -172,6 +172,24 @@ describe('K8sSsmAutomationStack', () => {
                 }),
             });
         });
+
+        it('should create a nextjs secrets automation document', () => {
+            template.hasResourceProperties('AWS::SSM::Document', {
+                DocumentType: 'Automation',
+                Name: 'k8s-dev-deploy-nextjs-secrets',
+                DocumentFormat: 'JSON',
+                UpdateMethod: 'NewVersion',
+            });
+        });
+
+        it('should create a monitoring secrets automation document', () => {
+            template.hasResourceProperties('AWS::SSM::Document', {
+                DocumentType: 'Automation',
+                Name: 'k8s-dev-deploy-monitoring-secrets',
+                DocumentFormat: 'JSON',
+                UpdateMethod: 'NewVersion',
+            });
+        });
     });
 
     // =========================================================================
@@ -268,6 +286,20 @@ describe('K8sSsmAutomationStack', () => {
                 Name: '/k8s/development/bootstrap/automation-role-arn',
             });
         });
+
+        it('should create SSM parameter for nextjs secrets document name', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/k8s/development/deploy/nextjs-secrets-doc-name',
+                Value: 'k8s-dev-deploy-nextjs-secrets',
+            });
+        });
+
+        it('should create SSM parameter for monitoring secrets document name', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/k8s/development/deploy/monitoring-secrets-doc-name',
+                Value: 'k8s-dev-deploy-monitoring-secrets',
+            });
+        });
     });
 
     // =========================================================================
@@ -286,6 +318,14 @@ describe('K8sSsmAutomationStack', () => {
 
         it('should expose automationRoleArn', () => {
             expect(stack.automationRoleArn).toBeTruthy();
+        });
+
+        it('should expose nextjsSecretsDocName', () => {
+            expect(stack.nextjsSecretsDocName).toBe('k8s-dev-deploy-nextjs-secrets');
+        });
+
+        it('should expose monitoringSecretsDocName', () => {
+            expect(stack.monitoringSecretsDocName).toBe('k8s-dev-deploy-monitoring-secrets');
         });
     });
 });
