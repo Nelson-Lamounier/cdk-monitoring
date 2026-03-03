@@ -30,8 +30,6 @@ on:
         type: choice
         options:
           - development
-          - staging
-          - production
         default: development
       confirm:
         description: "Type DEPLOY-DAY1 to confirm"
@@ -97,19 +95,9 @@ jobs:
               echo "security-scan-blocking=false" >> $GITHUB_OUTPUT
               echo "shared-stack-name=Shared-Infra-development" >> $GITHUB_OUTPUT
               ;;
-            staging)
-              echo "cdk-environment=staging" >> $GITHUB_OUTPUT
-              echo "require-approval=broadening" >> $GITHUB_OUTPUT
-              echo "enable-security-scan=true" >> $GITHUB_OUTPUT
-              echo "security-scan-blocking=true" >> $GITHUB_OUTPUT
-              echo "shared-stack-name=Shared-Infra-staging" >> $GITHUB_OUTPUT
-              ;;
-            production)
-              echo "cdk-environment=production" >> $GITHUB_OUTPUT
-              echo "require-approval=broadening" >> $GITHUB_OUTPUT
-              echo "enable-security-scan=true" >> $GITHUB_OUTPUT
-              echo "security-scan-blocking=true" >> $GITHUB_OUTPUT
-              echo "shared-stack-name=Shared-Infra-production" >> $GITHUB_OUTPUT
+            staging|production)
+              echo "::error::Only development environment is supported."
+              exit 1
               ;;
           esac
 

@@ -51,7 +51,7 @@
 #
 # ─── Concurrency ───────────────────────────────────────────────────
 #   This is a workflow_call (reusable) workflow — concurrency MUST be set
-#   on the caller (e.g., deploy-kubernetes-dev.yml, deploy-kubernetes-prod.yml).
+#   on the caller (e.g., deploy-kubernetes-dev.yml).
 #   Each caller defines: concurrency: { group: deploy-k8s-<env>, cancel-in-progress: false }
 
 name: Deploy K8s (Reusable)
@@ -765,7 +765,7 @@ jobs:
   # ===========================================================================
   # K8s Manifest Deployment — ArgoCD (GitOps)
   #
-  # Monitoring and application manifests are deployed by ArgoCD running
+  # Application manifests are deployed by ArgoCD running
   # on the kubeadm node. ArgoCD watches this Git repo and auto-syncs changes
   # within ~3 minutes. No CI pipeline jobs needed.
   #

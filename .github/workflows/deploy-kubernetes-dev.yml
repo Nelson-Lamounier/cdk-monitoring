@@ -6,8 +6,8 @@
 # and runs verification — all in one pipeline.
 #
 # 8-Stack Architecture: Data → Base → Compute → AppIam → Api → Edge.
-# Application workloads (monitoring, nextjs, traefik, metrics-server)
-# are managed by ArgoCD via Pipeline B (gitops-k8s-dev.yml).
+# Application workloads (traefik, metrics-server) are managed by
+# ArgoCD via Pipeline B (gitops-k8s-dev.yml).
 #
 # Prerequisites:
 #   - Shared VPC from deploy-shared workflow
@@ -22,7 +22,6 @@ on:
     paths:
       # CDK infrastructure
       - "infra/lib/config/k8s/**"
-      - "infra/lib/config/nextjs/**"
       - "infra/lib/config/projects.ts"
       - "infra/lib/config/defaults.ts"
       - "infra/lib/projects/k8s/**"

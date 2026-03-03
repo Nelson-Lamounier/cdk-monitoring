@@ -112,7 +112,7 @@ jobs:
             --context project=org \
             --context environment=prod \
             --context hostedZoneIds='["${{ vars.HOSTED_ZONE_ID }}"]' \
-            --context trustedAccountIds='["${{ vars.DEV_ACCOUNT_ID }}","${{ vars.STAGING_ACCOUNT_ID }}","${{ vars.PROD_ACCOUNT_ID }}"]' \
+            --context trustedAccountIds='["${{ vars.AWS_ACCOUNT_ID }}"]' \
             --context account=${{ vars.ROOT_ACCOUNT_ID }} \
             --context region=${{ env.AWS_REGION }} \
             --output cdk.out \
@@ -168,13 +168,13 @@ jobs:
 
           echo "Deploying $STACK_NAME to root account..."
           echo "  - Hosted Zone: ${{ vars.HOSTED_ZONE_ID }}"
-          echo "  - Trusted Accounts: dev, staging, prod"
+          echo "  - Trusted Account: portfolio"
 
           npx cdk deploy "$STACK_NAME" \
             --context project=org \
             --context environment=prod \
             --context hostedZoneIds='["${{ vars.HOSTED_ZONE_ID }}"]' \
-            --context trustedAccountIds='["${{ vars.DEV_ACCOUNT_ID }}","${{ vars.STAGING_ACCOUNT_ID }}","${{ vars.PROD_ACCOUNT_ID }}"]' \
+            --context trustedAccountIds='["${{ vars.AWS_ACCOUNT_ID }}"]' \
             --context account=${{ vars.ROOT_ACCOUNT_ID }} \
             --context region=${{ env.AWS_REGION }} \
             --require-approval never \
@@ -233,7 +233,7 @@ jobs:
           ### Next Steps
 
           The cross-account DNS validation role is now deployed.
-          Target accounts (dev/staging/prod) can now assume this role for ACM certificate validation.
+          Target account (portfolio) can now assume this role for ACM certificate validation.
 
           **Role ARN**: \`arn:aws:iam::${{ vars.ROOT_ACCOUNT_ID }}:role/Route53DnsValidationRole\`
 
