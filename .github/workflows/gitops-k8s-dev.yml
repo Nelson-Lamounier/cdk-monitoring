@@ -12,7 +12,7 @@
 #
 #   boot-k8s.sh, ArgoCD manifests, and Calico config are INFRASTRUCTURE.
 #   They are synced to S3 by Pipeline A's sync-bootstrap-content job.
-#   This pipeline does NOT touch S3 or EC2. -
+#   This pipeline does NOT touch S3 or EC2. - Test
 #
 # What ArgoCD syncs from Git (managed by App-of-Apps root):
 #   - kubernetes-app/k8s-bootstrap/system/argocd/applications/ → child Application manifests
