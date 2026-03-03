@@ -651,30 +651,43 @@ jobs:
           # ── Run deploy.py via SSM send-command ────────────────────────
           # 1. Re-sync deploy scripts from S3 to /data/app-deploy/nextjs/
           # 2. Execute deploy.py (creates K8s secrets + Helm upgrade)
+          #
+          # We write the command JSON to a file to avoid shell quoting issues.
+          # Quoted heredoc ('CMDJSON') prevents expansion; envsubst injects
+          # only the pipeline-side variables while $S3_BUCKET / $AWS_REGION
+          # inside the remote commands stay as literals for the EC2 shell.
+          export INSTANCE_ID SSM_PREFIX REGION S3_BUCKET
+          envsubst '$INSTANCE_ID $SSM_PREFIX $REGION $S3_BUCKET' > /tmp/ssm-cmd.json <<'CMDJSON'
+          {
+            "InstanceIds": ["$INSTANCE_ID"],
+            "DocumentName": "AWS-RunShellScript",
+            "TimeoutSeconds": 300,
+            "Parameters": {
+              "commands": [
+                "set -euo pipefail",
+                "echo '=== Next.js Secret Deployment ==='",
+                "",
+                "export KUBECONFIG=/etc/kubernetes/admin.conf",
+                "export SSM_PREFIX=$SSM_PREFIX",
+                "export AWS_REGION=$REGION",
+                "export S3_BUCKET=$S3_BUCKET",
+                "",
+                "# Re-sync deploy scripts from S3",
+                "if [ -n \"$S3_BUCKET\" ]; then",
+                "  echo 'Syncing app-deploy/nextjs from S3...'",
+                "  aws s3 sync \"s3://$S3_BUCKET/app-deploy/nextjs/\" /data/app-deploy/nextjs/ --region $AWS_REGION",
+                "fi",
+                "",
+                "# Run deploy script",
+                "cd /data/app-deploy/nextjs",
+                "python3 deploy.py"
+              ]
+            }
+          }
+          CMDJSON
+
           CMD_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --timeout-seconds 300 \
-            --parameters "commands=[
-              'set -euo pipefail',
-              'echo \"=== Next.js Secret Deployment ==="',
-              '',
-              'export KUBECONFIG=/etc/kubernetes/admin.conf',
-              'export SSM_PREFIX=${SSM_PREFIX}',
-              'export AWS_REGION=${REGION}',
-              'export S3_BUCKET=${S3_BUCKET}',
-              '',
-              '# Re-sync deploy scripts from S3',
-              'if [ -n \"\$S3_BUCKET\" ]; then',
-              '  echo \"Syncing app-deploy/nextjs from S3...\"',
-              '  aws s3 sync \"s3://\$S3_BUCKET/app-deploy/nextjs/\" /data/app-deploy/nextjs/ --region \$AWS_REGION',
-              '  find /data/app-deploy/nextjs -name \"*.sh\" -exec chmod +x {} +',
-              'fi',
-              '',
-              '# Run deploy script',
-              'cd /data/app-deploy/nextjs',
-              'python3 deploy.py'
-            ]" \
+            --cli-input-json file:///tmp/ssm-cmd.json \
             --query 'Command.CommandId' --output text \
             --region "$REGION")
 
