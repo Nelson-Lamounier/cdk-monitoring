@@ -146,6 +146,19 @@ const NEXTJS_SECRETS_STEPS: AutomationStep[] = [
 ];
 
 // =============================================================================
+// MONITORING SECRETS STEP DEFINITION
+// =============================================================================
+
+const MONITORING_SECRETS_STEPS: AutomationStep[] = [
+    {
+        name: 'deployMonitoringSecrets',
+        scriptPath: 'app-deploy/monitoring/deploy.py',
+        timeoutSeconds: 600,
+        description: 'Resolve SSM parameters, create monitoring K8s Secrets, deploy Helm chart',
+    },
+];
+
+// =============================================================================
 // STACK
 // =============================================================================
 
@@ -164,6 +177,9 @@ export class K8sSsmAutomationStack extends cdk.Stack {
 
     /** Next.js secrets SSM Automation document name */
     public readonly nextjsSecretsDocName: string;
+
+    /** Monitoring secrets SSM Automation document name */
+    public readonly monitoringSecretsDocName: string;
 
     /** Automation execution role ARN */
     public readonly automationRoleArn: string;
@@ -342,6 +358,34 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         this.nextjsSecretsDocName = nextjsDocName;
 
         // =====================================================================
+        // SSM Automation Document — Monitoring Secrets Deployment
+        //
+        // Single-step automation that syncs deploy scripts from S3 and runs
+        // deploy.py to resolve SSM parameters (grafana-admin-password,
+        // github-token), create K8s Secrets, deploy the Helm chart, and
+        // reset the Grafana admin password.
+        // Triggered by the SSM Automation pipeline after bootstrap completes.
+        // =====================================================================
+
+        const monitoringDocName = `${prefix}-deploy-monitoring-secrets`;
+
+        const _monitoringDocument = new ssm.CfnDocument(this, 'MonitoringSecretsAutomation', {
+            documentType: 'Automation',
+            name: monitoringDocName,
+            content: this.buildNextjsSecretsContent({
+                description: 'Deploy monitoring K8s secrets — syncs from S3, resolves SSM parameters, deploys Helm chart',
+                steps: MONITORING_SECRETS_STEPS,
+                ssmPrefix: props.ssmPrefix,
+                s3Bucket: props.scriptsBucketName,
+                automationRoleArn: automationRole.roleArn,
+            }),
+            documentFormat: 'JSON',
+            updateMethod: 'NewVersion',
+        });
+
+        this.monitoringSecretsDocName = monitoringDocName;
+
+        // =====================================================================
         // SSM Parameters — Document Discovery
         //
         // EC2 user data reads these parameters to find the document names
@@ -364,6 +408,12 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             parameterName: `${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`,
             stringValue: nextjsDocName,
             description: 'SSM Automation document name for Next.js secrets deployment',
+        });
+
+        new ssm.StringParameter(this, 'MonitoringSecretsDocNameParam', {
+            parameterName: `${props.ssmPrefix}/deploy/monitoring-secrets-doc-name`,
+            stringValue: monitoringDocName,
+            description: 'SSM Automation document name for monitoring secrets deployment',
         });
 
         new ssm.StringParameter(this, 'AutomationRoleArnParam', {

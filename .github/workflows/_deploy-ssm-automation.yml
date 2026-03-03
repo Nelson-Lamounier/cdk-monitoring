@@ -252,6 +252,26 @@ jobs:
             echo "[SKIP] ${APP_DIR} not found — no app-deploy scripts to sync"
           fi
 
+          # ── Sync Monitoring deploy scripts ────────────────────────────
+          # deploy.py, deploy-manifests.sh, requirements.txt
+          # NOTE: chart/ is NOT synced here —
+          # ArgoCD handles Helm chart deployment via GitOps.
+          MON_DIR="./kubernetes-app/app-deploy/monitoring"
+          if [ -d "$MON_DIR" ]; then
+            MON_COUNT=$(find "$MON_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')
+            echo "Syncing ${MON_COUNT} monitoring deploy files from ${MON_DIR} to s3://${BUCKET}/app-deploy/monitoring/"
+
+            aws s3 sync "$MON_DIR" "s3://${BUCKET}/app-deploy/monitoring/" \
+              --delete \
+              --exclude 'chart/*' \
+              --exclude '__pycache__/*' \
+              --region "$REGION"
+
+            echo "[OK] Monitoring deploy scripts synced"
+          else
+            echo "[SKIP] ${MON_DIR} not found — no monitoring deploy scripts to sync"
+          fi
+
   # ===========================================================================
   # Trigger SSM Bootstrap — Start SSM Automation on existing nodes
   #
@@ -715,6 +735,125 @@ jobs:
           fi
 
   # ===========================================================================
+  # Deploy Monitoring Secrets — Create K8s Secrets from SSM Parameters
+  #
+  # Runs deploy.py on the control plane via SSM Automation document.
+  # The document syncs deploy scripts from S3 and executes deploy.py
+  # to resolve SSM parameters (grafana-admin-password, github-token),
+  # create/update K8s Secrets, deploy Helm chart, and reset Grafana password.
+  #
+  # Visible in: AWS Console → Systems Manager → Automation → Executions
+  #
+  # Depends on: watch-bootstrap (cluster must be ready before creating secrets)
+  # ===========================================================================
+  deploy-monitoring-secrets:
+    name: Deploy Monitoring Secrets
+    needs: [deploy, watch-bootstrap]
+    if: >-
+      always()
+      && needs.watch-bootstrap.result == 'success'
+      && inputs.trigger-bootstrap == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Run deploy.py via SSM Automation
+        env:
+          SSM_PREFIX: /k8s/${{ inputs.environment }}
+          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: |
+          echo "=== Deploy Monitoring Secrets ==="
+
+          # ── Resolve control-plane instance ID ─────────────────────────
+          INSTANCE_ID=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
+            --query "Parameter.Value" --output text \
+            --region "$REGION" 2>/dev/null || echo "")
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::error::Control plane instance ID not found at ${SSM_PREFIX}/bootstrap/control-plane-instance-id"
+            exit 1
+          fi
+          echo "Target instance: $INSTANCE_ID"
+
+          # ── Resolve SSM Automation document name ───────────────────────
+          DOC_NAME=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/deploy/monitoring-secrets-doc-name" \
+            --query "Parameter.Value" --output text \
+            --region "$REGION" 2>/dev/null || echo "")
+
+          if [ -z "$DOC_NAME" ] || [ "$DOC_NAME" = "None" ]; then
+            echo "::error::Monitoring secrets doc name not found at ${SSM_PREFIX}/deploy/monitoring-secrets-doc-name"
+            exit 1
+          fi
+          echo "Automation document: $DOC_NAME"
+
+          # ── Resolve S3 bucket for script sync ──────────────────────────
+          S3_BUCKET=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/scripts-bucket" \
+            --query "Parameter.Value" --output text \
+            --region "$REGION" 2>/dev/null || echo "")
+
+          # ── Start SSM Automation execution ─────────────────────────────
+          EXECUTION_ID=$(aws ssm start-automation-execution \
+            --document-name "$DOC_NAME" \
+            --parameters "InstanceId=$INSTANCE_ID,SsmPrefix=${SSM_PREFIX},S3Bucket=${S3_BUCKET},Region=${REGION}" \
+            --region "$REGION" \
+            --query "AutomationExecutionId" --output text)
+
+          echo "Execution ID: $EXECUTION_ID"
+
+          # ── Poll for completion ────────────────────────────────────────
+          MAX_WAIT=600
+          WAITED=0
+          POLL_INTERVAL=15
+
+          while [ $WAITED -lt $MAX_WAIT ]; do
+            sleep $POLL_INTERVAL
+            WAITED=$((WAITED + POLL_INTERVAL))
+
+            STATUS=$(aws ssm get-automation-execution \
+              --automation-execution-id "$EXECUTION_ID" \
+              --query "AutomationExecution.AutomationExecutionStatus" \
+              --output text --region "$REGION" 2>/dev/null || echo "Unknown")
+
+            case "$STATUS" in
+              Success)
+                echo "[PASS] deploy.py completed successfully (${WAITED}s)"
+                break
+                ;;
+              Failed|Cancelled|TimedOut|CompletedWithFailure)
+                echo "[FAIL] deploy.py automation failed with status: $STATUS (${WAITED}s)"
+
+                echo "::group::Automation Step Details"
+                aws ssm describe-automation-step-executions \
+                  --automation-execution-id "$EXECUTION_ID" \
+                  --region "$REGION" 2>/dev/null | \
+                  jq -r '.StepExecutions[] | "Step: \(.StepName) | Status: \(.StepStatus) | Output: \(.Outputs // {} | tostring)"' || true
+                echo "::endgroup::"
+
+                exit 1
+                ;;
+              *)
+                echo "  Status: $STATUS (${WAITED}s / ${MAX_WAIT}s)"
+                ;;
+            esac
+          done
+
+          if [ $WAITED -ge $MAX_WAIT ]; then
+            echo "[FAIL] deploy.py automation did not complete within ${MAX_WAIT}s"
+            exit 1
+          fi
+
+  # ===========================================================================
   # Verify & Smoke Tests
   #
   # Runs after bootstrap and secret deployment complete. Verifies ArgoCD
@@ -724,11 +863,18 @@ jobs:
   # ===========================================================================
   verify:
     name: Verify & Smoke Tests
-    needs: [deploy, watch-bootstrap, deploy-nextjs-secrets]
+    needs:
+      [
+        deploy,
+        watch-bootstrap,
+        deploy-nextjs-secrets,
+        deploy-monitoring-secrets,
+      ]
     if: >-
       always()
       && needs.watch-bootstrap.result == 'success'
       && (needs.deploy-nextjs-secrets.result == 'success' || needs.deploy-nextjs-secrets.result == 'skipped')
+      && (needs.deploy-monitoring-secrets.result == 'success' || needs.deploy-monitoring-secrets.result == 'skipped')
       && inputs.trigger-bootstrap == true
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -800,7 +946,7 @@ jobs:
             exit 1
           fi
 
-          ARGOCD_SERVER="https://${EIP}/argocd"
+          ARGOCD_SERVER="http://${EIP}/argocd"
           echo "ArgoCD server: ${ARGOCD_SERVER}"
 
           MAX_POLL=6
