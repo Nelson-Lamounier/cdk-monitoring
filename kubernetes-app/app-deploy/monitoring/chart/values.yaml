@@ -8,7 +8,7 @@ namespace: monitoring
 # Node Placement (applies to Deployments, NOT DaemonSets)
 # ---------------------------------------------------------------------------
 nodeSelector:
-  role: monitoring
+  workload: monitoring
 
 # ---------------------------------------------------------------------------
 # Prometheus

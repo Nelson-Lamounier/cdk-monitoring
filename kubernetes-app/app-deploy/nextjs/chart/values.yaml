@@ -41,7 +41,7 @@ containerSecurityContext:
 # Node Placement
 # ---------------------------------------------------------------------------
 nodeSelector:
-  role: application
+  workload: frontend
 
 # ---------------------------------------------------------------------------
 # Service

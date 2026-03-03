@@ -529,6 +529,29 @@ delete-log-group log-group region profile:
       --profile "{{profile}}"
     echo "✓ Log group '{{log-group}}' deleted."
 
+# List k8s-bootstrap S3 contents (e.g., just list-k8s-bootstrap development eu-west-1 dev-account)
+[group('ops')]
+list-k8s-bootstrap env region profile:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "→ Resolving scripts bucket from SSM /k8s/{{env}}/scripts-bucket…"
+    BUCKET=$(aws ssm get-parameter \
+      --name "/k8s/{{env}}/scripts-bucket" \
+      --query 'Parameter.Value' --output text \
+      --region "{{region}}" \
+      --profile "{{profile}}" 2>/dev/null || echo "")
+    if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
+      echo "✗ SSM parameter /k8s/{{env}}/scripts-bucket not found"
+      exit 1
+    fi
+    BUCKET=$(echo "$BUCKET" | sed 's|^s3://||' | sed 's|/$||')
+    echo "→ Listing s3://${BUCKET}/k8s-bootstrap/"
+    echo ""
+    aws s3 ls "s3://${BUCKET}/k8s-bootstrap/" \
+      --recursive \
+      --region "{{region}}" \
+      --profile "{{profile}}"
+
 # Update an inline IAM policy on a role (e.g., just update-oidc-policy eu-west-1 dev-account DevAccountOIDCRole ArgocdHealthCheckPolicy argocdHealthcheck.json)
 [group('ops')]
 update-oidc-policy region profile role-name policy-name policy-file:
