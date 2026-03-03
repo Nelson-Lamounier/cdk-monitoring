@@ -240,65 +240,6 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             }],
         });
 
-        // =====================================================================
-        // SSM Run Command Document — Next.js Application Manifests
-        //
-        // Separate from monitoring: allows independent app manifest deployment
-        // without rerunning the monitoring deploy script.
-        // Triggered by GitHub Actions pipeline or manual SSM send-command.
-        // =====================================================================
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const appManifestDeployDoc = new SsmRunCommandDocument(this, 'AppManifestDeployDocument', {
-            documentName: `${namePrefix}-deploy-app-manifests`,
-            description: 'Deploy Next.js application k8s manifests — re-syncs from S3, resolves secrets, applies via kubectl',
-            parameters: {
-                S3Bucket: {
-                    type: 'String',
-                    description: 'S3 bucket containing k8s manifests',
-                    default: scriptsBucket.bucketName,
-                },
-                S3KeyPrefix: {
-                    type: 'String',
-                    description: 'S3 key prefix',
-                    default: 'app-deploy',
-                },
-                SsmPrefix: {
-                    type: 'String',
-                    description: 'SSM parameter prefix for k8s',
-                    default: props.ssmPrefix,
-                },
-                Region: {
-                    type: 'String',
-                    description: 'AWS region',
-                    default: this.region,
-                },
-                ManifestsDir: {
-                    type: 'String',
-                    description: 'Local path to manifests directory',
-                    default: '/data/app-deploy/nextjs',
-                },
-                DeployScript: {
-                    type: 'String',
-                    description: 'Local path to the deploy script',
-                    default: '/data/app-deploy/nextjs/deploy.py',
-                },
-            },
-            steps: [{
-                name: 'deployAppManifests',
-                commands: [
-                    'export KUBECONFIG=/etc/kubernetes/admin.conf',
-                    'export S3_BUCKET="{{S3Bucket}}"',
-                    'export S3_KEY_PREFIX="{{S3KeyPrefix}}"',
-                    'export SSM_PREFIX="{{SsmPrefix}}"',
-                    'export AWS_REGION="{{Region}}"',
-                    'export MANIFESTS_DIR="{{ManifestsDir}}"',
-                    '',
-                    '# Re-sync manifests from S3 and run Next.js deploy script',
-                    'python3 "{{DeployScript}}"',
-                ],
-                timeoutSeconds: 600,
-            }],
-        });
 
         // =====================================================================
         // Golden AMI Pipeline — MOVED to dedicated GoldenAmiStack
