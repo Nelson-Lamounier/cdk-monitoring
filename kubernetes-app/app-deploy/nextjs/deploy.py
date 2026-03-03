@@ -118,11 +118,11 @@ class Config:
 
     @property
     def helm_chart(self) -> Path:
-        return Path(self.manifests_dir) / "helm" / "chart"
+        return Path(self.manifests_dir) / "chart"
 
     @property
     def helm_values(self) -> Path:
-        return Path(self.manifests_dir) / "helm" / "nextjs-values.yaml"
+        return Path(self.manifests_dir) / "nextjs-values.yaml"
 
     def print_banner(self) -> None:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -316,8 +316,8 @@ def deploy_helm_chart(cfg: Config) -> None:
 
     chart = str(cfg.helm_chart)
     if not cfg.helm_chart.is_dir():
-        log.error("  ✗ Helm chart not found at: %s", chart)
-        raise SystemExit(1)
+        log.warning("  ⚠ Helm chart not found at: %s — skipping (ArgoCD handles Helm deployment)", chart)
+        return
 
     cmd = [
         "helm",
