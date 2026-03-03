@@ -27,6 +27,10 @@ on:
       # Boot scripts and system configs
       - "kubernetes-app/k8s-bootstrap/boot/**"
       - "kubernetes-app/k8s-bootstrap/system/**"
+      # Next.js deploy scripts (secret creation + Helm deploy)
+      - "kubernetes-app/app-deploy/nextjs/deploy.py"
+      - "kubernetes-app/app-deploy/nextjs/deploy-manifests.sh"
+      - "kubernetes-app/app-deploy/nextjs/requirements.txt"
       # CDK stack definition
       - "infra/lib/stacks/kubernetes/ssm-automation-stack.ts"
       # Pipeline definitions

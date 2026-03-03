@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deploy Next.js application to Kubernetes via Helm.
 
-Called by the SSM State Manager association on the control plane instance.
+Called by the SSM Automation pipeline on the control plane instance.
 Resolves secrets from SSM, creates K8s secrets, deploys the Helm chart,
 and waits for rollout readiness.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # deploy-manifests.sh — Thin wrapper for Python deploy script.
 #
-# Preserves SSM State Manager association compatibility (expects .sh entrypoint).
+# Preserves SSM Automation pipeline compatibility (expects .sh entrypoint).
 # Installs Python dependencies and delegates to deploy.py.
 #
 # Usage:
