@@ -295,12 +295,19 @@ export const CLOUDFRONT_ERROR_RESPONSES = [
 
 // =============================================================================
 // CONFIGURATIONS BY ENVIRONMENT
+//
+// IMPORTANT: Configs are evaluated lazily (inside a function) so that fromEnv()
+// reads process.env AFTER dotenv has loaded .env values. If these were a
+// top-level constant, fromEnv() would execute at module import time — before
+// dotenv.config() runs — resulting in empty values during local synth.
 // =============================================================================
 
 /**
- * NextJS resource configurations by environment
+ * Build NextJS resource configurations for all environments.
+ * Called lazily to ensure process.env is populated by dotenv first.
  */
-export const NEXTJS_CONFIGS: Record<Environment, NextJsConfigs> = {
+function buildNextJsConfigs(): Record<Environment, NextJsConfigs> {
+    return {
     [Environment.DEVELOPMENT]: {
         // Synth-time context — Edge (env var > hardcoded default)
         domainName: fromEnv('DOMAIN_NAME') ?? 'dev.nelsonlamounier.com',
@@ -570,16 +577,24 @@ export const NEXTJS_CONFIGS: Record<Environment, NextJsConfigs> = {
         removalPolicy: cdk.RemovalPolicy.RETAIN,
     },
 };
+}
+
+// Memoised cache — built once on first access
+let _cachedConfigs: Record<Environment, NextJsConfigs> | undefined;
 
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
 
 /**
- * Get NextJS configurations for an environment
+ * Get NextJS configurations for an environment.
+ * Lazily evaluates fromEnv() on first call — ensures dotenv has loaded.
  */
 export function getNextJsConfigs(env: Environment): NextJsConfigs {
-    return NEXTJS_CONFIGS[env];
+    if (!_cachedConfigs) {
+        _cachedConfigs = buildNextJsConfigs();
+    }
+    return _cachedConfigs[env];
 }
 
 /**

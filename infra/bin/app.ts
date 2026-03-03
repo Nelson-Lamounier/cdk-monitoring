@@ -14,15 +14,17 @@
  */
 
 import * as cdk from 'aws-cdk-lib/core';
-import * as dotenv from 'dotenv';
+
+// Load .env FIRST — must be before any app imports that call fromEnv() at
+// module load time (e.g., configurations.ts evaluates NEXTJS_CONFIGS eagerly).
+// Side-effect import ensures .env is loaded before other modules evaluate.
+// CI sets env vars via workflow env: blocks, so this is a no-op in CI.
+import 'dotenv/config';
 
 import { applyCdkNag, applyCommonSuppressions, CompliancePack, TaggingAspect } from '../lib/aspects';
 import { Environment, isValidEnvironment } from '../lib/config';
 import { isValidProject, getProjectConfig, Project } from '../lib/config/projects';
 import { getProjectFactoryFromContext } from '../lib/factories/project-registry';
-
-// Load .env for local development (CI sets env vars via workflow env: blocks)
-dotenv.config();
 
 const app = new cdk.App();
 
