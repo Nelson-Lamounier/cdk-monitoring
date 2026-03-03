@@ -13,9 +13,6 @@ spec:
     - match: {{ .Values.grafana.ingress.matchRule }}
       kind: Rule
       priority: 100
-      middlewares:
-        - name: grafana-stripprefix
-          namespace: {{ .Values.namespace }}
       services:
         - name: grafana
           port: {{ .Values.grafana.service.port }}
