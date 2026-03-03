@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Deploy Next.js application to Kubernetes via Helm.
+"""Create Next.js Kubernetes secrets from SSM parameters.
 
 Called by the SSM Automation pipeline on the control plane instance.
-Resolves secrets from SSM, creates K8s secrets, deploys the Helm chart,
-and waits for rollout readiness.
+Resolves secrets from SSM Parameter Store and creates/updates the
+nextjs-secrets K8s Secret. Helm chart deployment is handled by ArgoCD.
 
 Usage:
     KUBECONFIG=/etc/kubernetes/admin.conf python3 deploy.py
@@ -17,8 +17,6 @@ Environment overrides:
     KUBECONFIG             — kubeconfig path               (default: /etc/kubernetes/admin.conf)
     S3_BUCKET              — re-sync from S3               (optional)
     S3_KEY_PREFIX          — S3 key prefix                 (default: k8s)
-    WAIT_TIMEOUT           — readiness timeout in sec      (default: 300)
-    ECR_REPOSITORY_URI     — ECR image URI                 (optional, resolved from SSM)
 """
 
 from __future__ import annotations
@@ -28,7 +26,6 @@ import logging
 import os
 import subprocess
 import sys
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,14 +90,7 @@ class Config:
     s3_key_prefix: str = field(
         default_factory=lambda: os.getenv("S3_KEY_PREFIX", "k8s")
     )
-    wait_timeout: int = field(
-        default_factory=lambda: int(os.getenv("WAIT_TIMEOUT", "300"))
-    )
-    ecr_repository_uri: str = field(
-        default_factory=lambda: os.getenv("ECR_REPOSITORY_URI", "")
-    )
 
-    release_name: str = "nextjs-app"
     namespace: str = "nextjs-app"
     dry_run: bool = False
 
@@ -116,19 +106,10 @@ class Config:
         env = self.ssm_prefix.rsplit("/", 1)[-1]
         return f"/nextjs/{env}"
 
-    @property
-    def helm_chart(self) -> Path:
-        return Path(self.manifests_dir) / "chart"
-
-    @property
-    def helm_values(self) -> Path:
-        return Path(self.manifests_dir) / "nextjs-values.yaml"
-
     def print_banner(self) -> None:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        log.info("=== Next.js Application Deployment (Helm/Python) ===")
+        log.info("=== Next.js Secret Deployment ===")
         log.info("Manifests:    %s", self.manifests_dir)
-        log.info("Helm chart:   %s", self.helm_chart)
         log.info("SSM prefix:   %s", self.ssm_prefix)
         log.info("Frontend SSM: %s", self.frontend_ssm_prefix)
         log.info("Region:       %s", self.aws_region)
@@ -209,22 +190,7 @@ def resolve_ssm_secrets(cfg: Config) -> dict[str, str]:
             else:
                 log.warning("  ⚠ %s: SSM error (%s)", env_var, code)
 
-    # ECR repository URI (from K8s SSM prefix, not frontend)
-    if not cfg.ecr_repository_uri:
-        ecr_ssm_path = f"{cfg.ssm_prefix}/ecr/nextjs-repository-uri"
-        log.info("  → Resolving ECR_REPOSITORY_URI from SSM: %s", ecr_ssm_path)
-        try:
-            resp = ssm.get_parameter(Name=ecr_ssm_path, WithDecryption=False)
-            cfg.ecr_repository_uri = resp["Parameter"]["Value"]
-            log.info("  ✓ ECR_REPOSITORY_URI: %s", cfg.ecr_repository_uri)
-        except ClientError as exc:
-            code = exc.response["Error"]["Code"]
-            if code == "ParameterNotFound":
-                log.warning("  ⚠ ECR_REPOSITORY_URI: not found in SSM — using chart default")
-            else:
-                log.warning("  ⚠ ECR_REPOSITORY_URI: SSM error (%s)", code)
-    else:
-        log.info("  ✓ ECR_REPOSITORY_URI: using environment override")
+
 
     log.info("")
     return secrets
@@ -307,138 +273,7 @@ def _upsert_secret(
             raise
 
 
-# ---------------------------------------------------------------------------
-# Step 4: Deploy via Helm
-# ---------------------------------------------------------------------------
-def deploy_helm_chart(cfg: Config) -> None:
-    """Run helm upgrade --install for the Next.js chart."""
-    log.info("=== Step 4: Helm upgrade (full application) ===")
 
-    chart = str(cfg.helm_chart)
-    if not cfg.helm_chart.is_dir():
-        log.warning("  ⚠ Helm chart not found at: %s — skipping (ArgoCD handles Helm deployment)", chart)
-        return
-
-    cmd = [
-        "helm",
-        "upgrade",
-        "--install",
-        cfg.release_name,
-        chart,
-        "--namespace",
-        cfg.namespace,
-        "--create-namespace",
-        "--wait",
-        "--timeout",
-        f"{cfg.wait_timeout}s",
-    ]
-
-    # Values file override
-    if cfg.helm_values.exists():
-        cmd.extend(["-f", str(cfg.helm_values)])
-        log.info("  Using values override: %s", cfg.helm_values)
-
-    # ECR image repository
-    if cfg.ecr_repository_uri:
-        cmd.extend(["--set", f"image.repository={cfg.ecr_repository_uri}"])
-        log.info("  ✓ Image: %s:latest", cfg.ecr_repository_uri)
-    else:
-        log.warning("  ⚠ ECR URI not found — using chart default image")
-
-    _run_cmd(cmd, check=True)
-
-    log.info("")
-    log.info("  ✓ Helm upgrade complete")
-
-    # Show release status
-    _run_cmd(
-        ["helm", "status", cfg.release_name, "-n", cfg.namespace, "--short"],
-        check=False,
-    )
-    log.info("")
-
-
-# ---------------------------------------------------------------------------
-# Step 5: Verify pod readiness
-# ---------------------------------------------------------------------------
-DEPLOYMENTS = ["nextjs"]
-
-
-def verify_pod_readiness(
-    apps_v1: k8s_client.AppsV1Api,
-    cfg: Config,
-) -> None:
-    """Wait for all Deployments to reach ready state."""
-    log.info("=== Step 5: Waiting for rollout (timeout: %ds) ===", cfg.wait_timeout)
-
-    for name in DEPLOYMENTS:
-        _wait_for_deployment(apps_v1, name, cfg.namespace, cfg.wait_timeout)
-
-    log.info("")
-
-
-def _wait_for_deployment(
-    apps_v1: k8s_client.AppsV1Api,
-    name: str,
-    namespace: str,
-    timeout: int,
-) -> None:
-    """Poll a Deployment until all replicas are available or timeout."""
-    log.info("  → Checking deployment/%s...", name)
-    deadline = time.monotonic() + timeout
-
-    while time.monotonic() < deadline:
-        try:
-            dep = apps_v1.read_namespaced_deployment(name=name, namespace=namespace)
-            status = dep.status
-            desired = dep.spec.replicas or 1
-            available = status.available_replicas or 0
-            updated = status.updated_replicas or 0
-
-            if available >= desired and updated >= desired:
-                log.info("  ✓ deployment/%s ready (%d/%d)", name, available, desired)
-                return
-        except k8s_client.ApiException as exc:
-            if exc.status == 404:
-                pass  # Not created yet — keep waiting
-            else:
-                log.warning("  ⚠ deployment/%s: API error %s", name, exc.reason)
-
-        time.sleep(5)
-
-    log.warning("  ⚠ deployment/%s not ready within %ds timeout", name, timeout)
-
-
-# ---------------------------------------------------------------------------
-# Step 6: Summary
-# ---------------------------------------------------------------------------
-def print_summary(cfg: Config) -> None:
-    """Print deployment summary — pods, services, and access info."""
-    log.info("=== Deployment Summary ===")
-    log.info("")
-
-    _run_cmd(
-        ["kubectl", "get", "pods", "-n", cfg.namespace, "-o", "wide"],
-        check=False,
-    )
-    log.info("")
-    _run_cmd(
-        ["kubectl", "get", "svc", "-n", cfg.namespace],
-        check=False,
-    )
-    log.info("")
-
-    log.info("=== Helm Releases ===")
-    _run_cmd(["helm", "list", "-n", cfg.namespace], check=False)
-    log.info("")
-
-    log.info("=== Access ===")
-    log.info("  Next.js: Via Traefik Ingress on EIP (port 80/443)")
-    log.info("  kubectl port-forward svc/nextjs 3000:3000 -n %s", cfg.namespace)
-    log.info("")
-
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    log.info("✓ Next.js application deployment complete (%s)", now)
 
 
 # ---------------------------------------------------------------------------
@@ -469,16 +304,11 @@ def main() -> None:
         cfg.print_banner()
         log.info("=== DRY RUN — no changes will be made ===")
         log.info("  manifests_dir:    %s", cfg.manifests_dir)
-        log.info("  helm_chart:       %s (exists: %s)", cfg.helm_chart, cfg.helm_chart.exists())
-        log.info("  helm_values:      %s (exists: %s)", cfg.helm_values, cfg.helm_values.exists())
         log.info("  ssm_prefix:       %s", cfg.ssm_prefix)
         log.info("  frontend_ssm:     %s", cfg.frontend_ssm_prefix)
         log.info("  aws_region:       %s", cfg.aws_region)
         log.info("  kubeconfig:       %s", cfg.kubeconfig)
         log.info("  s3_bucket:        %s", cfg.s3_bucket or "(none)")
-        log.info("  ecr_repo_uri:     %s", cfg.ecr_repository_uri or "(none)")
-        log.info("  wait_timeout:     %ds", cfg.wait_timeout)
-        log.info("  release_name:     %s", cfg.release_name)
         log.info("  namespace:        %s", cfg.namespace)
         return
 
@@ -494,7 +324,6 @@ def main() -> None:
     os.environ["KUBECONFIG"] = cfg.kubeconfig
     k8s_config.load_kube_config(config_file=cfg.kubeconfig)
     v1 = k8s_client.CoreV1Api()
-    apps_v1 = k8s_client.AppsV1Api()
 
     # Step 2: Resolve secrets from SSM
     cfg.secrets = resolve_ssm_secrets(cfg)
@@ -502,14 +331,9 @@ def main() -> None:
     # Step 3: Create Kubernetes secrets
     create_k8s_secrets(v1, cfg)
 
-    # Step 4: Deploy via Helm
-    deploy_helm_chart(cfg)
-
-    # Step 5: Verify pod readiness
-    verify_pod_readiness(apps_v1, cfg)
-
-    # Step 6: Summary
-    print_summary(cfg)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log.info("")
+    log.info("✓ Next.js secrets deployed successfully (%s)", now)
 
 
 if __name__ == "__main__":
