@@ -27,4 +27,14 @@ spec:
           protocol: TCP
         - port: 4318
           protocol: TCP
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - port: 3000
+          protocol: TCP
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - port: 9090
+          protocol: TCP
 {{- end }}
