@@ -373,7 +373,7 @@ helm-verify-selectors:
 
 # Check SourceDestCheck status on all K8s compute instances
 # Filters by Stack tag to show only K8s nodes (control-plane, app-worker, mon-worker).
-# SourceDestCheck must be false for Calico direct routing (VXLANCrossSubnet + same subnet).
+# SourceDestCheck must be false for Calico pod networking (required even with VXLANAlways).
 [group('k8s')]
 k8s-check-source-dest region="eu-west-1" profile="dev-account":
     aws ec2 describe-instances \
@@ -396,7 +396,7 @@ ec2-list-instances region="eu-west-1" profile="dev-account":
       --profile {{profile}}
 
 # Disable SourceDestCheck on a specific EC2 instance
-# Required for Kubernetes pod networking (Calico direct routing / VXLANCrossSubnet).
+# Required for Kubernetes pod networking (Calico VXLAN encapsulation).
 # Usage: just ec2-disable-source-dest-check i-069286d4c9098608b
 [group('k8s')]
 ec2-disable-source-dest-check instance-id region="eu-west-1" profile="dev-account":
