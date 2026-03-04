@@ -80,7 +80,9 @@ spec:
           projected:
             sources:
               - configMap:
-                  name: grafana-dashboards
+                  name: grafana-dashboards-cluster
+              - configMap:
+                  name: grafana-dashboards-application
               - configMap:
                   name: grafana-dashboards-cloudwatch
               - configMap:
