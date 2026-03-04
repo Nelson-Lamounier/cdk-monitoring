@@ -9,34 +9,9 @@ data:
     apiVersion: 1
     contactPoints:
       - orgId: 1
-        name: email
-        receivers:
-          - uid: email-receiver
-            type: email
-            settings:
-              addresses: "{{ .Values.grafana.alerting.notificationEmail }}"
-              singleEmail: true
-            disableResolveMessage: false
-      - orgId: 1
         name: sns
         receivers:
           - uid: sns-receiver
-            type: sns
-            settings:
-              topic: "{{ .Values.grafana.alerting.snsTopicArn }}"
-              region: "{{ .Values.grafana.alerting.awsRegion }}"
-              authProvider: default
-            disableResolveMessage: false
-      - orgId: 1
-        name: email-and-sns
-        receivers:
-          - uid: email-and-sns-email
-            type: email
-            settings:
-              addresses: "{{ .Values.grafana.alerting.notificationEmail }}"
-              singleEmail: true
-            disableResolveMessage: false
-          - uid: email-and-sns-sns
             type: sns
             settings:
               topic: "{{ .Values.grafana.alerting.snsTopicArn }}"
@@ -48,7 +23,7 @@ data:
     apiVersion: 1
     policies:
       - orgId: 1
-        receiver: email
+        receiver: sns
         group_by:
           - grafana_folder
           - alertname
@@ -56,11 +31,11 @@ data:
         group_interval: 5m
         repeat_interval: 4h
         routes:
-          - receiver: email-and-sns
+          - receiver: sns
             matchers:
               - severity = critical
             continue: false
-          - receiver: email
+          - receiver: sns
             matchers:
               - severity = warning
             continue: false

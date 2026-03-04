@@ -41,25 +41,6 @@ spec:
               value: "%(protocol)s://%(domain)s/grafana/"
             - name: GF_SERVER_SERVE_FROM_SUB_PATH
               value: "true"
-            # --- SMTP (Amazon SES) ---
-            - name: GF_SMTP_ENABLED
-              value: "true"
-            - name: GF_SMTP_HOST
-              value: "{{ .Values.grafana.alerting.smtp.host }}"
-            - name: GF_SMTP_USER
-              valueFrom:
-                secretKeyRef:
-                  name: grafana-smtp-credentials
-                  key: username
-            - name: GF_SMTP_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: grafana-smtp-credentials
-                  key: password
-            - name: GF_SMTP_FROM_ADDRESS
-              value: "{{ .Values.grafana.alerting.smtp.fromAddress }}"
-            - name: GF_SMTP_FROM_NAME
-              value: "Grafana Alerts"
             # --- SNS region for alerting ---
             - name: AWS_REGION
               value: "{{ .Values.grafana.alerting.awsRegion }}"
