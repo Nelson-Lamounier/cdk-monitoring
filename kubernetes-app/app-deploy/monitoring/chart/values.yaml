@@ -168,6 +168,7 @@ steampipe:
       memory: 512Mi
   service:
     port: 9193
+  databasePassword: steampipe
 
 # ---------------------------------------------------------------------------
 # Resource Quota (namespace-level limits)

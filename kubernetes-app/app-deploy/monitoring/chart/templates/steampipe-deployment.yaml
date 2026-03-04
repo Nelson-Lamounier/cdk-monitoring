@@ -20,7 +20,10 @@ spec:
       containers:
         - name: steampipe
           image: {{ .Values.steampipe.image }}
-          command: ["steampipe", "service", "start", "--foreground"]
+          command: ["steampipe", "service", "start", "--foreground", "--database-listen", "network", "--database-port", "{{ .Values.steampipe.service.port }}"]
+          env:
+            - name: STEAMPIPE_DATABASE_PASSWORD
+              value: "{{ .Values.steampipe.databasePassword }}"
           ports:
             - containerPort: {{ .Values.steampipe.service.port }}
               name: http

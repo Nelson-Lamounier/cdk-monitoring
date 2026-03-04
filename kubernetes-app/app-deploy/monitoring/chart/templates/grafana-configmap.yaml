@@ -69,3 +69,5 @@ data:
         jsonData:
           sslmode: disable
           postgresVersion: 1400
+        secureJsonData:
+          password: "{{ .Values.steampipe.databasePassword }}"
