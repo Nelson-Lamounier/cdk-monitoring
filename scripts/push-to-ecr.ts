@@ -14,9 +14,8 @@
  *   Pipeline: npx tsx scripts/push-to-ecr.ts --env development --skip-build --ecr-url <uri> --image-name <name>
  */
 
-import { join, dirname } from 'path'
+import { join, resolve } from 'path'
 import { existsSync, rmSync, mkdirSync } from 'fs'
-import { fileURLToPath } from 'url'
 import * as log from './lib/logger.js'
 import {
   parseArgs,
@@ -60,8 +59,7 @@ async function main(): Promise<void> {
   const ecrUrlArg = args['ecr-url'] as string | undefined
   const imageNameArg = args['image-name'] as string | undefined
 
-  const scriptDir = dirname(fileURLToPath(import.meta.url))
-  const projectRoot = join(scriptDir, '..')
+  const projectRoot = join(__dirname, '..')
 
   log.header('🚀 Next.js ECR Push Script')
   log.config('Configuration', {
@@ -192,7 +190,7 @@ async function main(): Promise<void> {
     }
 
     // Delegate to sync script
-    const syncScript = join(scriptDir, 'sync-static-to-s3.ts')
+    const syncScript = join(__dirname, 'sync-static-to-s3.ts')
     if (existsSync(syncScript)) {
       const syncArgs = `--env "${config.environment}" --region "${config.region}"`
       const profileArg = config.profile ? ` --profile "${config.profile}"` : ''
