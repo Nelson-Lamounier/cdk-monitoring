@@ -70,8 +70,80 @@ data:
           "type": "logs"
         },
         {
+          "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+          "id": 10,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": true,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+              "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 100",
+              "id": "",
+              "logGroups": [
+                { "arn": "", "name": "/aws/lambda/nextjs-subscribe-development", "accountId": "" }
+              ],
+              "queryMode": "Logs",
+              "refId": "A",
+              "region": "eu-west-1",
+              "statsGroups": []
+            }
+          ],
+          "title": "Subscribe Lambda",
+          "type": "logs"
+        },
+        {
+          "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+          "id": 11,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": true,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+              "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 100",
+              "id": "",
+              "logGroups": [
+                { "arn": "", "name": "/aws/lambda/nextjs-verify-subscription-development", "accountId": "" }
+              ],
+              "queryMode": "Logs",
+              "refId": "A",
+              "region": "eu-west-1",
+              "statsGroups": []
+            }
+          ],
+          "title": "Verify Subscription Lambda",
+          "type": "logs"
+        },
+        {
           "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
           "id": 200,
           "title": "SSM Automation Logs",
           "type": "row"

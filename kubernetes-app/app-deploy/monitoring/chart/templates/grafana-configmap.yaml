@@ -50,3 +50,11 @@ data:
         jsonData:
           defaultRegion: eu-west-1
           authType: default
+      - name: CloudWatch Edge (us-east-1)
+        type: cloudwatch
+        access: proxy
+        uid: cloudwatch-edge
+        editable: false
+        jsonData:
+          defaultRegion: us-east-1
+          authType: default
