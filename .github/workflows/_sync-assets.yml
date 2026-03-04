@@ -71,10 +71,11 @@ jobs:
       - name: Extract Static Assets from Docker Image
         run: |
           echo "Loading Docker image..."
-          docker load -i /tmp/docker-image.tar
+          LOADED=$(docker load -i /tmp/docker-image.tar | grep "Loaded image:" | awk '{print $3}')
+          echo "Loaded image: $LOADED"
 
           echo "Extracting static assets..."
-          TEMP_CONTAINER=$(docker create frontend:latest)
+          TEMP_CONTAINER=$(docker create "$LOADED")
 
           mkdir -p .next
           if ! docker cp "$TEMP_CONTAINER:/app/.next/static" ".next/"; then
