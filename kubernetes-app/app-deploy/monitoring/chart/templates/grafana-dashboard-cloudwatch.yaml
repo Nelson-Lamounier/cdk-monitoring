@@ -55,10 +55,10 @@ data:
           "targets": [
             {
               "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-              "expression": "fields @timestamp, @message, @logStream | sort @timestamp desc | limit 100",
+              "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 100",
               "id": "",
               "logGroups": [
-                { "arn": "", "name": "/aws/lambda/*-dns-*" }
+                { "arn": "", "name": "/aws/lambda/k8s-development-eip-failover", "accountId": "" }
               ],
               "queryMode": "Logs",
               "refId": "A",
@@ -66,7 +66,7 @@ data:
               "statsGroups": []
             }
           ],
-          "title": "DNS Lambda Logs",
+          "title": "EIP Failover Lambda",
           "type": "logs"
         },
         {
@@ -91,10 +91,10 @@ data:
           "targets": [
             {
               "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-              "expression": "fields @timestamp, @message, @logStream | sort @timestamp desc | limit 100",
+              "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 100",
               "id": "",
               "logGroups": [
-                { "arn": "", "name": "/aws/lambda/*-ebs-detach-*" }
+                { "arn": "", "name": "/aws/lambda/development-development-monitoring-efs-init", "accountId": "" }
               ],
               "queryMode": "Logs",
               "refId": "A",
@@ -102,8 +102,15 @@ data:
               "statsGroups": []
             }
           ],
-          "title": "EBS Detach Lambda Logs",
+          "title": "Monitoring EFS Init Lambda",
           "type": "logs"
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+          "id": 200,
+          "title": "SSM Automation Logs",
+          "type": "row"
         },
         {
           "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
@@ -111,7 +118,7 @@ data:
             "defaults": {},
             "overrides": []
           },
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
           "id": 3,
           "options": {
             "dedupStrategy": "none",
@@ -127,89 +134,10 @@ data:
           "targets": [
             {
               "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-              "expression": "fields @timestamp, @message, @logStream | sort @timestamp desc | limit 100",
+              "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 200",
               "id": "",
               "logGroups": [
-                { "arn": "", "name": "/aws/lambda/*-ecr-deploy-*" }
-              ],
-              "queryMode": "Logs",
-              "refId": "A",
-              "region": "eu-west-1",
-              "statsGroups": []
-            }
-          ],
-          "title": "ECR Deploy Lambda Logs",
-          "type": "logs"
-        },
-        {
-          "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-          "fieldConfig": {
-            "defaults": {},
-            "overrides": []
-          },
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
-          "id": 4,
-          "options": {
-            "dedupStrategy": "none",
-            "enableLogDetails": true,
-            "prettifyLogMessage": true,
-            "showCommonLabels": false,
-            "showLabels": false,
-            "showTime": true,
-            "sortOrder": "Descending",
-            "wrapLogMessage": true
-          },
-          "pluginVersion": "11.6.0",
-          "targets": [
-            {
-              "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-              "expression": "fields @timestamp, @message, @logStream | sort @timestamp desc | limit 100",
-              "id": "",
-              "logGroups": [
-                { "arn": "", "name": "/aws/lambda/*-subscriptions-*" }
-              ],
-              "queryMode": "Logs",
-              "refId": "A",
-              "region": "eu-west-1",
-              "statsGroups": []
-            }
-          ],
-          "title": "Subscriptions Lambda Logs",
-          "type": "logs"
-        },
-        {
-          "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
-          "id": 200,
-          "title": "SSM Automation Logs",
-          "type": "row"
-        },
-        {
-          "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-          "fieldConfig": {
-            "defaults": {},
-            "overrides": []
-          },
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
-          "id": 5,
-          "options": {
-            "dedupStrategy": "none",
-            "enableLogDetails": true,
-            "prettifyLogMessage": true,
-            "showCommonLabels": false,
-            "showLabels": false,
-            "showTime": true,
-            "sortOrder": "Descending",
-            "wrapLogMessage": true
-          },
-          "pluginVersion": "11.6.0",
-          "targets": [
-            {
-              "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-              "expression": "fields @timestamp, @message, @logStream | sort @timestamp desc | limit 200",
-              "id": "",
-              "logGroups": [
-                { "arn": "", "name": "/ssm/*/bootstrap" }
+                { "arn": "", "name": "/ssm/k8s/development/bootstrap", "accountId": "" }
               ],
               "queryMode": "Logs",
               "refId": "A",
@@ -226,7 +154,86 @@ data:
             "defaults": {},
             "overrides": []
           },
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+          "id": 4,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": true,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+              "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 200",
+              "id": "",
+              "logGroups": [
+                { "arn": "", "name": "/ssm/k8s/development/deploy", "accountId": "" }
+              ],
+              "queryMode": "Logs",
+              "refId": "A",
+              "region": "eu-west-1",
+              "statsGroups": []
+            }
+          ],
+          "title": "SSM Deploy Logs",
+          "type": "logs"
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+          "id": 300,
+          "title": "EC2 Instance Logs",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+          "id": 5,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": true,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+              "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 200",
+              "id": "",
+              "logGroups": [
+                { "arn": "", "name": "/ec2/k8s-development/instances", "accountId": "" }
+              ],
+              "queryMode": "Logs",
+              "refId": "A",
+              "region": "eu-west-1",
+              "statsGroups": []
+            }
+          ],
+          "title": "Control Plane (cloud-init)",
+          "type": "logs"
+        },
+        {
+          "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
           "id": 6,
           "options": {
             "dedupStrategy": "none",
@@ -242,10 +249,10 @@ data:
           "targets": [
             {
               "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-              "expression": "fields @timestamp, @message, @logStream | sort @timestamp desc | limit 200",
+              "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 200",
               "id": "",
               "logGroups": [
-                { "arn": "", "name": "/ssm/*/deploy" }
+                { "arn": "", "name": "/ec2/k8s-development-worker/instances", "accountId": "" }
               ],
               "queryMode": "Logs",
               "refId": "A",
@@ -253,15 +260,8 @@ data:
               "statsGroups": []
             }
           ],
-          "title": "SSM Deploy Logs",
+          "title": "App Worker (cloud-init)",
           "type": "logs"
-        },
-        {
-          "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
-          "id": 300,
-          "title": "EC2 Instance Logs",
-          "type": "row"
         },
         {
           "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
@@ -269,7 +269,7 @@ data:
             "defaults": {},
             "overrides": []
           },
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 27 },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
           "id": 7,
           "options": {
             "dedupStrategy": "none",
@@ -285,10 +285,10 @@ data:
           "targets": [
             {
               "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-              "expression": "fields @timestamp, @message, @logStream | sort @timestamp desc | limit 200",
+              "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 200",
               "id": "",
               "logGroups": [
-                { "arn": "", "name": "/ec2/*/instances" }
+                { "arn": "", "name": "/ec2/k8s-development-mon-worker/instances", "accountId": "" }
               ],
               "queryMode": "Logs",
               "refId": "A",
@@ -296,12 +296,12 @@ data:
               "statsGroups": []
             }
           ],
-          "title": "EC2 Instance Logs (cloud-init / user-data)",
+          "title": "Monitoring Worker (cloud-init)",
           "type": "logs"
         },
         {
           "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
           "id": 400,
           "title": "VPC Flow Logs",
           "type": "row"
@@ -312,7 +312,7 @@ data:
             "defaults": {},
             "overrides": []
           },
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 36 },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
           "id": 8,
           "options": {
             "dedupStrategy": "none",
@@ -328,10 +328,10 @@ data:
           "targets": [
             {
               "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-              "expression": "fields @timestamp, srcAddr, dstAddr, srcPort, dstPort, protocol, packets, bytes, action, logStatus | filter action = 'REJECT' | sort @timestamp desc | limit 200",
+              "expression": "fields @timestamp, srcAddr, dstAddr, srcPort, dstPort, protocol, packets, bytes, action, logStatus\n| filter action = 'REJECT'\n| sort @timestamp desc\n| limit 200",
               "id": "",
               "logGroups": [
-                { "arn": "", "name": "/vpc/*/flow-logs" }
+                { "arn": "", "name": "/vpc/shared/development/flow-logs", "accountId": "" }
               ],
               "queryMode": "Logs",
               "refId": "A",
@@ -363,7 +363,7 @@ data:
             },
             "overrides": []
           },
-          "gridPos": { "h": 7, "w": 24, "x": 0, "y": 44 },
+          "gridPos": { "h": 7, "w": 24, "x": 0, "y": 36 },
           "id": 9,
           "options": {
             "legend": { "calcs": [], "displayMode": "list", "placement": "bottom" },
@@ -373,10 +373,10 @@ data:
           "targets": [
             {
               "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-              "expression": "stats count(*) as rejectedCount by bin(5m) | filter action = 'REJECT'",
+              "expression": "stats count(*) as rejectedCount by bin(5m)\n| filter action = 'REJECT'",
               "id": "",
               "logGroups": [
-                { "arn": "", "name": "/vpc/*/flow-logs" }
+                { "arn": "", "name": "/vpc/shared/development/flow-logs", "accountId": "" }
               ],
               "queryMode": "Logs",
               "refId": "A",
@@ -397,5 +397,5 @@ data:
       "timezone": "browser",
       "title": "AWS Logs",
       "uid": "aws-logs",
-      "version": 1
+      "version": 2
     }
