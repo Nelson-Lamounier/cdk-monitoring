@@ -45,420 +45,68 @@ outputs:
     value: ${{ steps.outputs.outputs.stack_outputs }}
   outputs-file:
     description: "Path to saved outputs file (if outputs-directory specified)"
-    value: ${{ steps.save-outputs.outputs.file_path }}
+    value: ${{ steps.outputs.outputs.file_path }}
 
 runs:
   using: "composite"
   steps:
-    - name: Validate Inputs
+    - name: Pre-flight Checks
       shell: bash
       run: |
-        echo "Validating deployment inputs..."
-        echo ""
-
-        # Validate stack name
-        if [ -z "${{ inputs.stack-name }}" ]; then
-          echo "ERROR: stack-name is required"
-          exit 1
+        BOOTSTRAP_FLAG=""
+        if [ "${{ inputs.verify-bootstrap }}" = "true" ]; then
+          BOOTSTRAP_FLAG="--verify-bootstrap"
         fi
-
-        # Validate environment
-        VALID_ENVIRONMENTS="development staging production"
-        if ! echo "$VALID_ENVIRONMENTS" | grep -qw "${{ inputs.environment }}"; then
-          echo "ERROR: Invalid environment: ${{ inputs.environment }}"
-          echo "Valid environments: $VALID_ENVIRONMENTS"
-          echo ""
-          echo "Note: This action is for deploying to target environments."
-          echo "For CI/CD pipeline validation, use CDK synth directly."
-          exit 1
-        fi
-
-        # Validate AWS account ID format
-        if ! [[ "${{ inputs.aws-account-id }}" =~ ^[0-9]{12}$ ]]; then
-          echo "ERROR: Invalid AWS account ID format: ${{ inputs.aws-account-id }}"
-          echo "Expected: 12-digit number"
-          exit 1
-        fi
-
-        # Validate AWS region format
-        if ! [[ "${{ inputs.aws-region }}" =~ ^[a-z]{2}-[a-z]+-[0-9]{1}$ ]]; then
-          echo "ERROR: Invalid AWS region format: ${{ inputs.aws-region }}"
-          echo "Expected format: eu-west-1, us-east-1, etc."
-          exit 1
-        fi
-
-        # Validate require-approval value
-        VALID_APPROVALS="never any-change broadening"
-        if ! echo "$VALID_APPROVALS" | grep -qw "${{ inputs.require-approval }}"; then
-          echo "ERROR: Invalid require-approval: ${{ inputs.require-approval }}"
-          echo "Valid values: $VALID_APPROVALS"
-          exit 1
-        fi
-
-        echo "✓ Input validation passed"
-        echo ""
-        echo "Deployment Configuration:"
-        echo "  Stack Name: ${{ inputs.stack-name }}"
-        echo "  Project: ${{ inputs.project }}"
-        echo "  Environment: ${{ inputs.environment }}"
-        echo "  Account ID: ***${ACCOUNT_ID: -4}"
-        echo "  Region: ${{ inputs.aws-region }}"
-        echo "  Approval: ${{ inputs.require-approval }}"
-      env:
-        ACCOUNT_ID: ${{ inputs.aws-account-id }}
-
-    - name: Verify AWS Credentials
-      shell: bash
-      run: |
-        echo "Verifying AWS credentials..."
-
-        CURRENT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text 2>&1)
-
-        if [ $? -ne 0 ]; then
-          echo "ERROR: Cannot retrieve AWS account information"
-          echo "AWS CLI output: $CURRENT_ACCOUNT"
-          echo ""
-          echo "Troubleshooting:"
-          echo "  1. Verify AWS credentials are configured"
-          echo "  2. Check IAM role trust policy allows GitHub OIDC"
-          echo "  3. Ensure role has sts:GetCallerIdentity permission"
-          exit 1
-        fi
-
-        echo "✓ Authenticated to AWS account: ***${CURRENT_ACCOUNT: -4}"
-
-        if [ "$CURRENT_ACCOUNT" != "${{ inputs.aws-account-id }}" ]; then
-          echo ""
-          ACCOUNT_LAST4="${{ inputs.aws-account-id }}"
-          echo "WARNING: Current account (***${CURRENT_ACCOUNT: -4}) differs from target (***${ACCOUNT_LAST4: -4})"
-          echo "This may be expected for cross-account deployments via AssumeRole"
-        fi
-
-    - name: Verify CDK Bootstrap
-      if: inputs.verify-bootstrap == 'true'
-      shell: bash
-      run: |
-        echo "Verifying CDK bootstrap in target account..."
-        echo "Account: ***${ACCOUNT_ID: -4}"
-        echo "Region: ${{ inputs.aws-region }}"
-        echo ""
-
-        BOOTSTRAP_STACK="CDKToolkit"
-
-        STACK_STATUS=$(aws cloudformation describe-stacks \
-          --stack-name "$BOOTSTRAP_STACK" \
+        just ci-preflight "${{ inputs.stack-name }}" \
+          --project "${{ inputs.project }}" \
+          --environment "${{ inputs.environment }}" \
           --region "${{ inputs.aws-region }}" \
-          --query 'Stacks[0].StackStatus' \
-          --output text 2>&1)
-
-        if [ $? -ne 0 ]; then
-          echo "ERROR: CDK bootstrap stack not found"
-          echo ""
-          echo "Please bootstrap the CDK environment:"
-          echo "  cdk bootstrap aws://${{ inputs.aws-account-id }}/${{ inputs.aws-region }}"
-          exit 1
-        fi
-
-        if [[ "$STACK_STATUS" != *"COMPLETE"* ]]; then
-          echo "ERROR: CDK bootstrap stack is not in a healthy state"
-          echo "Status: $STACK_STATUS"
-          exit 1
-        fi
-
-        echo "✓ CDK bootstrap verified: $STACK_STATUS"
+          --account-id "${{ inputs.aws-account-id }}" \
+          --require-approval "${{ inputs.require-approval }}" \
+          $BOOTSTRAP_FLAG
       env:
-        ACCOUNT_ID: ${{ inputs.aws-account-id }}
-
-    - name: Build CDK Context
-      id: context
-      shell: bash
-      run: |
-        echo "Building CDK context..."
-
-        # CDK context is structural only: project + environment
-        # All config values (edge, email, secrets) flow via process.env
-        CDK_ENV="${{ inputs.environment }}"
-
-        CONTEXT_ARGS=""
-        CONTEXT_ARGS="$CONTEXT_ARGS --context project=${{ inputs.project }}"
-        CONTEXT_ARGS="$CONTEXT_ARGS --context environment=$CDK_ENV"
-        echo "  project=${{ inputs.project }}"
-        echo "  environment=$CDK_ENV"
-
-        # Export for next step
-        echo "$CONTEXT_ARGS" > /tmp/cdk-context-args.txt
-        echo "context_args=$CONTEXT_ARGS" >> $GITHUB_OUTPUT
-
-        echo ""
-        echo "✓ Context built successfully (structural only: project + environment)"
-
-    - name: Build TypeScript
-      shell: bash
-      run: yarn build
+        AWS_REGION: ${{ inputs.aws-region }}
 
     - name: Deploy Stack
       id: deploy
       shell: bash
       run: |
-        echo "Deploying CDK stack..."
-        echo "Stack: ${{ inputs.stack-name }}"
-        echo ""
-
-        # Record start time
-        START_TIME=$(date +%s)
-
-        # Read context args
-        CONTEXT_ARGS=$(cat /tmp/cdk-context-args.txt)
-
-        # Build deploy command
-        # Use --method=direct to avoid ChangeSetNotFoundException issues in CI/CD
-        # Direct method calls UpdateStack/CreateStack API directly instead of changesets
-        # Use --exclusively to prevent CDK from deploying dependent stacks (workflow handles ordering)
-        DEPLOY_CMD="npx cdk deploy ${{ inputs.stack-name }}"
-        DEPLOY_CMD="$DEPLOY_CMD $CONTEXT_ARGS"
-        DEPLOY_CMD="$DEPLOY_CMD --require-approval ${{ inputs.require-approval }}"
-        DEPLOY_CMD="$DEPLOY_CMD --method=direct"
-        DEPLOY_CMD="$DEPLOY_CMD --exclusively"
-
-        # Add outputs file to capture stack outputs during deployment
-        mkdir -p /tmp/cdk-outputs
-        DEPLOY_CMD="$DEPLOY_CMD --outputs-file /tmp/cdk-outputs/stack-outputs.json"
-
-        # Deployment provenance tags (SLSA-inspired audit metadata)
-        # These tags are applied to all CloudFormation resources in the stack
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployCommit=${GITHUB_SHA:-unknown}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployRunId=${GITHUB_RUN_ID:-0}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployActor=${GITHUB_ACTOR:-local}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployRepo=${GITHUB_REPOSITORY:-local}"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        DEPLOY_CMD="$DEPLOY_CMD --tags DeployWorkflow=${GITHUB_WORKFLOW:-manual}"
-
-        # Add additional args if provided
-        if [ -n "${{ inputs.additional-args }}" ]; then
-          DEPLOY_CMD="$DEPLOY_CMD ${{ inputs.additional-args }}"
-        fi
-
-        echo "Executing: $DEPLOY_CMD"
-        echo ""
-
-        # Execute deployment
-        if eval "$DEPLOY_CMD"; then
-          END_TIME=$(date +%s)
-          DURATION=$((END_TIME - START_TIME))
-          echo "status=success" >> $GITHUB_OUTPUT
-          echo "duration=$DURATION" >> $GITHUB_OUTPUT
-          echo ""
-          echo "✓ Stack deployment successful (${DURATION}s)"
-        else
-          EXIT_CODE=$?
-          END_TIME=$(date +%s)
-          DURATION=$((END_TIME - START_TIME))
-          echo "status=failure" >> $GITHUB_OUTPUT
-          echo "duration=$DURATION" >> $GITHUB_OUTPUT
-          echo ""
-          echo "ERROR: Stack deployment failed (exit code: $EXIT_CODE, duration: ${DURATION}s)"
-          exit $EXIT_CODE
-        fi
+        just ci-deploy "${{ inputs.stack-name }}" "${{ inputs.project }}" "${{ inputs.environment }}" \
+          --require-approval "${{ inputs.require-approval }}" \
+          ${{ inputs.additional-args }}
       env:
         CDK_ENVIRONMENT: ${{ inputs.environment }}
         AWS_ACCOUNT_ID: ${{ inputs.aws-account-id }}
         AWS_REGION: ${{ inputs.aws-region }}
 
-    - name: Create Outputs Directory (Always)
-      if: always() && inputs.outputs-directory != ''
+    - name: Diagnose CloudFormation Failure
+      if: failure() && steps.deploy.outputs.status != 'success'
       shell: bash
+      continue-on-error: true
       run: |
-        echo "=== Creating outputs directory (unconditional) ==="
-        OUTPUTS_DIR="${GITHUB_WORKSPACE}/${{ inputs.outputs-directory }}"
-        echo "Target directory: $OUTPUTS_DIR"
+        just ci-diagnose "${{ inputs.stack-name }}" --region "${{ inputs.aws-region }}"
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
 
-        mkdir -p "$OUTPUTS_DIR"
-
-        if [ -d "$OUTPUTS_DIR" ]; then
-          echo "✓ Directory exists: $OUTPUTS_DIR"
-          ls -la "$OUTPUTS_DIR" || echo "Empty directory"
-        else
-          echo "✗ ERROR: Failed to create directory!"
-          exit 1
-        fi
-
-    - name: Retrieve Stack Outputs
+    - name: Collect Stack Outputs
       id: outputs
-      if: steps.deploy.outputs.status == 'success'
-      shell: bash
-      run: |
-        echo "Retrieving CloudFormation stack outputs..."
-
-        # CDK saves outputs to file during deployment
-        OUTPUTS_FILE="/tmp/cdk-outputs/stack-outputs.json"
-
-        if [ -f "$OUTPUTS_FILE" ]; then
-          echo "Reading outputs from CDK outputs file..."
-          
-          # Extract outputs for this specific stack
-          STACK_OUTPUTS=$(jq -r '.["${{ inputs.stack-name }}"] // []' "$OUTPUTS_FILE")
-          
-          if [ "$STACK_OUTPUTS" != "[]" ] && [ "$STACK_OUTPUTS" != "null" ]; then
-            # Convert CDK output format to CloudFormation format
-            # CDK format: {"OutputKey": "value"}
-            # CFN format: [{"OutputKey": "key", "OutputValue": "value"}]
-            FORMATTED_OUTPUTS=$(echo "$STACK_OUTPUTS" | jq -c '[to_entries[] | {OutputKey: .key, OutputValue: .value}]')
-            
-            # Escape output for GitHub Actions
-            echo "stack_outputs=$FORMATTED_OUTPUTS" >> $GITHUB_OUTPUT
-            
-            OUTPUT_COUNT=$(echo "$FORMATTED_OUTPUTS" | jq 'length')
-            echo "✓ Retrieved $OUTPUT_COUNT stack output(s) from CDK outputs file"
-            
-            if [ "$OUTPUT_COUNT" -gt 0 ]; then
-              echo ""
-              echo "Stack Outputs:"
-              echo "$FORMATTED_OUTPUTS" | jq -r '.[] | "  \(.OutputKey): \(.OutputValue)"'
-            fi
-          else
-            echo "No outputs found for stack: ${{ inputs.stack-name }}"
-            echo "stack_outputs=[]" >> $GITHUB_OUTPUT
-          fi
-        else
-          echo "WARNING: CDK outputs file not found at: $OUTPUTS_FILE"
-          echo "This may indicate the deployment succeeded but outputs were not captured."
-          echo "stack_outputs=[]" >> $GITHUB_OUTPUT
-        fi
-      env:
-        CDK_ENVIRONMENT: ${{ inputs.environment }}
-        AWS_ACCOUNT_ID: ${{ inputs.aws-account-id }}
-        AWS_REGION: ${{ inputs.aws-region }}
-
-    - name: Debug Outputs Directory Input
       if: always()
       shell: bash
       run: |
-        echo "=== Checking outputs-directory input ==="
-        echo "Input value: '${{ inputs.outputs-directory }}'"
-        echo "Is empty: $([ -z '${{ inputs.outputs-directory }}' ] && echo 'YES' || echo 'NO')"
-        echo "Condition will evaluate to: $([ -n '${{ inputs.outputs-directory }}' ] && echo 'TRUE - step will run' || echo 'FALSE - step will skip')"
-
-    - name: Save Outputs to File
-      id: save-outputs
-      if: always() && inputs.outputs-directory != ''
-      shell: bash
-      run: |
-        echo "Saving stack outputs to file..."
-
-        # Use GITHUB_WORKSPACE to ensure absolute path
-        OUTPUTS_DIR="${GITHUB_WORKSPACE}/${{ inputs.outputs-directory }}"
-        echo "Creating directory: $OUTPUTS_DIR"
-        mkdir -p "$OUTPUTS_DIR"
-
-        # Verify directory was created
-        if [ -d "$OUTPUTS_DIR" ]; then
-          echo "✓ Directory created successfully"
-        else
-          echo "✗ ERROR: Directory creation failed!"
-          exit 1
-        fi
-
-        echo "Output directory: $OUTPUTS_DIR"
-
-        # Sanitise stack name for filename
-        STACK_NAME_SAFE=$(echo "${{ inputs.stack-name }}" | tr '/' '-' | tr ':' '-')
-        OUTPUT_FILE="$OUTPUTS_DIR/${STACK_NAME_SAFE}-outputs.json"
-
-        echo "Target output file: $OUTPUT_FILE"
-
-        # Only save if deployment was successful
-        if [ "${{ steps.deploy.outputs.status }}" != "success" ]; then
-          echo "⚠ Deployment did not succeed, skipping output save"
-          echo "Directory created for artifact upload consistency"
-          echo "Status was: ${{ steps.deploy.outputs.status }}"
-          exit 0
-        fi
-
-        # Copy CDK outputs file if it exists
-        if [ -f "/tmp/cdk-outputs/stack-outputs.json" ]; then
-          cp "/tmp/cdk-outputs/stack-outputs.json" "$OUTPUT_FILE"
-          echo "file_path=$OUTPUT_FILE" >> $GITHUB_OUTPUT
-          echo "✓ Outputs saved to: $OUTPUT_FILE"
-          
-          # Verify file was created
-          if [ -f "$OUTPUT_FILE" ]; then
-            echo "✓ File verified at: $OUTPUT_FILE"
-            ls -lh "$OUTPUT_FILE"
-          else
-            echo "⚠ Warning: File not found after copy"
-          fi
-        else
-          # Fallback: save from GitHub output
-          if [ -n "${{ steps.outputs.outputs.stack_outputs }}" ] && [ "${{ steps.outputs.outputs.stack_outputs }}" != "[]" ]; then
-            echo '${{ steps.outputs.outputs.stack_outputs }}' | jq '.' > "$OUTPUT_FILE"
-            echo "file_path=$OUTPUT_FILE" >> $GITHUB_OUTPUT
-            echo "✓ Outputs saved to: $OUTPUT_FILE"
-          else
-            echo "⚠ No outputs to save"
-          fi
-        fi
-
-    - name: Verify Outputs Directory for Artifact Upload
-      if: always() && inputs.outputs-directory != ''
-      shell: bash
-      run: |
-        echo "=== Verifying Outputs Directory (from composite action) ==="
-        OUTPUTS_DIR="${GITHUB_WORKSPACE}/${{ inputs.outputs-directory }}"
-        echo "Expected directory: $OUTPUTS_DIR"
-
-        if [ -d "$OUTPUTS_DIR" ]; then
-          echo "✓ Directory exists"
-          echo "Contents:"
-          ls -la "$OUTPUTS_DIR"
-          
-          FILE_COUNT=$(find "$OUTPUTS_DIR" -type f | wc -l)
-          echo "Total files: $FILE_COUNT"
-        else
-          echo "✗ Directory does not exist!"
-          echo "This will cause artifact upload to fail"
-          echo ""
-          echo "Checking workspace..."
-          ls -la "${GITHUB_WORKSPACE}"
-        fi
+        just ci-collect-outputs "${{ inputs.stack-name }}" \
+          --deploy-status "${{ steps.deploy.outputs.status }}" \
+          --outputs-dir "${{ inputs.outputs-directory }}"
+      env:
+        GITHUB_WORKSPACE: ${{ github.workspace }}
 
     - name: Generate Deployment Summary
       if: always()
       shell: bash
       run: |
-        echo "## CDK Stack Deployment" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        printf '**Stack**: `%s`\n' "${{ inputs.stack-name }}" >> $GITHUB_STEP_SUMMARY
-        echo "**Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
-        echo "**Region**: ${{ inputs.aws-region }}" >> $GITHUB_STEP_SUMMARY
-        printf '**Account**: `***%s`\n' "${ACCOUNT_ID: -4}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-
-        if [ "${{ steps.deploy.outputs.status }}" = "success" ]; then
-          echo "### Status: ✓ Success" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Deployment completed in ${{ steps.deploy.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
-          
-          # Add outputs if available
-          # Store outputs in variable to avoid bash interpolation issues
-          STACK_OUTPUTS='${{ steps.outputs.outputs.stack_outputs }}'
-          if [ -n "$STACK_OUTPUTS" ] && [ "$STACK_OUTPUTS" != "[]" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Stack Outputs" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "$STACK_OUTPUTS" | jq -r '.[] | "- **\(.OutputKey)**: `\(.OutputValue)`"' >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Add outputs file location if saved
-          if [ -n "${{ steps.save-outputs.outputs.file_path }}" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            printf 'Outputs saved to: `%s`\n' "${{ steps.save-outputs.outputs.file_path }}" >> $GITHUB_STEP_SUMMARY
-          fi
-        else
-          echo "### Status: ✗ Failed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Deployment failed after ${{ steps.deploy.outputs.duration }}s" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Check deployment logs for details." >> $GITHUB_STEP_SUMMARY
-        fi
-      env:
-        ACCOUNT_ID: ${{ inputs.aws-account-id }}
+        just ci-deploy-summary "${{ inputs.stack-name }}" \
+          --environment "${{ inputs.environment }}" \
+          --region "${{ inputs.aws-region }}" \
+          --account-id "${{ inputs.aws-account-id }}" \
+          --deploy-status "${{ steps.deploy.outputs.status }}" \
+          --deploy-duration "${{ steps.deploy.outputs.duration }}" \
+          --outputs-file "${{ steps.outputs.outputs.file_path }}"

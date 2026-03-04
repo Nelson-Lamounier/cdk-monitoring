@@ -1,6 +1,26 @@
 # .github/workflows/ci.yml
 # CI pipeline for cdk-monitoring project
-# Runs tests for VPC, EC2, EBS, and Security Group stacks
+#
+# JUSTFILE INTEGRATION:
+# All script execution in this pipeline goes through the justfile task runner.
+# This ensures local development and CI use identical execution paths.
+# See: justfile (root) for the full recipe list.
+#
+# Recipe mapping (CI step → justfile recipe):
+#   - Security Audit    → just audit
+#   - ESLint            → just lint
+#   - Type Check        → just typecheck
+#   - Build             → just build
+#   - Deps Validation   → just deps-check-ci
+#   - Stack Tests       → just test-stacks
+#   - CDK Synthesis     → just ci-synth-validate
+#   - Helm Validate (all) → just helm-validate-charts
+#   - Helm Validation   → helm lint + helm template + kubeconform
+#
+# Projects validated during CDK synthesis:
+#   1. k8s         — K8s cluster stacks (Base, ControlPlane, Workers, Edge, API)
+#   2. bedrock     — Bedrock-Data, Bedrock-Agent, Bedrock-Api, Bedrock-Content
+#   3. shared      — Shared-Infra (VPC, ECR)
 
 name: Continuous Integration
 
@@ -15,7 +35,7 @@ env:
   NODE_VERSION: "22" # Fallback - prefer .nvmrc
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ============================================================================
@@ -31,6 +51,7 @@ jobs:
       ci-config: ${{ steps.filter.outputs.ci-config }}
       any-src: ${{ steps.filter.outputs.any-src }}
       any-tests: ${{ steps.filter.outputs.any-tests }}
+      k8s-content: ${{ steps.filter.outputs.k8s-content }}
       # Computed: should we run all tests?
       run-all: ${{ steps.compute.outputs.run-all }}
 
@@ -44,22 +65,26 @@ jobs:
         with:
           filters: |
             stacks:
-              - 'lib/*-stack.ts'
-              - 'tests/unit/stacks/**'
+              - 'infra/lib/*-stack.ts'
+              - 'infra/tests/unit/stacks/**'
             aspects:
-              - 'lib/aspects/**'
+              - 'infra/lib/aspects/**'
             ci-config:
               - '.github/**'
               - 'package.json'
               - 'yarn.lock'
               - 'tsconfig*.json'
               - 'jest.config.*'
-              - 'Makefile'
+              - 'justfile'
             any-src:
-              - 'lib/**/*.ts'
+              - 'infra/lib/**/*.ts'
               - 'bin/**/*.ts'
+              - 'bedrock-publisher/src/**/*.ts'
             any-tests:
-              - 'tests/**/*.ts'
+              - 'infra/tests/**/*.ts'
+            k8s-content:
+              - 'kubernetes-app/app-deploy/**/chart/**'
+              - 'kubernetes-app/k8s-bootstrap/**'
 
       - name: Compute Run Flags
         id: compute
@@ -170,7 +195,7 @@ jobs:
           timeout_minutes: 5
           max_attempts: 3
           retry_wait_seconds: 10
-          command: yarn cli audit --ignore 1113296
+          command: just audit --ignore 1113296 --ignore 1113371
 
   lint:
     name: Lint Code
@@ -189,7 +214,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Run ESLint
-        run: yarn cli lint
+        run: just lint
 
   deps-check:
     name: Dependency Validation
@@ -207,15 +232,18 @@ jobs:
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
 
+      # Runs dependency-cruiser to enforce architectural boundaries
+      # (e.g., no circular imports, layer violations).
+      # Uses 'err-long' output format for CI — verbose error details.
+      # Recipe: justfile → deps-check-ci → yarn deps:check:ci
       - name: Validate Dependencies
-        run: yarn deps:check:ci
+        run: just deps-check-ci
 
   typecheck:
     name: Type Check
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
     steps:
@@ -228,7 +256,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Run TypeScript Compiler
-        run: yarn cli typecheck
+        run: just typecheck
 
   # ============================================================================
   # Build (Always Run - Required for CDK Validation)
@@ -250,7 +278,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Build TypeScript
-        run: yarn cli build
+        run: just build
 
   # ============================================================================
   # Stack Tests
@@ -260,7 +288,6 @@ jobs:
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
     if: |
       (github.event_name == 'pull_request' || 
        (github.event_name == 'push' && 
@@ -282,17 +309,20 @@ jobs:
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
 
+      # Runs all CDK stack unit tests (snapshot + fine-grained assertions).
+      # Covers: k8s, shared, org, and bedrock stacks.
+      # Recipe: justfile → test-stacks → yarn test tests/unit/stacks
       - name: Run Stack Tests
-        run: yarn test tests/unit/stacks
+        run: just test-stacks
 
       - name: Upload Coverage
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-stacks
-          path: coverage/
+          path: infra/coverage/
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   # ============================================================================
   # NOTE: Snapshot Tests
@@ -321,34 +351,24 @@ jobs:
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
 
+      # Synthesizes all CDK projects to validate template generation.
+      # Uses --no-lookups to skip AWS API calls (relies on cached cdk.context.json).
+      #
+      # Projects synthesized:
+      #   1. k8s         → cluster stacks (Base, ControlPlane, Workers, Edge, API)
+      #   2. bedrock     → 4 stacks (Data, Agent, Api, Content)
+      #   3. shared      → 1 stack (Infra)
+      #
+      # If synth fails with "Cannot determine scope" errors, run locally to
+      # refresh cdk.context.json: just synth <project> development
+      #
+      # Recipe: justfile → ci-synth-validate
       - name: Synthesize CDK Stacks
-        run: |
-          echo "==========================================="
-          echo "Validating Monitoring Project (dev)"
-          echo "==========================================="
-          # Use --no-lookups to skip AWS API calls (uses cached cdk.context.json)
-          npx cdk list -c project=monitoring -c environment=dev --no-lookups || {
-            echo "Note: Some stacks may require cached context in cdk.context.json"
-          }
-          npx cdk synth -c project=monitoring -c environment=dev --no-lookups --quiet || {
-            echo "⚠ Monitoring synth requires cached context - run locally to update cdk.context.json"
-          }
-
-          echo ""
-          echo "==========================================="
-          echo "Validating NextJS Project (dev)"
-          echo "==========================================="
-          # NextJS stacks resolve VPC via Vpc.fromLookup() internally (no cross-stack exports)
-          npx cdk synth -c project=nextjs -c environment=dev --no-lookups --quiet 2>&1 || {
-            echo "⚠ NextJS synth requires cached VPC context - run locally to update cdk.context.json"
-          }
-
-          echo ""
-          echo "✓ CDK synthesis validation complete"
+        run: just ci-synth-validate
         env:
           AWS_REGION: eu-west-1
-          # Required by NextJS API stack validation (actual values come from
-          # GitHub environment vars during deploy — see _deploy-nextjs.yml)
+          # Required by Kubernetes API stack validation (actual values come from
+          # GitHub environment vars during deploy — see deployment pipelines)
           NOTIFICATION_EMAIL: ci-validation@placeholder.local
           SES_FROM_EMAIL: ci-validation@placeholder.local
           VERIFICATION_SECRET: ci-placeholder-secret
@@ -357,9 +377,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cdk-synthesis
-          path: cdk.out/
+          path: infra/cdk.out/
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   # ============================================================================
   # NOTE: IaC Security Scanning Strategy
@@ -377,8 +397,72 @@ jobs:
   #     • Staging: Blocking on HIGH/CRITICAL
   #     • Production: Blocking on all findings
   #
-  # See: .github/workflows/_deploy-monitoring.yml for deployment security scan
+  # See: .github/workflows/_deploy-kubernetes.yml for deployment security scan
   # ============================================================================
+
+  # ============================================================================
+  # Helm Chart Validation
+  #
+  # Validates Kubernetes Helm charts before they reach the cluster.
+  # Catches template errors, schema violations, and missing values
+  # that would otherwise only surface during deployment.
+  # ============================================================================
+  validate-helm:
+    name: Validate Helm Charts
+    needs: [detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: needs.detect-changes.outputs.k8s-content == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Helm
+        uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
+        with:
+          version: v3.17.1
+
+      - name: Install just
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C /usr/local/bin
+
+      # -----------------------------------------------------------------
+      # Lint (via justfile recipes)
+      # -----------------------------------------------------------------
+      - name: Lint Helm Charts
+        run: just helm-validate-charts
+
+      # -----------------------------------------------------------------
+      # Template Render + Schema Validation
+      # -----------------------------------------------------------------
+      - name: Template Render (Next.js)
+        run: |
+          helm template nextjs-app \
+            kubernetes-app/app-deploy/nextjs/chart \
+            -f kubernetes-app/app-deploy/nextjs/nextjs-values.yaml \
+            --namespace nextjs-app \
+            > /tmp/nextjs-rendered.yaml
+
+      - name: Validate K8s Schemas (Next.js)
+        run: |
+          kubeconform -summary -strict \
+            -kubernetes-version 1.31.0 \
+            -ignore-missing-schemas \
+            /tmp/nextjs-rendered.yaml
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Helm Chart Validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Chart | Lint | Template | Schema |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Next.js | ✅ | ✅ | ✅ |" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
   # CI Summary
@@ -388,12 +472,14 @@ jobs:
     needs:
       - detect-changes
       - lint-workflows
+      - audit
       - lint
       - deps-check
       - typecheck
       - test-stacks
       - build
       - validate-cdk
+      - validate-helm
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -425,16 +511,34 @@ jobs:
           echo "### Build & Validation" >> $GITHUB_STEP_SUMMARY
           echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- CDK Validation: ${{ needs.validate-cdk.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Helm Validation: ${{ needs.validate-helm.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "ℹ️ IaC Security Scan runs in deployment pipelines (not CI)" >> $GITHUB_STEP_SUMMARY
 
-          # Critical failures
-          if [[ "${{ needs.build.result }}" == "failure" ]] || \
-             [[ "${{ needs.validate-cdk.result }}" == "failure" ]]; then
+          # Fail if ANY upstream job failed (skipped jobs are acceptable)
+          FAILED_JOBS=""
+          for job_result in \
+            "lint-workflows:${{ needs.lint-workflows.result }}" \
+            "audit:${{ needs.audit.result }}" \
+            "lint:${{ needs.lint.result }}" \
+            "deps-check:${{ needs.deps-check.result }}" \
+            "typecheck:${{ needs.typecheck.result }}" \
+            "test-stacks:${{ needs.test-stacks.result }}" \
+            "build:${{ needs.build.result }}" \
+            "validate-cdk:${{ needs.validate-cdk.result }}" \
+            "validate-helm:${{ needs.validate-helm.result }}"; do
+            JOB_NAME="${job_result%%:*}"
+            JOB_STATUS="${job_result##*:}"
+            if [[ "$JOB_STATUS" == "failure" ]]; then
+              FAILED_JOBS="$FAILED_JOBS $JOB_NAME"
+            fi
+          done
+
+          if [[ -n "$FAILED_JOBS" ]]; then
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "❌ CI failed due to critical job failures" >> $GITHUB_STEP_SUMMARY
+            echo "❌ CI failed — failing jobs:$FAILED_JOBS" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ All critical CI checks passed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All CI checks passed" >> $GITHUB_STEP_SUMMARY

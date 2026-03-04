@@ -2,17 +2,17 @@
 # @description Deploy Shared Infrastructure to Development
 #
 # Deploys the shared VPC + ECR stack that other projects depend on.
-# Must be deployed BEFORE monitoring/nextjs stacks.
+# Must be deployed BEFORE kubernetes/bedrock stacks.
 
 name: Deploy Shared (Dev)
 
 on:
   workflow_dispatch: # Manual trigger
   push:
-    branches: [main]
+    branches: [develop]
     paths:
-      - "lib/shared/**"
-      - "bin/app.ts"
+      - "infra/lib/shared/**"
+      - "infra/bin/app.ts"
       - "scripts/deployment/stacks.ts"
       - ".github/workflows/deploy-shared-*.yml"
       - ".github/workflows/_deploy-stack.yml"
