@@ -1,0 +1,166 @@
+# =============================================================================
+# Orchestrator: Deploy Next.js Frontend (Development)
+# =============================================================================
+#
+# Unified pipeline that builds, pushes, syncs, and migrates the Next.js
+# frontend application for the development environment.
+#
+# This pipeline lives in cdk-monitoring (infrastructure orchestrator) and
+# checks out the private frontend-portfolio repo for building.
+#
+# Trigger methods:
+#   1. Manual: workflow_dispatch from GitHub UI
+#   2. Cross-repo: repository_dispatch from frontend-portfolio CI
+#   3. Schedule: after Kubernetes infra deployment (called by _deploy-kubernetes.yml)
+#
+# Flow:
+#   build-image → push-to-ecr → sync-static-assets
+#                              → deploy-nextjs-secrets (via SSM)
+#               → migrate-articles (independent)
+# =============================================================================
+
+name: "Deploy Next.js (Dev)"
+
+on:
+  # Manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      frontend-ref:
+        description: "Git ref to build from frontend-portfolio (branch, tag, SHA)"
+        required: false
+        default: "main"
+        type: string
+      skip-migration:
+        description: "Skip article migration"
+        required: false
+        default: false
+        type: boolean
+
+  # Cross-repo trigger from frontend-portfolio CI
+  repository_dispatch:
+    types: [deploy-nextjs-dev]
+
+env:
+  ENVIRONMENT: development
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  # ===========================================================================
+  # Job 1: Build and Push Docker Image
+  # ===========================================================================
+  build-and-push:
+    name: Build & Push Image
+    uses: ./.github/workflows/_build-push-image.yml
+    with:
+      environment: development
+      image-tag: ${{ github.sha }}
+      ssm-ecr-param: /shared/ecr/development/repository-uri
+      frontend-repo: Nelson-Lamounier/frontend-portfolio
+      frontend-ref: ${{ github.event.inputs.frontend-ref || github.event.client_payload.ref || 'main' }}
+      api-url: ${{ vars.NEXT_PUBLIC_API_URL || '' }}
+      push-to-dockerhub: false
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+      CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
+
+  # ===========================================================================
+  # Job 2: Sync Static Assets to S3 + CloudFront
+  # Runs after build (needs the Docker image artifact)
+  # ===========================================================================
+  sync-assets:
+    name: Sync Static Assets
+    needs: [build-and-push]
+    uses: ./.github/workflows/_sync-assets.yml
+    with:
+      environment: development
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Job 3: Deploy to Kubernetes via SSM Send-Command
+  # Runs after build (needs the ECR image URI)
+  # ===========================================================================
+  deploy-to-cluster:
+    name: Deploy to Kubernetes
+    needs: [build-and-push]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: development
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Deploy via SSM
+        run: |
+          IMAGE_URI="${{ needs.build-and-push.outputs.image-uri }}"
+          echo "Deploying image: $IMAGE_URI"
+
+          # Update the SSM parameter with the new image URI so ArgoCD
+          # picks it up on next sync, or trigger a direct deployment
+          # via SSM send-command to the control plane.
+          aws ssm put-parameter \
+            --name "/nextjs/${{ env.ENVIRONMENT }}/image-uri" \
+            --value "$IMAGE_URI" \
+            --type String \
+            --overwrite
+
+          echo "[PASS] Image URI updated in SSM"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Kubernetes Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: $IMAGE_URI" >> $GITHUB_STEP_SUMMARY
+          echo "- **SSM Parameter Updated**" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Job 4: Migrate Articles (independent — can run in parallel with deploy)
+  # ===========================================================================
+  migrate-articles:
+    name: Migrate Articles
+    if: ${{ !inputs.skip-migration && github.event_name != 'repository_dispatch' || github.event.client_payload.migrate == true }}
+    uses: ./.github/workflows/_migrate-articles.yml
+    with:
+      environment: development
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+      CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
+
+  # ===========================================================================
+  # Job 5: Summary
+  # ===========================================================================
+  summary:
+    name: Deployment Summary
+    needs: [build-and-push, sync-assets, deploy-to-cluster]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate Summary
+        run: |
+          echo "## Next.js Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build & Push | ${{ needs.build-and-push.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Sync Assets | ${{ needs.sync-assets.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy to K8s | ${{ needs.deploy-to-cluster.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.build-and-push.result }}" = "failure" ] || \
+             [ "${{ needs.sync-assets.result }}" = "failure" ] || \
+             [ "${{ needs.deploy-to-cluster.result }}" = "failure" ]; then
+            echo "**Result: FAILED** — check individual job logs above" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          echo "**Result: SUCCESS**" >> $GITHUB_STEP_SUMMARY

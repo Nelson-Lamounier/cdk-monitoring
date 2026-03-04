@@ -3,16 +3,13 @@
 # =============================================================================
 #
 # Builds a Next.js Docker image from the private frontend-portfolio repo
-# and pushes it to ECR (and optionally Docker Hub).
-#
-# This workflow runs from cdk-monitoring but checks out the frontend-portfolio
-# repo for the build context (Dockerfile + source code). A CROSS_REPO_PAT
-# secret with `repo` scope is required to access the private repository.
+# and pushes it to ECR using scripts/push-to-ecr.ts.
 #
 # Two-job architecture:
 #   1. Build — checks out frontend-portfolio, builds Docker image, uploads
 #      the tar as a GitHub Actions artifact (no AWS credentials needed)
-#   2. Push — downloads the artifact, authenticates to ECR, pushes the image
+#   2. Push — downloads the artifact, runs push-to-ecr.ts to authenticate
+#      with ECR and push the image
 #
 # Prerequisites:
 #   - CROSS_REPO_PAT secret with `repo` scope for frontend-portfolio access
@@ -86,9 +83,6 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # ----------------------------------------------------------------
-      # Checkout the frontend-portfolio repo (private — needs PAT)
-      # ----------------------------------------------------------------
       - name: Checkout Frontend Repository
         uses: actions/checkout@v4
         with:
@@ -133,7 +127,7 @@ jobs:
           echo "- **Image Size**: $IMAGE_SIZE" >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
-  # Job 2: Push to ECR and Docker Hub
+  # Job 2: Push to ECR via scripts/push-to-ecr.ts
   # ===========================================================================
   push:
     name: Push to Registries
@@ -150,6 +144,15 @@ jobs:
 
     steps:
       # ----------------------------------------------------------------
+      # Checkout cdk-monitoring (owns scripts/push-to-ecr.ts)
+      # ----------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+
+      # ----------------------------------------------------------------
       # AWS Credentials
       # ----------------------------------------------------------------
       - name: Configure AWS Credentials
@@ -160,27 +163,7 @@ jobs:
           audience: sts.amazonaws.com
 
       # ----------------------------------------------------------------
-      # Get ECR URL from SSM
-      # ----------------------------------------------------------------
-      - name: Get ECR Repository URL from SSM
-        id: ecr-url
-        run: |
-          ECR_URL=$(aws ssm get-parameter \
-            --name "${{ inputs.ssm-ecr-param }}" \
-            --query 'Parameter.Value' \
-            --output text)
-
-          if [ -z "$ECR_URL" ] || [ "$ECR_URL" = "None" ]; then
-            echo "[FAIL] ECR repository URL not found in SSM: ${{ inputs.ssm-ecr-param }}"
-            exit 1
-          fi
-
-          echo "::add-mask::$ECR_URL"
-          echo "ecr-url=$ECR_URL" >> $GITHUB_OUTPUT
-          echo "[PASS] Retrieved ECR repository URL from SSM"
-
-      # ----------------------------------------------------------------
-      # Download, load, and push Docker image
+      # Download and load Docker image
       # ----------------------------------------------------------------
       - name: Download Docker Image Artifact
         uses: actions/download-artifact@v4
@@ -194,28 +177,33 @@ jobs:
           docker load -i /tmp/docker-image.tar
           echo "[PASS] Image loaded"
 
-      - name: Login to ECR
-        run: |
-          ECR_URL="${{ steps.ecr-url.outputs.ecr-url }}"
-          ECR_REGISTRY=$(echo "$ECR_URL" | cut -d/ -f1)
-          aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
-            | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-          echo "[PASS] Authenticated to ECR"
-
+      # ----------------------------------------------------------------
+      # Push to ECR using the push-to-ecr.ts script
+      # ----------------------------------------------------------------
       - name: Push to ECR
         id: push-ecr
         run: |
-          ECR_URL="${{ steps.ecr-url.outputs.ecr-url }}"
-          TAG="${{ inputs.image-tag }}"
+          # Resolve ECR URL from SSM first
+          ECR_URL=$(aws ssm get-parameter \
+            --name "${{ inputs.ssm-ecr-param }}" \
+            --query 'Parameter.Value' \
+            --output text)
 
-          docker tag "frontend:${TAG}" "${ECR_URL}:${TAG}"
-          docker tag "frontend:${TAG}" "${ECR_URL}:latest"
+          if [ -z "$ECR_URL" ] || [ "$ECR_URL" = "None" ]; then
+            echo "[FAIL] ECR repository URL not found in SSM: ${{ inputs.ssm-ecr-param }}"
+            exit 1
+          fi
 
-          docker push "${ECR_URL}:${TAG}"
-          docker push "${ECR_URL}:latest"
+          npx tsx scripts/push-to-ecr.ts \
+            --env "${{ inputs.environment }}" \
+            --tag "${{ inputs.image-tag }}" \
+            --ecr-url "$ECR_URL" \
+            --image-name "frontend:${{ inputs.image-tag }}" \
+            --skip-build \
+            --skip-sync \
+            --region "${{ env.AWS_REGION }}"
 
-          echo "image-uri=${ECR_URL}:${TAG}" >> $GITHUB_OUTPUT
-          echo "[PASS] Image pushed to ECR: ${ECR_URL}:${TAG}"
+          echo "image-uri=${ECR_URL}:${{ inputs.image-tag }}" >> $GITHUB_OUTPUT
 
       # ----------------------------------------------------------------
       # Optional: Docker Hub
@@ -249,12 +237,10 @@ jobs:
           echo "## Image Pushed to Registries" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### ECR" >> $GITHUB_STEP_SUMMARY
-          echo "- **Repository**: ${{ steps.ecr-url.outputs.ecr-url }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tag**: ${{ inputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
           echo "- **URI**: ${{ steps.push-ecr.outputs.image-uri }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           if [ "${{ inputs.push-to-dockerhub }}" = "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Docker Hub" >> $GITHUB_STEP_SUMMARY
-            echo "- **Repository**: lamounierdev/nextjs-application" >> $GITHUB_STEP_SUMMARY
             echo "- **Pull**: \`docker pull lamounierdev/nextjs-application:latest\`" >> $GITHUB_STEP_SUMMARY
           fi

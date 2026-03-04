@@ -3,16 +3,13 @@
 # =============================================================================
 #
 # Extracts Next.js static assets from a Docker image artifact built in a
-# previous job, syncs them to S3, and invalidates the CloudFront cache.
-#
-# This workflow runs from the cdk-monitoring repo. The sync-static-to-s3.ts
-# script and its dependencies (scripts/lib/*) live here alongside the CDK
-# infrastructure that defines the S3 bucket and CloudFront distribution.
+# previous job, syncs them to S3, and invalidates the CloudFront cache
+# using scripts/sync-static-to-s3.ts.
 #
 # Prerequisites:
 #   - A prior job must upload a Docker image artifact named
 #     "docker-image-<environment>" containing a docker-image.tar file
-#   - AWS OIDC role must have permissions for S3, CloudFront, SSM, STS
+#   - AWS OIDC role with S3, CloudFront, SSM, STS permissions
 # =============================================================================
 
 name: Sync Static Assets (Reusable)
@@ -30,7 +27,6 @@ on:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-  NODE_VERSION: "22"
 
 jobs:
   sync:
@@ -45,10 +41,13 @@ jobs:
 
     steps:
       # ------------------------------------------------------------------
-      # 1. Checkout cdk-monitoring (this repo — owns the sync script)
+      # 1. Checkout cdk-monitoring (owns scripts/sync-static-to-s3.ts)
       # ------------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
 
       # ------------------------------------------------------------------
       # 2. AWS Credentials
@@ -61,7 +60,7 @@ jobs:
           audience: sts.amazonaws.com
 
       # ------------------------------------------------------------------
-      # 3. Download & extract static assets from the Docker image artifact
+      # 3. Download & extract static assets from Docker image artifact
       # ------------------------------------------------------------------
       - name: Download Docker Image Artifact
         uses: actions/download-artifact@v4
@@ -89,19 +88,8 @@ jobs:
           echo "[PASS] Extracted $ASSET_COUNT static assets"
 
       # ------------------------------------------------------------------
-      # 4. Install dependencies & run sync script
+      # 4. Sync to S3 & invalidate CloudFront
       # ------------------------------------------------------------------
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Enable Corepack
-        run: corepack enable
-
-      - name: Install Dependencies
-        run: yarn install --immutable
-
       - name: Sync to S3 & Invalidate CloudFront
         run: |
           npx tsx scripts/sync-static-to-s3.ts \
