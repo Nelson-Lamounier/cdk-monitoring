@@ -35,6 +35,18 @@ spec:
           ports:
             - containerPort: {{ .Values.githubActionsExporter.service.port }}
               name: metrics
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
           resources:
             {{- toYaml .Values.githubActionsExporter.resources | nindent 12 }}
 ---

@@ -44,6 +44,18 @@ spec:
               mountPath: /host/root
               mountPropagation: HostToContainer
               readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: {{ .Values.nodeExporter.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: {{ .Values.nodeExporter.service.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 20
           resources:
             {{- toYaml .Values.nodeExporter.resources | nindent 12 }}
       volumes:

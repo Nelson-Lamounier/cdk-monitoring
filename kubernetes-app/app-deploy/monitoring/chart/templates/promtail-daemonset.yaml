@@ -35,6 +35,18 @@ spec:
             - name: machine-id
               mountPath: /etc/machine-id
               readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 9080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 9080
+            initialDelaySeconds: 10
+            periodSeconds: 20
           resources:
             {{- toYaml .Values.promtail.resources | nindent 12 }}
           env:
