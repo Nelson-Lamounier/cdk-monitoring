@@ -34,6 +34,7 @@ A beginner-friendly, step-by-step guide to verifying that your monitoring stack 
   - [Issue 15: Prometheus CrashLoopBackOff — TSDB Lock Conflict](#issue-15-prometheus-crashloopbackoff--tsdb-lock-conflict)
   - [Issue 16: Traefik IngressRoute Returns 504 — NetworkPolicy Blocks hostNetwork Traffic](#issue-16-traefik-ingressroute-returns-504--networkpolicy-blocks-hostnetwork-traffic)
   - [Issue 17: ArgoCD Sync Fails — Recreate Strategy Rejects Leftover rollingUpdate Settings](#issue-17-argocd-sync-fails--recreate-strategy-rejects-leftover-rollingupdate-settings)
+  - [Issue 18: github-actions-exporter ImagePullBackOff — Non-Existent Image Tag](#issue-18-github-actions-exporter-imagepullbackoff--non-existent-image-tag)
 - [Glossary](#glossary)
 
 ---
@@ -1514,6 +1515,117 @@ recreate them within ~1 minute.
 
 ---
 
+### Issue 18: github-actions-exporter ImagePullBackOff — Non-Existent Image Tag
+
+**Symptom:** The `github-actions-exporter` pod is stuck in `ImagePullBackOff`
+and never starts:
+
+```text
+NAME                                       READY   STATUS             RESTARTS   AGE
+github-actions-exporter-86cb45dc5d-zt6zw   0/1     ImagePullBackOff   0          34m
+```
+
+Pod logs return:
+
+```text
+container "github-actions-exporter" is waiting to start:
+trying and failing to pull image
+```
+
+**Root Cause:** The image tag configured in `values.yaml` pointed to a version
+that does not exist on the container registry (GHCR):
+
+```yaml
+# values.yaml (BEFORE — v0.7.0 does not exist on ghcr.io)
+githubActionsExporter:
+  image: ghcr.io/cpanato/github_actions_exporter:v0.7.0
+```
+
+The tag `v0.7.0` was either removed from the registry or never published.
+Kubernetes repeatedly tries to pull the image and backs off with increasing
+delays (`ImagePullBackOff`), but will never succeed because the tag doesn't
+exist.
+
+#### Understanding ImagePullBackOff
+
+Kubernetes pulls container images in this sequence:
+
+| Status | Meaning |
+| --- | --- |
+| `ContainerCreating` | Kubernetes is pulling the image for the first time |
+| `ErrImagePull` | The first pull attempt failed (tag not found, auth error, network issue) |
+| `ImagePullBackOff` | Kubernetes is waiting before retrying. The backoff delay increases exponentially (10s → 20s → 40s → ... up to 5 minutes) |
+
+To see the exact pull error, use `describe`:
+
+```bash
+sudo kubectl describe pod -n monitoring -l app=github-actions-exporter
+```
+
+Look for the `Events` section at the bottom. Common errors include:
+
+- `manifest unknown` — the image tag does not exist
+- `unauthorized` — authentication is required (private registry)
+- `dial tcp: lookup ghcr.io: no such host` — DNS resolution failure
+
+**Diagnose (via SSM session on control plane):**
+
+```bash
+# 1. Check the exact error
+sudo kubectl describe pod -n monitoring -l app=github-actions-exporter \
+  | grep -A10 "Events"
+
+# 2. Check which image the deployment is trying to pull
+sudo kubectl get deployment github-actions-exporter -n monitoring \
+  -o jsonpath='{.spec.template.spec.containers[0].image}' && echo
+
+# 3. Test if the image can be pulled manually
+sudo kubectl run pull-test --rm -it --restart=Never \
+  --image=ghcr.io/cpanato/github_actions_exporter:v0.8.0 -- echo "Pull success"
+```
+
+**Fix — update the image tag to a valid version:**
+
+```yaml
+# values.yaml (AFTER — v0.8.0 exists on ghcr.io)
+githubActionsExporter:
+  image: ghcr.io/cpanato/github_actions_exporter:v0.8.0
+```
+
+**File changed:** `monitoring/chart/values.yaml`
+
+**Verify after ArgoCD syncs:**
+
+```bash
+# Wait for ArgoCD to sync the new image tag
+sudo kubectl get application monitoring -n argocd -w
+
+# Check if the pod is now running
+sudo kubectl get pods -n monitoring -l app=github-actions-exporter
+
+# If the pod is still using the old image, force a rollout
+sudo kubectl rollout restart deployment github-actions-exporter -n monitoring
+```
+
+#### What Success Looks Like
+
+```text
+NAME                                       READY   STATUS    RESTARTS   AGE
+github-actions-exporter-5f8c9d7b6a-k2m4j   1/1     Running   0          45s
+```
+
+> [!TIP]
+> To check available tags for a GHCR image, visit the GitHub
+> Packages page for the repository. For this exporter:
+> `https://github.com/cpanato/github_actions_exporter/pkgs/container/github_actions_exporter`
+
+> [!NOTE]
+> **Resolved.** Updated the image tag from `v0.7.0` to `v0.8.0` in
+> `values.yaml`. After ArgoCD synced the change, the pod pulled the
+> image successfully and entered `Running` state.
+
+---
+
 ## Glossary
 
 | Term | Definition |
@@ -1544,3 +1656,4 @@ recreate them within ~1 minute.
 | **SSM Automation** | AWS Systems Manager capability for running multi-step runbooks on EC2 instances |
 | **StorageClass** | Defines how PersistentVolumes are created (provisioner, reclaim policy, binding mode) |
 | **Tempo** | Distributed tracing backend from Grafana Labs — stores and queries trace data |
+| **ImagePullBackOff** | A pod status indicating Kubernetes cannot pull the container image and is retrying with increasing delays. Common causes: non-existent image tag, private registry without credentials, or network issues. |
