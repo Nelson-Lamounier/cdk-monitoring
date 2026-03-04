@@ -19,7 +19,7 @@
 #               → migrate-articles (independent)
 # =============================================================================
 
-name: "Deploy Next.js (Dev)"
+name: "Deploy Frontend (Dev)"
 
 on:
   # Manual trigger from GitHub UI
