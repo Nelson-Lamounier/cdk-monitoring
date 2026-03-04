@@ -41,7 +41,10 @@
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -83,6 +86,9 @@ export interface KubernetesMonitoringWorkerStackProps extends cdk.StackProps {
     /** Name prefix for resources @default 'k8s' */
     readonly namePrefix?: string;
 
+    /** Email address for alert notifications */
+    readonly notificationEmail?: string;
+
     /** Log retention @default ONE_WEEK */
     readonly logRetention?: logs.RetentionDays;
 }
@@ -105,6 +111,9 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
 
     /** The IAM role for the monitoring worker node */
     public readonly instanceRole: iam.IRole;
+
+    /** SNS topic for monitoring alerts (Grafana → Email + SNS) */
+    public readonly alertsTopic: sns.Topic;
 
     /** CloudWatch log group for instance logs */
     public readonly logGroup?: logs.LogGroup;
@@ -273,6 +282,46 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
             resources: ['*'],
         }));
 
+        // =====================================================================
+        // SNS Topic — Monitoring Alerts
+        //
+        // Dedicated topic for Grafana unified alerting (Email + SNS).
+        // Grafana's SNS contact point publishes to this topic.
+        // =====================================================================
+        const alertsTopic = new sns.Topic(this, 'MonitoringAlertsTopic', {
+            topicName: `${workerPrefix}-monitoring-alerts`,
+            displayName: 'Monitoring Alerts',
+            enforceSSL: true,
+            masterKey: kms.Alias.fromAliasName(this, 'SnsEncryptionKey', 'alias/aws/sns'),
+        });
+
+        if (props.notificationEmail) {
+            alertsTopic.addSubscription(
+                new sns_subscriptions.EmailSubscription(props.notificationEmail),
+            );
+        }
+
+        // Grant sns:Publish for Grafana's SNS contact point
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SnsPublishAlerts',
+            effect: iam.Effect.ALLOW,
+            actions: ['sns:Publish'],
+            resources: [alertsTopic.topicArn],
+        }));
+
+        // Grant KMS for SNS encryption
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'KmsForSns',
+            effect: iam.Effect.ALLOW,
+            actions: ['kms:Decrypt', 'kms:GenerateDataKey*'],
+            resources: ['*'],
+            conditions: {
+                StringEquals: {
+                    'kms:ViaService': `sns.${this.region}.amazonaws.com`,
+                },
+            },
+        }));
+
         // ASG: min=0 allows scaling down to save costs, max=1 for single monitoring worker
         const asgConstruct = new AutoScalingGroupConstruct(this, 'MonWorkerAsg', {
             vpc,
@@ -358,6 +407,7 @@ echo "SSM Automation will be triggered by the CI pipeline"
         // Expose properties
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
         this.instanceRole = launchTemplateConstruct.instanceRole;
+        this.alertsTopic = alertsTopic;
         this.logGroup = launchTemplateConstruct.logGroup;
 
         // =====================================================================
@@ -379,6 +429,11 @@ echo "SSM Automation will be triggered by the CI pipeline"
         new cdk.CfnOutput(this, 'MonitoringWorkerInstanceRoleArn', {
             value: launchTemplateConstruct.instanceRole.roleArn,
             description: 'Monitoring worker node IAM role ARN',
+        });
+
+        new cdk.CfnOutput(this, 'MonitoringAlertsTopicArn', {
+            value: alertsTopic.topicArn,
+            description: 'SNS topic ARN for Grafana monitoring alerts',
         });
     }
 }

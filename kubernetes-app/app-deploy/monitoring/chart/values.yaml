@@ -52,6 +52,13 @@ grafana:
   ingress:
     enabled: false
     matchRule: "PathPrefix(`/grafana`)"
+  alerting:
+    notificationEmail: ""
+    snsTopicArn: ""
+    awsRegion: eu-west-1
+    smtp:
+      host: "email-smtp.eu-west-1.amazonaws.com:587"
+      fromAddress: "grafana@example.com"
 
 # ---------------------------------------------------------------------------
 # Loki (log aggregation)
