@@ -1,0 +1,277 @@
+#!/usr/bin/env tsx
+/**
+ * Static Assets S3 Sync Script
+ *
+ * Syncs Next.js static assets (.next/static) to S3 for CloudFront serving
+ * and optionally invalidates the CloudFront cache.
+ *
+ * Auth modes:
+ *   - CI/Pipeline: Uses OIDC (credentials from env vars, no --profile needed)
+ *   - Local/Manual: Uses AWS CLI profile (--profile flag)
+ *
+ * Usage:
+ *   Local:    npx tsx scripts/sync-static-to-s3.ts --env dev --profile dev-account
+ *   Pipeline: npx tsx scripts/sync-static-to-s3.ts --env development --region eu-west-1
+ */
+
+import { existsSync, readdirSync, statSync, readFileSync } from 'fs'
+import { join, relative } from 'path'
+import {
+  S3Client,
+  PutObjectCommand,
+  ListObjectsV2Command,
+  ListObjectsV2CommandOutput,
+  DeleteObjectsCommand,
+} from '@aws-sdk/client-s3'
+import {
+  CloudFrontClient,
+  CreateInvalidationCommand,
+} from '@aws-sdk/client-cloudfront'
+import { lookup } from 'mime-types'
+import * as log from './lib/logger.js'
+import {
+  parseArgs,
+  buildAwsConfig,
+  getSSMParameterWithFallbacks,
+  getSSMParameter,
+  getAccountId,
+  resolveAuth,
+} from './lib/aws-helpers.js'
+
+// ========================================
+// CLI Arguments
+// ========================================
+
+const args = parseArgs(
+  [
+    { name: 'env', description: 'Environment: dev, staging, prod', hasValue: true, default: 'dev' },
+    { name: 'profile', description: 'AWS CLI profile', hasValue: true },
+    { name: 'region', description: 'AWS region', hasValue: true, default: 'eu-west-1' },
+    { name: 'skip-invalidation', description: 'Skip CloudFront cache invalidation', hasValue: false, default: false },
+  ],
+  'Sync Next.js static assets to S3 bucket and invalidate CloudFront cache',
+)
+
+// ========================================
+// Helpers
+// ========================================
+
+/** Recursively get all files in a directory */
+function getAllFiles(dir: string): string[] {
+  const files: string[] = []
+
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...getAllFiles(fullPath))
+    } else {
+      files.push(fullPath)
+    }
+  }
+
+  return files
+}
+
+// ========================================
+// Main
+// ========================================
+
+async function main(): Promise<void> {
+  const config = buildAwsConfig(args)
+  const auth = resolveAuth(config.profile)
+  const skipInvalidation = args['skip-invalidation'] as boolean
+
+  // Determine project root
+  const scriptDir = import.meta.dirname ?? new URL('.', import.meta.url).pathname
+  const projectRoot = join(scriptDir, '..')
+  const staticDir = join(projectRoot, '.next', 'static')
+
+  log.header('📦 Static Assets S3 Sync Script')
+  log.config('Configuration', {
+    'Auth Mode': auth.mode,
+    'AWS Region': config.region,
+    'Environment': config.environment,
+  })
+
+  const totalSteps = 5
+
+  // Step 1: Verify static directory exists
+  log.step(1, totalSteps, 'Verifying static assets directory...')
+
+  if (!existsSync(staticDir)) {
+    log.fatal(
+      `Static assets not found at: ${staticDir}\n` +
+      "   Run 'yarn build' first to generate static assets.",
+    )
+  }
+
+  const allFiles = getAllFiles(staticDir)
+  log.success(`Found ${allFiles.length} static assets`)
+
+  // Step 2: Get S3 bucket name from SSM
+  log.step(2, totalSteps, 'Discovering S3 bucket from SSM...')
+
+  const ssmPaths = [
+    `/nextjs/${config.environment}/assets-bucket-name`,
+    `/nextjs/${config.environment}/s3/static-assets-bucket`,
+  ]
+
+  const bucketResult = await getSSMParameterWithFallbacks(ssmPaths, config)
+  let bucketName: string
+
+  if (bucketResult) {
+    bucketName = bucketResult.value
+  } else {
+    log.warn('SSM parameter not found. Trying alternative discovery...')
+    const accountId = await getAccountId(config)
+    bucketName = `nextjs-static-assets-${config.environment}-${accountId}`
+    log.warn(`Using fallback bucket name: ${bucketName}`)
+  }
+
+  // Strip s3:// prefix and trailing slash if present
+  bucketName = bucketName.replace(/^s3:\/\//, '').replace(/\/$/, '')
+  log.success(`Bucket: ${bucketName}`)
+
+  // Step 3: Sync static assets to S3
+  log.step(3, totalSteps, 'Syncing static assets to S3...')
+  console.log(`   Source:      ${staticDir}`)
+  console.log(`   Destination: s3://${bucketName}/_next/static/`)
+
+  const s3 = new S3Client({
+    region: config.region,
+    credentials: config.credentials,
+  })
+
+  // Upload all local files
+  let uploaded = 0
+  for (const filePath of allFiles) {
+    const relativePath = relative(staticDir, filePath)
+    const s3Key = `_next/static/${relativePath}`
+    const contentType = lookup(filePath) || 'application/octet-stream'
+    const fileContent = readFileSync(filePath)
+
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: bucketName,
+        Key: s3Key,
+        Body: fileContent,
+        ContentType: contentType,
+        CacheControl: 'public, max-age=31536000, immutable',
+      }),
+    )
+    uploaded++
+  }
+
+  log.success(`Uploaded ${uploaded} files to S3`)
+
+  // Delete stale files from S3 that no longer exist locally
+  const localKeys = new Set(
+    allFiles.map((f) => `_next/static/${relative(staticDir, f)}`),
+  )
+
+  let continuationToken: string | undefined
+  const staleKeys: string[] = []
+
+  do {
+    const listResult = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: '_next/static/',
+        ContinuationToken: continuationToken,
+      }),
+    )
+
+    for (const obj of listResult.Contents || []) {
+      if (obj.Key && !localKeys.has(obj.Key)) {
+        staleKeys.push(obj.Key)
+      }
+    }
+
+    continuationToken = listResult.NextContinuationToken
+  } while (continuationToken)
+
+  if (staleKeys.length > 0) {
+    // Delete in batches of 1000 (S3 limit)
+    for (let i = 0; i < staleKeys.length; i += 1000) {
+      const batch = staleKeys.slice(i, i + 1000)
+      await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: bucketName,
+          Delete: { Objects: batch.map((Key) => ({ Key })) },
+        }),
+      )
+    }
+    log.success(`Deleted ${staleKeys.length} stale files from S3`)
+  }
+
+  // Step 4: Verify sync
+  log.step(4, totalSteps, 'Verifying upload...')
+
+  let totalInS3 = 0
+  continuationToken = undefined
+  do {
+    const listResult: ListObjectsV2CommandOutput = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: '_next/static/',
+        ContinuationToken: continuationToken,
+      }),
+    )
+    totalInS3 += listResult.KeyCount || 0
+    continuationToken = listResult.NextContinuationToken
+  } while (continuationToken)
+
+  log.success(`${totalInS3} files in S3`)
+
+  // Step 5: CloudFront Cache Invalidation
+  log.step(5, totalSteps, 'CloudFront cache invalidation...')
+
+  if (skipInvalidation) {
+    console.log(log.yellow('⏩ Skipping CloudFront invalidation (--skip-invalidation)'))
+  } else {
+    const cfParam = `/nextjs/${config.environment}/cloudfront/distribution-id`
+    console.log(`   Looking up: ${cfParam}`)
+    const distributionId = await getSSMParameter(cfParam, config)
+
+    if (!distributionId) {
+      log.warn(
+        `CloudFront distribution ID not found in SSM. Skipping invalidation.\n` +
+        `   Create SSM parameter: ${cfParam}`,
+      )
+    } else {
+      console.log(`   Distribution: ${distributionId}`)
+
+      const cf = new CloudFrontClient({
+        region: config.region,
+        credentials: config.credentials,
+      })
+
+      const result = await cf.send(
+        new CreateInvalidationCommand({
+          DistributionId: distributionId,
+          InvalidationBatch: {
+            CallerReference: `sync-${Date.now()}`,
+            Paths: {
+              Quantity: 1,
+              Items: ['/_next/static/*'],
+            },
+          },
+        }),
+      )
+
+      log.success(
+        `CloudFront invalidation created: ${result.Invalidation?.Id}`,
+      )
+    }
+  }
+
+  log.summary('Static Assets Sync Complete!', {
+    'S3 Bucket': bucketName,
+    'S3 Prefix': '/_next/static/',
+    'Files Synced': String(uploaded),
+  })
+}
+
+main().catch((error) => {
+  log.fatal(`S3 sync failed: ${error.message}`)
+})
