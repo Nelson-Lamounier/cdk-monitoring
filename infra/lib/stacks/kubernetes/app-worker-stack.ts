@@ -186,7 +186,9 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
         // Grant S3 read for boot script download + orchestrator fallback
         scriptsBucket.grantRead(launchTemplateConstruct.instanceRole);
 
-        // Grant ECR pull for container images (Next.js from ECR)
+        // Grant ECR pull + list for container images (Next.js from ECR)
+        // Includes ListImages/DescribeImages for ArgoCD Image Updater
+        // to discover new SHA-tagged images and update deployments.
         launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
             sid: 'EcrPullImages',
             effect: iam.Effect.ALLOW,
@@ -194,6 +196,8 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
                 'ecr:GetDownloadUrlForLayer',
                 'ecr:BatchGetImage',
                 'ecr:BatchCheckLayerAvailability',
+                'ecr:ListImages',
+                'ecr:DescribeImages',
             ],
             resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/*`],
         }));
