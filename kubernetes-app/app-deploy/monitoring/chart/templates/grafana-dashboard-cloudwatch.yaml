@@ -39,7 +39,7 @@ data:
             "defaults": {},
             "overrides": []
           },
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 1 },
           "id": 1,
           "options": {
             "dedupStrategy": "none",
@@ -67,42 +67,6 @@ data:
             }
           ],
           "title": "EIP Failover Lambda",
-          "type": "logs"
-        },
-        {
-          "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-          "fieldConfig": {
-            "defaults": {},
-            "overrides": []
-          },
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
-          "id": 2,
-          "options": {
-            "dedupStrategy": "none",
-            "enableLogDetails": true,
-            "prettifyLogMessage": true,
-            "showCommonLabels": false,
-            "showLabels": false,
-            "showTime": true,
-            "sortOrder": "Descending",
-            "wrapLogMessage": true
-          },
-          "pluginVersion": "11.6.0",
-          "targets": [
-            {
-              "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
-              "expression": "fields @timestamp, @message, @logStream\n| sort @timestamp desc\n| limit 100",
-              "id": "",
-              "logGroups": [
-                { "arn": "", "name": "/aws/lambda/development-development-monitoring-efs-init", "accountId": "" }
-              ],
-              "queryMode": "Logs",
-              "refId": "A",
-              "region": "eu-west-1",
-              "statsGroups": []
-            }
-          ],
-          "title": "Monitoring EFS Init Lambda",
           "type": "logs"
         },
         {
