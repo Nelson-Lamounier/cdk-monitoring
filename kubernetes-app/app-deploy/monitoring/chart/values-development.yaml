@@ -63,9 +63,9 @@ nodeExporter:
   service:
     port: 9101
 
-# GitHub Actions Exporter — disabled until GITHUB_TOKEN is in SSM
+# GitHub Actions Exporter
 githubActionsExporter:
-  replicas: 0
+  replicas: 1
 
 # Steampipe — disabled until AWS credentials/config are set up
 steampipe:
