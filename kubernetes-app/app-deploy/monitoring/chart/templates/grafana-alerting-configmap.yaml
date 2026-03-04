@@ -8,6 +8,7 @@ data:
   contactpoints.yaml: |
     apiVersion: 1
     contactPoints:
+{{- if .Values.grafana.alerting.snsTopicArn }}
       - orgId: 1
         name: sns
         receivers:
@@ -18,10 +19,14 @@ data:
               region: "{{ .Values.grafana.alerting.awsRegion }}"
               authProvider: default
             disableResolveMessage: false
+{{- else }}
+      []
+{{- end }}
 
   policies.yaml: |
     apiVersion: 1
     policies:
+{{- if .Values.grafana.alerting.snsTopicArn }}
       - orgId: 1
         receiver: sns
         group_by:
@@ -39,6 +44,9 @@ data:
             matchers:
               - severity = warning
             continue: false
+{{- else }}
+      []
+{{- end }}
 
   rules.yaml: |
     apiVersion: 1
