@@ -42,3 +42,11 @@ data:
             datasourceUid: prometheus
           nodeGraph:
             enabled: true
+      - name: CloudWatch
+        type: cloudwatch
+        access: proxy
+        uid: cloudwatch
+        editable: false
+        jsonData:
+          defaultRegion: eu-west-1
+          authType: default
