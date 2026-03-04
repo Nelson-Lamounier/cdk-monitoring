@@ -58,3 +58,14 @@ data:
         jsonData:
           defaultRegion: us-east-1
           authType: default
+      - name: Steampipe
+        type: postgres
+        access: proxy
+        uid: steampipe
+        editable: false
+        url: steampipe.{{ .Values.namespace }}.svc.cluster.local:{{ .Values.steampipe.service.port }}
+        database: steampipe
+        user: steampipe
+        jsonData:
+          sslmode: disable
+          postgresVersion: 1400

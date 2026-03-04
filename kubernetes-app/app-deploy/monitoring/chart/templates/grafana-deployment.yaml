@@ -88,4 +88,6 @@ spec:
               - configMap:
                   name: grafana-dashboards-cloudwatch-edge
               - configMap:
+                  name: grafana-dashboards-cloud-inventory
+              - configMap:
                   name: grafana-dashboards-tracing

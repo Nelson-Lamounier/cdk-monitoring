@@ -1,0 +1,505 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-cloud-inventory
+  namespace: {{ .Values.namespace }}
+  labels: {{- include "monitoring.fullLabels" "grafana" | nindent 4 }}
+data:
+  cloud-inventory.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "id": 100,
+          "title": "EBS Volumes & Snapshots",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+          "id": 1,
+          "options": {
+            "colorMode": "background_gradient",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT count(*) AS \"Total Volumes\" FROM aws_ebs_volume;",
+              "refId": "A"
+            }
+          ],
+          "title": "Total EBS Volumes",
+          "type": "stat"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+          "id": 2,
+          "options": {
+            "colorMode": "background_gradient",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT count(*) AS \"Unencrypted\" FROM aws_ebs_volume WHERE NOT encrypted;",
+              "refId": "A"
+            }
+          ],
+          "title": "Unencrypted Volumes",
+          "type": "stat"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+          "id": 3,
+          "options": {
+            "colorMode": "background_gradient",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT count(*) AS \"Total Snapshots\" FROM aws_ebs_snapshot WHERE owner_id = (SELECT account_id FROM aws_account);",
+              "refId": "A"
+            }
+          ],
+          "title": "Total Snapshots",
+          "type": "stat"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+          "id": 4,
+          "options": {
+            "colorMode": "background_gradient",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT count(*) AS \"Orphaned\" FROM aws_ebs_volume WHERE jsonb_array_length(attachments) = 0 AND state = 'available';",
+              "refId": "A"
+            }
+          ],
+          "title": "Orphaned Volumes",
+          "type": "stat"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "encrypted" },
+                "properties": [
+                  {
+                    "id": "custom.cellOptions",
+                    "value": { "type": "color-background" }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      { "options": { "false": { "color": "red", "text": "No" }, "true": { "color": "green", "text": "Yes" } }, "type": "value" }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 5 },
+          "id": 5,
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "sortBy": [{ "displayName": "size_gb", "desc": true }]
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT volume_id, size AS size_gb, volume_type, state, encrypted, iops, attachments->0->>'InstanceId' AS attached_instance, tags->>'Name' AS name FROM aws_ebs_volume ORDER BY size DESC;",
+              "refId": "A"
+            }
+          ],
+          "title": "EBS Volume Inventory",
+          "type": "table"
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
+          "id": 200,
+          "title": "Security Groups",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 8, "x": 0, "y": 14 },
+          "id": 6,
+          "options": {
+            "colorMode": "background_gradient",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT count(DISTINCT group_id) AS \"Open to Internet\" FROM aws_vpc_security_group_rule WHERE type = 'ingress' AND cidr_ipv4 = '0.0.0.0/0';",
+              "refId": "A"
+            }
+          ],
+          "title": "Security Groups Open to Internet",
+          "type": "stat"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 8, "x": 8, "y": 14 },
+          "id": 7,
+          "options": {
+            "colorMode": "background_gradient",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT count(DISTINCT group_id) AS \"SSH Open\" FROM aws_vpc_security_group_rule WHERE type = 'ingress' AND from_port = 22 AND cidr_ipv4 = '0.0.0.0/0';",
+              "refId": "A"
+            }
+          ],
+          "title": "SSH Open to Internet (Port 22)",
+          "type": "stat"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 4, "w": 8, "x": 16, "y": 14 },
+          "id": 8,
+          "options": {
+            "colorMode": "background_gradient",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT count(*) AS \"Total SGs\" FROM aws_vpc_security_group;",
+              "refId": "A"
+            }
+          ],
+          "title": "Total Security Groups",
+          "type": "stat"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 18 },
+          "id": 9,
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "sortBy": [{ "displayName": "from_port", "desc": false }]
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT sg.group_name, r.group_id, r.type, r.from_port, r.to_port, r.ip_protocol, r.cidr_ipv4 FROM aws_vpc_security_group_rule r JOIN aws_vpc_security_group sg ON r.group_id = sg.group_id WHERE r.type = 'ingress' AND r.cidr_ipv4 = '0.0.0.0/0' ORDER BY r.from_port;",
+              "refId": "A"
+            }
+          ],
+          "title": "Ingress Rules Open to Internet (0.0.0.0/0)",
+          "type": "table"
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+          "id": 300,
+          "title": "EC2 Instances & Cross-Service View",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "state" },
+                "properties": [
+                  {
+                    "id": "custom.cellOptions",
+                    "value": { "type": "color-background" }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      { "options": { "running": { "color": "green", "text": "Running" }, "stopped": { "color": "red", "text": "Stopped" } }, "type": "value" }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": { "h": 6, "w": 24, "x": 0, "y": 27 },
+          "id": 10,
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT instance_id, tags->>'Name' AS name, instance_type, instance_state AS state, private_ip_address, public_ip_address, launch_time::text FROM aws_ec2_instance ORDER BY launch_time DESC;",
+              "refId": "A"
+            }
+          ],
+          "title": "EC2 Instance Inventory",
+          "type": "table"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "steampipe" },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "encrypted" },
+                "properties": [
+                  {
+                    "id": "custom.cellOptions",
+                    "value": { "type": "color-background" }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      { "options": { "false": { "color": "red", "text": "No" }, "true": { "color": "green", "text": "Yes" } }, "type": "value" }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
+          "id": 11,
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "pluginVersion": "11.6.0",
+          "targets": [
+            {
+              "datasource": { "type": "postgres", "uid": "steampipe" },
+              "format": "table",
+              "rawSql": "SELECT i.tags->>'Name' AS instance_name, i.instance_id, i.instance_type, v.volume_id, v.size AS vol_gb, v.volume_type, v.encrypted, count(s.snapshot_id) AS snapshots FROM aws_ec2_instance i LEFT JOIN aws_ebs_volume v ON v.attachments->0->>'InstanceId' = i.instance_id LEFT JOIN aws_ebs_snapshot s ON s.volume_id = v.volume_id AND s.owner_id = (SELECT account_id FROM aws_account) GROUP BY i.tags->>'Name', i.instance_id, i.instance_type, v.volume_id, v.size, v.volume_type, v.encrypted ORDER BY i.tags->>'Name', v.size DESC;",
+              "refId": "A"
+            }
+          ],
+          "title": "EC2 → Volumes → Snapshots (Cross-Service Join)",
+          "type": "table"
+        }
+      ],
+      "refresh": "",
+      "schemaVersion": 39,
+      "tags": ["aws", "steampipe", "compliance", "inventory"],
+      "templating": { "list": [] },
+      "time": { "from": "now-6h", "to": "now" },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Cloud Inventory & Compliance",
+      "uid": "cloud-inventory",
+      "version": 1
+    }

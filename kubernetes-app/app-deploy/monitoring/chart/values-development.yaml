@@ -67,6 +67,6 @@ nodeExporter:
 githubActionsExporter:
   replicas: 1
 
-# Steampipe — disabled until AWS credentials/config are set up
+# Steampipe — cloud inventory and compliance queries
 steampipe:
-  replicas: 0
+  replicas: 1
