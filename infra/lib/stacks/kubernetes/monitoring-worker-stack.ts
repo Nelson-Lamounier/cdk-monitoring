@@ -45,6 +45,7 @@ import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -434,6 +435,13 @@ echo "SSM Automation will be triggered by the CI pipeline"
         new cdk.CfnOutput(this, 'MonitoringAlertsTopicArn', {
             value: alertsTopic.topicArn,
             description: 'SNS topic ARN for Grafana monitoring alerts',
+        });
+
+        // SSM Parameter — discoverable by bootstrap_argocd.py
+        new ssm.StringParameter(this, 'MonitoringAlertsTopicArnParam', {
+            parameterName: `${ssmPrefix}/monitoring/alerts-topic-arn`,
+            stringValue: alertsTopic.topicArn,
+            description: 'SNS topic ARN for Grafana monitoring alerts — used by ArgoCD bootstrap',
         });
     }
 }
