@@ -57,7 +57,7 @@ jobs:
           token: ${{ secrets.CROSS_REPO_PAT }}
           path: frontend-portfolio
           sparse-checkout: |
-            content
+            src/app/articles
           sparse-checkout-cone-mode: true
 
       - name: Setup Node.js and Yarn

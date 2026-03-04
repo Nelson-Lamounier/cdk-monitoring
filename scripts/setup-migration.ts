@@ -133,11 +133,11 @@ async function main(): Promise<void> {
   const tableName =
     (args.table as string) ||
     process.env.DYNAMODB_TABLE_NAME ||
-    `webapp-articles-${config.environment}`
+    `nextjs-personal-portfolio-${config.environment}`
   const bucketName =
     (args.bucket as string) ||
     process.env.S3_BUCKET_NAME ||
-    `webapp-article-assets-${config.environment}`
+    `nextjs-article-assets-${config.environment}`
 
   log.header('📋 Article Migration - Setup')
   log.config('Configuration', {

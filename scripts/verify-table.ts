@@ -38,7 +38,7 @@ async function main(): Promise<void> {
   const tableName =
     (args.table as string) ||
     process.env.DYNAMODB_TABLE_NAME ||
-    `webapp-articles-${config.environment}`
+    `nextjs-personal-portfolio-${config.environment}`
 
   console.log(`Checking DynamoDB table: ${tableName}`)
   console.log(`Region: ${config.region}`)

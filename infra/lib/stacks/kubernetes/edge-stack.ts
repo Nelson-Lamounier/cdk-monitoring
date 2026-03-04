@@ -684,6 +684,13 @@ export class KubernetesEdgeStack extends cdk.Stack {
             tier: ssm.ParameterTier.STANDARD,
         });
 
+        new ssm.StringParameter(this, 'DistributionIdParameter', {
+            parameterName: ssmPaths.cloudfront.distributionId,
+            stringValue: this.distribution.distributionId,
+            description: 'CloudFront distribution ID for cache invalidation',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
         // Suppress cdk-nag for AwsCustomResource Lambda (SSM cross-region readers)
         NagSuppressions.addResourceSuppressionsByPath(
             this,

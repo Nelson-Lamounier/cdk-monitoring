@@ -117,6 +117,8 @@ export interface NextjsSsmPaths {
         readonly wafArn: string;
         /** CloudFront distribution domain name */
         readonly distributionDomain: string;
+        /** CloudFront distribution ID (for cache invalidation) */
+        readonly distributionId: string;
     };
 
     // --- Wildcard for IAM policy grants ---
@@ -166,6 +168,7 @@ export function nextjsSsmPaths(
         cloudfront: {
             wafArn: `${prefix}/cloudfront/waf-arn`,
             distributionDomain: `${prefix}/cloudfront/distribution-domain`,
+            distributionId: `${prefix}/cloudfront/distribution-id`,
         },
 
         // Wildcard
