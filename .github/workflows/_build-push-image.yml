@@ -81,6 +81,7 @@ jobs:
     name: Build Docker Image
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: ${{ inputs.environment }}
 
     steps:
       - name: Checkout Frontend Repository
