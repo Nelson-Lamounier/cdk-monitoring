@@ -40,6 +40,10 @@ on:
   repository_dispatch:
     types: [deploy-nextjs-dev]
 
+permissions:
+  id-token: write
+  contents: read
+
 env:
   ENVIRONMENT: development
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
