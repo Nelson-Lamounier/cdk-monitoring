@@ -12,7 +12,7 @@ name: Deploy Bedrock (Dev)
 on:
   workflow_dispatch: # Manual trigger
   push:
-    branches: [develop]
+    # branches: [develop]
     paths:
       - "infra/lib/stacks/bedrock/**"
       - "infra/lib/config/bedrock/**"

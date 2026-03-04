@@ -9,7 +9,7 @@ name: Deploy Shared (Dev)
 on:
   workflow_dispatch: # Manual trigger
   push:
-    branches: [develop]
+    # branches: [develop]
     paths:
       - "infra/lib/shared/**"
       - "infra/bin/app.ts"
