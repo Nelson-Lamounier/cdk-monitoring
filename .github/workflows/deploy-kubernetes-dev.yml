@@ -1,0 +1,73 @@
+# @format
+# @description Deploy K8s Infrastructure to Development
+#
+# Unified infrastructure pipeline for the K8s cluster.
+# Deploys CDK stacks, syncs bootstrap scripts, builds Golden AMI,
+# and runs verification — all in one pipeline.
+#
+# 8-Stack Architecture: Data → Base → Compute → AppIam → Api → Edge.
+# Application workloads (traefik, metrics-server) are managed by
+# ArgoCD via Pipeline B (gitops-k8s-dev.yml).
+#
+# Prerequisites:
+#   - Shared VPC from deploy-shared workflow
+
+name: Deploy K8s to Development
+
+on:
+  push:
+    branches:
+      - develop
+      - feature/k3s-kubernetes-migration
+    paths:
+      # CDK infrastructure
+      - "infra/lib/config/k8s/**"
+      - "infra/lib/config/projects.ts"
+      - "infra/lib/config/defaults.ts"
+      - "infra/lib/projects/k8s/**"
+      - "infra/lib/stacks/kubernetes/**"
+      - "infra/lib/common/compute/builders/user-data-builder.ts"
+      - "infra/lambda/**"
+      - "infra/bin/app.ts"
+      # Bootstrap scripts (synced to S3 inside _deploy-kubernetes.yml)
+      - "kubernetes-app/k8s-bootstrap/**"
+      # Golden AMI image construct
+      - "infra/lib/common/compute/constructs/golden-ami-image.ts"
+      # Golden AMI recipes
+      - "kubernetes-app/infra-ami/**"
+      # Pipeline definitions
+      - ".github/workflows/deploy-kubernetes-dev.yml"
+      - ".github/workflows/_deploy-kubernetes.yml"
+      - ".github/workflows/_deploy-stack.yml"
+      - ".github/workflows/_iac-security-scan.yml"
+      - ".github/actions/**"
+  # Weekly: AMI refresh for OS security patches
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      skip_verification:
+        description: "Skip post-deployment verification"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-k8s-development
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Development
+    uses: ./.github/workflows/_deploy-kubernetes.yml
+    with:
+      environment: development
+      cdk-environment: development
+      require-approval: never
+      enable-security-scan: true
+      security-scan-blocking: false
+      skip-verification: ${{ inputs.skip_verification || false }}
+    secrets: inherit

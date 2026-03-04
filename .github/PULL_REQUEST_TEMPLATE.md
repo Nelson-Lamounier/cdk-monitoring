@@ -17,8 +17,8 @@
 <!-- Which CDK stacks are modified by this PR? -->
 
 - [ ] Shared (VPC/ECR)
-- [ ] Monitoring (Storage/Compute)
-- [ ] NextJS (Data/Compute/Networking/Application/API/Edge)
+- [ ] Kubernetes (Base/ControlPlane/Workers/Edge/API)
+- [ ] Bedrock (Data/Agent/Api/Content)
 - [ ] Organization (DNS roles)
 - [ ] None (non-infrastructure change)
 
@@ -33,7 +33,7 @@
 ## Deployment Notes
 
 <!-- Any special deployment considerations, ordering requirements, or manual steps needed? -->
-<!-- Example: "Must deploy Shared VPC before Monitoring stacks" -->
+<!-- Example: "Must deploy Shared VPC before Kubernetes stacks" -->
 
 N/A
 

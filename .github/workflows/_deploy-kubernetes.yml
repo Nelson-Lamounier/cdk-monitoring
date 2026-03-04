@@ -1,0 +1,1021 @@
+# @format
+# @description Reusable Kubernetes Infrastructure Deployment Workflow
+#
+# ─── Purpose ───────────────────────────────────────────────────────
+# Deploys the K8s (kubeadm) infrastructure stacks via CDK.
+# This pipeline is infrastructure-only — it provisions AWS resources
+# but does NOT bootstrap Kubernetes or trigger SSM Automation.
+#
+# ─── Two-Pipeline Architecture ─────────────────────────────────────
+# Kubernetes bootstrapping is split across two independent pipelines:
+#
+#   Pipeline 1: _deploy-kubernetes.yml (this file)
+#     - Deploys CDK stacks: networking, compute, IAM, API, edge
+#     - EC2 user data exports env vars, publishes instance IDs to SSM,
+#       and sends cfn-signal to confirm infrastructure readiness
+#     - Does NOT download scripts from S3 or trigger SSM Automation
+#
+#   Pipeline 2: _deploy-ssm-automation.yml
+#     - Deploys the SSM Automation CDK stack (documents + IAM role)
+#     - Syncs bootstrap scripts (Python steps) to S3
+#     - Triggers SSM Automation on existing nodes (control-plane first,
+#       then workers after CP completes)
+#     - Observes bootstrap progress with CloudWatch log streaming
+#
+# ─── Day-1 Deployment ──────────────────────────────────────────────
+# For a fresh cluster, run both pipelines in sequence:
+#   1. deploy-kubernetes-dev.yml  → provisions all infrastructure
+#   2. deploy-ssm-automation-dev.yml → deploys SSM stack + triggers bootstrap
+#
+# ─── Day-2+ Updates ───────────────────────────────────────────────
+# - Infrastructure changes: push to trigger deploy-kubernetes-dev.yml
+# - Bootstrap script changes: push to trigger deploy-ssm-automation-dev.yml
+#   (deploys SSM docs, syncs scripts, re-triggers bootstrap automatically)
+#
+# ─── Stack Deployment Order ────────────────────────────────────────
+#   1.  Data             (DynamoDB + S3 + SSM Parameters)
+#   2.  Base             (VPC networking + SG + KMS + EBS + EIP + S3 Scripts)
+#   2b. Golden AMI       (Bake containerd + kubeadm into AMI)
+#   3.  Compute          (Control Plane EC2 + ASG)
+#   3b. AppWorker        (Application worker node)
+#   3c. MonitoringWorker (Monitoring worker node)
+#   4.  AppIam           (Application-tier IAM grants)
+#   5.  Api              (API Gateway + Lambda)
+#   6.  Edge             (CloudFront + ACM + WAF in us-east-1)
+#
+# ─── Post-Deploy (manifests managed by ArgoCD GitOps) ──────────────
+#   7.  ArgoCD Health Gate          (wait for GitOps sync)
+#   8.  Verify & Smoke Tests
+#   9.  Deployment Failure Alert    (halt + preserve + alert)
+#  10.  Summary
+#
+# ─── Concurrency ───────────────────────────────────────────────────
+#   This is a workflow_call (reusable) workflow — concurrency MUST be set
+#   on the caller (e.g., deploy-kubernetes-dev.yml).
+#   Each caller defines: concurrency: { group: deploy-k8s-<env>, cancel-in-progress: false }
+
+name: Deploy K8s (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+      cdk-environment:
+        description: "CDK environment name"
+        required: true
+        type: string
+      require-approval:
+        description: "CDK deployment approval mode"
+        required: false
+        default: "never"
+        type: string
+      enable-security-scan:
+        description: "Run IaC security scan"
+        required: false
+        default: false
+        type: boolean
+      security-scan-blocking:
+        description: "Fail pipeline on security scan findings"
+        required: false
+        default: false
+        type: boolean
+      skip-verification:
+        description: "Skip post-deployment verification"
+        required: false
+        default: false
+        type: boolean
+      domain-name:
+        description: "Domain name for CloudFront Edge stack (optional — falls back to vars.DOMAIN_NAME)"
+        required: false
+        type: string
+        default: ""
+      hosted-zone-id:
+        description: "Route53 Hosted Zone ID (optional — falls back to vars.HOSTED_ZONE_ID)"
+        required: false
+        type: string
+        default: ""
+      cross-account-role-arn:
+        description: "Cross-account IAM role for Route53 (optional — falls back to vars.DNS_VALIDATION_ROLE)"
+        required: false
+        type: string
+        default: ""
+
+    secrets:
+      AWS_OIDC_ROLE:
+        description: "AWS OIDC role ARN"
+        required: false
+      VERIFICATION_SECRET:
+        required: false
+      ALLOW_IPV4:
+        description: "IPv4 CIDR to allowlist in WAF (e.g., 203.0.113.42/32)"
+        required: false
+      ALLOW_IPV6:
+        description: "IPv6 CIDR to allowlist in WAF (e.g., 2a02:8084::/128)"
+        required: false
+
+env:
+  NODE_VERSION: "22"
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+
+jobs:
+  # ===========================================================================
+  # Setup, Build & Synthesize
+  # ===========================================================================
+  setup:
+    name: Setup & Synthesize
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    outputs:
+      aws-account-id: ${{ steps.account-id.outputs.account_id }}
+      commit-sha: ${{ github.sha }}
+      commit-short-sha: ${{ steps.commit-info.outputs.short_sha }}
+      node-version: ${{ steps.setup-tools.outputs.node-version }}
+      # Resolved edge configuration
+      domain-name: ${{ steps.resolve-edge.outputs.domain-name }}
+      hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
+      cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
+      # Stack names from synthesize-ci.ts (10-stack architecture)
+      data-stack: ${{ steps.synth.outputs.data }}
+      base-stack: ${{ steps.synth.outputs.base }}
+      goldenami-stack: ${{ steps.synth.outputs.goldenAmi }}
+      controlplane-stack: ${{ steps.synth.outputs.controlPlane }}
+      ssmautomation-stack: ${{ steps.synth.outputs.ssmAutomation }}
+      worker-stack: ${{ steps.synth.outputs.appWorker }}
+      monitoring-worker-stack: ${{ steps.synth.outputs.monitoringWorker }}
+      appiam-stack: ${{ steps.synth.outputs.appIam }}
+      edge-stack: ${{ steps.synth.outputs.edge }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Record Commit Information
+        id: commit-info
+        run: echo "short_sha=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js and Yarn
+        id: setup-tools
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Validate AWS Account ID
+        id: account-id
+        run: |
+          ACCOUNT_ID="${{ vars.AWS_ACCOUNT_ID }}"
+          if [ -z "$ACCOUNT_ID" ]; then
+            echo "ERROR: AWS_ACCOUNT_ID variable not configured"
+            exit 1
+          fi
+          if ! [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "ERROR: Invalid AWS account ID format"
+            exit 1
+          fi
+          echo "::add-mask::$ACCOUNT_ID"
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+
+      - name: Build TypeScript
+        run: just build
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Resolve Edge Configuration
+        id: resolve-edge
+        run: |
+          # Domain: input > vars.DOMAIN_NAME
+          DOMAIN="${{ inputs.domain-name }}"
+          if [ -z "$DOMAIN" ]; then DOMAIN="${{ vars.DOMAIN_NAME }}"; fi
+          if [ -z "$DOMAIN" ]; then
+            echo "ERROR: No domain name. Set DOMAIN_NAME in environment '${{ inputs.environment }}'"
+            exit 1
+          fi
+
+          # Hosted Zone: input > vars.HOSTED_ZONE_ID
+          HZ_ID="${{ inputs.hosted-zone-id }}"
+          if [ -z "$HZ_ID" ]; then HZ_ID="${{ vars.HOSTED_ZONE_ID }}"; fi
+          if [ -z "$HZ_ID" ]; then
+            echo "ERROR: No hosted zone ID. Set HOSTED_ZONE_ID in environment '${{ inputs.environment }}'"
+            exit 1
+          fi
+
+          # Cross-account role: input > vars.DNS_VALIDATION_ROLE
+          ROLE_ARN="${{ inputs.cross-account-role-arn }}"
+          if [ -z "$ROLE_ARN" ]; then ROLE_ARN="${{ vars.DNS_VALIDATION_ROLE }}"; fi
+          if [ -z "$ROLE_ARN" ]; then
+            echo "ERROR: No cross-account role. Set DNS_VALIDATION_ROLE in environment '${{ inputs.environment }}'"
+            exit 1
+          fi
+
+          echo "domain-name=$DOMAIN" >> $GITHUB_OUTPUT
+          echo "hosted-zone-id=$HZ_ID" >> $GITHUB_OUTPUT
+          echo "cross-account-role-arn=$ROLE_ARN" >> $GITHUB_OUTPUT
+          echo "[OK] Edge config: $DOMAIN (Zone: $HZ_ID)"
+
+      - name: Synthesize & Determine Stack Names
+        id: synth
+        env:
+          DOMAIN_NAME: ${{ steps.resolve-edge.outputs.domain-name }}
+          HOSTED_ZONE_ID: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
+          CROSS_ACCOUNT_ROLE_ARN: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
+          NOTIFICATION_EMAIL: ${{ vars.NOTIFICATION_EMAIL }}
+          SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL }}
+          VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
+          VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL }}
+          # ── WAF IP Allowlist (Pre-launch Access Restriction) ─────────
+          # Restricts CloudFront access to listed IPs only.
+          #
+          # GitHub Environment settings (Settings → Environments → development):
+          #   Variable: RESTRICT_ACCESS = "true" | "false"
+          #   Secret:   ALLOW_IPV4 = "<your-ipv4>/32"  (e.g., "203.0.113.42/32")
+          #   Secret:   ALLOW_IPV6 = "<your-ipv6>/128"  (e.g., "2a02:8084::/128")
+          #
+          # To go live: set RESTRICT_ACCESS to "false" in GitHub Environment
+          # variables and re-run the pipeline. No code change, commit, or PR
+          # needed — the WAF default action flips from BLOCK to ALLOW.
+          #
+          # To lock down again: set RESTRICT_ACCESS back to "true".
+          # ──────────────────────────────────────────────────────────────
+          RESTRICT_ACCESS: ${{ vars.RESTRICT_ACCESS }}
+          ALLOW_IPV4: ${{ secrets.ALLOW_IPV4 }}
+          ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
+        run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
+
+      - name: Upload Synthesized Templates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
+          path: infra/cdk.out/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload for Security Scan
+        if: inputs.enable-security-scan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cdk-synthesis
+          path: infra/cdk.out/
+          retention-days: 7
+          if-no-files-found: error
+
+  # ===========================================================================
+  # IaC Security Scan (Conditional)
+  # ===========================================================================
+  security-scan:
+    name: Security Scan
+    needs: setup
+    if: inputs.enable-security-scan
+    uses: ./.github/workflows/_iac-security-scan.yml
+    with:
+      environment: ${{ inputs.environment }}
+      enforce-blocking: ${{ inputs.security-scan-blocking }}
+      cdk-output-path: "cdk.out"
+      skip-checks: ""
+      soft-fail-on: ${{ inputs.security-scan-blocking && '' || 'LOW' }}
+    secrets: inherit
+
+  # ===========================================================================
+  # Drift Detection (staging/production — informational)
+  # ===========================================================================
+  drift-detection:
+    name: Drift Detection
+    needs: [setup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    if: needs.setup.result == 'success' && inputs.cdk-environment != 'development'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: infra
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Run Drift Detection
+        run: just ci-drift kubernetes ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+
+  # ===========================================================================
+  # Template Validation (cfn-lint)
+  # ===========================================================================
+  validate-templates:
+    name: Validate Templates
+    needs: [setup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: .cfnlintrc
+          sparse-checkout-cone-mode: false
+
+      - name: Download Synthesized Templates
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
+          path: cdk.out/
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Validate CloudFormation Templates
+        shell: python3 {0}
+        run: |
+          import sys, glob
+          sys.setrecursionlimit(10000)
+          from cfnlint import decode, runner
+          from cfnlint.config import ConfigMixIn
+
+          templates = sorted(glob.glob("cdk.out/**/*.template.json", recursive=True))
+          print(f"Validating {len(templates)} templates...")
+          total_errors = 0
+          for tpl in templates:
+              print(f"\n--- {tpl} ---")
+              try:
+                  config = ConfigMixIn(["--template", tpl])
+                  matches = list(runner.Runner(config).run())
+                  if matches:
+                      total_errors += len(matches)
+                      for match in matches:
+                          print(f"  {match}")
+                  else:
+                      print("  PASS")
+              except RecursionError:
+                  print(f"  SKIP (template too deeply nested)")
+              except Exception as e:
+                  print(f"  SKIP ({type(e).__name__}: {e})")
+
+          if total_errors > 0:
+              print(f"\n{total_errors} validation errors found")
+              sys.exit(1)
+          else:
+              print(f"\nAll {len(templates)} templates passed validation")
+
+  # ===========================================================================
+  # Deploy Data Stack (1/6) — DynamoDB + S3 + SSM Parameters
+  # ===========================================================================
+  deploy-data:
+    name: Deploy Data
+    needs: [setup, validate-templates, security-scan, drift-detection]
+    if: >-
+      always()
+      && needs.setup.result == 'success'
+      && needs.validate-templates.result == 'success'
+      && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
+      && (needs.drift-detection.result == 'success' || needs.drift-detection.result == 'skipped')
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.data-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Golden AMI Deploy Observer — Real-time build log streaming (parallel)
+  #
+  # Runs alongside deploy-goldenami. CloudFormation's CfnImage triggers
+  # Image Builder inline (~15-25 min). This observer polls the build status
+  # every 60s and streams S3 + CloudWatch logs into GitHub Actions output.
+  # Observational only — does not block the pipeline.
+  # ===========================================================================
+  goldenami-deploy-observer:
+    name: Golden AMI Deploy Observer
+    needs: [setup, deploy-base]
+    if: >-
+      always()
+      && needs.deploy-base.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: ${{ inputs.environment }}
+    continue-on-error: true
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Stream Image Builder Logs
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: |
+          echo "=== Golden AMI Deploy Observer ==="
+          echo "Monitoring Image Builder build triggered by CloudFormation..."
+          echo ""
+
+          STACK_NAME="${{ needs.setup.outputs.goldenami-stack }}"
+
+          # ── Pre-check: is the stack actively deploying? ──────────────
+          # describe-stack-events returns ALL historical events, so we
+          # cannot rely on it. Instead, check the stack's current status.
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text 2>/dev/null || echo "")
+
+          case "$STACK_STATUS" in
+            *_IN_PROGRESS)
+              echo "Stack is $STACK_STATUS — checking for active Image Builder build..."
+              ;;
+            *)
+              echo "[INFO] Stack status is ${STACK_STATUS:-NOT_FOUND} — no active deployment."
+              echo "  Skipping observer."
+              exit 0
+              ;;
+          esac
+
+          # Quick check: is there actually an Image Builder build running?
+          ACTIVE_BUILD=$(aws imagebuilder list-images \
+            --owner Self \
+            --query "imageVersionList[*].arn" \
+            --output text --region "$REGION" 2>/dev/null || echo "")
+
+          HAS_ACTIVE=false
+          for VER_ARN in $ACTIVE_BUILD; do
+            BLD_ARNS=$(aws imagebuilder list-image-build-versions \
+              --image-version-arn "$VER_ARN" \
+              --query "imageSummaryList[?state.status=='BUILDING' || state.status=='TESTING' || state.status=='DISTRIBUTING' || state.status=='INTEGRATING'].arn" \
+              --output text --region "$REGION" 2>/dev/null || echo "")
+            if [ -n "$BLD_ARNS" ] && [ "$BLD_ARNS" != "None" ]; then
+              HAS_ACTIVE=true
+              break
+            fi
+          done
+
+          if [ "$HAS_ACTIVE" = "false" ]; then
+            echo "[INFO] Stack is deploying but no active Image Builder build detected."
+            echo "  CloudFormation may have determined no AMI changes are needed."
+            echo "  Skipping observer."
+            exit 0
+          fi
+
+          echo "Active Image Builder build detected — monitoring..."
+          echo ""
+
+          # ── Resolve S3 log prefix ───────────────────────────────────
+          SSM_PREFIX="/k8s/${CDK_ENV}"
+          S3_BUCKET=$(aws ssm get-parameter \
+            --name "${SSM_PREFIX}/scripts-bucket" \
+            --query 'Parameter.Value' --output text \
+            --region "$REGION" 2>/dev/null || echo "")
+          S3_LOG_PREFIX="s3://${S3_BUCKET}/image-builder-logs/"
+
+          # ── Wait for an active Image Builder build ──────────────────
+          MAX_WAIT=600
+          WAITED=0
+          BUILD_ARN=""
+
+          echo "Waiting for Image Builder build to start (CFN creates it)..."
+
+          while [ -z "$BUILD_ARN" ] && [ $WAITED -lt $MAX_WAIT ]; do
+            # List all image version ARNs in this account
+            IMAGE_VERSIONS=$(aws imagebuilder list-images \
+              --owner Self \
+              --query "imageVersionList[*].arn" \
+              --output text --region "$REGION" 2>/dev/null || echo "")
+
+            # For each version, list its build versions and check status
+            for VER_ARN in $IMAGE_VERSIONS; do
+              BUILD_ARNS=$(aws imagebuilder list-image-build-versions \
+                --image-version-arn "$VER_ARN" \
+                --query "imageSummaryList[*].arn" \
+                --output text --region "$REGION" 2>/dev/null || echo "")
+
+              for BLD_ARN in $BUILD_ARNS; do
+                BLD_STATUS=$(aws imagebuilder get-image \
+                  --image-build-version-arn "$BLD_ARN" \
+                  --query 'image.state.status' --output text \
+                  --region "$REGION" 2>/dev/null || echo "")
+
+                case "$BLD_STATUS" in
+                  BUILDING|TESTING|DISTRIBUTING|INTEGRATING)
+                    BUILD_ARN="$BLD_ARN"
+                    break 3
+                    ;;
+                esac
+              done
+            done
+
+            # If no active build found this iteration, wait
+            if [ -z "$BUILD_ARN" ]; then
+              echo "  Waiting for build to start... (${WAITED}s / ${MAX_WAIT}s)"
+              sleep 15
+              WAITED=$((WAITED + 15))
+            fi
+          done
+
+          if [ -z "$BUILD_ARN" ]; then
+            echo "[INFO] No active build detected after ${MAX_WAIT}s"
+            echo "  CloudFormation may have detected no changes (AMI already current)."
+            exit 0
+          fi
+
+          echo ""
+          echo "Tracking build: $BUILD_ARN"
+          echo ""
+
+          # ── Poll build status + stream logs ─────────────────────────
+          MAX_POLLS=35
+          INTERVAL=60
+
+          for i in $(seq 1 $MAX_POLLS); do
+            STATUS=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
+              --query 'image.state.status' --output text --region "$REGION" 2>/dev/null || echo "UNKNOWN")
+
+            TIMESTAMP=$(date '+%H:%M:%S')
+            echo "[$TIMESTAMP] Poll $i/$MAX_POLLS — Status: $STATUS"
+
+            # Stream S3 build logs (incremental)
+            if [ -n "$S3_BUCKET" ]; then
+              echo "::group::Build Logs (S3 — poll $i)"
+              LOG_FILES=$(aws s3 ls "$S3_LOG_PREFIX" --recursive --region "$REGION" 2>/dev/null | awk '{print $NF}' || echo "")
+              LOG_COUNT=$(echo "$LOG_FILES" | grep -c . 2>/dev/null || echo "0")
+
+              if [ "$LOG_COUNT" -gt 0 ] 2>/dev/null; then
+                for LOG_FILE in $LOG_FILES; do
+                  echo "--- s3://${S3_BUCKET}/${LOG_FILE} ---"
+                  aws s3 cp "s3://${S3_BUCKET}/${LOG_FILE}" - --region "$REGION" 2>/dev/null | tail -50
+                  echo ""
+                done
+              else
+                echo "  (no log files yet)"
+              fi
+              echo "::endgroup::"
+            fi
+
+            # Stream CloudWatch logs (Image Builder auto-creates these)
+            echo "::group::CloudWatch Logs (poll $i)"
+            for LG in $(aws logs describe-log-groups \
+              --log-group-name-prefix "/aws/imagebuilder/" \
+              --query 'logGroups[].logGroupName' \
+              --output text --region "$REGION" 2>/dev/null || echo ""); do
+
+              STREAM=$(aws logs describe-log-streams \
+                --log-group-name "$LG" \
+                --order-by LastEventTime --descending --max-items 1 \
+                --query 'logStreams[0].logStreamName' \
+                --output text --region "$REGION" 2>/dev/null || echo "")
+
+              if [ -n "$STREAM" ] && [ "$STREAM" != "None" ]; then
+                aws logs get-log-events \
+                  --log-group-name "$LG" \
+                  --log-stream-name "$STREAM" \
+                  --limit 30 \
+                  --output json --region "$REGION" 2>/dev/null | \
+                  jq -r '.events[].message' 2>/dev/null || true
+              fi
+            done
+            echo "::endgroup::"
+
+            case "$STATUS" in
+              AVAILABLE)
+                echo ""
+                AMI_ID=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
+                  --query 'image.outputResources.amis[0].image' --output text --region "$REGION" 2>/dev/null || echo "unknown")
+                echo "[PASS] Golden AMI built successfully: $AMI_ID"
+                exit 0
+                ;;
+              FAILED|CANCELLED)
+                echo ""
+                REASON=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
+                  --query 'image.state.reason' --output text --region "$REGION" 2>/dev/null || echo "unknown")
+                echo "[FAIL] Build failed: $REASON"
+
+                # Dump full S3 logs on failure
+                if [ -n "$S3_BUCKET" ]; then
+                  echo "::group::Full Build Logs (S3 — for debugging)"
+                  for LOG_FILE in $(aws s3 ls "$S3_LOG_PREFIX" --recursive --region "$REGION" 2>/dev/null | awk '{print $NF}' || echo ""); do
+                    echo "--- s3://${S3_BUCKET}/${LOG_FILE} ---"
+                    aws s3 cp "s3://${S3_BUCKET}/${LOG_FILE}" - --region "$REGION" 2>/dev/null || echo "(failed to download)"
+                    echo ""
+                  done
+                  echo "::endgroup::"
+                fi
+
+                exit 1
+                ;;
+            esac
+
+            sleep $INTERVAL
+          done
+
+          echo ""
+          echo "::warning::Golden AMI Deploy Observer timed out after ${MAX_POLLS}m"
+
+  # ===========================================================================
+  # Deploy Base Stack (2/6) — VPC networking + SG + KMS + EBS + EIP
+  # ===========================================================================
+  deploy-base:
+    name: Deploy Base
+    needs: [setup, deploy-data]
+    if: always() && needs.deploy-data.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.base-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy Golden AMI Stack (Image Builder Pipeline)
+  #
+  # Creates the CfnImage resource that builds the Golden AMI inline.
+  # CloudFormation triggers Image Builder and waits for the AMI to be
+  # built (~15-25 min). The AMI ID is stored in SSM by CloudFormation.
+  # ===========================================================================
+  deploy-goldenami:
+    name: Deploy Golden AMI
+    needs: [setup, deploy-base]
+    if: >-
+      always()
+      && needs.deploy-base.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.goldenami-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      timeout-minutes: 35
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy Compute Stack — Control Plane EC2 + ASG
+  #
+  # Waits for Golden AMI bake (or skip) so the Launch Template
+  # resolves to the latest baked AMI.
+  # SSM Automation stack is deployed separately via _deploy-ssm-automation.yml.
+  # ===========================================================================
+  deploy-controlplane:
+    name: Deploy Control Plane
+    needs: [setup, deploy-base, deploy-goldenami]
+    if: >-
+      always()
+      && needs.deploy-base.result == 'success'
+      && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.controlplane-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy App Worker Stack (3b/8) — Application Worker Node
+  # ===========================================================================
+  deploy-app-worker:
+    name: Deploy App Worker
+    needs: [setup, deploy-controlplane]
+    if: always() && needs.deploy-controlplane.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.worker-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy Monitoring Worker Stack (3c/8) — Monitoring Worker Node
+  # ===========================================================================
+  deploy-monitoring-worker:
+    name: Deploy Monitoring Worker
+    needs: [setup, deploy-controlplane]
+    if: always() && needs.deploy-controlplane.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.monitoring-worker-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy AppIam Stack (4/8) — Application-tier IAM grants
+  # ===========================================================================
+  deploy-appiam:
+    name: Deploy App IAM
+    needs: [setup, deploy-app-worker, deploy-monitoring-worker]
+    if: always() && needs.deploy-app-worker.result == 'success' && needs.deploy-monitoring-worker.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.appiam-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Deploy Edge Stack (5/6) — CloudFront + ACM + WAF (us-east-1)
+  # Origin: Elastic IP → Traefik
+  # ===========================================================================
+  deploy-edge:
+    name: Deploy Edge
+    needs: [setup, deploy-appiam, deploy-data]
+    if: always() && needs.deploy-appiam.result == 'success' && needs.deploy-data.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.edge-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.ROUTE53_REGION || 'us-east-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+      domain-name: ${{ needs.setup.outputs.domain-name }}
+      hosted-zone-id: ${{ needs.setup.outputs.hosted-zone-id }}
+      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
+    secrets: inherit
+
+  # ===========================================================================
+  # K8s Manifest Deployment — ArgoCD (GitOps)
+  #
+  # Application manifests are deployed by ArgoCD running
+  # on the kubeadm node. ArgoCD watches this Git repo and auto-syncs changes
+  # within ~3 minutes. No CI pipeline jobs needed.
+  #
+  # See: kubernetes-app/k8s-bootstrap/system/argocd/ for ArgoCD config and Application CRDs.
+  # SSM Run Command documents are retained as a fallback for secret updates.
+  # ===========================================================================
+
+  # ===========================================================================
+  # Deployment Failure Alert (staging/production only)
+  #
+  # For K8s/GitOps environments, automated CFn rollbacks on stateful infra
+  # (EC2 nodes running ArgoCD) risk split-brain state. Instead we:
+  #   1. Halt the pipeline
+  #   2. Preserve artifacts and diagnostics
+  #   3. Alert engineers with actionable context
+  #   4. Let them "roll forward" with a targeted fix
+  # ===========================================================================
+  deployment-failure-alert:
+    name: "Deployment Failed — Alert"
+    needs:
+      [
+        setup,
+        deploy-controlplane,
+        deploy-app-worker,
+        deploy-monitoring-worker,
+        deploy-edge,
+      ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    if: |
+      always()
+      && (
+        needs.deploy-controlplane.result == 'failure'
+        || needs.deploy-app-worker.result == 'failure'
+        || needs.deploy-monitoring-worker.result == 'failure'
+        || needs.deploy-edge.result == 'failure'
+      )
+      && inputs.cdk-environment != 'development'
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: "Collect CloudFormation Diagnostics"
+        continue-on-error: true
+        run: |
+          echo "## Deployment Failure Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Environment** | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ needs.setup.outputs.commit-sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Control Plane** | ${{ needs.deploy-controlplane.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **App Worker** | ${{ needs.deploy-app-worker.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Mon. Worker** | ${{ needs.deploy-monitoring-worker.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Edge** | ${{ needs.deploy-edge.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### CloudFormation Failed Events" >> $GITHUB_STEP_SUMMARY
+          STACKS=(
+            "${{ needs.setup.outputs.data-stack }}"
+            "${{ needs.setup.outputs.base-stack }}"
+            "${{ needs.setup.outputs.controlplane-stack }}"
+            "${{ needs.setup.outputs.worker-stack }}"
+            "${{ needs.setup.outputs.monitoring-worker-stack }}"
+            "${{ needs.setup.outputs.appiam-stack }}"
+            "${{ needs.setup.outputs.edge-stack }}"
+          )
+
+          for STACK in "${STACKS[@]}"; do
+            [ -z "$STACK" ] && continue
+            echo "#### \`${STACK}\`" >> $GITHUB_STEP_SUMMARY
+            EVENTS=$(aws cloudformation describe-stack-events \
+              --stack-name "$STACK" \
+              --query 'StackEvents[?contains(ResourceStatus,`FAILED`)].[Timestamp,LogicalResourceId,ResourceStatusReason]' \
+              --output table --region ${{ env.AWS_REGION }} 2>/dev/null)
+            if [ -n "$EVENTS" ]; then
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "$EVENTS" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            else
+              echo "[PASS] No failed events" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: "Collect K8s Diagnostics via SSM"
+        continue-on-error: true
+        run: |
+          INSTANCE_ID=$(aws ssm get-parameter \
+            --name "/k8s/${{ inputs.cdk-environment }}/instance-id" \
+            --query 'Parameter.Value' --output text \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "### K8s Diagnostics" >> $GITHUB_STEP_SUMMARY
+            echo "_Could not resolve instance ID — skipping_" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          echo "### K8s Pod Status (non-Running)" >> $GITHUB_STEP_SUMMARY
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["sudo kubectl get pods -A --field-selector=status.phase!=Running -o wide 2>/dev/null || echo No kubectl access"]' \
+            --query 'Command.CommandId' --output text \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+
+          if [ -n "$CMD_ID" ]; then
+            sleep 15
+            POD_OUTPUT=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query 'StandardOutputContent' --output text \
+              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "Could not retrieve pod status")
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$POD_OUTPUT" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: "Fetch Boot Logs from CloudWatch"
+        continue-on-error: true
+        run: |
+          echo "### EC2 Boot Logs (last 15 minutes)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          LOG_GROUP="/ec2/k8s-${{ inputs.cdk-environment }}/instances"
+          START_TIME=$(( $(date +%s) * 1000 - 900000 ))
+          EVENTS=$(aws logs filter-log-events \
+            --log-group-name "$LOG_GROUP" \
+            --start-time "$START_TIME" \
+            --query 'events[].{ts:timestamp,stream:logStreamName,msg:message}' \
+            --output table \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
+          if [ -n "$EVENTS" ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$EVENTS" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "_No boot log events found (log group: ${LOG_GROUP})_" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: "Post Failure Context"
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **[Failed Run Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**" >> $GITHUB_STEP_SUMMARY
+          echo "- **[Commit](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> **Do not run automated CFn rollbacks on K8s/GitOps infrastructure.**" >> $GITHUB_STEP_SUMMARY
+          echo "> Prefer \"roll forward\" — push a fix commit to trigger a new deployment." >> $GITHUB_STEP_SUMMARY
+
+          echo "::error::Deployment verification failed for ${{ inputs.environment }}. Check the Deployment Failure Report in the job summary for diagnostics."
+
+  # ===========================================================================
+  # Deployment Summary (TypeScript)
+  # ===========================================================================
+  summary:
+    name: Deployment Summary
+    needs:
+      - setup
+      - security-scan
+      - drift-detection
+      - deploy-data
+      - deploy-controlplane
+      - deploy-goldenami
+      - deploy-app-worker
+      - deploy-monitoring-worker
+      - deploy-edge
+      - deployment-failure-alert
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+
+    steps:
+      # Guard: if setup was cancelled/failed, write minimal fallback
+      - name: Check Prerequisites
+        id: prereqs
+        run: |
+          if [ "${{ needs.setup.result }}" != "success" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## Pipeline Aborted
+
+          **Reason**: Setup job did not complete successfully (`${{ needs.setup.result }}`)
+          **Commit**: `${{ github.sha }}`
+          **Environment**: ${{ inputs.environment }}
+
+          No stacks were deployed. Check the setup job logs for details.
+          EOF
+            echo "::warning::Setup did not succeed (${{ needs.setup.result }}), skipping full summary"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout
+        if: steps.prereqs.outputs.skip != 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js and Yarn
+        if: steps.prereqs.outputs.skip != 'true'
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        if: steps.prereqs.outputs.skip != 'true'
+        run: yarn install --frozen-lockfile
+        working-directory: infra
+
+      - name: Generate Summary
+        if: steps.prereqs.outputs.skip != 'true'
+        env:
+          DEPLOY_DATA_RESULT: ${{ needs.deploy-data.result }}
+          DEPLOY_CONTROLPLANE_RESULT: ${{ needs.deploy-controlplane.result }}
+          DEPLOY_WORKER_RESULT: ${{ needs.deploy-app-worker.result || 'skipped' }}
+          DEPLOY_MON_WORKER_RESULT: ${{ needs.deploy-monitoring-worker.result || 'skipped' }}
+          DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
+          SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
+          VERIFY_RESULT: "moved-to-ssm-pipeline"
+          SMOKE_TESTS_RESULT: "moved-to-ssm-pipeline"
+          ALERT_RESULT: ${{ needs.deployment-failure-alert.result || 'skipped' }}
+          COMMIT_SHORT_SHA: ${{ needs.setup.outputs.commit-short-sha }}
+        run: just ci-summary kubernetes ${{ inputs.cdk-environment }}
