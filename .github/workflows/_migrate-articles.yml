@@ -1,0 +1,76 @@
+# .github/workflows/_migrate-articles.yml
+# Reusable workflow for running article migration (MDX to DynamoDB)
+# Idempotent: skips articles that already exist in DynamoDB
+
+name: Migrate Articles (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Target environment (development, staging, production)'
+        required: true
+        type: string
+    secrets:
+      AWS_OIDC_ROLE:
+        required: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  migrate:
+    name: Migrate Articles to DynamoDB
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Run Article Migration
+        run: |
+          echo "## 📝 Article Migration" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          npx tsx scripts/dynamodb/migrate-articles-to-dynamodb.ts \
+            --env "${{ inputs.environment }}" \
+            --region "${{ env.AWS_REGION }}" 2>&1 | tee /tmp/migration-output.txt
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -20 /tmp/migration-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Verify Migration
+        run: |
+          npx tsx scripts/dynamodb/verify-migration.ts \
+            --env "${{ inputs.environment }}" \
+            --region "${{ env.AWS_REGION }}" 2>&1 | tee /tmp/verify-output.txt
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Verification" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -10 /tmp/verify-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

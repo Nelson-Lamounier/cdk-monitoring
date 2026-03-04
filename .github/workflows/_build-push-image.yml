@@ -1,0 +1,260 @@
+# =============================================================================
+# Reusable Workflow: Build and Push Docker Image
+# =============================================================================
+#
+# Builds a Next.js Docker image from the private frontend-portfolio repo
+# and pushes it to ECR (and optionally Docker Hub).
+#
+# This workflow runs from cdk-monitoring but checks out the frontend-portfolio
+# repo for the build context (Dockerfile + source code). A CROSS_REPO_PAT
+# secret with `repo` scope is required to access the private repository.
+#
+# Two-job architecture:
+#   1. Build — checks out frontend-portfolio, builds Docker image, uploads
+#      the tar as a GitHub Actions artifact (no AWS credentials needed)
+#   2. Push — downloads the artifact, authenticates to ECR, pushes the image
+#
+# Prerequisites:
+#   - CROSS_REPO_PAT secret with `repo` scope for frontend-portfolio access
+#   - AWS OIDC role with ECR push permissions
+#   - SSM parameter containing the ECR repository URL
+# =============================================================================
+
+name: Build and Push Docker Image (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+      image-tag:
+        description: "Docker image tag (default: latest)"
+        required: false
+        type: string
+        default: "latest"
+      ssm-ecr-param:
+        description: "SSM parameter name for ECR repository URL"
+        required: true
+        type: string
+      push-to-dockerhub:
+        description: "Also push image to Docker Hub"
+        required: false
+        type: boolean
+        default: false
+      api-url:
+        description: "Articles API URL (NEXT_PUBLIC_API_URL) to inject at build time"
+        required: false
+        type: string
+        default: ""
+      frontend-repo:
+        description: "Frontend repository (owner/name)"
+        required: false
+        type: string
+        default: "Nelson-Lamounier/frontend-portfolio"
+      frontend-ref:
+        description: "Git ref to checkout from frontend repo (branch, tag, SHA)"
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      AWS_OIDC_ROLE:
+        required: true
+      CROSS_REPO_PAT:
+        description: "GitHub PAT with repo scope for private frontend-portfolio access"
+        required: true
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+    outputs:
+      image-uri:
+        description: "Full Docker image URI (including tag)"
+        value: ${{ jobs.push.outputs.image-uri }}
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  # ===========================================================================
+  # Job 1: Build Docker Image (no AWS credentials needed)
+  # ===========================================================================
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # ----------------------------------------------------------------
+      # Checkout the frontend-portfolio repo (private — needs PAT)
+      # ----------------------------------------------------------------
+      - name: Checkout Frontend Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.frontend-repo }}
+          ref: ${{ inputs.frontend-ref }}
+          token: ${{ secrets.CROSS_REPO_PAT }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: false
+          tags: frontend:${{ inputs.image-tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          build-args: |
+            NODE_ENV=production
+            NEXT_TELEMETRY_DISABLED=1
+            NEXT_PUBLIC_API_URL=${{ inputs.api-url }}
+          outputs: type=docker,dest=/tmp/docker-image.tar
+
+      - name: Upload Docker Image Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ inputs.environment }}
+          path: /tmp/docker-image.tar
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Build Summary
+        run: |
+          IMAGE_SIZE=$(du -sh /tmp/docker-image.tar | cut -f1)
+          echo "## Docker Build Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source**: ${{ inputs.frontend-repo }}@${{ inputs.frontend-ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ inputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Size**: $IMAGE_SIZE" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Job 2: Push to ECR and Docker Hub
+  # ===========================================================================
+  push:
+    name: Push to Registries
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    outputs:
+      image-uri: ${{ steps.push-ecr.outputs.image-uri }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      # ----------------------------------------------------------------
+      # AWS Credentials
+      # ----------------------------------------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      # ----------------------------------------------------------------
+      # Get ECR URL from SSM
+      # ----------------------------------------------------------------
+      - name: Get ECR Repository URL from SSM
+        id: ecr-url
+        run: |
+          ECR_URL=$(aws ssm get-parameter \
+            --name "${{ inputs.ssm-ecr-param }}" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          if [ -z "$ECR_URL" ] || [ "$ECR_URL" = "None" ]; then
+            echo "[FAIL] ECR repository URL not found in SSM: ${{ inputs.ssm-ecr-param }}"
+            exit 1
+          fi
+
+          echo "::add-mask::$ECR_URL"
+          echo "ecr-url=$ECR_URL" >> $GITHUB_OUTPUT
+          echo "[PASS] Retrieved ECR repository URL from SSM"
+
+      # ----------------------------------------------------------------
+      # Download, load, and push Docker image
+      # ----------------------------------------------------------------
+      - name: Download Docker Image Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-${{ inputs.environment }}
+          path: /tmp
+
+      - name: Load Docker Image
+        run: |
+          echo "Loading Docker image from artifact..."
+          docker load -i /tmp/docker-image.tar
+          echo "[PASS] Image loaded"
+
+      - name: Login to ECR
+        run: |
+          ECR_URL="${{ steps.ecr-url.outputs.ecr-url }}"
+          ECR_REGISTRY=$(echo "$ECR_URL" | cut -d/ -f1)
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          echo "[PASS] Authenticated to ECR"
+
+      - name: Push to ECR
+        id: push-ecr
+        run: |
+          ECR_URL="${{ steps.ecr-url.outputs.ecr-url }}"
+          TAG="${{ inputs.image-tag }}"
+
+          docker tag "frontend:${TAG}" "${ECR_URL}:${TAG}"
+          docker tag "frontend:${TAG}" "${ECR_URL}:latest"
+
+          docker push "${ECR_URL}:${TAG}"
+          docker push "${ECR_URL}:latest"
+
+          echo "image-uri=${ECR_URL}:${TAG}" >> $GITHUB_OUTPUT
+          echo "[PASS] Image pushed to ECR: ${ECR_URL}:${TAG}"
+
+      # ----------------------------------------------------------------
+      # Optional: Docker Hub
+      # ----------------------------------------------------------------
+      - name: Login to Docker Hub
+        if: inputs.push-to-dockerhub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push to Docker Hub
+        if: inputs.push-to-dockerhub
+        run: |
+          TAG="${{ inputs.image-tag }}"
+          DOCKERHUB_REPO="lamounierdev/nextjs-application"
+
+          docker tag "frontend:${TAG}" "${DOCKERHUB_REPO}:${TAG}"
+          docker tag "frontend:${TAG}" "${DOCKERHUB_REPO}:latest"
+
+          docker push "${DOCKERHUB_REPO}:${TAG}"
+          docker push "${DOCKERHUB_REPO}:latest"
+
+          echo "[PASS] Image pushed to Docker Hub"
+
+      # ----------------------------------------------------------------
+      # Summary
+      # ----------------------------------------------------------------
+      - name: Push Summary
+        run: |
+          echo "## Image Pushed to Registries" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ECR" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: ${{ steps.ecr-url.outputs.ecr-url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ inputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **URI**: ${{ steps.push-ecr.outputs.image-uri }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.push-to-dockerhub }}" = "true" ]; then
+            echo "### Docker Hub" >> $GITHUB_STEP_SUMMARY
+            echo "- **Repository**: lamounierdev/nextjs-application" >> $GITHUB_STEP_SUMMARY
+            echo "- **Pull**: \`docker pull lamounierdev/nextjs-application:latest\`" >> $GITHUB_STEP_SUMMARY
+          fi
