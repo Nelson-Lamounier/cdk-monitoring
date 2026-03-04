@@ -26,7 +26,8 @@ spec:
               name: http
           volumeMounts:
             - name: config
-              mountPath: /home/steampipe/.steampipe/config
+              mountPath: /home/steampipe/.steampipe/config/aws.spc
+              subPath: steampipe.spc
           resources:
             {{- toYaml .Values.steampipe.resources | nindent 12 }}
       volumes:
