@@ -247,6 +247,32 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
                 },
             },
         }));
+
+        // Grant ViewOnlyAccess for Steampipe cloud inventory queries
+        // Covers EC2, EBS, VPC, IAM, and other AWS service read-only access
+        launchTemplateConstruct.instanceRole.addManagedPolicy(
+            iam.ManagedPolicy.fromAwsManagedPolicyName('job-function/ViewOnlyAccess'),
+        );
+
+        // Grant CloudWatch read-only for Grafana CloudWatch datasource
+        // Enables querying Lambda, SSM, EC2, VPC Flow, and CloudFront logs
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'CloudWatchGrafanaReadOnly',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'logs:DescribeLogGroups',
+                'logs:GetLogEvents',
+                'logs:FilterLogEvents',
+                'logs:StartQuery',
+                'logs:StopQuery',
+                'logs:GetQueryResults',
+                'logs:DescribeLogStreams',
+                'cloudwatch:GetMetricData',
+                'cloudwatch:ListMetrics',
+            ],
+            resources: ['*'],
+        }));
+
         // ASG: min=0 allows scaling down to save costs, max=1 for single monitoring worker
         const asgConstruct = new AutoScalingGroupConstruct(this, 'MonWorkerAsg', {
             vpc,
