@@ -32,6 +32,21 @@ data:
         wal:
           path: /var/tempo/wal
     metrics_generator:
+      processor:
+        service_graphs:
+          dimensions:
+            - db.system
+            - db.operation
+            - http.method
+            - http.status_code
+        span_metrics:
+          dimensions:
+            - service.name
+            - db.system
+            - db.operation
+            - http.method
+            - http.status_code
+            - http.route
       registry:
         external_labels:
           source: tempo
@@ -39,3 +54,4 @@ data:
         path: /var/tempo/generator/wal
         remote_write:
           - url: http://prometheus.{{ .Values.namespace }}.svc.cluster.local:9090/prometheus/api/v1/write
+            send_exemplars: true

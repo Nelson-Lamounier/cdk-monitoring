@@ -83,3 +83,5 @@ spec:
                   name: grafana-dashboards
               - configMap:
                   name: grafana-dashboards-cloudwatch
+              - configMap:
+                  name: grafana-dashboards-tracing

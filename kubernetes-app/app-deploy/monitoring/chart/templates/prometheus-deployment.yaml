@@ -31,6 +31,8 @@ spec:
             - "--storage.tsdb.retention.time={{ .Values.prometheus.retention }}"
             - "--web.enable-lifecycle"
             - "--web.external-url=/prometheus"
+            - "--web.enable-remote-write-receiver"
+            - "--enable-feature=exemplar-storage,native-histograms"
           ports:
             - containerPort: 9090
               name: http
