@@ -921,7 +921,7 @@ spec:
   calicoNetwork:
     ipPools:
       - cidr: ${podNetworkCidr}
-        encapsulation: VXLANAlways
+        encapsulation: VXLAN
         natOutgoing: Enabled
         nodeSelector: all()
     linuxDataplane: Iptables
