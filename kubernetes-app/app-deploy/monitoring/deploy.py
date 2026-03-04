@@ -138,6 +138,7 @@ def sync_from_s3(cfg: Config) -> None:
 SSM_SECRET_MAP = {
     "grafana-admin-password": "GRAFANA_ADMIN_PASSWORD",
     "github-token": "GITHUB_TOKEN",
+    "github-webhook-token": "GITHUB_WEBHOOK_TOKEN",
 }
 
 
@@ -210,12 +211,18 @@ def create_k8s_secrets(
 
     # GitHub Actions Exporter credentials
     gh_token = secrets.get("GITHUB_TOKEN")
-    if gh_token:
+    gh_webhook = secrets.get("GITHUB_WEBHOOK_TOKEN")
+    if gh_token or gh_webhook:
+        exporter_data: dict[str, str] = {}
+        if gh_token:
+            exporter_data["github-token"] = gh_token
+        if gh_webhook:
+            exporter_data["github-webhook-token"] = gh_webhook
         _upsert_secret(
             v1,
             name="github-actions-exporter-credentials",
             namespace=cfg.namespace,
-            data={"github-token": gh_token},
+            data=exporter_data,
         )
         log.info("  ✓ github-actions-exporter-credentials secret created/updated")
 
