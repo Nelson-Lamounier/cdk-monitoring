@@ -1,0 +1,105 @@
+# =============================================================================
+# Reusable Workflow: Migrate Articles
+# =============================================================================
+#
+# Runs article migration (MDX → DynamoDB) using scripts from
+# scripts/dynamodb/. Idempotent: skips articles that already exist.
+#
+# Prerequisites:
+#   - AWS OIDC role with DynamoDB, S3, SSM permissions
+#   - DynamoDB table and S3 bucket must exist (created by CDK)
+# =============================================================================
+
+name: Migrate Articles (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+    secrets:
+      AWS_OIDC_ROLE:
+        required: true
+      CROSS_REPO_PAT:
+        description: "GitHub PAT for private frontend-portfolio (MDX articles source)"
+        required: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  migrate:
+    name: Migrate Articles to DynamoDB
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      # ------------------------------------------------------------------
+      # Checkout cdk-monitoring (owns migration scripts)
+      # ------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # Checkout frontend-portfolio (MDX article source files)
+      # ------------------------------------------------------------------
+      - name: Checkout Frontend Articles
+        uses: actions/checkout@v4
+        with:
+          repository: Nelson-Lamounier/frontend-portfolio
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: frontend-portfolio
+          sparse-checkout: |
+            src/app/articles
+          sparse-checkout-cone-mode: true
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+
+      # ------------------------------------------------------------------
+      # AWS Credentials
+      # ------------------------------------------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      # ------------------------------------------------------------------
+      # Run Migration
+      # ------------------------------------------------------------------
+      - name: Run Article Migration
+        run: |
+          echo "## Article Migration" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          npx tsx scripts/dynamodb/migrate-articles-to-dynamodb.ts \
+            --env "${{ inputs.environment }}" \
+            --region "${{ env.AWS_REGION }}" 2>&1 | tee /tmp/migration-output.txt
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -20 /tmp/migration-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Verify Migration
+        run: |
+          npx tsx scripts/dynamodb/verify-migration.ts \
+            --env "${{ inputs.environment }}" \
+            --region "${{ env.AWS_REGION }}" 2>&1 | tee /tmp/verify-output.txt
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Verification" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -10 /tmp/verify-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

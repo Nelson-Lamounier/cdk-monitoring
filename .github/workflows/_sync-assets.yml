@@ -1,0 +1,108 @@
+# =============================================================================
+# Reusable Workflow: Sync Static Assets
+# =============================================================================
+#
+# Extracts Next.js static assets from a Docker image artifact built in a
+# previous job, syncs them to S3, and invalidates the CloudFront cache
+# using scripts/sync-static-to-s3.ts.
+#
+# Prerequisites:
+#   - A prior job must upload a Docker image artifact named
+#     "docker-image-<environment>" containing a docker-image.tar file
+#   - AWS OIDC role with S3, CloudFront, SSM, STS permissions
+# =============================================================================
+
+name: Sync Static Assets (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (development, staging, production)"
+        required: true
+        type: string
+    secrets:
+      AWS_OIDC_ROLE:
+        required: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  sync:
+    name: Sync Assets & Invalidate Cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout cdk-monitoring (owns scripts/sync-static-to-s3.ts)
+      # ------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
+
+      # ------------------------------------------------------------------
+      # 2. AWS Credentials
+      # ------------------------------------------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      # ------------------------------------------------------------------
+      # 3. Download & extract static assets from Docker image artifact
+      # ------------------------------------------------------------------
+      - name: Download Docker Image Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-${{ inputs.environment }}
+          path: /tmp
+
+      - name: Extract Static Assets from Docker Image
+        run: |
+          echo "Loading Docker image..."
+          docker load -i /tmp/docker-image.tar
+
+          echo "Extracting static assets..."
+          TEMP_CONTAINER=$(docker create frontend:latest)
+
+          mkdir -p .next
+          if ! docker cp "$TEMP_CONTAINER:/app/.next/static" ".next/"; then
+            echo "[FAIL] Failed to extract static assets"
+            docker rm "$TEMP_CONTAINER" > /dev/null 2>&1 || true
+            exit 1
+          fi
+          docker rm "$TEMP_CONTAINER" > /dev/null
+
+          ASSET_COUNT=$(find .next/static -type f | wc -l | tr -d ' ')
+          echo "[PASS] Extracted $ASSET_COUNT static assets"
+
+      # ------------------------------------------------------------------
+      # 4. Sync to S3 & invalidate CloudFront
+      # ------------------------------------------------------------------
+      - name: Sync to S3 & Invalidate CloudFront
+        run: |
+          npx tsx scripts/sync-static-to-s3.ts \
+            --env "${{ inputs.environment }}" \
+            --region "${{ env.AWS_REGION }}"
+
+      # ------------------------------------------------------------------
+      # 5. Summary
+      # ------------------------------------------------------------------
+      - name: Sync Summary
+        run: |
+          echo "## Static Assets Synced" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Assets synced to S3**" >> $GITHUB_STEP_SUMMARY
+          echo "- **CloudFront invalidation created**" >> $GITHUB_STEP_SUMMARY
