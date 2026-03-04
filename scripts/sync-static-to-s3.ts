@@ -82,8 +82,7 @@ async function main(): Promise<void> {
   const skipInvalidation = args['skip-invalidation'] as boolean
 
   // Determine project root
-  const scriptDir = import.meta.dirname ?? new URL('.', import.meta.url).pathname
-  const projectRoot = join(scriptDir, '..')
+  const projectRoot = join(__dirname, '..')
   const staticDir = join(projectRoot, '.next', 'static')
 
   log.header('📦 Static Assets S3 Sync Script')
