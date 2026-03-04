@@ -84,7 +84,7 @@ jobs:
 
     steps:
       - name: Checkout Frontend Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ inputs.frontend-repo }}
           ref: ${{ inputs.frontend-ref }}
@@ -110,7 +110,7 @@ jobs:
           outputs: type=docker,dest=/tmp/docker-image.tar
 
       - name: Upload Docker Image Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docker-image-${{ inputs.environment }}
           path: /tmp/docker-image.tar
@@ -147,7 +147,7 @@ jobs:
       # Checkout cdk-monitoring (owns scripts/push-to-ecr.ts)
       # ----------------------------------------------------------------
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js and Yarn
         uses: ./.github/actions/setup-node-yarn
@@ -156,7 +156,7 @@ jobs:
       # AWS Credentials
       # ----------------------------------------------------------------
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -166,7 +166,7 @@ jobs:
       # Download and load Docker image
       # ----------------------------------------------------------------
       - name: Download Docker Image Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: docker-image-${{ inputs.environment }}
           path: /tmp
