@@ -160,7 +160,7 @@ githubActionsExporter:
 # Steampipe (AWS compliance)
 # ---------------------------------------------------------------------------
 steampipe:
-  image: ghcr.io/turbot/steampipe:latest
+  image: 771826808455.dkr.ecr.eu-west-1.amazonaws.com/steampipe-aws:latest
   replicas: 1
   resources:
     requests:
