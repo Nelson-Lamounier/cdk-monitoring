@@ -55,6 +55,77 @@ env:
 
 jobs:
   # ===========================================================================
+  # 0. Build Steampipe Image — Rebuild custom image when Dockerfile changes
+  #
+  # The official Steampipe images (v0.22.0) have a bug that prevents plugin
+  # installs from the OCI registry (403 error). We build a custom image
+  # with Steampipe v2.4.0 + AWS plugin pre-installed and push to ECR.
+  # ArgoCD then pulls from ECR on every deploy (including after EC2 recycle).
+  # ===========================================================================
+  check-steampipe-changes:
+    name: Check Steampipe Changes
+    runs-on: ubuntu-latest
+    outputs:
+      steampipe-changed: ${{ steps.filter.outputs.steampipe }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check for Steampipe Dockerfile changes
+        id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        with:
+          filters: |
+            steampipe:
+              - 'kubernetes-app/app-deploy/monitoring/steampipe/**'
+
+  build-steampipe-image:
+    name: Build Steampipe Image
+    needs: check-steampipe-changes
+    if: |
+      needs.check-steampipe-changes.outputs.steampipe-changed == 'true' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: development
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+
+      - name: Build and Push Steampipe Image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building Steampipe custom image..."
+          docker build --platform linux/amd64 \
+            -t ${ECR_REGISTRY}/steampipe-aws:latest \
+            -t ${ECR_REGISTRY}/steampipe-aws:${IMAGE_TAG} \
+            kubernetes-app/app-deploy/monitoring/steampipe/
+
+          echo "Pushing to ECR..."
+          docker push ${ECR_REGISTRY}/steampipe-aws:latest
+          docker push ${ECR_REGISTRY}/steampipe-aws:${IMAGE_TAG}
+
+          echo "## Steampipe Image Build" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|:---|:---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Registry | \`${ECR_REGISTRY}/steampipe-aws\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tags | \`latest\`, \`${IMAGE_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
   # 1. Validate — Catch errors BEFORE ArgoCD auto-syncs from Git
   # ===========================================================================
   validate:
