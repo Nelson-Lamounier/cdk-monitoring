@@ -9,5 +9,5 @@ data:
   steampipe.spc: |
     connection "aws" {
       plugin  = "aws"
-      regions = ["eu-west-1"]
+      regions = ["eu-west-1", "us-east-1"]
     }
