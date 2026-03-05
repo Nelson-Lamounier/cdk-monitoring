@@ -21,6 +21,13 @@ spec:
         - name: install-plugins
           image: {{ .Values.steampipe.image }}
           command: ["steampipe", "plugin", "install", "aws"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
           volumeMounts:
             - name: steampipe-data
               mountPath: /home/steampipe/.steampipe
