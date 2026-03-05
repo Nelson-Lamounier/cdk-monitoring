@@ -264,6 +264,40 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
             iam.ManagedPolicy.fromAwsManagedPolicyName('job-function/ViewOnlyAccess'),
         );
 
+        // Grant additional read-only permissions for Steampipe cloud inventory
+        // ViewOnlyAccess doesn't include S3 config hydration, Route53, CloudFront,
+        // WAF, or CloudWatch Logs actions that Steampipe needs for dashboard queries
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SteampipeCloudInventoryReadOnly',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                // S3 — bucket config hydration (encryption, public access, versioning)
+                's3:GetEncryptionConfiguration',
+                's3:GetBucketPublicAccessBlock',
+                's3:GetBucketVersioning',
+                's3:GetBucketLogging',
+                's3:GetBucketTagging',
+                's3:GetBucketPolicy',
+                's3:GetBucketAcl',
+                's3:ListAllMyBuckets',
+                's3:GetBucketLocation',
+                // Route 53
+                'route53:ListHostedZones',
+                'route53:ListResourceRecordSets',
+                'route53:GetHostedZone',
+                // CloudFront
+                'cloudfront:ListDistributions',
+                'cloudfront:GetDistribution',
+                // WAF
+                'wafv2:ListWebACLs',
+                'wafv2:GetWebACL',
+                'wafv2:ListRuleGroups',
+                // CloudWatch Logs (supplements existing policy with List/Describe)
+                'logs:ListTagsForResource',
+            ],
+            resources: ['*'],
+        }));
+
         // Grant CloudWatch read-only for Grafana CloudWatch datasource
         // Enables querying Lambda, SSM, EC2, VPC Flow, and CloudFront logs
         launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
