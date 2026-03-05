@@ -7,9 +7,12 @@ metadata:
     {{- include "monitoring.fullLabels" "steampipe" | nindent 4 }}
 data:
   steampipe.spc: |
+    options "database" {
+      cache     = true
+      cache_ttl = 300
+    }
+
     connection "aws" {
       plugin  = "aws"
       regions = ["eu-west-1", "us-east-1"]
-      cache   = true
-      cache_ttl = 300
     }
