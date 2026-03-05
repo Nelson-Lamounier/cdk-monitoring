@@ -115,3 +115,8 @@ data:
         metrics_path: /api/metrics
         static_configs:
           - targets: ["nextjs.nextjs-app.svc.cluster.local:3000"]
+
+      - job_name: alloy
+        metrics_path: /metrics
+        static_configs:
+          - targets: ["alloy.{{ .Values.namespace }}.svc.cluster.local:{{ .Values.alloy.service.httpPort }}"]
