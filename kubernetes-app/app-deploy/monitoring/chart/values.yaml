@@ -164,11 +164,11 @@ steampipe:
   replicas: 1
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
       cpu: 250m
       memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1536Mi
   service:
     port: 9193
   databasePassword: steampipe

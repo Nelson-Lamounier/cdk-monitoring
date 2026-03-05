@@ -397,7 +397,7 @@ data:
             {
               "datasource": { "type": "postgres", "uid": "steampipe" },
               "format": "table",
-              "rawSql": "SELECT sg.group_name, r.group_id, r.type, r.from_port, r.to_port, r.ip_protocol, r.cidr_ipv4 FROM aws_vpc_security_group_rule r JOIN aws_vpc_security_group sg ON r.group_id = sg.group_id WHERE r.type = 'ingress' AND r.cidr_ipv4 = '0.0.0.0/0' ORDER BY r.from_port;",
+              "rawSql": "SELECT sg.group_name, r.group_id, r.type, r.from_port, r.to_port, r.ip_protocol, r.cidr_ipv4::text FROM aws_vpc_security_group_rule r JOIN aws_vpc_security_group sg ON r.group_id = sg.group_id WHERE r.type = 'ingress' AND r.cidr_ipv4::text = '0.0.0.0/0' ORDER BY r.from_port;",
               "refId": "A"
             }
           ],
@@ -415,7 +415,7 @@ data:
             {
               "datasource": { "type": "postgres", "uid": "steampipe" },
               "format": "table",
-              "rawSql": "SELECT sg.group_name AS sg_name, r.type, r.ip_protocol, r.from_port, r.to_port, COALESCE(r.cidr_ipv4, r.cidr_ipv6, 'N/A') AS cidr, r.pair_group_id AS peer_sg, sg.description AS sg_description FROM aws_vpc_security_group_rule r JOIN aws_vpc_security_group sg ON r.group_id = sg.group_id ORDER BY sg.group_name, r.type, r.from_port;",
+              "rawSql": "SELECT sg.group_name AS sg_name, r.type, r.ip_protocol, r.from_port, r.to_port, COALESCE(r.cidr_ipv4::text, r.cidr_ipv6::text, r.pair_group_id, 'N/A') AS source, sg.description AS sg_description FROM aws_vpc_security_group_rule r JOIN aws_vpc_security_group sg ON r.group_id = sg.group_id ORDER BY sg.group_name, r.type, r.from_port;",
               "refId": "A"
             }
           ],
@@ -485,7 +485,7 @@ data:
                 "matcher": { "id": "byName", "options": "encrypted" },
                 "properties": [
                   { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-                  { "id": "mappings", "value": [{ "options": { "false": { "color": "red", "text": "No" }, "true": { "color": "green", "text": "Yes" } }, "type": "value" }] }
+                  { "id": "mappings", "value": [{ "options": { "No": { "color": "red", "text": "No" }, "Yes": { "color": "green", "text": "Yes" } }, "type": "value" }] }
                 ]
               }
             ]
@@ -498,7 +498,7 @@ data:
             {
               "datasource": { "type": "postgres", "uid": "steampipe" },
               "format": "table",
-              "rawSql": "SELECT i.tags->>'Name' AS instance_name, i.instance_id, i.instance_type, v.volume_id, v.size AS vol_gb, v.volume_type, v.encrypted::text, count(s.snapshot_id) AS snapshots FROM aws_ec2_instance i LEFT JOIN aws_ebs_volume v ON v.attachments->0->>'InstanceId' = i.instance_id LEFT JOIN aws_ebs_snapshot s ON s.volume_id = v.volume_id AND s.owner_id = (SELECT account_id FROM aws_account) GROUP BY i.tags->>'Name', i.instance_id, i.instance_type, v.volume_id, v.size, v.volume_type, v.encrypted ORDER BY i.tags->>'Name', v.size DESC;",
+              "rawSql": "SELECT i.tags->>'Name' AS instance_name, i.instance_id, i.instance_type, v.volume_id, v.size AS vol_gb, v.volume_type, CASE WHEN v.encrypted THEN 'Yes' ELSE 'No' END AS encrypted, count(s.snapshot_id) AS snapshots FROM aws_ec2_instance i LEFT JOIN aws_ebs_volume v ON v.attachments->0->>'InstanceId' = i.instance_id LEFT JOIN aws_ebs_snapshot s ON s.volume_id = v.volume_id AND s.owner_id = (SELECT account_id FROM aws_account) GROUP BY i.tags->>'Name', i.instance_id, i.instance_type, v.volume_id, v.size, v.volume_type, v.encrypted ORDER BY i.tags->>'Name', v.size DESC;",
               "refId": "A"
             }
           ],
@@ -530,7 +530,7 @@ data:
           "id": 15,
           "options": { "colorMode": "background_gradient", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
           "pluginVersion": "11.6.0",
-          "targets": [{ "datasource": { "type": "postgres", "uid": "steampipe" }, "format": "table", "rawSql": "SELECT count(*) AS \"Unencrypted\" FROM aws_s3_bucket WHERE server_side_encryption_configuration IS NULL;", "refId": "A" }],
+          "targets": [{ "datasource": { "type": "postgres", "uid": "steampipe" }, "format": "table", "rawSql": "SELECT count(*) AS \"Unencrypted\" FROM aws_s3_bucket WHERE server_side_encryption_configuration IS NULL OR server_side_encryption_configuration::text = 'null';", "refId": "A" }],
           "title": "Unencrypted S3 Buckets",
           "type": "stat"
         },
@@ -541,8 +541,8 @@ data:
           "id": 16,
           "options": { "colorMode": "background_gradient", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showPercentChange": false, "textMode": "auto", "wideLayout": true },
           "pluginVersion": "11.6.0",
-          "targets": [{ "datasource": { "type": "postgres", "uid": "steampipe" }, "format": "table", "rawSql": "SELECT count(*) AS \"Public\" FROM aws_s3_bucket WHERE bucket_policy_is_public;", "refId": "A" }],
-          "title": "Public S3 Buckets",
+          "targets": [{ "datasource": { "type": "postgres", "uid": "steampipe" }, "format": "table", "rawSql": "SELECT count(*) AS \"Public Access\" FROM aws_s3_bucket WHERE block_public_acls IS NOT TRUE;", "refId": "A" }],
+          "title": "S3 Without Public Block",
           "type": "stat"
         },
         {
@@ -558,10 +558,10 @@ data:
                 ]
               },
               {
-                "matcher": { "id": "byName", "options": "public" },
+                "matcher": { "id": "byName", "options": "public_access" },
                 "properties": [
                   { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-                  { "id": "mappings", "value": [{ "options": { "true": { "color": "red", "text": "PUBLIC" }, "false": { "color": "green", "text": "Private" } }, "type": "value" }] }
+                  { "id": "mappings", "value": [{ "options": { "Open": { "color": "red", "text": "OPEN" }, "Blocked": { "color": "green", "text": "Blocked" } }, "type": "value" }] }
                 ]
               }
             ]
@@ -574,7 +574,7 @@ data:
             {
               "datasource": { "type": "postgres", "uid": "steampipe" },
               "format": "table",
-              "rawSql": "SELECT name, region, versioning_status, CASE WHEN server_side_encryption_configuration IS NOT NULL THEN 'Yes' ELSE 'No' END AS encrypted, bucket_policy_is_public::text AS public, creation_date::text FROM aws_s3_bucket ORDER BY name;",
+              "rawSql": "SELECT name, region, CASE WHEN server_side_encryption_configuration IS NOT NULL AND server_side_encryption_configuration::text != 'null' THEN 'Yes' ELSE 'No' END AS encrypted, CASE WHEN block_public_acls IS TRUE THEN 'Blocked' ELSE 'Open' END AS public_access, creation_date::text FROM aws_s3_bucket ORDER BY name;",
               "refId": "A"
             }
           ],
