@@ -64,7 +64,7 @@ data:
                 relativeTimeRange:
                   from: 300
                   to: 0
-                datasourceUid: ""
+                datasourceUid: prometheus
                 model:
                   expr: up{job="node-exporter"}
                   refId: A
@@ -103,7 +103,7 @@ data:
                 relativeTimeRange:
                   from: 600
                   to: 0
-                datasourceUid: ""
+                datasourceUid: prometheus
                 model:
                   expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
                   refId: A
@@ -139,7 +139,7 @@ data:
                 relativeTimeRange:
                   from: 600
                   to: 0
-                datasourceUid: ""
+                datasourceUid: prometheus
                 model:
                   expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100
                   refId: A
@@ -175,7 +175,7 @@ data:
                 relativeTimeRange:
                   from: 900
                   to: 0
-                datasourceUid: ""
+                datasourceUid: prometheus
                 model:
                   expr: increase(kube_pod_container_status_restarts_total[15m]) > 3
                   refId: A
@@ -211,7 +211,7 @@ data:
                 relativeTimeRange:
                   from: 600
                   to: 0
-                datasourceUid: ""
+                datasourceUid: prometheus
                 model:
                   expr: kube_pod_status_ready{condition="true"} == 0
                   refId: A
@@ -252,7 +252,7 @@ data:
                 relativeTimeRange:
                   from: 600
                   to: 0
-                datasourceUid: ""
+                datasourceUid: prometheus
                 model:
                   expr: (sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) * 100
                   refId: A
@@ -288,7 +288,7 @@ data:
                 relativeTimeRange:
                   from: 600
                   to: 0
-                datasourceUid: ""
+                datasourceUid: prometheus
                 model:
                   expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
                   refId: A
@@ -329,7 +329,7 @@ data:
                 relativeTimeRange:
                   from: 600
                   to: 0
-                datasourceUid: ""
+                datasourceUid: prometheus
                 model:
                   expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) * 100
                   refId: A
@@ -365,7 +365,7 @@ data:
                 relativeTimeRange:
                   from: 300
                   to: 0
-                datasourceUid: ""
+                datasourceUid: prometheus
                 model:
                   expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) * 100
                   refId: A

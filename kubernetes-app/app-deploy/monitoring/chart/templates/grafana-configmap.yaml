@@ -11,12 +11,14 @@ data:
       - name: Prometheus
         type: prometheus
         access: proxy
+        uid: prometheus
         url: http://prometheus.{{ .Values.namespace }}.svc.cluster.local:9090/prometheus
         isDefault: true
         editable: false
       - name: Loki
         type: loki
         access: proxy
+        uid: loki
         url: http://loki.{{ .Values.namespace }}.svc.cluster.local:{{ .Values.loki.service.port }}
         editable: false
         jsonData:
