@@ -7,6 +7,8 @@ metadata:
     {{- include "monitoring.fullLabels" "steampipe" | nindent 4 }}
 spec:
   replicas: {{ .Values.steampipe.replicas }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "monitoring.selectorLabels" "steampipe" | nindent 6 }}

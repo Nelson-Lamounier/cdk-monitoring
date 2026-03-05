@@ -168,7 +168,7 @@ steampipe:
       memory: 512Mi
     limits:
       cpu: 500m
-      memory: 1536Mi
+      memory: 1024Mi
   service:
     port: 9193
   databasePassword: steampipe
