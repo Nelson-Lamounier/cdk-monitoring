@@ -8,5 +8,5 @@ metadata:
 data:
   steampipe.spc: |
     connection "aws" {
-      plugin = "local/aws"
+      plugin = "aws"
     }

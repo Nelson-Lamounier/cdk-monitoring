@@ -1,22 +1,26 @@
-FROM ghcr.io/turbot/steampipe:latest
+FROM debian:bookworm-slim
 
-# ── Install AWS plugin from GitHub releases ──────────────────────────
-# The official `steampipe plugin install aws` command fails with 403
-# because us-docker.pkg.dev blocks unauthenticated OCI pulls.
-# Workaround: download the plugin binary directly from GitHub releases
-# and install it as a local plugin.
+# ── Install latest Steampipe CLI + AWS plugin ────────────────────────
+# The official ghcr.io/turbot/steampipe:latest image ships v0.22.0
+# which has a known bug causing 403 when pulling plugins from the
+# Steampipe OCI registry. Steampipe v2.x fixes this.
 
-USER root
-
-ARG PLUGIN_VERSION=1.29.0
+ARG STEAMPIPE_VERSION=2.4.0
 ARG TARGETARCH=amd64
 
-RUN apt-get update -qq && apt-get install -y -qq curl tar > /dev/null 2>&1 \
-    && mkdir -p /home/steampipe/.steampipe/plugins/local/aws \
+# Install Steampipe
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends curl ca-certificates \
     && curl -sSL \
-    "https://github.com/turbot/steampipe-plugin-aws/releases/download/v${PLUGIN_VERSION}/steampipe-plugin-aws_linux_${TARGETARCH}.tar.gz" \
-    | tar -xz -C /home/steampipe/.steampipe/plugins/local/aws \
-    && chown -R steampipe:steampipe /home/steampipe/.steampipe \
-    && apt-get remove -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+    "https://github.com/turbot/steampipe/releases/download/v${STEAMPIPE_VERSION}/steampipe_linux_${TARGETARCH}.tar.gz" \
+    | tar -xz -C /usr/local/bin \
+    && useradd -m steampipe \
+    && apt-get remove -y curl && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
+# Switch to steampipe user and install the AWS plugin
 USER steampipe
+WORKDIR /home/steampipe
+RUN steampipe plugin install aws
+
+ENTRYPOINT ["steampipe"]
