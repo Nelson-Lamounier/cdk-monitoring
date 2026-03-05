@@ -415,7 +415,7 @@ data:
             {
               "datasource": { "type": "postgres", "uid": "steampipe" },
               "format": "table",
-              "rawSql": "SELECT sg.group_name AS sg_name, r.type, r.ip_protocol, r.from_port, r.to_port, COALESCE(r.cidr_ipv4::text, r.cidr_ipv6::text, r.pair_group_id, 'N/A') AS source, sg.description AS sg_description FROM aws_vpc_security_group_rule r JOIN aws_vpc_security_group sg ON r.group_id = sg.group_id ORDER BY sg.group_name, r.type, r.from_port;",
+              "rawSql": "SELECT sg.group_name AS sg_name, r.type, r.ip_protocol, r.from_port, r.to_port, COALESCE(r.cidr_ipv4::text, r.cidr_ipv6::text, r.referenced_group_id, 'N/A') AS source, sg.description AS sg_description FROM aws_vpc_security_group_rule r JOIN aws_vpc_security_group sg ON r.group_id = sg.group_id ORDER BY sg.group_name, r.type, r.from_port;",
               "refId": "A"
             }
           ],
