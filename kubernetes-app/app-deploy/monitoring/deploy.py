@@ -139,6 +139,7 @@ SSM_SECRET_MAP = {
     "grafana-admin-password": "GRAFANA_ADMIN_PASSWORD",
     "github-token": "GITHUB_TOKEN",
     "github-webhook-token": "GITHUB_WEBHOOK_TOKEN",
+    "github-org": "GITHUB_ORG",
 }
 
 
@@ -212,12 +213,15 @@ def create_k8s_secrets(
     # GitHub Actions Exporter credentials
     gh_token = secrets.get("GITHUB_TOKEN")
     gh_webhook = secrets.get("GITHUB_WEBHOOK_TOKEN")
-    if gh_token or gh_webhook:
+    gh_org = secrets.get("GITHUB_ORG")
+    if gh_token or gh_webhook or gh_org:
         exporter_data: dict[str, str] = {}
         if gh_token:
             exporter_data["github-token"] = gh_token
         if gh_webhook:
             exporter_data["github-webhook-token"] = gh_webhook
+        if gh_org:
+            exporter_data["github-org"] = gh_org
         _upsert_secret(
             v1,
             name="github-actions-exporter-credentials",

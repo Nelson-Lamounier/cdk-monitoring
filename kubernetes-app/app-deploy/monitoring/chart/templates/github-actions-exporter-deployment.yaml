@@ -20,7 +20,7 @@ spec:
         - name: github-actions-exporter
           image: {{ .Values.githubActionsExporter.image }}
           env:
-            - name: GITHUB_TOKEN
+            - name: GITHUB_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: github-actions-exporter-credentials
@@ -31,6 +31,12 @@ spec:
                 secretKeyRef:
                   name: github-actions-exporter-credentials
                   key: github-webhook-token
+                  optional: true
+            - name: GITHUB_ORG
+              valueFrom:
+                secretKeyRef:
+                  name: github-actions-exporter-credentials
+                  key: github-org
                   optional: true
           ports:
             - containerPort: {{ .Values.githubActionsExporter.service.port }}
