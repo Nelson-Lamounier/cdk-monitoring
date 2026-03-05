@@ -160,7 +160,7 @@ githubActionsExporter:
 # Steampipe (AWS compliance)
 # ---------------------------------------------------------------------------
 steampipe:
-  image: turbot/steampipe:0.22.0
+  image: ghcr.io/turbot/steampipe:latest
   replicas: 1
   resources:
     requests:
