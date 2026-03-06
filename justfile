@@ -196,10 +196,36 @@ ci-failure-report *ARGS:
 ci-sync-scripts *ARGS:
     npx tsx infra/scripts/cd/sync-bootstrap-scripts.ts {{ARGS}}
 
+# CI trigger-bootstrap: trigger SSM Automation on K8s nodes
+[group('ci')]
+ci-trigger-bootstrap *ARGS:
+    npx tsx infra/scripts/cd/trigger-bootstrap.ts {{ARGS}}
+
+# CI observe-bootstrap: poll SSM Automation & stream CloudWatch logs
+[group('ci')]
+ci-observe-bootstrap *ARGS:
+    npx tsx infra/scripts/cd/observe-bootstrap.ts {{ARGS}}
+
+# CI deploy-monitoring-secrets: deploy monitoring secrets via SSM Automation
+[group('ci')]
+ci-deploy-monitoring-secrets *ARGS:
+    npx tsx infra/scripts/cd/deploy-monitoring-secrets.ts {{ARGS}}
+
+# CI deploy-nextjs-secrets: deploy Next.js secrets via SSM Automation
+[group('ci')]
+ci-deploy-nextjs-secrets *ARGS:
+    npx tsx infra/scripts/cd/deploy-nextjs-secrets.ts {{ARGS}}
+
 # CI finalize: collect outputs, write summary, save artifacts
 [group('ci')]
 ci-finalize-deployment *ARGS:
     npx tsx infra/scripts/cd/finalize.ts {{ARGS}}
+
+# CI summary: generate pipeline-wide deployment summary
+# Usage: just ci-summary kubernetes development
+[group('ci')]
+ci-summary *ARGS:
+    npx tsx infra/scripts/cd/finalize.ts {{ARGS}} --mode pipeline-summary
 
 # CI deploy-manifests: deploy K8s manifests via SSM Run Command
 # Usage: just ci-deploy-manifests kubernetes development --region eu-west-1

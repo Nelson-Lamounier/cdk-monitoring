@@ -25,8 +25,7 @@
  */
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 
 import { parseArgs, buildAwsConfig, getSSMParameter } from '@repo/script-utils/aws.js';
 import { runCommand } from '@repo/script-utils/exec.js';
@@ -67,7 +66,6 @@ const awsConfig = buildAwsConfig(args);
 // =============================================================================
 // Resolve workspace root (two levels up from this script)
 // =============================================================================
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKSPACE_ROOT = resolve(__dirname, '..', '..', '..');
 
 // =============================================================================
