@@ -174,7 +174,7 @@ jobs:
             echo "ERROR: AWS_ACCOUNT_ID variable not configured"
             exit 1
           fi
-          if ! [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+          if ! expr "$ACCOUNT_ID" : '^[0-9]\{12\}$' > /dev/null; then
             echo "ERROR: Invalid AWS account ID format"
             exit 1
           fi
