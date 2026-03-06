@@ -39,7 +39,7 @@ on:
   #   #   # App-of-Apps child Application manifests
   #   #   - "kubernetes-app/k8s-bootstrap/system/argocd/applications/**"
   #   #   # Pipeline definition
-  #   #   - ".github/workflows/gitops-k8s-dev.yml"
+  #   #   - ".github/workflows/gitops-k8s.yml"
   workflow_dispatch:
 
 permissions:

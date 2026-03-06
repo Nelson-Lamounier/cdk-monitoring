@@ -31,7 +31,7 @@ on:
   #     # CDK stack definition
   #     - "infra/lib/stacks/kubernetes/ssm-automation-stack.ts"
   #     # Pipeline definitions
-  #     - ".github/workflows/deploy-ssm-automation-dev.yml"
+  #     - ".github/workflows/deploy-ssm-automation.yml"
   #     - ".github/workflows/_deploy-ssm-automation.yml"
   workflow_dispatch:
     inputs:

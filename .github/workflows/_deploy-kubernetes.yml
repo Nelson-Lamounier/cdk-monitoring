@@ -24,12 +24,12 @@
 #
 # ─── Day-1 Deployment ──────────────────────────────────────────────
 # For a fresh cluster, run both pipelines in sequence:
-#   1. deploy-kubernetes-dev.yml  → provisions all infrastructure
-#   2. deploy-ssm-automation-dev.yml → deploys SSM stack + triggers bootstrap
+#   1. deploy-kubernetes.yml  → provisions all infrastructure
+#   2. deploy-ssm-automation.yml → deploys SSM stack + triggers bootstrap
 #
 # ─── Day-2+ Updates ───────────────────────────────────────────────
-# - Infrastructure changes: push to trigger deploy-kubernetes-dev.yml
-# - Bootstrap script changes: push to trigger deploy-ssm-automation-dev.yml
+# - Infrastructure changes: push to trigger deploy-kubernetes.yml
+# - Bootstrap script changes: push to trigger deploy-ssm-automation.yml
 #   (deploys SSM docs, syncs scripts, re-triggers bootstrap automatically)
 #
 # ─── Stack Deployment Order ────────────────────────────────────────
@@ -51,7 +51,7 @@
 #
 # ─── Concurrency ───────────────────────────────────────────────────
 #   This is a workflow_call (reusable) workflow — concurrency MUST be set
-#   on the caller (e.g., deploy-kubernetes-dev.yml).
+#   on the caller (e.g., deploy-kubernetes.yml).
 #   Each caller defines: concurrency: { group: deploy-k8s-<env>, cancel-in-progress: false }
 
 name: Deploy K8s (Reusable)

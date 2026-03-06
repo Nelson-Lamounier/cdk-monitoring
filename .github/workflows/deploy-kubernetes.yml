@@ -7,7 +7,7 @@
 #
 # 8-Stack Architecture: Data → Base → Compute → AppIam → Api → Edge.
 # Application workloads (traefik, metrics-server) are managed by
-# ArgoCD via Pipeline B (gitops-k8s-dev.yml).
+# ArgoCD via Pipeline B (gitops-k8s.yml).
 #
 # Prerequisites:
 #   - Shared VPC from deploy-shared workflow
@@ -36,7 +36,7 @@ on:
   #     # Golden AMI recipes
   #     - "kubernetes-app/infra-ami/**"
   #     # Pipeline definitions
-  #     - ".github/workflows/deploy-kubernetes-dev.yml"
+  #     - ".github/workflows/deploy-kubernetes.yml"
   #     - ".github/workflows/_deploy-kubernetes.yml"
   #     - ".github/workflows/_deploy-stack.yml"
   #     - ".github/workflows/_iac-security-scan.yml"

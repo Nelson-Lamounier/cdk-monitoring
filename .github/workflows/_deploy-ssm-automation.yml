@@ -47,8 +47,8 @@
 #
 # ─── Day-1 Deployment ──────────────────────────────────────────────
 # Run after the CDK infra pipeline completes:
-#   1. deploy-kubernetes-dev.yml  → provisions infrastructure
-#   2. deploy-ssm-automation-dev.yml → bootstrap (this pipeline)
+#   1. deploy-kubernetes.yml  → provisions infrastructure
+#   2. deploy-ssm-automation.yml → bootstrap (this pipeline)
 #
 # ─── Day-2+ Updates ───────────────────────────────────────────────
 # Push changes to boot/steps/ or ssm-automation-stack.ts to trigger
