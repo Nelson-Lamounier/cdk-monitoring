@@ -90,15 +90,7 @@ spec:
         - name: dashboards
           projected:
             sources:
+            {{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
               - configMap:
-                  name: grafana-dashboards-cluster
-              - configMap:
-                  name: grafana-dashboards-application
-              - configMap:
-                  name: grafana-dashboards-cloudwatch
-              - configMap:
-                  name: grafana-dashboards-cloudwatch-edge
-              - configMap:
-                  name: grafana-dashboards-cloud-inventory
-              - configMap:
-                  name: grafana-dashboards-tracing
+                  name: grafana-dashboards-{{ trimSuffix ".json" (base $path) }}
+            {{- end }}
