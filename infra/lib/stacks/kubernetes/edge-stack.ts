@@ -229,15 +229,17 @@ export class KubernetesEdgeStack extends cdk.Stack {
             );
         }
 
-        // Soft-fail: allow synth to complete for non-edge deploys
+        // Soft-fail: allow synth to complete for CI validation and non-edge deploys.
+        // These values are required at DEPLOY time (provided via GitHub Environment
+        // secrets/vars) but not needed for synthesis validation.
         if (!props.domainName) {
-            cdk.Annotations.of(this).addError('domainName is required for Edge stack deployment');
+            cdk.Annotations.of(this).addWarning('domainName is required for Edge stack deployment');
         }
         if (!props.hostedZoneId) {
-            cdk.Annotations.of(this).addError('hostedZoneId is required for Edge stack deployment');
+            cdk.Annotations.of(this).addWarning('hostedZoneId is required for Edge stack deployment');
         }
         if (!props.crossAccountRoleArn) {
-            cdk.Annotations.of(this).addError('crossAccountRoleArn is required for cross-account DNS');
+            cdk.Annotations.of(this).addWarning('crossAccountRoleArn is required for cross-account DNS');
         }
 
         // =====================================================================

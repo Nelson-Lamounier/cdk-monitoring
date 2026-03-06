@@ -144,22 +144,19 @@ export class AcmCertificateDnsValidationConstruct extends Construct {
     ) {
         super(scope, id);
 
-        // ========================================
-        // VALIDATION
-        // ========================================
         // Soft-fail: use annotations instead of throws.
-        // CDK synth creates all stacks, so these must not throw for
-        // non-edge deploys where edge config env vars are absent.
+        // CDK synth creates all stacks, so these must not block synth for
+        // CI validation or non-edge deploys where edge config env vars are absent.
         if (!props.domainName) {
-            cdk.Annotations.of(this).addError('domainName is required for ACM certificate');
+            cdk.Annotations.of(this).addWarning('domainName is required for ACM certificate');
         }
 
         if (!props.hostedZoneId) {
-            cdk.Annotations.of(this).addError('hostedZoneId is required for DNS validation');
+            cdk.Annotations.of(this).addWarning('hostedZoneId is required for DNS validation');
         }
 
         if (!props.crossAccountRoleArn) {
-            cdk.Annotations.of(this).addError('crossAccountRoleArn is required for cross-account DNS');
+            cdk.Annotations.of(this).addWarning('crossAccountRoleArn is required for cross-account DNS');
         }
 
         if (!props.validationFunction) {
