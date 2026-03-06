@@ -7377,6 +7377,7 @@ __metadata:
     "@aws-sdk/lib-dynamodb": "npm:^3.1001.0"
     "@aws-sdk/types": "npm:^3.973.4"
     "@types/mime-types": "npm:^3.0.1"
+    esbuild: "npm:^0.27.3"
     mime-types: "npm:^3.0.2"
     tsx: "npm:^4.21.0"
   languageName: unknown
@@ -10288,6 +10289,12 @@ __metadata:
   checksum: 10c0/d1eb6c85bb24cd357cedf67d02f9697261b70721a59eed48bd0be716e99b86ceb3e55ee9e6cfef60110272303e2de8dc6ea0621936f9e209490eaf5c24b2697f
   languageName: node
   linkType: hard
+
+"kubernetes-app@workspace:kubernetes-app":
+  version: 0.0.0-use.local
+  resolution: "kubernetes-app@workspace:kubernetes-app"
+  languageName: unknown
+  linkType: soft
 
 "leven@npm:^3.1.0":
   version: 3.1.0

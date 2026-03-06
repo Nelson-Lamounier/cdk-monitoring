@@ -1,6 +1,9 @@
 {
   "name": "cdk-monitoring-monorepo",
   "private": true,
+  "scripts": {
+    "esbuild": "esbuild"
+  },
   "workspaces": [
     "infra",
     "bedrock-publisher",
@@ -26,5 +29,8 @@
     "@types/mime-types": "^3.0.1",
     "mime-types": "^3.0.2",
     "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.3"
   }
 }
