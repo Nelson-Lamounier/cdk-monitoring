@@ -36,7 +36,6 @@ import {
     SSMClient,
     StartAutomationExecutionCommand,
 } from '@aws-sdk/client-ssm';
-
 import { parseArgs, buildAwsConfig } from '@repo/script-utils/aws.js';
 import { setOutput, writeSummary, emitAnnotation } from '@repo/script-utils/github.js';
 import logger from '@repo/script-utils/logger.js';

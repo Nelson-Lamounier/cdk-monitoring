@@ -31,16 +31,15 @@
  */
 
 import {
-    GetAutomationExecutionCommand,
-    GetCommandInvocationCommand,
-    SSMClient,
-} from '@aws-sdk/client-ssm';
-import {
     CloudWatchLogsClient,
     DescribeLogStreamsCommand,
     GetLogEventsCommand,
 } from '@aws-sdk/client-cloudwatch-logs';
-
+import {
+    GetAutomationExecutionCommand,
+    GetCommandInvocationCommand,
+    SSMClient,
+} from '@aws-sdk/client-ssm';
 import { parseArgs, buildAwsConfig } from '@repo/script-utils/aws.js';
 import { writeSummary, emitAnnotation } from '@repo/script-utils/github.js';
 import logger from '@repo/script-utils/logger.js';
