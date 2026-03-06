@@ -24,7 +24,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 import * as cdk from 'aws-cdk-lib/core';
 
 import { applyCdkNag, applyCommonSuppressions, CompliancePack, TaggingAspect } from '../lib/aspects';
-import { Environment, isValidEnvironment } from '../lib/config';
+import { Environment, isValidEnvironment, resolveEnvironment } from '../lib/config';
 import { isValidProject, getProjectConfig, Project } from '../lib/config/projects';
 import { getProjectFactoryFromContext } from '../lib/factories/project-registry';
 
@@ -49,7 +49,7 @@ if (!environmentContext || !isValidEnvironment(environmentContext)) {
     );
 }
 
-const environment = environmentContext as Environment;
+const environment = resolveEnvironment(environmentContext);
 const projectConfig = getProjectConfig(projectContext as Project);
 
 console.log(`=== Project: ${projectConfig.namespace} | Environment: ${environment} ===`);
