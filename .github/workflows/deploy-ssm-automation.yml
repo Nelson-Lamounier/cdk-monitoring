@@ -18,7 +18,7 @@ name: Deploy SSM Automation to Development
 
 on:
   push:
-    branches: [develop]
+    # branches: [develop]
   workflow_dispatch:
     inputs:
       trigger_bootstrap:

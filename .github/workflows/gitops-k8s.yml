@@ -26,20 +26,20 @@
 name: "GitOps: K8s Applications (Dev)"
 
 on:
-  # push:
-  #   # branches:
-  #   #   - develop
-  #   #   - feature/k3s-kubernetes-migration
-  #   # paths:
-  #   #   # Helm charts (ArgoCD watches these paths in Git)
-  #   #   - "kubernetes-app/app-deploy/nextjs/**"
-  #   #   - "kubernetes-app/app-deploy/monitoring/**"
-  #   #   # Traefik values (ArgoCD multi-source references this from Git)
-  #   #   - "kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml"
-  #   #   # App-of-Apps child Application manifests
-  #   #   - "kubernetes-app/k8s-bootstrap/system/argocd/applications/**"
-  #   #   # Pipeline definition
-  #   #   - ".github/workflows/gitops-k8s.yml"
+  push:
+    branches:
+      - develop
+      - feature/k3s-kubernetes-migration
+    paths:
+      # Helm charts (ArgoCD watches these paths in Git)
+      - "kubernetes-app/app-deploy/nextjs/**"
+      - "kubernetes-app/app-deploy/monitoring/**"
+      # Traefik values (ArgoCD multi-source references this from Git)
+      - "kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml"
+      # App-of-Apps child Application manifests
+      - "kubernetes-app/k8s-bootstrap/system/argocd/applications/**"
+      # Pipeline definition
+      - ".github/workflows/gitops-k8s.yml"
   workflow_dispatch:
 
 permissions:
