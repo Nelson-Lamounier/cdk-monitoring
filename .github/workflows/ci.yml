@@ -33,7 +33,6 @@ on:
 env:
   # Node.js version is now read from .nvmrc for centralization
   NODE_VERSION: "22" # Fallback - prefer .nvmrc
-  CI_IMAGE: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
 
 permissions:
   contents: read
@@ -160,7 +159,7 @@ jobs:
     name: Setup Dependencies
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     outputs:
       node-version: ${{ steps.setup-tools.outputs.node-version }}
@@ -181,7 +180,7 @@ jobs:
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
@@ -207,7 +206,7 @@ jobs:
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
@@ -228,7 +227,7 @@ jobs:
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true'
 
@@ -253,7 +252,7 @@ jobs:
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
@@ -277,7 +276,7 @@ jobs:
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true'
 
@@ -301,7 +300,7 @@ jobs:
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     if: |
       (github.event_name == 'pull_request' || 
@@ -355,7 +354,7 @@ jobs:
     needs: [setup, build, detect-changes]
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     if: needs.detect-changes.outputs.any-src == 'true'
 
@@ -429,7 +428,7 @@ jobs:
     needs: [detect-changes]
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.k8s-content == 'true'
 
