@@ -76,7 +76,7 @@ export async function getAccountId(config: AwsConfig): Promise<string> {
 
   const result = await sts.send(new GetCallerIdentityCommand({}))
   if (!result.Account) {
-    logger.fatal('Failed to get AWS Account ID. Check your AWS credentials.')
+    return logger.fatal('Failed to get AWS Account ID. Check your AWS credentials.')
   }
   return result.Account
 }
@@ -211,7 +211,7 @@ export function parseArgs(
 
     const spec = specs.find((s) => `--${s.name}` === arg)
     if (!spec) {
-      logger.fatal(`Unknown option: ${arg}\nRun with --help for usage.`)
+      return logger.fatal(`Unknown option: ${arg}\nRun with --help for usage.`)
     }
 
     if (spec.hasValue) {
