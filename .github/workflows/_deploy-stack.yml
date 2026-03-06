@@ -106,11 +106,14 @@ on:
 env:
   # Node.js version is read from .nvmrc for centralization
   NODE_VERSION: "22" # Fallback - prefer .nvmrc
+  CI_IMAGE: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
 
 jobs:
   deploy:
     name: ${{ inputs.stack-name }}
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     environment: ${{ inputs.environment }}
     outputs:

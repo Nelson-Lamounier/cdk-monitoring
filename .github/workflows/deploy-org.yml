@@ -58,6 +58,8 @@ jobs:
     name: Setup & Synthesize
     needs: [validate]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     environment: management # Separate GitHub environment for root account
     outputs:
@@ -67,14 +69,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Install dependencies
-        run: yarn install --frozen-lockfile
-        working-directory: infra
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
 
       - name: Build TypeScript
         run: yarn build
@@ -132,6 +128,8 @@ jobs:
     name: Deploy DNS Role
     needs: [setup]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     environment: management
     if: inputs.stack == 'dns-role' || inputs.stack == 'all'
@@ -146,14 +144,8 @@ jobs:
           name: cdk-out-org
           path: cdk.out
 
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Install dependencies
-        run: yarn install --frozen-lockfile
-        working-directory: infra
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
 
       - name: Configure AWS Credentials (Root Account)
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0

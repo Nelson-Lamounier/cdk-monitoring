@@ -33,6 +33,7 @@ on:
 env:
   # Node.js version is now read from .nvmrc for centralization
   NODE_VERSION: "22" # Fallback - prefer .nvmrc
+  CI_IMAGE: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
 
 permissions:
   contents: read
@@ -158,6 +159,8 @@ jobs:
   setup:
     name: Setup Dependencies
     runs-on: ubuntu-latest
+    container:
+      image: ${{ env.CI_IMAGE }}
     timeout-minutes: 10
     outputs:
       node-version: ${{ steps.setup-tools.outputs.node-version }}
@@ -177,6 +180,8 @@ jobs:
     name: Security Packages Audit
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ${{ env.CI_IMAGE }}
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
@@ -201,6 +206,8 @@ jobs:
     name: Lint Code
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ${{ env.CI_IMAGE }}
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
@@ -220,6 +227,8 @@ jobs:
     name: Dependency Validation
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ${{ env.CI_IMAGE }}
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true'
 
@@ -243,6 +252,8 @@ jobs:
     name: Type Check
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ${{ env.CI_IMAGE }}
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
@@ -265,6 +276,8 @@ jobs:
     name: Build TypeScript
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ${{ env.CI_IMAGE }}
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true'
 
@@ -287,6 +300,8 @@ jobs:
     name: Test Stacks
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ${{ env.CI_IMAGE }}
     timeout-minutes: 15
     if: |
       (github.event_name == 'pull_request' || 
@@ -339,6 +354,8 @@ jobs:
     name: Validate CDK Stacks
     needs: [setup, build, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ${{ env.CI_IMAGE }}
     timeout-minutes: 15
     if: needs.detect-changes.outputs.any-src == 'true'
 
@@ -411,20 +428,14 @@ jobs:
     name: Validate Helm Charts
     needs: [detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ${{ env.CI_IMAGE }}
     timeout-minutes: 10
     if: needs.detect-changes.outputs.k8s-content == 'true'
 
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Install Helm
-        uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
-        with:
-          version: v3.17.1
-
-      - name: Install just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
 
       - name: Install kubeconform
         run: |

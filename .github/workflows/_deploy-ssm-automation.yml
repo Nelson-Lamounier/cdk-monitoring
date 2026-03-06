@@ -106,6 +106,8 @@ jobs:
   deploy:
     name: Deploy SSM Automation
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
     outputs:
@@ -115,9 +117,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
 
       - name: Setup Node.js and Yarn
         uses: ./.github/actions/setup-node-yarn
