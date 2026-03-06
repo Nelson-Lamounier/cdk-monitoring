@@ -12,10 +12,8 @@ jest.setTimeout(30000);
 // Suppress CDK synthesis output noise in test logs
 process.env.CDK_DEBUG = 'false';
 
-// Skip Lambda asset bundling (esbuild) during tests.
-// Without this, CDK's NodejsFunction tries to run esbuild during synthesis,
-// which causes tests to hang. Bundling is only needed during actual deploys.
-process.env.CDK_BUNDLING_STACKS = '[]';
+// CDK bundling (esbuild) is mocked globally in jest.config.js via spawnSync
+// interception — no need for CDK_BUNDLING_STACKS here.
 
 // Ensure dist/lambda directory exists for Lambda asset tests
 // Tests may run before build (e.g., CI), so create the directory if missing

@@ -1,11 +1,36 @@
-/** @format */
+// ---------------------------------------------------------------------------
+// Mock CDK's local bundling (esbuild) during tests.
+//
+// CDK's NodejsFunction calls `spawnSync('bash', ['-c', 'yarn run esbuild ...'])`
+// for local bundling. By intercepting calls that contain 'esbuild', we return a
+// dummy success response and write a stub index.js to the output path.
+//
+// CDK's AssetStaging validates that bundling produced output — returning
+// status 0 alone causes "Bundling did not produce any output". We parse the
+// --outfile argument from the esbuild command and write a dummy module there.
+//
+// Must be set HERE (not in setupFilesAfterEnv) because CDK's AssetStaging reads
+// bundling config when NodejsFunction is instantiated during synthesis.
+// ---------------------------------------------------------------------------
+const { spawnSync: realSpawnSync } = require('child_process');
+const childProcess = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
-// Skip Lambda esbuild bundling during tests.
-// Must be set HERE (not in setupFilesAfterEnv) because CDK's AssetStaging
-// reads this env var when NodejsFunction is instantiated during synthesis.
-// Setting it in jest-setup.ts is too late — Jest has already loaded the
-// test file and its imports by then.
-process.env.CDK_BUNDLING_STACKS = '[]';
+childProcess.spawnSync = function mockedSpawnSync(command, args, options) {
+  const fullCmd = [command, ...(args || [])].join(' ');
+  if (fullCmd.includes('esbuild')) {
+    // Extract --outfile path from the esbuild command and write a stub
+    const outfileMatch = fullCmd.match(/--outfile="?([^"\s]+)"?/);
+    if (outfileMatch) {
+      const outfile = outfileMatch[1];
+      fs.mkdirSync(path.dirname(outfile), { recursive: true });
+      fs.writeFileSync(outfile, 'module.exports = {};');
+    }
+    return { status: 0, stdout: Buffer.from(''), stderr: Buffer.from(''), output: [null, Buffer.from(''), Buffer.from('')] };
+  }
+  return realSpawnSync(command, args, options);
+};
 
 module.exports = {
   testEnvironment: "node",
