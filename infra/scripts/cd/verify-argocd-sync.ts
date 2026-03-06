@@ -161,7 +161,7 @@ interface AppStatus {
  * @returns ArgoCD base URL or undefined if EIP is not available
  */
 async function resolveArgoCDEndpoint(): Promise<string | undefined> {
-  logger.step('Resolve ArgoCD Endpoint');
+  logger.step(1, 3, 'Resolve ArgoCD Endpoint');
 
   const eip = await getParam(`${ssmPrefix}/elastic-ip`);
   if (!eip) {
@@ -186,7 +186,7 @@ async function resolveArgoCDEndpoint(): Promise<string | undefined> {
  * @returns Bearer token or undefined if not available
  */
 async function retrieveCIToken(): Promise<string | undefined> {
-  logger.step('Retrieve CI Bot Token');
+  logger.step(2, 3, 'Retrieve CI Bot Token');
 
   const secretId = `k8s/${environment}/argocd-ci-token`;
   const token = await getSecret(secretId);
@@ -324,7 +324,7 @@ async function waitForSync(
   baseUrl: string,
   token: string,
 ): Promise<boolean> {
-  logger.step('Wait for ArgoCD Sync');
+  logger.step(3, 3, 'Wait for ArgoCD Sync');
 
   console.log('## ArgoCD Sync Verification');
   console.log('');
