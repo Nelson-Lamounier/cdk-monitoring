@@ -640,6 +640,18 @@ jobs:
       && inputs.cdk-environment != 'development'
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: ./
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
@@ -647,117 +659,26 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: "Collect CloudFormation Diagnostics"
+      - name: "Generate Deployment Failure Report"
         continue-on-error: true
+        env:
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit-sha }}
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          JOB_RESULTS: >-
+            {
+              "control-plane": "${{ needs.deploy-controlplane.result }}",
+              "app-worker": "${{ needs.deploy-app-worker.result }}",
+              "monitoring-worker": "${{ needs.deploy-monitoring-worker.result }}",
+              "edge": "${{ needs.deploy-edge.result || 'skipped' }}"
+            }
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          COMMIT_URL: "${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
         run: |
-          echo "## Deployment Failure Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Environment** | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Commit** | \`${{ needs.setup.outputs.commit-sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Control Plane** | ${{ needs.deploy-controlplane.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **App Worker** | ${{ needs.deploy-app-worker.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Mon. Worker** | ${{ needs.deploy-monitoring-worker.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Edge** | ${{ needs.deploy-edge.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "### CloudFormation Failed Events" >> $GITHUB_STEP_SUMMARY
-          STACKS=(
-            "${{ needs.setup.outputs.data-stack }}"
-            "${{ needs.setup.outputs.base-stack }}"
-            "${{ needs.setup.outputs.controlplane-stack }}"
-            "${{ needs.setup.outputs.worker-stack }}"
-            "${{ needs.setup.outputs.monitoring-worker-stack }}"
-            "${{ needs.setup.outputs.appiam-stack }}"
-            "${{ needs.setup.outputs.edge-stack }}"
-          )
-
-          for STACK in "${STACKS[@]}"; do
-            [ -z "$STACK" ] && continue
-            echo "#### \`${STACK}\`" >> $GITHUB_STEP_SUMMARY
-            EVENTS=$(aws cloudformation describe-stack-events \
-              --stack-name "$STACK" \
-              --query 'StackEvents[?contains(ResourceStatus,`FAILED`)].[Timestamp,LogicalResourceId,ResourceStatusReason]' \
-              --output table --region ${{ env.AWS_REGION }} 2>/dev/null)
-            if [ -n "$EVENTS" ]; then
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              echo "$EVENTS" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-            else
-              echo "[PASS] No failed events" >> $GITHUB_STEP_SUMMARY
-            fi
-            echo "" >> $GITHUB_STEP_SUMMARY
-          done
-
-      - name: "Collect K8s Diagnostics via SSM"
-        continue-on-error: true
-        run: |
-          INSTANCE_ID=$(aws ssm get-parameter \
-            --name "/k8s/${{ inputs.cdk-environment }}/instance-id" \
-            --query 'Parameter.Value' --output text \
-            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
-
-          if [ -z "$INSTANCE_ID" ]; then
-            echo "### K8s Diagnostics" >> $GITHUB_STEP_SUMMARY
-            echo "_Could not resolve instance ID — skipping_" >> $GITHUB_STEP_SUMMARY
-            exit 0
-          fi
-
-          echo "### K8s Pod Status (non-Running)" >> $GITHUB_STEP_SUMMARY
-          CMD_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["sudo kubectl get pods -A --field-selector=status.phase!=Running -o wide 2>/dev/null || echo No kubectl access"]' \
-            --query 'Command.CommandId' --output text \
-            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
-
-          if [ -n "$CMD_ID" ]; then
-            sleep 15
-            POD_OUTPUT=$(aws ssm get-command-invocation \
-              --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
-              --query 'StandardOutputContent' --output text \
-              --region ${{ env.AWS_REGION }} 2>/dev/null || echo "Could not retrieve pod status")
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "$POD_OUTPUT" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: "Fetch Boot Logs from CloudWatch"
-        continue-on-error: true
-        run: |
-          echo "### EC2 Boot Logs (last 15 minutes)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          LOG_GROUP="/ec2/k8s-${{ inputs.cdk-environment }}/instances"
-          START_TIME=$(( $(date +%s) * 1000 - 900000 ))
-          EVENTS=$(aws logs filter-log-events \
-            --log-group-name "$LOG_GROUP" \
-            --start-time "$START_TIME" \
-            --query 'events[].{ts:timestamp,stream:logStreamName,msg:message}' \
-            --output table \
-            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "")
-          if [ -n "$EVENTS" ]; then
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "$EVENTS" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          else
-            echo "_No boot log events found (log group: ${LOG_GROUP})_" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-      - name: "Post Failure Context"
-        run: |
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Quick Links" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **[Failed Run Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**" >> $GITHUB_STEP_SUMMARY
-          echo "- **[Commit](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> **Do not run automated CFn rollbacks on K8s/GitOps infrastructure.**" >> $GITHUB_STEP_SUMMARY
-          echo "> Prefer \"roll forward\" — push a fix commit to trigger a new deployment." >> $GITHUB_STEP_SUMMARY
-
-          echo "::error::Deployment verification failed for ${{ inputs.environment }}. Check the Deployment Failure Report in the job summary for diagnostics."
+          just ci-failure-report \
+            --stacks "${{ needs.setup.outputs.data-stack }},${{ needs.setup.outputs.base-stack }},${{ needs.setup.outputs.controlplane-stack }},${{ needs.setup.outputs.worker-stack }},${{ needs.setup.outputs.monitoring-worker-stack }},${{ needs.setup.outputs.appiam-stack }},${{ needs.setup.outputs.edge-stack }}" \
+            --region ${{ env.AWS_REGION }} \
+            --ssm-prefix "/k8s/${{ inputs.cdk-environment }}"
 
   # ===========================================================================
   # Deployment Summary (TypeScript)

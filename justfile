@@ -186,6 +186,11 @@ ci-golden-ami-observer *ARGS:
 ci-diagnose *ARGS:
     npx tsx infra/scripts/cd/diagnose-rollback.ts {{ARGS}} --mode diagnose
 
+# CI failure report: aggregate multi-stack diagnostics for failed deployment
+[group('ci')]
+ci-failure-report *ARGS:
+    npx tsx infra/scripts/cd/deployment-failure-report.ts {{ARGS}}
+
 # CI finalize: collect outputs, write summary, save artifacts
 [group('ci')]
 ci-finalize *ARGS:
