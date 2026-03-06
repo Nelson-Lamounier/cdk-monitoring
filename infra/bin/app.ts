@@ -24,7 +24,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 import * as cdk from 'aws-cdk-lib/core';
 
 import { applyCdkNag, applyCommonSuppressions, CompliancePack, TaggingAspect } from '../lib/aspects';
-import { Environment, isValidEnvironment, resolveEnvironment } from '../lib/config';
+import { isValidEnvironment, resolveEnvironment } from '../lib/config';
 import { isValidProject, getProjectConfig, Project } from '../lib/config/projects';
 import { getProjectFactoryFromContext } from '../lib/factories/project-registry';
 
