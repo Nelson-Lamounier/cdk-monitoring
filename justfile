@@ -227,6 +227,12 @@ ci-finalize-deployment *ARGS:
 ci-summary *ARGS:
     npx tsx infra/scripts/cd/finalize.ts {{ARGS}} --mode pipeline-summary
 
+# CI verify ArgoCD: poll ArgoCD API for sync status
+# Usage: just ci-verify-argocd --environment development --region eu-west-1
+[group('ci')]
+ci-verify-argocd *ARGS:
+    npx tsx infra/scripts/cd/verify-argocd-sync.ts {{ARGS}}
+
 # CI deploy-manifests: deploy K8s manifests via SSM Run Command
 # Usage: just ci-deploy-manifests kubernetes development --region eu-west-1
 [group('ci')]

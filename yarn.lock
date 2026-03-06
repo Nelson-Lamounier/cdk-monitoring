@@ -1191,6 +1191,53 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@aws-sdk/client-secrets-manager@npm:^3.1003.0":
+  version: 3.1003.0
+  resolution: "@aws-sdk/client-secrets-manager@npm:3.1003.0"
+  dependencies:
+    "@aws-crypto/sha256-browser": "npm:5.2.0"
+    "@aws-crypto/sha256-js": "npm:5.2.0"
+    "@aws-sdk/core": "npm:^3.973.18"
+    "@aws-sdk/credential-provider-node": "npm:^3.972.17"
+    "@aws-sdk/middleware-host-header": "npm:^3.972.7"
+    "@aws-sdk/middleware-logger": "npm:^3.972.7"
+    "@aws-sdk/middleware-recursion-detection": "npm:^3.972.7"
+    "@aws-sdk/middleware-user-agent": "npm:^3.972.18"
+    "@aws-sdk/region-config-resolver": "npm:^3.972.7"
+    "@aws-sdk/types": "npm:^3.973.5"
+    "@aws-sdk/util-endpoints": "npm:^3.996.4"
+    "@aws-sdk/util-user-agent-browser": "npm:^3.972.7"
+    "@aws-sdk/util-user-agent-node": "npm:^3.973.3"
+    "@smithy/config-resolver": "npm:^4.4.10"
+    "@smithy/core": "npm:^3.23.8"
+    "@smithy/fetch-http-handler": "npm:^5.3.13"
+    "@smithy/hash-node": "npm:^4.2.11"
+    "@smithy/invalid-dependency": "npm:^4.2.11"
+    "@smithy/middleware-content-length": "npm:^4.2.11"
+    "@smithy/middleware-endpoint": "npm:^4.4.22"
+    "@smithy/middleware-retry": "npm:^4.4.39"
+    "@smithy/middleware-serde": "npm:^4.2.12"
+    "@smithy/middleware-stack": "npm:^4.2.11"
+    "@smithy/node-config-provider": "npm:^4.3.11"
+    "@smithy/node-http-handler": "npm:^4.4.14"
+    "@smithy/protocol-http": "npm:^5.3.11"
+    "@smithy/smithy-client": "npm:^4.12.2"
+    "@smithy/types": "npm:^4.13.0"
+    "@smithy/url-parser": "npm:^4.2.11"
+    "@smithy/util-base64": "npm:^4.3.2"
+    "@smithy/util-body-length-browser": "npm:^4.2.2"
+    "@smithy/util-body-length-node": "npm:^4.2.3"
+    "@smithy/util-defaults-mode-browser": "npm:^4.3.38"
+    "@smithy/util-defaults-mode-node": "npm:^4.2.41"
+    "@smithy/util-endpoints": "npm:^3.3.2"
+    "@smithy/util-middleware": "npm:^4.2.11"
+    "@smithy/util-retry": "npm:^4.2.11"
+    "@smithy/util-utf8": "npm:^4.2.2"
+    tslib: "npm:^2.6.2"
+  checksum: 10c0/f84b2f33a29d5eb1953996e1b07e32cbd6c6bf5da7a691593634ced2e716613604de3bd03f3624e4b69908f2ec283abe5cdc9b351e68d5c4f6e0a3a22a2db07e
+  languageName: node
+  linkType: hard
+
 "@aws-sdk/client-ses@npm:^3.1001.0":
   version: 3.1003.0
   resolution: "@aws-sdk/client-ses@npm:3.1003.0"
@@ -7408,6 +7455,7 @@ __metadata:
     "@aws-sdk/client-pricing": "npm:^3.1001.0"
     "@aws-sdk/client-route-53": "npm:^3.1001.0"
     "@aws-sdk/client-s3": "npm:^3.1001.0"
+    "@aws-sdk/client-secrets-manager": "npm:^3.1003.0"
     "@aws-sdk/client-ses": "npm:^3.1001.0"
     "@aws-sdk/client-sns": "npm:^3.1001.0"
     "@aws-sdk/client-ssm": "npm:^3.1001.0"

@@ -58,6 +58,19 @@ export function isCI(): boolean {
   return process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
 }
 
+/**
+ * Mask a secret value in GitHub Actions logs.
+ *
+ * After calling this, any occurrence of the value in subsequent log output
+ * will be replaced with `***` by the Actions runner.
+ *
+ * @see https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/workflow-commands-for-github-actions#masking-a-value-in-a-log
+ */
+export function maskSecret(value: string): void {
+  if (!isCI()) return;
+  console.log(`::add-mask::${value}`);
+}
+
 // =============================================================================
 // GitHub Actions Annotations
 // =============================================================================
