@@ -191,6 +191,11 @@ ci-diagnose *ARGS:
 ci-failure-report *ARGS:
     npx tsx infra/scripts/cd/deployment-failure-report.ts {{ARGS}}
 
+# CI sync-scripts: sync bootstrap and deploy scripts to S3
+[group('ci')]
+ci-sync-scripts *ARGS:
+    npx tsx infra/scripts/cd/sync-bootstrap-scripts.ts {{ARGS}}
+
 # CI finalize: collect outputs, write summary, save artifacts
 [group('ci')]
 ci-finalize-deployment *ARGS:

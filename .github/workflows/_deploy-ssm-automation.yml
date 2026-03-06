@@ -188,12 +188,22 @@ jobs:
     needs: [deploy]
     if: inputs.trigger-bootstrap
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 5
     environment: ${{ inputs.environment }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build TypeScript
+        run: just build
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
@@ -203,76 +213,7 @@ jobs:
           audience: sts.amazonaws.com
 
       - name: Sync Scripts to S3
-        env:
-          SSM_PREFIX: /k8s/${{ inputs.environment }}
-          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: |
-          # Resolve scripts bucket from SSM
-          BUCKET=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/scripts-bucket" \
-            --query "Parameter.Value" --output text \
-            --region "$REGION" 2>/dev/null || echo "")
-
-          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
-            echo "::error::Scripts bucket not found at ${SSM_PREFIX}/scripts-bucket"
-            exit 1
-          fi
-          echo "Resolved scripts bucket: ${BUCKET}"
-
-          SOURCE_DIR="./kubernetes-app/k8s-bootstrap"
-          if [ ! -d "$SOURCE_DIR" ]; then
-            echo "::error::Source directory not found: ${SOURCE_DIR}"
-            exit 1
-          fi
-
-          FILE_COUNT=$(find "$SOURCE_DIR" -type f | wc -l | tr -d ' ')
-          echo "Syncing ${FILE_COUNT} files from ${SOURCE_DIR} to s3://${BUCKET}/k8s-bootstrap/"
-
-          aws s3 sync "$SOURCE_DIR" "s3://${BUCKET}/k8s-bootstrap/" \
-            --delete --region "$REGION"
-
-          echo "[OK] ${FILE_COUNT} bootstrap files synced"
-
-          # ── Sync Next.js deploy scripts ──────────────────────────────
-          # deploy.py, deploy-manifests.sh, requirements.txt
-          # NOTE: chart/ and nextjs-values.yaml are NOT synced here —
-          # ArgoCD handles Helm chart deployment via GitOps.
-          APP_DIR="./kubernetes-app/app-deploy/nextjs"
-          if [ -d "$APP_DIR" ]; then
-            APP_COUNT=$(find "$APP_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')
-            echo "Syncing ${APP_COUNT} app-deploy files from ${APP_DIR} to s3://${BUCKET}/app-deploy/nextjs/"
-
-            aws s3 sync "$APP_DIR" "s3://${BUCKET}/app-deploy/nextjs/" \
-              --delete \
-              --exclude 'chart/*' \
-              --exclude 'nextjs-values.yaml' \
-              --exclude '__pycache__/*' \
-              --region "$REGION"
-
-            echo "[OK] App deploy scripts synced"
-          else
-            echo "[SKIP] ${APP_DIR} not found — no app-deploy scripts to sync"
-          fi
-
-          # ── Sync Monitoring deploy scripts ────────────────────────────
-          # deploy.py, deploy-manifests.sh, requirements.txt
-          # NOTE: chart/ is NOT synced here —
-          # ArgoCD handles Helm chart deployment via GitOps.
-          MON_DIR="./kubernetes-app/app-deploy/monitoring"
-          if [ -d "$MON_DIR" ]; then
-            MON_COUNT=$(find "$MON_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')
-            echo "Syncing ${MON_COUNT} monitoring deploy files from ${MON_DIR} to s3://${BUCKET}/app-deploy/monitoring/"
-
-            aws s3 sync "$MON_DIR" "s3://${BUCKET}/app-deploy/monitoring/" \
-              --delete \
-              --exclude 'chart/*' \
-              --exclude '__pycache__/*' \
-              --region "$REGION"
-
-            echo "[OK] Monitoring deploy scripts synced"
-          else
-            echo "[SKIP] ${MON_DIR} not found — no monitoring deploy scripts to sync"
-          fi
+        run: just ci-sync-scripts --environment ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # Trigger SSM Bootstrap — Start SSM Automation on existing nodes
