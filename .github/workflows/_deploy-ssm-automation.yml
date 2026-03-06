@@ -139,7 +139,6 @@ jobs:
       # GitHub environment variables even though we only deploy the SSM stack.
       - name: CDK Synth
         id: synth
-        working-directory: infra
         env:
           HOSTED_ZONE_ID: ${{ vars.HOSTED_ZONE_ID }}
           CROSS_ACCOUNT_ROLE_ARN: ${{ vars.DNS_VALIDATION_ROLE }}
@@ -148,7 +147,7 @@ jobs:
           SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL || '' }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET || '' }}
           VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL || '' }}
-        run: npx tsx scripts/deployment/synthesize-ci.ts kubernetes ${{ inputs.cdk-environment }}
+        run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
 
       # Deploy only the SSM Automation stack
       - name: CDK Deploy — SSM Automation
