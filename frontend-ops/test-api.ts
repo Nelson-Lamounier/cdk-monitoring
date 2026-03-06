@@ -9,7 +9,8 @@
  */
 
 import { readFileSync, existsSync } from 'fs'
-import * as log from './lib/logger.js'
+import chalk from 'chalk'
+import logger from '@repo/script-utils/logger.js'
 
 // ========================================
 // Configuration
@@ -19,7 +20,7 @@ function getApiUrl(): string {
   const envFile = '.env.local'
 
   if (!existsSync(envFile)) {
-    log.fatal(
+    logger.fatal(
       'NEXT_PUBLIC_API_URL not set in .env.local\n' +
       '\n' +
       'Please set NEXT_PUBLIC_API_URL in .env.local:\n' +
@@ -31,7 +32,7 @@ function getApiUrl(): string {
   const match = content.match(/^NEXT_PUBLIC_API_URL=(.+)$/m)
 
   if (!match || !match[1].trim()) {
-    log.fatal(
+    logger.fatal(
       'NEXT_PUBLIC_API_URL not set in .env.local\n' +
       '\n' +
       'Please set NEXT_PUBLIC_API_URL in .env.local:\n' +
@@ -58,9 +59,9 @@ async function testEndpoint(
   url: string,
   options?: { showBody?: boolean; headersOnly?: boolean },
 ): Promise<TestResult> {
-  log.divider()
+  logger.divider()
   console.log(`${name}`)
-  log.divider()
+  logger.divider()
   console.log('')
   console.log(`Request:`)
   console.log(`  ${url}`)
@@ -93,7 +94,7 @@ async function testEndpoint(
       status: response.status,
     }
   } catch (error: any) {
-    console.log(log.red(`Error: ${error.message}`))
+    console.log(chalk.red(`Error: ${error.message}`))
     console.log('')
     return { name, passed: false, detail: error.message }
   }
@@ -106,7 +107,7 @@ async function testEndpoint(
 async function main(): Promise<void> {
   const apiUrl = getApiUrl()
 
-  log.header('🧪 Testing Articles API')
+  logger.header('🧪 Testing Articles API')
   console.log(`API Base URL: ${apiUrl}`)
   console.log('')
 
@@ -139,7 +140,7 @@ async function main(): Promise<void> {
   )
 
   // Summary
-  log.header('📊 Test Results')
+  logger.header('📊 Test Results')
 
   const passed = results.filter((r) => r.passed).length
   const total = results.length
@@ -152,12 +153,12 @@ async function main(): Promise<void> {
   console.log('')
 
   if (passed === total) {
-    log.success(`All ${total} tests passed!`)
+    logger.success(`All ${total} tests passed!`)
   } else {
-    log.warn(`${passed}/${total} tests passed`)
+    logger.warn(`${passed}/${total} tests passed`)
   }
 }
 
 main().catch((error) => {
-  log.fatal(`API test failed: ${error.message}`)
+  logger.fatal(`API test failed: ${error.message}`)
 })

@@ -12,8 +12,8 @@ import {
   DynamoDBClient,
   DescribeTableCommand,
 } from '@aws-sdk/client-dynamodb'
-import * as log from './lib/logger.js'
-import { parseArgs, buildAwsConfig } from './lib/aws-helpers.js'
+import logger from '@repo/script-utils/logger.js'
+import { parseArgs, buildAwsConfig } from '@repo/script-utils/aws.js'
 
 // ========================================
 // CLI Arguments
@@ -57,14 +57,14 @@ async function main(): Promise<void> {
     )
     tableInfo = result.Table
   } catch {
-    log.fatal(`Table '${tableName}' not found or no access`)
+    logger.fatal(`Table '${tableName}' not found or no access`)
   }
 
   if (!tableInfo) {
-    log.fatal(`Table '${tableName}' not found`)
+    logger.fatal(`Table '${tableName}' not found`)
   }
 
-  log.success('Table exists!')
+  logger.success('Table exists!')
   console.log('')
 
   // Key schema
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
   console.log('')
 
   if (pk !== 'pk' || sk !== 'sk') {
-    log.warn(
+    logger.warn(
       `Expected keys 'pk' and 'sk' but found '${pk}' and '${sk}'\n` +
       '\n' +
       'The migration script expects:\n' +
@@ -123,14 +123,14 @@ async function main(): Promise<void> {
   console.log('')
 
   if (itemCount > 0) {
-    log.info('ℹ️  Table already contains items')
+    logger.info('ℹ️  Table already contains items')
     console.log('   The migration script will skip articles that already exist')
   }
 
   console.log('')
-  log.success('Table structure looks good!')
+  logger.success('Table structure looks good!')
 
-  log.nextSteps([
+  logger.nextSteps([
     'Run: npx tsx scripts/setup-migration.ts',
     'Run: yarn migrate:articles:dry-run',
     'Run: yarn migrate:articles',
@@ -138,5 +138,5 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  log.fatal(`Table verification failed: ${error.message}`)
+  logger.fatal(`Table verification failed: ${error.message}`)
 })

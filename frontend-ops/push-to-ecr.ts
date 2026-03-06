@@ -16,7 +16,7 @@
 
 import { join, resolve } from 'path'
 import { existsSync, rmSync, mkdirSync } from 'fs'
-import * as log from './lib/logger.js'
+import logger from '@repo/script-utils/logger.js'
 import {
   parseArgs,
   buildAwsConfig,
@@ -24,7 +24,7 @@ import {
   exec,
   execStream,
   resolveAuth,
-} from './lib/aws-helpers.js'
+} from '@repo/script-utils/aws.js'
 
 // ========================================
 // CLI Arguments
@@ -61,8 +61,8 @@ async function main(): Promise<void> {
 
   const projectRoot = join(__dirname, '..')
 
-  log.header('🚀 Next.js ECR Push Script')
-  log.config('Configuration', {
+  logger.header('🚀 Next.js ECR Push Script')
+  logger.config('Configuration', {
     'Auth Mode': auth.mode,
     'AWS Region': config.region,
     'Environment': config.environment,
@@ -77,11 +77,11 @@ async function main(): Promise<void> {
   let repoUri: string
 
   if (ecrUrlArg) {
-    log.step(1, totalSteps, 'Using provided ECR URL...')
+    logger.step(1, totalSteps, 'Using provided ECR URL...')
     repoUri = ecrUrlArg
-    log.success(`ECR URL: ${repoUri}`)
+    logger.success(`ECR URL: ${repoUri}`)
   } else {
-    log.step(1, totalSteps, 'Discovering ECR URL...')
+    logger.step(1, totalSteps, 'Discovering ECR URL...')
 
     const ssmParam = `/shared/ecr/${config.environment}/repository-uri`
     console.log(`   Looking up: ${ssmParam}`)
@@ -89,9 +89,9 @@ async function main(): Promise<void> {
     const ssmValue = await getSSMParameter(ssmParam, config)
     if (ssmValue) {
       repoUri = ssmValue
-      log.success(`ECR URL: ${repoUri}`)
+      logger.success(`ECR URL: ${repoUri}`)
     } else {
-      log.fatal(
+      logger.fatal(
         `ECR repository URI not found in SSM: ${ssmParam}\n` +
         '   Use --ecr-url to provide it manually.',
       )
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
   }
 
   // ─── Step 2: Docker login to ECR ────────────────────────────────────
-  log.step(2, totalSteps, 'Authenticating with ECR...')
+  logger.step(2, totalSteps, 'Authenticating with ECR...')
 
   const registryUrl = repoUri.split('/')[0]
   const profileFlag = config.profile ? `--profile ${config.profile}` : ''
@@ -109,24 +109,24 @@ async function main(): Promise<void> {
     `docker login --username AWS --password-stdin ${registryUrl}`,
     { silent: true },
   )
-  log.success('Docker authenticated with ECR')
+  logger.success('Docker authenticated with ECR')
 
   // ─── Step 3: Build Docker image (skippable in CI) ──────────────────
   let localImage: string
 
   if (skipBuild) {
-    log.step(3, totalSteps, 'Skipping Docker build (--skip-build)')
+    logger.step(3, totalSteps, 'Skipping Docker build (--skip-build)')
     localImage = imageNameArg || `${repoName}:${imageTag}`
 
     // Verify image exists locally
     try {
       exec(`docker image inspect ${localImage}`, { silent: true })
-      log.success(`Using existing image: ${localImage}`)
+      logger.success(`Using existing image: ${localImage}`)
     } catch {
-      log.fatal(`Image not found locally: ${localImage}`)
+      logger.fatal(`Image not found locally: ${localImage}`)
     }
   } else {
-    log.step(3, totalSteps, 'Building Docker image...')
+    logger.step(3, totalSteps, 'Building Docker image...')
     localImage = `${repoName}:${imageTag}`
 
     // Fetch API URL from SSM for build-time injection
@@ -137,9 +137,9 @@ async function main(): Promise<void> {
     )
 
     if (apiUrl) {
-      log.success(`API URL: ${apiUrl}`)
+      logger.success(`API URL: ${apiUrl}`)
     } else {
-      log.warn('API URL not found in SSM, build will use file fallback')
+      logger.warn('API URL not found in SSM, build will use file fallback')
     }
 
     execStream(
@@ -151,22 +151,22 @@ async function main(): Promise<void> {
       `-t "${localImage}" .`,
       { cwd: projectRoot },
     )
-    log.success(`Docker image built: ${localImage}`)
+    logger.success(`Docker image built: ${localImage}`)
   }
 
   // ─── Step 4: Tag and push to ECR ───────────────────────────────────
-  log.step(4, totalSteps, 'Tagging and pushing to ECR...')
+  logger.step(4, totalSteps, 'Tagging and pushing to ECR...')
 
   const ecrImage = `${repoUri}:${imageTag}`
   exec(`docker tag ${localImage} ${ecrImage}`)
   execStream(`docker push ${ecrImage}`)
-  log.success(`Pushed: ${ecrImage}`)
+  logger.success(`Pushed: ${ecrImage}`)
 
   // ─── Step 5: Sync static assets to S3 ──────────────────────────────
   if (skipSync) {
-    log.step(5, totalSteps, 'Skipping S3 sync (--skip-sync)')
+    logger.step(5, totalSteps, 'Skipping S3 sync (--skip-sync)')
   } else {
-    log.step(5, totalSteps, 'Syncing static assets to S3...')
+    logger.step(5, totalSteps, 'Syncing static assets to S3...')
 
     // Clear stale local .next/static to avoid hash mismatches
     const localStaticDir = join(projectRoot, '.next', 'static')
@@ -184,9 +184,9 @@ async function main(): Promise<void> {
         { silent: true },
       )
       exec(`docker rm ${containerId}`, { silent: true })
-      log.success('Extracted static assets from Docker image')
+      logger.success('Extracted static assets from Docker image')
     } catch (error: any) {
-      log.warn(`Failed to extract static assets: ${error.message}`)
+      logger.warn(`Failed to extract static assets: ${error.message}`)
     }
 
     // Delegate to sync script
@@ -196,19 +196,19 @@ async function main(): Promise<void> {
       const profileArg = config.profile ? ` --profile "${config.profile}"` : ''
       execStream(`npx tsx ${syncScript} ${syncArgs}${profileArg}`)
     } else {
-      log.warn('sync-static-to-s3.ts not found. Skipping S3 sync.')
+      logger.warn('sync-static-to-s3.ts not found. Skipping S3 sync.')
     }
   }
 
-  log.summary('Push Complete!', {
+  logger.summary('Push Complete!', {
     'Image URI': `${repoUri}:${imageTag}`,
   })
 
-  log.nextSteps([
+  logger.nextSteps([
     `Deploy to ECS: npx tsx scripts/update-ecs-task.ts --env ${config.environment}`,
   ])
 }
 
 main().catch((error) => {
-  log.fatal(`ECR push failed: ${error.message}`)
+  logger.fatal(`ECR push failed: ${error.message}`)
 })

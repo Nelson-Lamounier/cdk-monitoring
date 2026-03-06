@@ -32,8 +32,8 @@ import {
   GetCallerIdentityCommand,
 } from '@aws-sdk/client-sts'
 import { fromIni } from '@aws-sdk/credential-providers'
-import * as log from './lib/logger.js'
-import { parseArgs, buildAwsConfig, exec } from './lib/aws-helpers.js'
+import logger from '@repo/script-utils/logger.js'
+import { parseArgs, buildAwsConfig, exec } from '@repo/script-utils/aws.js'
 
 // ========================================
 // CLI Arguments
@@ -56,11 +56,11 @@ const args = parseArgs(
 // ========================================
 
 async function listProfiles(): Promise<void> {
-  log.header('AWS Profile Helper')
+  logger.header('AWS Profile Helper')
 
   const credentialsFile = join(process.env.HOME || '~', '.aws', 'credentials')
   if (!existsSync(credentialsFile)) {
-    log.fatal(
+    logger.fatal(
       'No AWS credentials file found at ~/.aws/credentials\n' +
       '\n' +
       'Set up AWS credentials:\n' +
@@ -75,7 +75,7 @@ async function listProfiles(): Promise<void> {
     .map((line) => line.replace(/[[\]]/g, ''))
 
   if (profiles.length === 0) {
-    log.fatal('No profiles found in ~/.aws/credentials')
+    logger.fatal('No profiles found in ~/.aws/credentials')
   }
 
   if (process.env.AWS_PROFILE) {
@@ -84,9 +84,9 @@ async function listProfiles(): Promise<void> {
   }
 
   for (const profile of profiles) {
-    log.divider()
+    logger.divider()
     console.log(`Profile: ${profile}`)
-    log.divider()
+    logger.divider()
 
     try {
       const sts = new STSClient({
@@ -111,7 +111,7 @@ async function listProfiles(): Promise<void> {
     console.log('')
   }
 
-  log.divider()
+  logger.divider()
   console.log('')
   console.log('To use a profile for migration:')
   console.log('  $ npx tsx scripts/setup-migration.ts --profile your-profile-name')
@@ -139,8 +139,8 @@ async function main(): Promise<void> {
     process.env.S3_BUCKET_NAME ||
     `nextjs-article-assets-${config.environment}`
 
-  log.header('📋 Article Migration - Setup')
-  log.config('Configuration', {
+  logger.header('📋 Article Migration - Setup')
+  logger.config('Configuration', {
     'AWS Region': config.region,
     ...(config.profile ? { 'AWS Profile': config.profile } : {}),
     'DynamoDB Table': tableName,
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
   const totalSteps = 4
 
   // Step 1: Check AWS credentials
-  log.step(1, totalSteps, 'Checking AWS credentials...')
+  logger.step(1, totalSteps, 'Checking AWS credentials...')
 
   const sts = new STSClient({
     region: config.region,
@@ -159,11 +159,11 @@ async function main(): Promise<void> {
 
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}))
-    log.success('AWS credentials configured')
+    logger.success('AWS credentials configured')
     console.log(`  Account: ${identity.Account}`)
     console.log(`  Identity: ${identity.Arn}`)
   } catch {
-    log.fail('AWS credentials not configured')
+    logger.fail('AWS credentials not configured')
     console.log('')
     console.log('Options:')
     console.log('  1. Use a profile: npx tsx scripts/setup-migration.ts --profile your-profile')
@@ -174,7 +174,7 @@ async function main(): Promise<void> {
   console.log('')
 
   // Step 2: Check DynamoDB table
-  log.step(2, totalSteps, 'Checking DynamoDB table...')
+  logger.step(2, totalSteps, 'Checking DynamoDB table...')
 
   const dynamodb = new DynamoDBClient({
     region: config.region,
@@ -185,16 +185,16 @@ async function main(): Promise<void> {
     await dynamodb.send(
       new DescribeTableCommand({ TableName: tableName }),
     )
-    log.success(`DynamoDB table '${tableName}' exists`)
+    logger.success(`DynamoDB table '${tableName}' exists`)
   } catch {
-    log.fail(`DynamoDB table '${tableName}' not found`)
+    logger.fail(`DynamoDB table '${tableName}' not found`)
     console.log('Please create the table first or use --table to specify a different name')
     process.exit(1)
   }
   console.log('')
 
   // Step 3: Check S3 bucket
-  log.step(3, totalSteps, 'Checking S3 bucket...')
+  logger.step(3, totalSteps, 'Checking S3 bucket...')
 
   const s3 = new S3Client({
     region: config.region,
@@ -203,23 +203,23 @@ async function main(): Promise<void> {
 
   try {
     await s3.send(new HeadBucketCommand({ Bucket: bucketName }))
-    log.success(`S3 bucket '${bucketName}' exists`)
+    logger.success(`S3 bucket '${bucketName}' exists`)
   } catch {
-    log.fail(`S3 bucket '${bucketName}' not found`)
+    logger.fail(`S3 bucket '${bucketName}' not found`)
     console.log('Please create the bucket first or use --bucket to specify a different name')
     process.exit(1)
   }
   console.log('')
 
   // Step 4: Check dependencies
-  log.step(4, totalSteps, 'Checking Node.js dependencies...')
+  logger.step(4, totalSteps, 'Checking Node.js dependencies...')
 
   if (!existsSync('node_modules/@aws-sdk/client-dynamodb')) {
-    log.warn('Installing dependencies...')
+    logger.warn('Installing dependencies...')
     exec('yarn install', { silent: true })
-    log.success('Dependencies installed')
+    logger.success('Dependencies installed')
   } else {
-    log.success('Dependencies already installed')
+    logger.success('Dependencies already installed')
   }
   console.log('')
 
@@ -243,15 +243,15 @@ async function main(): Promise<void> {
   ].join('\n')
 
   writeFileSync('.env.migration', envContent)
-  log.success('Created .env.migration')
+  logger.success('Created .env.migration')
 
-  log.summary('Setup Complete!', {
+  logger.summary('Setup Complete!', {
     'Table': tableName,
     'Bucket': bucketName,
     'Config File': '.env.migration',
   })
 
-  log.nextSteps([
+  logger.nextSteps([
     'Load environment: export $(cat .env.migration | xargs)',
     'Preview migration: yarn migrate:articles:dry-run',
     'Run migration: yarn migrate:articles',
@@ -259,5 +259,5 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  log.fatal(`Setup failed: ${error.message}`)
+  logger.fatal(`Setup failed: ${error.message}`)
 })

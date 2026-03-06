@@ -44,12 +44,12 @@ import {
   HeadObjectCommand,
 } from '@aws-sdk/client-s3'
 import { lookup } from 'mime-types'
-import * as log from '../lib/logger.js'
+import logger from '@repo/script-utils/logger.js'
 import {
   parseArgs,
   buildAwsConfig,
   getSSMParameterWithFallbacks,
-} from '../lib/aws-helpers.js'
+} from '@repo/script-utils/aws.js'
 
 // ========================================
 // CLI Arguments
@@ -719,8 +719,8 @@ async function main() {
   const dryRun = (args['dry-run'] as boolean) || process.env.DRY_RUN === 'true'
   const forceUpdate = (args['force-update'] as boolean) || process.env.FORCE_UPDATE === 'true'
 
-  log.header('📝 Article Migration — MDX to DynamoDB')
-  log.config('Configuration', {
+  logger.header('📝 Article Migration — MDX to DynamoDB')
+  logger.config('Configuration', {
     'AWS Region': awsConfig.region,
     'Environment': awsConfig.environment,
     'Dry Run': String(dryRun),
@@ -730,7 +730,7 @@ async function main() {
   const totalSteps = 4
 
   // Step 1: Resolve DynamoDB table name from SSM
-  log.step(1, totalSteps, 'Discovering DynamoDB table from SSM...')
+  logger.step(1, totalSteps, 'Discovering DynamoDB table from SSM...')
 
   let tableName = process.env.DYNAMODB_TABLE_NAME
   if (!tableName) {
@@ -744,7 +744,7 @@ async function main() {
     if (tableResult) {
       tableName = tableResult.value
     } else {
-      log.fatal(
+      logger.fatal(
         `DynamoDB table name not found in SSM.\n` +
         `   Searched paths:\n` +
         `     /nextjs/${awsConfig.environment}/dynamodb-table-name\n` +
@@ -753,12 +753,12 @@ async function main() {
       )
     }
   } else {
-    log.success(`Using table from env: ${tableName}`)
+    logger.success(`Using table from env: ${tableName}`)
   }
-  log.success(`Table: ${tableName}`)
+  logger.success(`Table: ${tableName}`)
 
   // Step 2: Resolve S3 bucket name from SSM
-  log.step(2, totalSteps, 'Discovering S3 bucket from SSM...')
+  logger.step(2, totalSteps, 'Discovering S3 bucket from SSM...')
 
   let bucketName = process.env.S3_BUCKET_NAME
   if (!bucketName) {
@@ -772,7 +772,7 @@ async function main() {
     if (bucketResult) {
       bucketName = bucketResult.value
     } else {
-      log.fatal(
+      logger.fatal(
         `S3 bucket name not found in SSM.\n` +
         `   Searched paths:\n` +
         `     /nextjs/${awsConfig.environment}/assets-bucket-name\n` +
@@ -781,11 +781,11 @@ async function main() {
       )
     }
   } else {
-    log.success(`Using bucket from env: ${bucketName}`)
+    logger.success(`Using bucket from env: ${bucketName}`)
   }
   // Strip s3:// prefix and trailing slash if present
   bucketName = bucketName!.replace(/^s3:\/\//, '').replace(/\/$/, '')
-  log.success(`Bucket: ${bucketName}`)
+  logger.success(`Bucket: ${bucketName}`)
 
   const cloudfrontDomain = process.env.CLOUDFRONT_DOMAIN || ''
 
@@ -801,18 +801,18 @@ async function main() {
   }
 
   // Step 3: Discover articles
-  log.step(3, totalSteps, 'Discovering articles from filesystem...')
+  logger.step(3, totalSteps, 'Discovering articles from filesystem...')
 
   const slugs = getArticleSlugs(config.articlesDir)
   if (slugs.length === 0) {
-    log.fatal(`No articles found in ${config.articlesDir}`)
+    logger.fatal(`No articles found in ${config.articlesDir}`)
   }
 
-  log.success(`Found ${slugs.length} articles to migrate`)
+  logger.success(`Found ${slugs.length} articles to migrate`)
   slugs.forEach((slug) => console.log(`  - ${slug}`))
 
   // Step 4: Migrate articles
-  log.step(4, totalSteps, 'Running migration...')
+  logger.step(4, totalSteps, 'Running migration...')
 
   // Create AWS clients
   const clientConfig = {
@@ -839,7 +839,7 @@ async function main() {
 
   const totalImages = results.reduce((sum, r) => sum + r.imagesUploaded, 0)
 
-  log.summary('Migration Complete', {
+  logger.summary('Migration Complete', {
     'Migrated': String(successful.length),
     'Already Existed': String(alreadyExisted.length),
     'Failed': String(failed.length),
@@ -872,7 +872,7 @@ async function main() {
   // Exit non-zero if ALL articles failed (nothing was migrated or already present)
   const totalSuccess = successful.length + alreadyExisted.length
   if (totalSuccess === 0 && !dryRun) {
-    log.fatal(`Migration failed: no articles were successfully migrated out of ${slugs.length} found.`)
+    logger.fatal(`Migration failed: no articles were successfully migrated out of ${slugs.length} found.`)
   }
 
   if (failed.length > 0) {

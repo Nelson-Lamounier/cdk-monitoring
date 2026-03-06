@@ -28,7 +28,7 @@ import {
   CreateInvalidationCommand,
 } from '@aws-sdk/client-cloudfront'
 import { lookup } from 'mime-types'
-import * as log from './lib/logger.js'
+import logger from '@repo/script-utils/logger.js'
 import {
   parseArgs,
   buildAwsConfig,
@@ -36,7 +36,7 @@ import {
   getSSMParameter,
   getAccountId,
   resolveAuth,
-} from './lib/aws-helpers.js'
+} from '@repo/script-utils/aws.js'
 
 // ========================================
 // CLI Arguments
@@ -85,8 +85,8 @@ async function main(): Promise<void> {
   const projectRoot = join(__dirname, '..')
   const staticDir = join(projectRoot, '.next', 'static')
 
-  log.header('📦 Static Assets S3 Sync Script')
-  log.config('Configuration', {
+  logger.header('📦 Static Assets S3 Sync Script')
+  logger.config('Configuration', {
     'Auth Mode': auth.mode,
     'AWS Region': config.region,
     'Environment': config.environment,
@@ -95,20 +95,20 @@ async function main(): Promise<void> {
   const totalSteps = 5
 
   // Step 1: Verify static directory exists
-  log.step(1, totalSteps, 'Verifying static assets directory...')
+  logger.step(1, totalSteps, 'Verifying static assets directory...')
 
   if (!existsSync(staticDir)) {
-    log.fatal(
+    logger.fatal(
       `Static assets not found at: ${staticDir}\n` +
       "   Run 'yarn build' first to generate static assets.",
     )
   }
 
   const allFiles = getAllFiles(staticDir)
-  log.success(`Found ${allFiles.length} static assets`)
+  logger.success(`Found ${allFiles.length} static assets`)
 
   // Step 2: Get S3 bucket name from SSM
-  log.step(2, totalSteps, 'Discovering S3 bucket from SSM...')
+  logger.step(2, totalSteps, 'Discovering S3 bucket from SSM...')
 
   const ssmPaths = [
     `/nextjs/${config.environment}/assets-bucket-name`,
@@ -121,18 +121,18 @@ async function main(): Promise<void> {
   if (bucketResult) {
     bucketName = bucketResult.value
   } else {
-    log.warn('SSM parameter not found. Trying alternative discovery...')
+    logger.warn('SSM parameter not found. Trying alternative discovery...')
     const accountId = await getAccountId(config)
     bucketName = `nextjs-static-assets-${config.environment}-${accountId}`
-    log.warn(`Using fallback bucket name: ${bucketName}`)
+    logger.warn(`Using fallback bucket name: ${bucketName}`)
   }
 
   // Strip s3:// prefix and trailing slash if present
   bucketName = bucketName.replace(/^s3:\/\//, '').replace(/\/$/, '')
-  log.success(`Bucket: ${bucketName}`)
+  logger.success(`Bucket: ${bucketName}`)
 
   // Step 3: Sync static assets to S3
-  log.step(3, totalSteps, 'Syncing static assets to S3...')
+  logger.step(3, totalSteps, 'Syncing static assets to S3...')
   console.log(`   Source:      ${staticDir}`)
   console.log(`   Destination: s3://${bucketName}/_next/static/`)
 
@@ -161,7 +161,7 @@ async function main(): Promise<void> {
     uploaded++
   }
 
-  log.success(`Uploaded ${uploaded} files to S3`)
+  logger.success(`Uploaded ${uploaded} files to S3`)
 
   // Delete stale files from S3 that no longer exist locally
   const localKeys = new Set(
@@ -200,11 +200,11 @@ async function main(): Promise<void> {
         }),
       )
     }
-    log.success(`Deleted ${staleKeys.length} stale files from S3`)
+    logger.success(`Deleted ${staleKeys.length} stale files from S3`)
   }
 
   // Step 4: Verify sync
-  log.step(4, totalSteps, 'Verifying upload...')
+  logger.step(4, totalSteps, 'Verifying upload...')
 
   let totalInS3 = 0
   continuationToken = undefined
@@ -220,10 +220,10 @@ async function main(): Promise<void> {
     continuationToken = listResult.NextContinuationToken
   } while (continuationToken)
 
-  log.success(`${totalInS3} files in S3`)
+  logger.success(`${totalInS3} files in S3`)
 
   // Step 5: CloudFront Cache Invalidation
-  log.step(5, totalSteps, 'CloudFront cache invalidation...')
+  logger.step(5, totalSteps, 'CloudFront cache invalidation...')
 
   if (skipInvalidation) {
     console.log(log.yellow('⏩ Skipping CloudFront invalidation (--skip-invalidation)'))
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
     const distributionId = await getSSMParameter(cfParam, config)
 
     if (!distributionId) {
-      log.warn(
+      logger.warn(
         `CloudFront distribution ID not found in SSM. Skipping invalidation.\n` +
         `   Create SSM parameter: ${cfParam}`,
       )
@@ -258,13 +258,13 @@ async function main(): Promise<void> {
         }),
       )
 
-      log.success(
+      logger.success(
         `CloudFront invalidation created: ${result.Invalidation?.Id}`,
       )
     }
   }
 
-  log.summary('Static Assets Sync Complete!', {
+  logger.summary('Static Assets Sync Complete!', {
     'S3 Bucket': bucketName,
     'S3 Prefix': '/_next/static/',
     'Files Synced': String(uploaded),
@@ -272,5 +272,5 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  log.fatal(`S3 sync failed: ${error.message}`)
+  logger.fatal(`S3 sync failed: ${error.message}`)
 })
