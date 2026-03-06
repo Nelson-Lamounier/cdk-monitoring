@@ -21,7 +21,7 @@
 #
 # Prerequisites:
 #   - ArgoCD running on the control plane node
-#   - SSH deploy key configured in ArgoCD (allows Git pull)
+#   - SSH deploy key configured in ArgoCD (allows Git pull) - Test
 
 name: "GitOps: K8s Applications (Dev)"
 
