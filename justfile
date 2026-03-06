@@ -143,80 +143,53 @@ ci-synth-validate:
 # Called by: .github/workflows/_deploy-kubernetes.yml
 [group('ci')]
 ci-synth project environment:
-    npx tsx infra/scripts/deployment/synthesize-ci.ts {{project}} {{environment}}
+    npx tsx infra/scripts/ci/synthesize.ts {{project}} {{environment}}
 
 # CI preflight: validate inputs, verify credentials and bootstrap
 [group('ci')]
 ci-preflight *ARGS:
-    npx tsx infra/scripts/deployment/preflight-checks.ts {{ARGS}}
+    npx tsx infra/scripts/ci/preflight-checks.ts {{ARGS}}
 
 # CI deploy: deploy a specific stack (e.g., just ci-deploy ControlPlane-development)
 [group('ci')]
 ci-deploy *ARGS:
-    npx tsx infra/scripts/deployment/deploy.ts {{ARGS}}
+    npx tsx infra/scripts/cd/deploy.ts {{ARGS}}
 
 # CI rollback: rollback a failed deployment
 [group('ci')]
 ci-rollback *ARGS:
-    npx tsx infra/scripts/deployment/rollback.ts {{ARGS}}
+    npx tsx infra/scripts/cd/diagnose-rollback.ts {{ARGS}} --mode rollback
 
 # CI drift detection
 [group('ci')]
 ci-drift *ARGS:
-    npx tsx infra/scripts/deployment/drift-detection.ts {{ARGS}}
+    npx tsx infra/scripts/ci/drift-detection.ts {{ARGS}}
 
 # CI diagnose: diagnose a failed CloudFormation stack deployment
 [group('ci')]
 ci-diagnose *ARGS:
-    npx tsx infra/scripts/deployment/diagnose-stack.ts {{ARGS}}
+    npx tsx infra/scripts/cd/diagnose-rollback.ts {{ARGS}} --mode diagnose
 
-# CI collect-outputs: retrieve and save CDK stack outputs
+# CI finalize: collect outputs, write summary, save artifacts
 [group('ci')]
-ci-collect-outputs *ARGS:
-    npx tsx infra/scripts/deployment/collect-outputs.ts {{ARGS}}
-
-# CI deploy-summary: generate per-stack deployment summary
-[group('ci')]
-ci-deploy-summary *ARGS:
-    npx tsx infra/scripts/deployment/deploy-summary.ts {{ARGS}}
+ci-finalize *ARGS:
+    npx tsx infra/scripts/cd/finalize.ts {{ARGS}}
 
 # CI deploy-manifests: deploy K8s manifests via SSM Run Command
 # Usage: just ci-deploy-manifests kubernetes development --region eu-west-1
 [group('ci')]
 ci-deploy-manifests *ARGS:
-    npx tsx infra/scripts/deployment/deploy-manifests.ts {{ARGS}}
-
-# CI verify deployment
-[group('ci')]
-ci-verify *ARGS:
-    npx tsx infra/scripts/deployment/verify-deployment.ts {{ARGS}}
-
-# CI smoke tests (Kubernetes Infrastructure — application endpoints)
-[group('ci')]
-ci-smoke *ARGS:
-    npx tsx infra/scripts/deployment/smoke-tests-nextjs-kubernetes.ts {{ARGS}}
+    npx tsx kubernetes-app/app-deploy/monitoring/scripts/deploy-manifests.ts {{ARGS}}
 
 # CI smoke tests (Kubernetes Infrastructure — full kubeadm deployment)
 [group('ci')]
 ci-smoke-kubernetes-infra *ARGS:
-    npx tsx infra/scripts/deployment/smoke-tests-kubernetes.ts {{ARGS}}
+    npx tsx infra/scripts/validation/smoke-tests-kubernetes.ts {{ARGS}}
 
 # CI fetch boot logs from CloudWatch (failure diagnostics)
 [group('ci')]
 ci-fetch-boot-logs *ARGS:
-    npx tsx infra/scripts/deployment/fetch-boot-logs.ts {{ARGS}}
-
-
-# CI get stack names
-[group('ci')]
-ci-stack-names *ARGS:
-    npx tsx infra/scripts/deployment/get-stack-names.ts {{ARGS}}
-
-# CI deployment summary (generates GitHub step summary)
-# Called by: all _deploy-*.yml workflows → summary job
-[group('ci')]
-ci-summary *ARGS:
-    npx tsx infra/scripts/deployment/deployment-summary.ts {{ARGS}}
+    npx tsx kubernetes-app/k8s-bootstrap/scripts/fetch-boot-logs.ts {{ARGS}}
 
 
 
@@ -341,9 +314,10 @@ security-scan *ARGS:
 # =============================================================================
 
 # Sync Grafana dashboards to S3
-[group('k8s')]
-k8s-dashboards *ARGS:
-    npx tsx infra/scripts/deployment/sync-dashboards.ts {{ARGS}}
+# TODO: sync-dashboards.ts does not exist yet — uncomment when implemented
+# [group('k8s')]
+# k8s-dashboards *ARGS:
+#     npx tsx infra/scripts/pipeline/sync-dashboards.ts {{ARGS}}
 
 
 
@@ -351,6 +325,19 @@ k8s-dashboards *ARGS:
 [group('k8s')]
 k8s-build-golden-ami env="development" region="eu-west-1":
     npx tsx kubernetes-app/infra-ami/scripts/build-golden-ami.ts {{env}} --region {{region}}
+
+# Validate Grafana dashboard JSON files (syntax, schema, unique UIDs)
+# Catches broken dashboards BEFORE Helm render or ArgoCD sync.
+# Called by: .github/workflows/gitops-k8s-dev.yml → validate job
+[group('k8s')]
+validate-dashboards:
+    npx tsx kubernetes-app/app-deploy/monitoring/scripts/validate-dashboards.ts
+
+# Run dashboard validation test suite (per-file granularity)
+# Uses node:test for IDE integration and detailed test reports.
+[group('test')]
+test-dashboards:
+    npx tsx --test kubernetes-app/app-deploy/monitoring/tests/validate-dashboards.test.ts
 
 # Validate all Helm charts (lint + template render)
 # Catches rendering errors (broken delimiters, missing values) BEFORE ArgoCD sync.
@@ -521,27 +508,30 @@ ssm-status execution-id region="eu-west-1" profile="dev-account":
 # =============================================================================
 
 # Deploy CrossAccountDnsRoleStack to root account (one-time setup)
-[group('ops')]
-setup-dns-role profile hosted-zone-ids trusted-account-ids *ARGS:
-    npx tsx infra/scripts/deployment/setup-dns-role.ts \
-      --profile {{profile}} \
-      --hosted-zone-ids {{hosted-zone-ids}} \
-      --trusted-account-ids {{trusted-account-ids}} \
-      {{ARGS}}
+# TODO: setup-dns-role.ts does not exist yet — uncomment when implemented
+# [group('ops')]
+# setup-dns-role profile hosted-zone-ids trusted-account-ids *ARGS:
+#     npx tsx infra/scripts/pipeline/setup-dns-role.ts \
+#       --profile {{profile}} \
+#       --hosted-zone-ids {{hosted-zone-ids}} \
+#       --trusted-account-ids {{trusted-account-ids}} \
+#       {{ARGS}}
 
 # Get CrossAccountDnsRoleStack outputs (role ARN)
-[group('ops')]
-get-dns-role profile *ARGS:
-    npx tsx infra/scripts/deployment/get-dns-role.ts \
-      --profile {{profile}} \
-      {{ARGS}}
+# TODO: get-dns-role.ts does not exist yet — uncomment when implemented
+# [group('ops')]
+# get-dns-role profile *ARGS:
+#     npx tsx infra/scripts/pipeline/get-dns-role.ts \
+#       --profile {{profile}} \
+#       {{ARGS}}
 
 # Deploy Steampipe cross-account ReadOnly roles
-[group('ops')]
-deploy-steampipe-roles monitoring-account *ARGS:
-    npx tsx infra/scripts/deployment/deploy-steampipe-roles.ts \
-      --monitoring-account {{monitoring-account}} \
-      {{ARGS}}
+# TODO: deploy-steampipe-roles.ts does not exist yet — uncomment when implemented
+# [group('ops')]
+# deploy-steampipe-roles monitoring-account *ARGS:
+#     npx tsx infra/scripts/pipeline/deploy-steampipe-roles.ts \
+#       --monitoring-account {{monitoring-account}} \
+#       {{ARGS}}
 
 # Delete a CloudFormation stack (e.g., just delete-stack MyStack eu-west-1 dev-account)
 [group('ops')]
