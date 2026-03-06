@@ -124,7 +124,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
 
       - name: Configure AWS Credentials

@@ -20,7 +20,7 @@ This action consolidates the repetitive Node.js + Yarn setup pattern used across
 ### Basic Usage
 
 ```yaml
-- name: Setup Node.js and Yarn
+- name: Setup Environment and Dependencies
   uses: ./.github/actions/setup-node-yarn
 ```
 
@@ -36,7 +36,7 @@ This action consolidates the repetitive Node.js + Yarn setup pattern used across
 ### Skip Dependency Installation
 
 ```yaml
-- name: Setup Node.js and Yarn (no install)
+- name: Setup Environment and Dependencies (no install)
   uses: ./.github/actions/setup-node-yarn
   with:
     install-dependencies: "false"
@@ -45,7 +45,7 @@ This action consolidates the repetitive Node.js + Yarn setup pattern used across
 ### With Cache Key Output
 
 ```yaml
-- name: Setup Node.js and Yarn
+- name: Setup Environment and Dependencies
   id: setup-node
   uses: ./.github/actions/setup-node-yarn
 
@@ -113,7 +113,7 @@ With Yarn v4, this operation is extremely fast on cache hits (~2-5 seconds).
 ### After (setup-node-yarn)
 
 ```yaml
-- name: Setup Node.js and Yarn
+- name: Setup Environment and Dependencies
   uses: ./.github/actions/setup-node-yarn
   with:
     node-version: ${{ env.NODE_VERSION }}
@@ -137,7 +137,7 @@ setup:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Setup Node.js and Yarn
+    - name: Setup Environment and Dependencies
       id: setup
       uses: ./.github/actions/setup-node-yarn
 ```
@@ -154,7 +154,7 @@ deploy:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Setup Node.js and Yarn
+    - name: Setup Environment and Dependencies
       uses: ./.github/actions/setup-node-yarn
       with:
         node-version: ${{ needs.setup.outputs.node-version }}

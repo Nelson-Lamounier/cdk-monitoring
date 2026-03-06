@@ -160,7 +160,7 @@ jobs:
         id: commit-info
         run: echo "short_sha=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         id: setup-tools
         uses: ./.github/actions/setup-node-yarn
         with:
@@ -302,7 +302,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
@@ -992,7 +992,7 @@ jobs:
         if: steps.prereqs.outputs.skip != 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         if: steps.prereqs.outputs.skip != 'true'
         uses: ./.github/actions/setup-node-yarn
         with:

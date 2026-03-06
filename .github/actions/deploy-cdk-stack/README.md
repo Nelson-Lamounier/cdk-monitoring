@@ -356,7 +356,7 @@ deploy-networking:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Setup Node.js and Yarn
+    - name: Setup Environment and Dependencies
       uses: ./.github/actions/setup-node-yarn
 
     - name: Configure AWS Credentials

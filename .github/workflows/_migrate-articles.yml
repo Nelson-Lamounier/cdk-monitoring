@@ -60,7 +60,7 @@ jobs:
             src/app/articles
           sparse-checkout-cone-mode: true
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
 
       # ------------------------------------------------------------------

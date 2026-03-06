@@ -1,7 +1,7 @@
 # @format
 
-name: "Setup Node.js with Yarn and Caching"
-description: "Centralised composite action for Node.js, Yarn v4, and dependency caching. Container-aware: skips tool installation when running inside the CI Docker image."
+name: "Setup Environment and Dependencies"
+description: "Container-aware setup: installs Node.js/Yarn on bare runners, then restores dependency cache and runs yarn install on all environments."
 
 inputs:
   node-version:
