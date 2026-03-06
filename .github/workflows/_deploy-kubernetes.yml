@@ -418,11 +418,16 @@ jobs:
       always()
       && needs.deploy-base.result == 'success'
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 40
     environment: ${{ inputs.environment }}
     continue-on-error: true
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
         with:
@@ -430,214 +435,21 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
           audience: sts.amazonaws.com
 
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: infra
+
       - name: Stream Image Builder Logs
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
-          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: |
-          echo "=== Golden AMI Deploy Observer ==="
-          echo "Monitoring Image Builder build triggered by CloudFormation..."
-          echo ""
-
-          STACK_NAME="${{ needs.setup.outputs.goldenami-stack }}"
-
-          # ── Pre-check: is the stack actively deploying? ──────────────
-          # describe-stack-events returns ALL historical events, so we
-          # cannot rely on it. Instead, check the stack's current status.
-          STACK_STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text 2>/dev/null || echo "")
-
-          case "$STACK_STATUS" in
-            *_IN_PROGRESS)
-              echo "Stack is $STACK_STATUS — checking for active Image Builder build..."
-              ;;
-            *)
-              echo "[INFO] Stack status is ${STACK_STATUS:-NOT_FOUND} — no active deployment."
-              echo "  Skipping observer."
-              exit 0
-              ;;
-          esac
-
-          # Quick check: is there actually an Image Builder build running?
-          ACTIVE_BUILD=$(aws imagebuilder list-images \
-            --owner Self \
-            --query "imageVersionList[*].arn" \
-            --output text --region "$REGION" 2>/dev/null || echo "")
-
-          HAS_ACTIVE=false
-          for VER_ARN in $ACTIVE_BUILD; do
-            BLD_ARNS=$(aws imagebuilder list-image-build-versions \
-              --image-version-arn "$VER_ARN" \
-              --query "imageSummaryList[?state.status=='BUILDING' || state.status=='TESTING' || state.status=='DISTRIBUTING' || state.status=='INTEGRATING'].arn" \
-              --output text --region "$REGION" 2>/dev/null || echo "")
-            if [ -n "$BLD_ARNS" ] && [ "$BLD_ARNS" != "None" ]; then
-              HAS_ACTIVE=true
-              break
-            fi
-          done
-
-          if [ "$HAS_ACTIVE" = "false" ]; then
-            echo "[INFO] Stack is deploying but no active Image Builder build detected."
-            echo "  CloudFormation may have determined no AMI changes are needed."
-            echo "  Skipping observer."
-            exit 0
-          fi
-
-          echo "Active Image Builder build detected — monitoring..."
-          echo ""
-
-          # ── Resolve S3 log prefix ───────────────────────────────────
-          SSM_PREFIX="/k8s/${CDK_ENV}"
-          S3_BUCKET=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/scripts-bucket" \
-            --query 'Parameter.Value' --output text \
-            --region "$REGION" 2>/dev/null || echo "")
-          S3_LOG_PREFIX="s3://${S3_BUCKET}/image-builder-logs/"
-
-          # ── Wait for an active Image Builder build ──────────────────
-          MAX_WAIT=600
-          WAITED=0
-          BUILD_ARN=""
-
-          echo "Waiting for Image Builder build to start (CFN creates it)..."
-
-          while [ -z "$BUILD_ARN" ] && [ $WAITED -lt $MAX_WAIT ]; do
-            # List all image version ARNs in this account
-            IMAGE_VERSIONS=$(aws imagebuilder list-images \
-              --owner Self \
-              --query "imageVersionList[*].arn" \
-              --output text --region "$REGION" 2>/dev/null || echo "")
-
-            # For each version, list its build versions and check status
-            for VER_ARN in $IMAGE_VERSIONS; do
-              BUILD_ARNS=$(aws imagebuilder list-image-build-versions \
-                --image-version-arn "$VER_ARN" \
-                --query "imageSummaryList[*].arn" \
-                --output text --region "$REGION" 2>/dev/null || echo "")
-
-              for BLD_ARN in $BUILD_ARNS; do
-                BLD_STATUS=$(aws imagebuilder get-image \
-                  --image-build-version-arn "$BLD_ARN" \
-                  --query 'image.state.status' --output text \
-                  --region "$REGION" 2>/dev/null || echo "")
-
-                case "$BLD_STATUS" in
-                  BUILDING|TESTING|DISTRIBUTING|INTEGRATING)
-                    BUILD_ARN="$BLD_ARN"
-                    break 3
-                    ;;
-                esac
-              done
-            done
-
-            # If no active build found this iteration, wait
-            if [ -z "$BUILD_ARN" ]; then
-              echo "  Waiting for build to start... (${WAITED}s / ${MAX_WAIT}s)"
-              sleep 15
-              WAITED=$((WAITED + 15))
-            fi
-          done
-
-          if [ -z "$BUILD_ARN" ]; then
-            echo "[INFO] No active build detected after ${MAX_WAIT}s"
-            echo "  CloudFormation may have detected no changes (AMI already current)."
-            exit 0
-          fi
-
-          echo ""
-          echo "Tracking build: $BUILD_ARN"
-          echo ""
-
-          # ── Poll build status + stream logs ─────────────────────────
-          MAX_POLLS=35
-          INTERVAL=60
-
-          for i in $(seq 1 $MAX_POLLS); do
-            STATUS=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
-              --query 'image.state.status' --output text --region "$REGION" 2>/dev/null || echo "UNKNOWN")
-
-            TIMESTAMP=$(date '+%H:%M:%S')
-            echo "[$TIMESTAMP] Poll $i/$MAX_POLLS — Status: $STATUS"
-
-            # Stream S3 build logs (incremental)
-            if [ -n "$S3_BUCKET" ]; then
-              echo "::group::Build Logs (S3 — poll $i)"
-              LOG_FILES=$(aws s3 ls "$S3_LOG_PREFIX" --recursive --region "$REGION" 2>/dev/null | awk '{print $NF}' || echo "")
-              LOG_COUNT=$(echo "$LOG_FILES" | grep -c . 2>/dev/null || echo "0")
-
-              if [ "$LOG_COUNT" -gt 0 ] 2>/dev/null; then
-                for LOG_FILE in $LOG_FILES; do
-                  echo "--- s3://${S3_BUCKET}/${LOG_FILE} ---"
-                  aws s3 cp "s3://${S3_BUCKET}/${LOG_FILE}" - --region "$REGION" 2>/dev/null | tail -50
-                  echo ""
-                done
-              else
-                echo "  (no log files yet)"
-              fi
-              echo "::endgroup::"
-            fi
-
-            # Stream CloudWatch logs (Image Builder auto-creates these)
-            echo "::group::CloudWatch Logs (poll $i)"
-            for LG in $(aws logs describe-log-groups \
-              --log-group-name-prefix "/aws/imagebuilder/" \
-              --query 'logGroups[].logGroupName' \
-              --output text --region "$REGION" 2>/dev/null || echo ""); do
-
-              STREAM=$(aws logs describe-log-streams \
-                --log-group-name "$LG" \
-                --order-by LastEventTime --descending --max-items 1 \
-                --query 'logStreams[0].logStreamName' \
-                --output text --region "$REGION" 2>/dev/null || echo "")
-
-              if [ -n "$STREAM" ] && [ "$STREAM" != "None" ]; then
-                aws logs get-log-events \
-                  --log-group-name "$LG" \
-                  --log-stream-name "$STREAM" \
-                  --limit 30 \
-                  --output json --region "$REGION" 2>/dev/null | \
-                  jq -r '.events[].message' 2>/dev/null || true
-              fi
-            done
-            echo "::endgroup::"
-
-            case "$STATUS" in
-              AVAILABLE)
-                echo ""
-                AMI_ID=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
-                  --query 'image.outputResources.amis[0].image' --output text --region "$REGION" 2>/dev/null || echo "unknown")
-                echo "[PASS] Golden AMI built successfully: $AMI_ID"
-                exit 0
-                ;;
-              FAILED|CANCELLED)
-                echo ""
-                REASON=$(aws imagebuilder get-image --image-build-version-arn "$BUILD_ARN" \
-                  --query 'image.state.reason' --output text --region "$REGION" 2>/dev/null || echo "unknown")
-                echo "[FAIL] Build failed: $REASON"
-
-                # Dump full S3 logs on failure
-                if [ -n "$S3_BUCKET" ]; then
-                  echo "::group::Full Build Logs (S3 — for debugging)"
-                  for LOG_FILE in $(aws s3 ls "$S3_LOG_PREFIX" --recursive --region "$REGION" 2>/dev/null | awk '{print $NF}' || echo ""); do
-                    echo "--- s3://${S3_BUCKET}/${LOG_FILE} ---"
-                    aws s3 cp "s3://${S3_BUCKET}/${LOG_FILE}" - --region "$REGION" 2>/dev/null || echo "(failed to download)"
-                    echo ""
-                  done
-                  echo "::endgroup::"
-                fi
-
-                exit 1
-                ;;
-            esac
-
-            sleep $INTERVAL
-          done
-
-          echo ""
-          echo "::warning::Golden AMI Deploy Observer timed out after ${MAX_POLLS}m"
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          SSM_PREFIX: /k8s/${{ inputs.cdk-environment }}
+        run: just ci-golden-ami-observer "${{ needs.setup.outputs.goldenami-stack }}" --region "$AWS_REGION" --ssm-prefix "$SSM_PREFIX"
 
   # ===========================================================================
   # Deploy Base Stack (2/6) — VPC networking + SG + KMS + EBS + EIP

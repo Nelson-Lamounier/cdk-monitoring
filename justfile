@@ -176,6 +176,11 @@ ci-rollback *ARGS:
 ci-drift *ARGS:
     npx tsx infra/scripts/ci/drift-detection.ts {{ARGS}}
 
+# CI golden AMI observer: stream Image Builder build logs during deployment
+[group('ci')]
+ci-golden-ami-observer *ARGS:
+    npx tsx infra/scripts/ci/golden-ami-observer.ts {{ARGS}}
+
 # CI diagnose: diagnose a failed CloudFormation stack deployment
 [group('ci')]
 ci-diagnose *ARGS:
