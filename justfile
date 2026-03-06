@@ -106,36 +106,47 @@ bootstrap account profile *ARGS:
 [group('ci')]
 ci-synth-validate:
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -uo pipefail
     cd infra
+    FAILURES=0
+
     echo "==========================================="
     echo "Validating K8s Project (dev)"
     echo "==========================================="
-    # k8s stacks: Data + Base + ControlPlane + AppWorker + MonitoringWorker + AppIam + Api + Edge
-    npx cdk list -c project=kubernetes -c environment=dev --no-lookups || {
-      echo "Note: Some stacks may require cached context in cdk.context.json"
-    }
-    npx cdk synth -c project=kubernetes -c environment=dev --no-lookups --quiet || {
-      echo "⚠ K8s synth requires cached context — run locally to update cdk.context.json"
-    }
+    if npx cdk synth -c project=kubernetes -c environment=dev --no-lookups --quiet; then
+      echo "✓ K8s synth passed"
+    else
+      echo "✗ K8s synth FAILED"
+      FAILURES=$((FAILURES + 1))
+    fi
 
     echo ""
     echo "==========================================="
     echo "Validating Bedrock Project (dev)"
     echo "==========================================="
-    npx cdk synth -c project=bedrock -c environment=dev --no-lookups --quiet || {
-      echo "⚠ Bedrock synth failed"
-    }
+    if npx cdk synth -c project=bedrock -c environment=dev --no-lookups --quiet; then
+      echo "✓ Bedrock synth passed"
+    else
+      echo "⚠ Bedrock synth failed (expected in container — no Docker daemon)"
+      # Not counted as failure: Bedrock constructs require Docker for asset bundling
+    fi
 
     echo ""
     echo "==========================================="
     echo "Validating Shared Project (dev)"
     echo "==========================================="
-    npx cdk synth -c project=shared -c environment=dev --no-lookups --quiet || {
-      echo "⚠ Shared synth failed"
-    }
+    if npx cdk synth -c project=shared -c environment=dev --no-lookups --quiet; then
+      echo "✓ Shared synth passed"
+    else
+      echo "✗ Shared synth FAILED"
+      FAILURES=$((FAILURES + 1))
+    fi
 
     echo ""
+    if [ "$FAILURES" -gt 0 ]; then
+      echo "✗ CDK synthesis validation failed ($FAILURES project(s) failed)"
+      exit 1
+    fi
     echo "✓ CDK synthesis validation complete (all projects)"
 
 # CI synth: synthesize + output stack names (e.g., just ci-synth kubernetes development)
