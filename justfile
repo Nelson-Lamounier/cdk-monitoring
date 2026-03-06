@@ -193,7 +193,7 @@ ci-failure-report *ARGS:
 
 # CI finalize: collect outputs, write summary, save artifacts
 [group('ci')]
-ci-finalize *ARGS:
+ci-finalize-deployment *ARGS:
     npx tsx infra/scripts/cd/finalize.ts {{ARGS}}
 
 # CI deploy-manifests: deploy K8s manifests via SSM Run Command

@@ -296,7 +296,7 @@ jobs:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
-    if: needs.setup.result == 'success' && inputs.cdk-environment != 'development'
+    if: needs.setup.result == 'success'
 
     steps:
       - name: Checkout
