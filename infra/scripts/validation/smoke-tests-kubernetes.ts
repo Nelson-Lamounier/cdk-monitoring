@@ -26,8 +26,7 @@
  *   1 = critical check failed
  */
 
-import { appendFileSync } from 'fs';
-
+import { parseArgs } from 'util';
 
 import {
   CloudFormationClient,
@@ -35,10 +34,11 @@ import {
 } from '@aws-sdk/client-cloudformation';
 import { HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import { GetParametersCommand, SSMClient } from '@aws-sdk/client-ssm';
-import { Agent } from 'undici';
+import { setOutput, writeSummary } from '@repo/script-utils/github.js';
+import logger from '@repo/script-utils/logger.js';
+import { Agent, fetch as undiciFetch } from 'undici';
 
-import logger from './logger.js';
-import { getProject, type Environment } from './stacks.js';
+import { getProject, type Environment } from '../shared/stacks.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,18 +55,20 @@ interface CheckResult {
 // ---------------------------------------------------------------------------
 // CLI argument parsing
 // ---------------------------------------------------------------------------
-const args = process.argv.slice(2);
-const environment = args[0] as Environment;
+const { positionals, values: flags } = parseArgs({
+  args: process.argv.slice(2),
+  allowPositionals: true,
+  options: {
+    region: { type: 'string', default: process.env.AWS_REGION || 'eu-west-1' },
+    'cloudfront-domain': { type: 'string', default: process.env.CLOUDFRONT_DOMAIN || '' },
+  },
+});
 
-function getFlag(name: string): string {
-  const idx = args.indexOf(`--${name}`);
-  return idx !== -1 ? args[idx + 1] : '';
-}
-
-const region = getFlag('region') || process.env.AWS_REGION || 'eu-west-1';
+const environment = positionals[0] as Environment;
+const region = flags.region!;
 const edgeRegion = 'us-east-1';
 
-let cloudfrontDomain = getFlag('cloudfront-domain') || process.env.CLOUDFRONT_DOMAIN || '';
+let cloudfrontDomain = flags['cloudfront-domain']!;
 
 if (!environment) {
   console.error(
@@ -78,11 +80,13 @@ if (!environment) {
 // ---------------------------------------------------------------------------
 // Project Configuration
 // ---------------------------------------------------------------------------
-const project = getProject('kubernetes');
-if (!project) {
+const _project = getProject('kubernetes');
+if (!_project) {
   console.error('Kubernetes project not found in stacks configuration');
   process.exit(1);
 }
+// Re-bind after the guard so TypeScript narrowing persists across function boundaries
+const project = _project;
 
 // SSM prefix matches the CDK configuration
 const k8sSsmPrefix = `/k8s/${environment}`;
@@ -99,19 +103,6 @@ const ssmEdge = new SSMClient({ region: edgeRegion });
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-function setOutput(key: string, value: string): void {
-  const outputFile = process.env.GITHUB_OUTPUT;
-  if (outputFile) {
-    appendFileSync(outputFile, `${key}=${value}\n`);
-  }
-}
-
-function appendSummary(content: string): void {
-  const summaryFile = process.env.GITHUB_STEP_SUMMARY;
-  if (summaryFile) {
-    appendFileSync(summaryFile, content + '\n');
-  }
-}
 
 /**
  * HTTP check with retry and exponential backoff.
@@ -144,19 +135,11 @@ async function httpCheckWithRetry(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-      const fetchOpts: RequestInit & { dispatcher?: Agent } = {
-        signal: controller.signal,
+      const response = await undiciFetch(url, {
+        signal: AbortSignal.timeout(timeoutMs),
         redirect: 'follow',
-      };
-      if (dispatcher) {
-        (fetchOpts as Record<string, unknown>).dispatcher = dispatcher;
-      }
-
-      const response = await fetch(url, fetchOpts);
-      clearTimeout(timeout);
+        ...(dispatcher && { dispatcher }),
+      });
       return response.status;
     } catch (err) {
       lastError = (err as Error).message || 'unknown error';
@@ -215,55 +198,61 @@ let eipAddress = '';
 let apiGatewayUrl = '';
 
 async function discoverEndpoints(): Promise<void> {
-  // Discover EIP from SSM (/k8s/{env}/elastic-ip)
-  logger.task('Auto-discovering EIP from SSM...');
-  try {
-    const response = await ssm.send(
-      new GetParametersCommand({ Names: [`${k8sSsmPrefix}/elastic-ip`] }),
-    );
-    const value = response.Parameters?.[0]?.Value;
+  logger.task('Auto-discovering endpoints from SSM and stack outputs...');
+
+  const apiStack = project.stacks.find((s) => s.id === 'api');
+
+  const [eipResult, cfResult, apiResult] = await Promise.allSettled([
+    // EIP from SSM
+    ssm.send(new GetParametersCommand({ Names: [`${k8sSsmPrefix}/elastic-ip`] })),
+    // CloudFront domain from Edge SSM (only if not provided via CLI)
+    !cloudfrontDomain
+      ? ssmEdge.send(
+          new GetParametersCommand({
+            Names: [`${k8sSsmPrefix}/cloudfront/distribution-domain`],
+          }),
+        )
+      : Promise.resolve(null),
+    // API Gateway URL from stack output
+    apiStack
+      ? getStackOutput(apiStack.getStackName(environment), 'ApiUrl')
+      : Promise.resolve(undefined),
+  ]);
+
+  // Process EIP
+  if (eipResult.status === 'fulfilled') {
+    const value = eipResult.value?.Parameters?.[0]?.Value;
     if (value) {
       eipAddress = value;
       logger.success(`EIP discovered: ${eipAddress}`);
     } else {
       logger.warn('EIP not found in SSM');
     }
-  } catch (err) {
-    logger.warn(`EIP discovery failed: ${(err as Error).message}`);
+  } else {
+    logger.warn(`EIP discovery failed: ${eipResult.reason}`);
   }
 
-  // Discover CloudFront domain from SSM (Edge region: us-east-1)
-  if (!cloudfrontDomain) {
-    logger.task('Auto-discovering CloudFront domain from SSM (us-east-1)...');
-    try {
-      const response = await ssmEdge.send(
-        new GetParametersCommand({
-          Names: [`${k8sSsmPrefix}/cloudfront/distribution-domain`],
-        }),
-      );
-      const value = response.Parameters?.[0]?.Value;
-      if (value) {
-        cloudfrontDomain = value;
-        logger.success(`CloudFront domain discovered: ${cloudfrontDomain}`);
-      } else {
-        logger.warn('CloudFront domain not found in SSM (Edge stack may not be deployed)');
-      }
-    } catch (err) {
-      logger.warn(`CloudFront domain discovery failed: ${(err as Error).message}`);
-    }
-  }
-
-  // Discover API Gateway URL from API stack output
-  logger.task('Auto-discovering API Gateway URL...');
-  const apiStack = project!.stacks.find((s) => s.id === 'api');
-  if (apiStack) {
-    const url = await getStackOutput(apiStack.getStackName(environment), 'ApiUrl');
-    if (url) {
-      apiGatewayUrl = url;
-      logger.success(`API Gateway discovered: ${apiGatewayUrl}`);
+  // Process CloudFront
+  if (cfResult.status === 'fulfilled' && cfResult.value) {
+    const value = cfResult.value.Parameters?.[0]?.Value;
+    if (value) {
+      cloudfrontDomain = value;
+      logger.success(`CloudFront domain discovered: ${cloudfrontDomain}`);
     } else {
-      logger.warn('API Gateway URL not found in stack outputs');
+      logger.warn('CloudFront domain not found in SSM (Edge stack may not be deployed)');
     }
+  } else if (cfResult.status === 'rejected') {
+    logger.warn(`CloudFront domain discovery failed: ${cfResult.reason}`);
+  }
+
+  // Process API Gateway
+  if (apiResult.status === 'fulfilled' && apiResult.value) {
+    apiGatewayUrl = apiResult.value;
+    logger.success(`API Gateway discovered: ${apiGatewayUrl}`);
+  } else if (apiResult.status === 'fulfilled' && apiStack) {
+    logger.warn('API Gateway URL not found in stack outputs');
+  } else if (apiResult.status === 'rejected') {
+    logger.warn(`API Gateway discovery failed: ${apiResult.reason}`);
   }
 }
 
@@ -273,7 +262,7 @@ async function discoverEndpoints(): Promise<void> {
 async function checkCloudFormationStacks(): Promise<CheckResult> {
   logger.task('Checking CloudFormation stack statuses...');
 
-  const stacks = project!.stacks;
+  const stacks = project.stacks;
 
   let allHealthy = true;
   let anyFailed = false;
@@ -549,7 +538,7 @@ async function checkS3Bucket(): Promise<CheckResult> {
   logger.task('Checking S3 scripts bucket...');
 
   try {
-    const baseStack = project!.stacks.find((s) => s.id === 'base');
+    const baseStack = project.stacks.find((s) => s.id === 'base');
     if (!baseStack) {
       return { name: 'S3 Scripts Bucket', status: 'skipped', critical: false };
     }
@@ -730,15 +719,15 @@ async function main(): Promise<void> {
   logger.blank();
 
   // Run all checks
-  const results: CheckResult[] = [
-    await checkCloudFormationStacks(),
-    await checkGoldenAmiSsm(),
-    await checkEipHealth(),
-    await checkSsmParameters(),
-    await checkS3Bucket(),
-    await checkApiGateway(),
-    await checkCloudFront(),
-  ];
+  const results = await Promise.all([
+    checkCloudFormationStacks(),
+    checkGoldenAmiSsm(),
+    checkEipHealth(),
+    checkSsmParameters(),
+    checkS3Bucket(),
+    checkApiGateway(),
+    checkCloudFront(),
+  ]);
 
   // Determine overall status
   const criticalFailures = results.filter((r) => r.critical && r.status === 'unhealthy');
@@ -781,7 +770,7 @@ async function main(): Promise<void> {
     summaryLines.push('');
   }
 
-  appendSummary(summaryLines.join('\n'));
+  writeSummary(summaryLines.join('\n'));
 
   // Console summary table
   logger.blank();
@@ -805,7 +794,8 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  logger.error(`Fatal: ${err.message}`);
+main().catch((err: unknown) => {
+  const message = err instanceof Error ? err.message : String(err);
+  logger.error(`Fatal: ${message}`);
   process.exit(1);
 });

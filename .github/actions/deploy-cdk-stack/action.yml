@@ -88,25 +88,21 @@ runs:
       env:
         AWS_REGION: ${{ inputs.aws-region }}
 
-    - name: Collect Stack Outputs
+    - name: Finalize Deployment
       id: outputs
       if: always()
       shell: bash
       run: |
-        just ci-collect-outputs "${{ inputs.stack-name }}" \
+        OUTPUTS_DIR_FLAG=""
+        if [ -n "${{ inputs.outputs-directory }}" ]; then
+          OUTPUTS_DIR_FLAG="--outputs-dir ${{ inputs.outputs-directory }}"
+        fi
+        just ci-finalize-deployment "${{ inputs.stack-name }}" \
           --deploy-status "${{ steps.deploy.outputs.status }}" \
-          --outputs-dir "${{ inputs.outputs-directory }}"
-      env:
-        GITHUB_WORKSPACE: ${{ github.workspace }}
-
-    - name: Generate Deployment Summary
-      if: always()
-      shell: bash
-      run: |
-        just ci-deploy-summary "${{ inputs.stack-name }}" \
           --environment "${{ inputs.environment }}" \
           --region "${{ inputs.aws-region }}" \
           --account-id "${{ inputs.aws-account-id }}" \
-          --deploy-status "${{ steps.deploy.outputs.status }}" \
           --deploy-duration "${{ steps.deploy.outputs.duration }}" \
-          --outputs-file "${{ steps.outputs.outputs.file_path }}"
+          $OUTPUTS_DIR_FLAG
+      env:
+        GITHUB_WORKSPACE: ${{ github.workspace }}
