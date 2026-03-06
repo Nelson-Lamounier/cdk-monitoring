@@ -12,6 +12,7 @@ node_modules/
 .cdk.staging
 cdk.out/
 cdk-outputs/
+cdk.context.json
 
 # Yarn 4+
 .yarn/*
