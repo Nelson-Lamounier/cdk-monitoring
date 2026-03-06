@@ -158,7 +158,7 @@ jobs:
 
       - name: Record Commit Information
         id: commit-info
-        run: echo "short_sha=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+        run: echo "short_sha=$(printf '%.8s' "$GITHUB_SHA")" >> $GITHUB_OUTPUT
 
       - name: Setup Environment and Dependencies
         id: setup-tools
