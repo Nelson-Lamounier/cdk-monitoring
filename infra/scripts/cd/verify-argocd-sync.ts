@@ -1,17 +1,19 @@
 #!/usr/bin/env npx tsx
 /**
- * Verify ArgoCD Sync
+ * Verify ArgoCD Sync (via SSM send-command)
  *
  * Polls the ArgoCD API to verify all expected Applications have reached
- * Synced + Healthy state after a Git push. Consolidates three workflow
- * steps into a single script:
+ * Synced + Healthy state after a Git push. Instead of calling ArgoCD
+ * directly (blocked by ingress SG), runs curl on the control plane
+ * node via SSM send-command.
  *
- *   1. Resolve ArgoCD endpoint via SSM (EIP behind Traefik)
+ * Steps:
+ *   1. Resolve control plane instance ID via SSM
  *   2. Retrieve CI bot token from Secrets Manager
- *   3. Poll ArgoCD API until all apps are Synced + Healthy
+ *   3. Poll ArgoCD API (via SSM) until all apps are Synced + Healthy
  *
- * Graceful skip: if EIP or token is unavailable (Day-0), the script
- * exits 0 with a warning annotation instead of failing the pipeline.
+ * Graceful skip: if instance ID or token is unavailable (Day-0), the
+ * script exits 0 with a warning annotation instead of failing.
  *
  * Usage:
  *   npx tsx infra/scripts/cd/verify-argocd-sync.ts \
@@ -25,7 +27,12 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  SSMClient,
+  GetParameterCommand,
+  SendCommandCommand,
+  GetCommandInvocationCommand,
+} from '@aws-sdk/client-ssm';
 import { parseArgs, buildAwsConfig } from '@repo/script-utils/aws.js';
 import {
   emitAnnotation,
@@ -138,6 +145,57 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Execute a curl command on the control plane node via SSM send-command.
+ * Returns the stdout output (curl response body or HTTP code).
+ */
+async function ssmCurl(
+  instanceId: string,
+  curlCommand: string,
+): Promise<string | undefined> {
+  try {
+    const sendResult = await ssm.send(
+      new SendCommandCommand({
+        InstanceIds: [instanceId],
+        DocumentName: 'AWS-RunShellScript',
+        Parameters: { commands: [curlCommand] },
+        TimeoutSeconds: 30,
+      }),
+    );
+
+    const commandId = sendResult.Command?.CommandId;
+    if (!commandId) return undefined;
+
+    // Wait for command to finish (poll up to 15s)
+    for (let wait = 0; wait < 5; wait++) {
+      await sleep(3000);
+      try {
+        const invocation = await ssm.send(
+          new GetCommandInvocationCommand({
+            CommandId: commandId,
+            InstanceId: instanceId,
+          }),
+        );
+
+        if (
+          invocation.Status === 'Success' ||
+          invocation.Status === 'Failed'
+        ) {
+          return invocation.StandardOutputContent?.trim() || undefined;
+        }
+      } catch {
+        // InvocationDoesNotExist — command still pending
+      }
+    }
+
+    return undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn(`SSM send-command error: ${message}`);
+    return undefined;
+  }
+}
+
 // =============================================================================
 // ArgoCD API Types
 // =============================================================================
@@ -155,28 +213,29 @@ interface AppStatus {
 // =============================================================================
 
 /**
- * Resolve the ArgoCD URL from the EIP stored in SSM Parameter Store.
- * ArgoCD is behind Traefik on the control plane node.
- *
- * @returns ArgoCD base URL or undefined if EIP is not available
+ * Resolve the control plane instance ID from SSM Parameter Store.
+ * Used to route ArgoCD API calls via SSM send-command (localhost).
  */
-async function resolveArgoCDEndpoint(): Promise<string | undefined> {
-  logger.step(1, 3, 'Resolve ArgoCD Endpoint');
+async function resolveControlPlaneInstance(): Promise<string | undefined> {
+  logger.step(1, 3, 'Resolve Control Plane Instance');
 
-  const eip = await getParam(`${ssmPrefix}/elastic-ip`);
-  if (!eip) {
+  const instanceId = await getParam(
+    `${ssmPrefix}/bootstrap/control-plane-instance-id`,
+  );
+  if (!instanceId) {
     emitAnnotation(
       'warning',
-      'Could not resolve EIP — ArgoCD verification skipped',
+      'Could not resolve control-plane instance ID -- ArgoCD verification skipped',
       'ArgoCD Endpoint',
     );
-    logger.warn('Could not resolve EIP from SSM — skipping verification');
+    logger.warn(
+      'Could not resolve control-plane instance ID from SSM -- skipping verification',
+    );
     return undefined;
   }
 
-  const url = `http://${eip}/argocd`;
-  logger.info(`ArgoCD URL: ${url}`);
-  return url;
+  logger.info(`Control plane instance: ${instanceId}`);
+  return instanceId;
 }
 
 /**
@@ -194,10 +253,10 @@ async function retrieveCIToken(): Promise<string | undefined> {
   if (!token) {
     emitAnnotation(
       'warning',
-      'ArgoCD CI token not found — skipping verification',
+      'ArgoCD CI token not found -- skipping verification',
       'ArgoCD Token',
     );
-    logger.warn('ArgoCD CI token not found in Secrets Manager — skipping');
+    logger.warn('ArgoCD CI token not found in Secrets Manager -- skipping');
     return undefined;
   }
 
@@ -208,47 +267,44 @@ async function retrieveCIToken(): Promise<string | undefined> {
 
 /**
  * Probe a single ArgoCD application to surface auth/network errors early.
+ * Runs via SSM send-command on the control plane node.
  */
 async function diagnosticProbe(
-  baseUrl: string,
+  instanceId: string,
   token: string,
 ): Promise<void> {
   const probeApp = EXPECTED_APPS[0];
-  const probeUrl = `${baseUrl}/api/v1/applications/${probeApp}`;
+  const curlCmd = `curl -sk -w '\\n%{http_code}' --max-time 10 -H 'Authorization: Bearer ${token}' 'http://localhost/argocd/api/v1/applications/${probeApp}' 2>/dev/null || echo 'UNREACHABLE'`;
 
-  logger.info(`Diagnostic probe: GET ${probeUrl}`);
+  logger.info(
+    `Diagnostic probe: ArgoCD API /applications/${probeApp} (via SSM)`,
+  );
 
-  try {
-    const response = await fetch(probeUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(10_000),
-    });
+  const output = await ssmCurl(instanceId, curlCmd);
 
-    logger.info(`  HTTP Status: ${response.status}`);
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      const preview = body.slice(0, 500);
-      logger.warn(`  Response body (first 500 chars): ${preview}`);
-
-      if (response.status === 401 || response.status === 403) {
-        emitAnnotation(
-          'error',
-          'Authentication failed. The CI bot token may be expired or revoked. Regenerate it: just argocd-ci-token',
-          'ArgoCD Auth',
-        );
-      } else if (response.status >= 500) {
-        logger.warn('  ArgoCD server returned a server error');
-      }
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+  if (!output || output.includes('UNREACHABLE')) {
     emitAnnotation(
       'error',
-      `ArgoCD API is unreachable: ${message}`,
+      'ArgoCD API is unreachable via SSM send-command',
       'ArgoCD Connectivity',
     );
-    logger.error(`  ArgoCD API unreachable: ${message}`);
+    logger.error('  ArgoCD API unreachable via SSM');
+    return;
+  }
+
+  // Output format: body\nHTTP_CODE
+  const lines = output.split('\n');
+  const httpCode = lines[lines.length - 1]?.trim();
+  logger.info(`  HTTP Status: ${httpCode}`);
+
+  if (httpCode === '401' || httpCode === '403') {
+    emitAnnotation(
+      'error',
+      'Authentication failed. The CI bot token may be expired or revoked. Regenerate it: just argocd-ci-token',
+      'ArgoCD Auth',
+    );
+  } else if (httpCode && parseInt(httpCode, 10) >= 500) {
+    logger.warn('  ArgoCD server returned a server error');
   }
 
   console.log('');
@@ -256,32 +312,29 @@ async function diagnosticProbe(
 
 /**
  * Check the sync and health status of a single ArgoCD application.
+ * Runs via SSM send-command on the control plane node.
  */
 async function checkApp(
-  baseUrl: string,
+  instanceId: string,
   token: string,
   app: string,
 ): Promise<AppStatus> {
+  // Curl that returns JSON body only (for parsing sync/health status)
+  const curlCmd = `curl -sk --max-time 10 -H 'Authorization: Bearer ${token}' 'http://localhost/argocd/api/v1/applications/${app}' 2>/dev/null || echo '{}'`;
+
+  const output = await ssmCurl(instanceId, curlCmd);
+
+  if (!output) {
+    return {
+      app,
+      syncStatus: 'Unknown',
+      healthStatus: 'Unknown',
+      reachable: false,
+    };
+  }
+
   try {
-    const response = await fetch(
-      `${baseUrl}/api/v1/applications/${app}`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-
-    if (!response.ok) {
-      return {
-        app,
-        syncStatus: 'Unknown',
-        healthStatus: 'Unknown',
-        error: `HTTP ${response.status}`,
-        reachable: true,
-      };
-    }
-
-    const data = (await response.json()) as {
+    const data = JSON.parse(output) as {
       error?: string;
       status?: {
         sync?: { status?: string };
@@ -310,7 +363,8 @@ async function checkApp(
       app,
       syncStatus: 'Unknown',
       healthStatus: 'Unknown',
-      reachable: false,
+      error: 'Invalid JSON response',
+      reachable: true,
     };
   }
 }
@@ -321,20 +375,20 @@ async function checkApp(
  * @returns true if all apps passed, false if timed out
  */
 async function waitForSync(
-  baseUrl: string,
+  instanceId: string,
   token: string,
 ): Promise<boolean> {
   logger.step(3, 3, 'Wait for ArgoCD Sync');
 
-  console.log('## ArgoCD Sync Verification');
+  console.log('## ArgoCD Sync Verification (via SSM)');
   console.log('');
-  console.log(`Endpoint: ${baseUrl}`);
+  console.log(`Instance: ${instanceId}`);
   console.log(`Expected Applications: ${EXPECTED_APPS.join(', ')}`);
   console.log(`Poll interval: ${pollInterval}s, max polls: ${maxPolls}`);
   console.log('');
 
   // Run diagnostic probe on first app
-  await diagnosticProbe(baseUrl, token);
+  await diagnosticProbe(instanceId, token);
 
   for (let poll = 1; poll <= maxPolls; poll++) {
     const timestamp = new Date().toISOString().slice(11, 19);
@@ -343,7 +397,7 @@ async function waitForSync(
     console.log(`--- Poll ${poll}/${maxPolls} (${timestamp}) ---`);
 
     for (const app of EXPECTED_APPS) {
-      const status = await checkApp(baseUrl, token, app);
+      const status = await checkApp(instanceId, token, app);
 
       if (!status.reachable) {
         console.log(`  ${app}: [WARN] API unreachable`);
@@ -396,8 +450,9 @@ async function waitForSync(
   console.log(
     `## [WARN] Some Applications did not reach Synced+Healthy within ${totalWait}s`,
   );
-  console.log('This is informational — ArgoCD will continue retrying.');
-  console.log(`Check: ${baseUrl} for details.`);
+  console.log(
+    'This is informational -- ArgoCD will continue retrying.',
+  );
 
   writeSummary('## ArgoCD Sync Verification');
   writeSummary('');
@@ -418,27 +473,27 @@ async function main(): Promise<void> {
   logger.info(`Region:      ${awsConfig.region}`);
   console.log('');
 
-  // Step 1: Resolve endpoint
-  const argoCDUrl = await resolveArgoCDEndpoint();
-  if (!argoCDUrl) {
-    logger.warn('Exiting gracefully — no ArgoCD endpoint available');
+  // Step 1: Resolve control plane instance
+  const instanceId = await resolveControlPlaneInstance();
+  if (!instanceId) {
+    logger.warn('Exiting gracefully -- no control plane instance available');
     process.exit(0);
   }
 
   // Step 2: Retrieve token
   const token = await retrieveCIToken();
   if (!token) {
-    logger.warn('Exiting gracefully — no CI bot token available');
+    logger.warn('Exiting gracefully -- no CI bot token available');
     process.exit(0);
   }
 
-  // Step 3: Poll for sync
-  const success = await waitForSync(argoCDUrl, token);
+  // Step 3: Poll for sync via SSM
+  const success = await waitForSync(instanceId, token);
 
   if (!success) {
     emitAnnotation(
       'warning',
-      'Some ArgoCD Applications did not reach Synced+Healthy — ArgoCD will continue retrying',
+      'Some ArgoCD Applications did not reach Synced+Healthy -- ArgoCD will continue retrying',
       'ArgoCD Sync Timeout',
     );
     process.exit(1);
