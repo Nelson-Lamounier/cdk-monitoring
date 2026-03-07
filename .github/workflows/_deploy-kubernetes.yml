@@ -57,6 +57,11 @@
 name: Deploy K8s (Reusable)
 
 on:
+  push:
+    branches:
+      - develop
+    paths:
+      - "infra/**"
   workflow_call:
     inputs:
       environment:
