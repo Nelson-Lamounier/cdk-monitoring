@@ -308,16 +308,14 @@ export class KubernetesBaseStack extends cdk.Stack {
             reason: 'ec2:DescribeManagedPrefixLists requires wildcard resource — read-only API call',
         }], true);
 
-        // CloudFront → Traefik (HTTP origin pull + HTTPS redirect)
+        // CloudFront → Traefik (HTTP origin pull only)
+        // CloudFront terminates TLS at the edge and connects to the origin
+        // over HTTP (port 80). Only port 80 uses the CF prefix list to stay
+        // within the SG rule limit (~60 CF CIDRs count individually).
         this.ingressSg.addIngressRule(
             ec2.Peer.prefixList(cfPrefixListId),
             ec2.Port.tcp(TRAEFIK_HTTP_PORT),
             'HTTP from CloudFront origin-facing IPs',
-        );
-        this.ingressSg.addIngressRule(
-            ec2.Peer.prefixList(cfPrefixListId),
-            ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
-            'HTTPS from CloudFront origin-facing IPs',
         );
 
         // Admin IP → Traefik (direct ops access: Grafana, ArgoCD, Prometheus)
