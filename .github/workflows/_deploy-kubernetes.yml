@@ -699,6 +699,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
+    environment: ${{ inputs.environment }}
     permissions:
       id-token: write # OIDC for DescribeStacks verification
       contents: read
