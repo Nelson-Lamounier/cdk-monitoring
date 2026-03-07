@@ -18,8 +18,6 @@ on:
   push:
     branches:
       - develop
-    paths:
-      - "infra/**"
   # Weekly: AMI refresh for OS security patches
   schedule:
     - cron: "0 6 * * 1"
