@@ -214,6 +214,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 configs,
                 namePrefix,
                 ssmPrefix,
+                allowedIpv4: nextjsConfig.allowedIpv4,
+                allowedIpv6: nextjsConfig.allowedIpv6,
             },
         );
         stacks.push(baseStack);

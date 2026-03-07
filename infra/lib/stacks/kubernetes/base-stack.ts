@@ -9,7 +9,7 @@
  *
  * Resources Created:
  *   - VPC Lookup (Shared VPC from deploy-shared workflow)
- *   - Security Group (unified: HTTP/HTTPS, K8s API, monitoring ports)
+ *   - Security Groups (role-specific: cluster-base, control-plane, ingress, monitoring)
  *   - KMS Key (CloudWatch log group encryption)
  *   - EBS Volume (persistent storage for Kubernetes data + PVCs)
  *   - Elastic IP (shared by Next.js CloudFront and SSM access)
@@ -40,6 +40,7 @@ import * as kms from 'aws-cdk-lib/aws-kms';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
+import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
@@ -84,6 +85,21 @@ export interface KubernetesBaseStackProps extends cdk.StackProps {
      * @default 'shared-vpc-{environment}'
      */
     readonly vpcName?: string;
+
+    /**
+     * Admin IPv4 CIDR for direct access to Traefik (ops services).
+     * Sourced from ALLOW_IPV4 env var. Added to the ingress SG
+     * alongside the CloudFront managed prefix list.
+     * @example '203.0.113.42/32'
+     */
+    readonly allowedIpv4?: string;
+
+    /**
+     * Admin IPv6 CIDR for direct access to Traefik (ops services).
+     * Sourced from ALLOW_IPV6 env var.
+     * @example '2a02:8084::/128'
+     */
+    readonly allowedIpv6?: string;
 }
 
 // =============================================================================
@@ -101,8 +117,21 @@ export class KubernetesBaseStack extends cdk.Stack {
     /** The looked-up VPC */
     public readonly vpc: ec2.IVpc;
 
-    /** The security group for the Kubernetes cluster */
+    /**
+     * Base security group — intra-cluster communication (all nodes).
+     * Explicit port rules for kubeadm: etcd, kubelet, VXLAN, Calico BGP, NodePorts.
+     * Backward-compatible: this was previously the single shared SG.
+     */
     public readonly securityGroup: ec2.SecurityGroup;
+
+    /** Control plane SG — K8s API server access from VPC (SSM port-forwarding) */
+    public readonly controlPlaneSg: ec2.SecurityGroup;
+
+    /** Ingress SG — Traefik HTTP/HTTPS from anywhere (CloudFront + ops) */
+    public readonly ingressSg: ec2.SecurityGroup;
+
+    /** Monitoring SG — Prometheus, Node Exporter, Loki, Tempo from VPC */
+    public readonly monitoringSg: ec2.SecurityGroup;
 
     /** KMS key for CloudWatch log group encryption */
     public readonly logGroupKmsKey: kms.Key;
@@ -129,66 +158,207 @@ export class KubernetesBaseStack extends cdk.Stack {
         this.vpc = ec2.Vpc.fromLookup(this, 'SharedVpc', { vpcName });
 
         // =====================================================================
-        // Security Group (unified — superset of monitoring + application ports)
+        // Security Group 1/4: Cluster Base (all nodes)
+        //
+        // Explicit intra-cluster port rules — replaces the previous protocol
+        // "-1" (all traffic) self-referencing rule for least-privilege.
         // =====================================================================
         this.securityGroup = new ec2.SecurityGroup(this, 'K8sSecurityGroup', {
             vpc: this.vpc,
-            description: `Shared Kubernetes cluster security group (${targetEnvironment})`,
+            description: `K8s intra-cluster base SG (${targetEnvironment})`,
             securityGroupName: `${namePrefix}-k8s-cluster`,
             allowAllOutbound: true,
         });
 
-        // Traefik Ingress: HTTP/HTTPS from anywhere (CloudFront → Traefik)
-        this.securityGroup.addIngressRule(
-            ec2.Peer.anyIpv4(),
-            ec2.Port.tcp(TRAEFIK_HTTP_PORT),
-            'Allow HTTP traffic (Traefik Ingress)',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.anyIpv4(),
-            ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
-            'Allow HTTPS traffic (Traefik Ingress)',
-        );
-
-        // K8s API: Only from VPC CIDR (for SSM port-forwarding access)
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-            ec2.Port.tcp(K8S_API_PORT),
-            'Allow K8s API from VPC (SSM port-forwarding)',
-        );
-
-        // Monitoring ports from VPC: Prometheus and Node Exporter
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-            ec2.Port.tcp(PROMETHEUS_PORT),
-            'Allow Prometheus metrics from VPC',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-            ec2.Port.tcp(NODE_EXPORTER_PORT),
-            'Allow Node Exporter metrics from VPC',
-        );
-
-        // Loki/Tempo NodePorts: accessible from VPC (ECS tasks → k8s monitoring)
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-            ec2.Port.tcp(LOKI_NODEPORT),
-            'Allow Loki push API from VPC (cross-stack log shipping)',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-            ec2.Port.tcp(TEMPO_NODEPORT),
-            'Allow Tempo OTLP gRPC from VPC (cross-stack trace shipping)',
-        );
-
-        // Intra-cluster communication (3-node kubeadm)
-        // Self-referencing SG rule: allows all traffic between nodes sharing
-        // this security group. Required for kubelet API (10250), VXLAN overlay
-        // (4789), Calico BGP (179), etcd (2379-2380), and NodePort services.
+        // etcd client + peer communication (control plane)
         this.securityGroup.addIngressRule(
             this.securityGroup,
-            ec2.Port.allTraffic(),
-            'Allow all intra-cluster traffic between K8s nodes',
+            ec2.Port.tcpRange(2379, 2380),
+            'etcd client and peer (intra-cluster)',
+        );
+        // K8s API server (intra-cluster — kubelet → API)
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcp(K8S_API_PORT),
+            'K8s API server (intra-cluster)',
+        );
+        // kubelet API
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcp(10250),
+            'kubelet API (intra-cluster)',
+        );
+        // kube-controller-manager
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcp(10257),
+            'kube-controller-manager (intra-cluster)',
+        );
+        // kube-scheduler
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcp(10259),
+            'kube-scheduler (intra-cluster)',
+        );
+        // VXLAN overlay networking
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.udp(4789),
+            'VXLAN overlay networking (intra-cluster)',
+        );
+        // Calico BGP peering
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcp(179),
+            'Calico BGP peering (intra-cluster)',
+        );
+        // NodePort services (K8s default range)
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcpRange(30000, 32767),
+            'NodePort services (intra-cluster)',
+        );
+        // CoreDNS (TCP + UDP)
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcp(53),
+            'CoreDNS TCP (intra-cluster)',
+        );
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.udp(53),
+            'CoreDNS UDP (intra-cluster)',
+        );
+
+        // =====================================================================
+        // Security Group 2/4: Control Plane (control plane node only)
+        // =====================================================================
+        this.controlPlaneSg = new ec2.SecurityGroup(this, 'K8sControlPlaneSg', {
+            vpc: this.vpc,
+            description: `K8s control plane SG — API server access (${targetEnvironment})`,
+            securityGroupName: `${namePrefix}-k8s-control-plane`,
+            allowAllOutbound: false, // Outbound handled by base SG
+        });
+
+        // K8s API: Only from VPC CIDR (for SSM port-forwarding access)
+        this.controlPlaneSg.addIngressRule(
+            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
+            ec2.Port.tcp(K8S_API_PORT),
+            'K8s API from VPC (SSM port-forwarding)',
+        );
+
+        // =====================================================================
+        // Security Group 3/4: Ingress (monitoring worker only — Traefik)
+        //
+        // Defense in depth: SG allows CloudFront IPs (for public site) +
+        // admin IPs (for ops services). Traefik IPAllowList middleware
+        // provides the second layer of admin access control.
+        // =====================================================================
+        this.ingressSg = new ec2.SecurityGroup(this, 'K8sIngressSg', {
+            vpc: this.vpc,
+            description: `K8s ingress SG — Traefik HTTP/HTTPS (${targetEnvironment})`,
+            securityGroupName: `${namePrefix}-k8s-ingress`,
+            allowAllOutbound: false, // Outbound handled by base SG
+        });
+
+        // CloudFront origin-facing IPs (managed by AWS, auto-updated)
+        // Required because CloudFront connects to the EIP origin using
+        // AWS-owned IPs that change without notice.
+        const cfPrefixListLookup = new cr.AwsCustomResource(
+            this,
+            'CloudFrontPrefixListLookup',
+            {
+                onCreate: {
+                    service: '@aws-sdk/client-ec2',
+                    action: 'DescribeManagedPrefixLists',
+                    parameters: {
+                        Filters: [{
+                            Name: 'prefix-list-name',
+                            Values: ['com.amazonaws.global.cloudfront.origin-facing'],
+                        }],
+                    },
+                    physicalResourceId:
+                        cr.PhysicalResourceId.of('cf-prefix-list-lookup'),
+                },
+                policy: cr.AwsCustomResourcePolicy.fromStatements([
+                    new iam.PolicyStatement({
+                        actions: ['ec2:DescribeManagedPrefixLists'],
+                        resources: ['*'],
+                    }),
+                ]),
+            },
+        );
+        const cfPrefixListId = cfPrefixListLookup.getResponseField(
+            'PrefixLists.0.PrefixListId',
+        );
+
+        // CloudFront → Traefik (HTTP origin pull + HTTPS redirect)
+        this.ingressSg.addIngressRule(
+            ec2.Peer.prefixList(cfPrefixListId),
+            ec2.Port.tcp(TRAEFIK_HTTP_PORT),
+            'HTTP from CloudFront origin-facing IPs',
+        );
+        this.ingressSg.addIngressRule(
+            ec2.Peer.prefixList(cfPrefixListId),
+            ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
+            'HTTPS from CloudFront origin-facing IPs',
+        );
+
+        // Admin IP → Traefik (direct ops access: Grafana, ArgoCD, Prometheus)
+        if (props.allowedIpv4) {
+            this.ingressSg.addIngressRule(
+                ec2.Peer.ipv4(props.allowedIpv4),
+                ec2.Port.tcp(TRAEFIK_HTTP_PORT),
+                'HTTP from admin IPv4 (ops services)',
+            );
+            this.ingressSg.addIngressRule(
+                ec2.Peer.ipv4(props.allowedIpv4),
+                ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
+                'HTTPS from admin IPv4 (ops services)',
+            );
+        }
+        if (props.allowedIpv6) {
+            this.ingressSg.addIngressRule(
+                ec2.Peer.ipv6(props.allowedIpv6),
+                ec2.Port.tcp(TRAEFIK_HTTP_PORT),
+                'HTTP from admin IPv6 (ops services)',
+            );
+            this.ingressSg.addIngressRule(
+                ec2.Peer.ipv6(props.allowedIpv6),
+                ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
+                'HTTPS from admin IPv6 (ops services)',
+            );
+        }
+
+        // =====================================================================
+        // Security Group 4/4: Monitoring (monitoring worker only)
+        // =====================================================================
+        this.monitoringSg = new ec2.SecurityGroup(this, 'K8sMonitoringSg', {
+            vpc: this.vpc,
+            description: `K8s monitoring SG — Prometheus/Loki/Tempo (${targetEnvironment})`,
+            securityGroupName: `${namePrefix}-k8s-monitoring`,
+            allowAllOutbound: false, // Outbound handled by base SG
+        });
+
+        this.monitoringSg.addIngressRule(
+            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
+            ec2.Port.tcp(PROMETHEUS_PORT),
+            'Prometheus metrics from VPC',
+        );
+        this.monitoringSg.addIngressRule(
+            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
+            ec2.Port.tcp(NODE_EXPORTER_PORT),
+            'Node Exporter metrics from VPC',
+        );
+        this.monitoringSg.addIngressRule(
+            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
+            ec2.Port.tcp(LOKI_NODEPORT),
+            'Loki push API from VPC (cross-stack log shipping)',
+        );
+        this.monitoringSg.addIngressRule(
+            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
+            ec2.Port.tcp(TEMPO_NODEPORT),
+            'Tempo OTLP gRPC from VPC (cross-stack trace shipping)',
         );
 
         // =====================================================================

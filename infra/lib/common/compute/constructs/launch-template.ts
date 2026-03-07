@@ -94,6 +94,15 @@ export interface LaunchTemplateConstructProps {
      */
     readonly securityGroup: ec2.ISecurityGroup;
 
+    /**
+     * Additional security groups to attach to instances.
+     * Used for role-specific SGs (e.g., ingress, monitoring, control-plane).
+     * The primary `securityGroup` provides intra-cluster traffic rules;
+     * these provide additional port access per node role.
+     * @default []
+     */
+    readonly additionalSecurityGroups?: ec2.ISecurityGroup[];
+
     /** Instance type @default t3.small */
     readonly instanceType?: ec2.InstanceType;
 
@@ -262,6 +271,11 @@ export class LaunchTemplateConstruct extends Construct {
             // UserData.forLinux() would add a shebang-only script to every instance.
             userData: props.userData,
         });
+
+        // Attach role-specific security groups (e.g., ingress, monitoring)
+        for (const sg of props.additionalSecurityGroups ?? []) {
+            this.launchTemplate.connections.addSecurityGroup(sg);
+        }
 
         // =================================================================
         // SOURCE/DEST CHECK OVERRIDE (Kubernetes overlay networking)

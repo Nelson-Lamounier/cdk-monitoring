@@ -130,6 +130,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
 
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup,
+            additionalSecurityGroups: [baseStack.controlPlaneSg],
             instanceType: configs.compute.instanceType,
             volumeSizeGb: configs.compute.rootVolumeSizeGb, // Must be >= Golden AMI snapshot size
             detailedMonitoring: configs.compute.detailedMonitoring,

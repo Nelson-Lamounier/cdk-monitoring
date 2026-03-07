@@ -154,6 +154,7 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
         // =====================================================================
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup,
+            additionalSecurityGroups: [baseStack.ingressSg, baseStack.monitoringSg],
             instanceType: monitoringWorkerConfig.instanceType,
             volumeSizeGb: monitoringWorkerConfig.rootVolumeSizeGb,
             detailedMonitoring: monitoringWorkerConfig.detailedMonitoring,
