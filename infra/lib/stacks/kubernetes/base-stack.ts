@@ -165,7 +165,7 @@ export class KubernetesBaseStack extends cdk.Stack {
         // =====================================================================
         this.securityGroup = new ec2.SecurityGroup(this, 'K8sSecurityGroup', {
             vpc: this.vpc,
-            description: `K8s intra-cluster base SG (${targetEnvironment})`,
+            description: `Shared Kubernetes cluster security group (${targetEnvironment})`,
             securityGroupName: `${namePrefix}-k8s-cluster`,
             allowAllOutbound: true,
         });
@@ -235,7 +235,7 @@ export class KubernetesBaseStack extends cdk.Stack {
         // =====================================================================
         this.controlPlaneSg = new ec2.SecurityGroup(this, 'K8sControlPlaneSg', {
             vpc: this.vpc,
-            description: `K8s control plane SG — API server access (${targetEnvironment})`,
+            description: `K8s control plane SG - API server access (${targetEnvironment})`,
             securityGroupName: `${namePrefix}-k8s-control-plane`,
             allowAllOutbound: false, // Outbound handled by base SG
         });
@@ -256,7 +256,7 @@ export class KubernetesBaseStack extends cdk.Stack {
         // =====================================================================
         this.ingressSg = new ec2.SecurityGroup(this, 'K8sIngressSg', {
             vpc: this.vpc,
-            description: `K8s ingress SG — Traefik HTTP/HTTPS (${targetEnvironment})`,
+            description: `K8s ingress SG - Traefik HTTP/HTTPS (${targetEnvironment})`,
             securityGroupName: `${namePrefix}-k8s-ingress`,
             allowAllOutbound: false, // Outbound handled by base SG
         });
@@ -351,7 +351,7 @@ export class KubernetesBaseStack extends cdk.Stack {
         // =====================================================================
         this.monitoringSg = new ec2.SecurityGroup(this, 'K8sMonitoringSg', {
             vpc: this.vpc,
-            description: `K8s monitoring SG — Prometheus/Loki/Tempo (${targetEnvironment})`,
+            description: `K8s monitoring SG - Prometheus/Loki/Tempo (${targetEnvironment})`,
             securityGroupName: `${namePrefix}-k8s-monitoring`,
             allowAllOutbound: false, // Outbound handled by base SG
         });
