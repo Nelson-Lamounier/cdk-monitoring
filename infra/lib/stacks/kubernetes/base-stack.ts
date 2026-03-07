@@ -292,13 +292,18 @@ export class KubernetesBaseStack extends cdk.Stack {
             'PrefixLists.0.PrefixListId',
         );
 
-        // Suppress CDK Nag: the AwsCustomResource Lambda runtime is managed
-        // by CDK internals — we cannot control it. The function only runs once
-        // at deploy time to look up the CloudFront managed prefix list ID.
+        // Suppress CDK Nag: the AwsCustomResource creates a shared singleton
+        // Lambda at the stack root (AWS679f53fac002430cb0da5b7982bd2287).
+        // Its runtime is managed by CDK internals — we cannot control it.
+        // The function only runs once at deploy time to look up the prefix list ID.
+        NagSuppressions.addResourceSuppressionsByPath(this,
+            `/${this.stackName}/AWS679f53fac002430cb0da5b7982bd2287/Resource`,
+            [{
+                id: 'AwsSolutions-L1',
+                reason: 'AwsCustomResource singleton Lambda runtime is managed by CDK — deploy-time only, reads prefix list ID',
+            }],
+        );
         NagSuppressions.addResourceSuppressions(cfPrefixListLookup, [{
-            id: 'AwsSolutions-L1',
-            reason: 'AwsCustomResource Lambda runtime is managed by CDK — deploy-time only, reads prefix list ID',
-        }, {
             id: 'AwsSolutions-IAM5',
             reason: 'ec2:DescribeManagedPrefixLists requires wildcard resource — read-only API call',
         }], true);
