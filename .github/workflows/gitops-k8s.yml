@@ -40,6 +40,11 @@ on:
   #     - "kubernetes-app/k8s-bootstrap/system/argocd/applications/**"
   #     # Pipeline definition
   #     - ".github/workflows/gitops-k8s.yml"
+  workflow_call:
+    secrets:
+      AWS_OIDC_ROLE:
+        description: "AWS OIDC role ARN"
+        required: false
   workflow_dispatch:
 
 permissions:
