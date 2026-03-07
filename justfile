@@ -233,6 +233,12 @@ ci-summary *ARGS:
 ci-verify-argocd *ARGS:
     npx tsx infra/scripts/cd/verify-argocd-sync.ts {{ARGS}}
 
+# CI ArgoCD health: quick reachability check via SSM send-command
+# Usage: just ci-argocd-health --environment development --region eu-west-1
+[group('ci')]
+ci-argocd-health *ARGS:
+    npx tsx infra/scripts/cd/verify-argocd-sync.ts --mode health {{ARGS}}
+
 # CI deploy-manifests: deploy K8s manifests via SSM Run Command
 # Usage: just ci-deploy-manifests kubernetes development --region eu-west-1
 [group('ci')]

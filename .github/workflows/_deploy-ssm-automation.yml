@@ -473,8 +473,8 @@ jobs:
       # ArgoCD Server Health (via SSM send-command)
       #
       # Verifies the ArgoCD SERVER is reachable after bootstrap.
-      # Runs curl from INSIDE the control plane node via SSM, bypassing
-      # the ingress SG which blocks external (GitHub runner) access.
+      # Uses the same verify-argocd-sync.ts script in --mode health,
+      # which runs curl on the control plane node via SSM send-command.
       #
       # On Day-0 (no token), this step is skipped gracefully.
       # -----------------------------------------------------------------------
@@ -483,58 +483,11 @@ jobs:
         env:
           ARGOCD_TOKEN: ${{ steps.argocd-token.outputs.token }}
         run: |
-          SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}"
-          REGION="${{ env.AWS_REGION }}"
-
-          # Resolve control-plane instance ID
-          INSTANCE_ID=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
-            --query 'Parameter.Value' --output text \
-            --region "$REGION" 2>/dev/null || echo "")
-
-          if [ -z "$INSTANCE_ID" ]; then
-            echo "::error::Could not resolve control-plane instance ID from SSM"
-            exit 1
-          fi
-          echo "Control plane instance: ${INSTANCE_ID}"
-
-          MAX_POLL=6
-          POLL_INTERVAL=20
-          echo "Verifying ArgoCD via SSM send-command (timeout: $(( MAX_POLL * POLL_INTERVAL ))s)..."
-
-          for ATTEMPT in $(seq 1 $MAX_POLL); do
-            # Run curl on the control plane node itself (localhost)
-            CMD_ID=$(aws ssm send-command \
-              --instance-ids "$INSTANCE_ID" \
-              --document-name "AWS-RunShellScript" \
-              --parameters "commands=[\"curl -sk -o /dev/null -w '%{http_code}' --max-time 10 -H 'Authorization: Bearer ${ARGOCD_TOKEN}' 'http://localhost/argocd/api/v1/applications' 2>/dev/null || echo 000\"]" \
-              --query 'Command.CommandId' --output text \
-              --region "$REGION" 2>/dev/null || echo "")
-
-            if [ -z "$CMD_ID" ]; then
-              echo "  Attempt $ATTEMPT/$MAX_POLL — SSM send-command failed, retrying in ${POLL_INTERVAL}s..."
-              sleep $POLL_INTERVAL
-              continue
-            fi
-
-            # Wait for command to complete
-            sleep 5
-            HTTP_CODE=$(aws ssm get-command-invocation \
-              --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
-              --query 'StandardOutputContent' --output text \
-              --region "$REGION" 2>/dev/null | tr -d '[:space:]' || echo "000")
-
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "[PASS] ArgoCD server is reachable via SSM (HTTP ${HTTP_CODE})"
-              exit 0
-            fi
-
-            echo "  Attempt $ATTEMPT/$MAX_POLL — HTTP ${HTTP_CODE}, retrying in ${POLL_INTERVAL}s..."
-            sleep $POLL_INTERVAL
-          done
-
-          echo "::error::ArgoCD server unreachable after $(( MAX_POLL * POLL_INTERVAL ))s — bootstrapArgoCD may have failed"
-          exit 1
+          just ci-argocd-health \
+            --environment ${{ inputs.cdk-environment }} \
+            --region ${{ env.AWS_REGION }} \
+            --max-polls 6 \
+            --poll-interval 20
 
       - name: Run K8s Smoke Tests
         id: smoke

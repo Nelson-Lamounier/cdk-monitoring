@@ -7,20 +7,25 @@
  * directly (blocked by ingress SG), runs curl on the control plane
  * node via SSM send-command.
  *
+ * Modes:
+ *   --mode sync   (default)  Full sync polling until all apps are Synced + Healthy
+ *   --mode health            Quick reachability check — poll until HTTP 200
+ *
  * Steps:
  *   1. Resolve control plane instance ID via SSM
- *   2. Retrieve CI bot token from Secrets Manager
- *   3. Poll ArgoCD API (via SSM) until all apps are Synced + Healthy
+ *   2. Retrieve CI bot token (env ARGOCD_TOKEN or Secrets Manager)
+ *   3. Poll ArgoCD API (via SSM) per mode
  *
  * Graceful skip: if instance ID or token is unavailable (Day-0), the
  * script exits 0 with a warning annotation instead of failing.
  *
  * Usage:
  *   npx tsx infra/scripts/cd/verify-argocd-sync.ts \
- *     --environment development \
- *     --region eu-west-1
+ *     --environment development --region eu-west-1 --mode sync
  *
- * Called by: .github/workflows/gitops-k8s.yml (verify-argocd job)
+ * Called by:
+ *   - .github/workflows/gitops-k8s.yml (mode=sync)
+ *   - .github/workflows/_deploy-ssm-automation.yml (mode=health)
  */
 
 import {
@@ -65,6 +70,12 @@ const args = parseArgs(
       hasValue: true,
     },
     {
+      name: 'mode',
+      description: 'Verification mode: sync (full polling) or health (reachability only)',
+      hasValue: true,
+      default: 'sync',
+    },
+    {
       name: 'poll-interval',
       description: 'Seconds between polls',
       hasValue: true,
@@ -77,10 +88,11 @@ const args = parseArgs(
       default: '12',
     },
   ],
-  'Verify ArgoCD sync status for all expected Applications.',
+  'Verify ArgoCD sync/health status via SSM send-command.',
 );
 
 const environment = args.environment as string;
+const mode = (args.mode as string) || 'sync';
 const awsConfig = buildAwsConfig(args);
 const pollInterval = parseInt(args['poll-interval'] as string, 10) || 30;
 const maxPolls = parseInt(args['max-polls'] as string, 10) || 12;
@@ -239,14 +251,27 @@ async function resolveControlPlaneInstance(): Promise<string | undefined> {
 }
 
 /**
- * Retrieve the ArgoCD CI bot token from Secrets Manager.
- * The token is created by bootstrap_argocd.py during cluster setup.
+ * Retrieve the ArgoCD CI bot token.
+ *
+ * Priority:
+ *   1. ARGOCD_TOKEN env var (set by SSM pipeline from previous step output)
+ *   2. Secrets Manager (used by GitOps pipeline)
  *
  * @returns Bearer token or undefined if not available
  */
 async function retrieveCIToken(): Promise<string | undefined> {
-  logger.step(2, 3, 'Retrieve CI Bot Token');
+  const totalSteps = mode === 'health' ? 2 : 3;
+  logger.step(2, totalSteps, 'Retrieve CI Bot Token');
 
+  // Check env var first (SSM pipeline passes token from previous step)
+  const envToken = process.env.ARGOCD_TOKEN;
+  if (envToken) {
+    maskSecret(envToken);
+    logger.success('CI bot token loaded from ARGOCD_TOKEN env var');
+    return envToken;
+  }
+
+  // Fall back to Secrets Manager
   const secretId = `k8s/${environment}/argocd-ci-token`;
   const token = await getSecret(secretId);
 
@@ -261,7 +286,7 @@ async function retrieveCIToken(): Promise<string | undefined> {
   }
 
   maskSecret(token);
-  logger.success('CI bot token retrieved and masked');
+  logger.success('CI bot token retrieved from Secrets Manager');
   return token;
 }
 
@@ -464,13 +489,60 @@ async function waitForSync(
 }
 
 // =============================================================================
+// Health Check Mode
+// =============================================================================
+
+/**
+ * Quick reachability check: poll ArgoCD API until HTTP 200.
+ * Used by the SSM pipeline after bootstrap completes.
+ */
+async function healthCheck(
+  instanceId: string,
+  token: string,
+): Promise<boolean> {
+  const totalWait = maxPolls * pollInterval;
+  logger.info(
+    `Health check: polling until HTTP 200 (timeout: ${totalWait}s)...`,
+  );
+
+  const curlCmd = `curl -sk -o /dev/null -w '%{http_code}' --max-time 10 -H 'Authorization: Bearer ${token}' 'http://localhost/argocd/api/v1/applications' 2>/dev/null || echo 000`;
+
+  for (let attempt = 1; attempt <= maxPolls; attempt++) {
+    const output = await ssmCurl(instanceId, curlCmd);
+    const httpCode = output?.trim() || '000';
+
+    if (httpCode === '200') {
+      logger.success(`ArgoCD is reachable via SSM (HTTP ${httpCode})`);
+      writeSummary('## ArgoCD Health Check');
+      writeSummary('');
+      writeSummary('✅ ArgoCD server is reachable (HTTP 200)');
+      return true;
+    }
+
+    logger.info(
+      `  Attempt ${attempt}/${maxPolls} -- HTTP ${httpCode}, retrying in ${pollInterval}s...`,
+    );
+    await sleep(pollInterval * 1000);
+  }
+
+  emitAnnotation(
+    'error',
+    `ArgoCD unreachable after ${totalWait}s -- bootstrapArgoCD may have failed`,
+    'ArgoCD Health',
+  );
+  return false;
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
 async function main(): Promise<void> {
-  logger.header('Verify ArgoCD Sync');
+  const modeLabel = mode === 'health' ? 'Health Check' : 'Sync Verification';
+  logger.header(`Verify ArgoCD (${modeLabel})`);
   logger.info(`Environment: ${environment}`);
   logger.info(`Region:      ${awsConfig.region}`);
+  logger.info(`Mode:        ${mode}`);
   console.log('');
 
   // Step 1: Resolve control plane instance
@@ -487,16 +559,22 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Step 3: Poll for sync via SSM
-  const success = await waitForSync(instanceId, token);
-
-  if (!success) {
-    emitAnnotation(
-      'warning',
-      'Some ArgoCD Applications did not reach Synced+Healthy -- ArgoCD will continue retrying',
-      'ArgoCD Sync Timeout',
-    );
-    process.exit(1);
+  // Step 3: Execute mode
+  if (mode === 'health') {
+    const reachable = await healthCheck(instanceId, token);
+    if (!reachable) {
+      process.exit(1);
+    }
+  } else {
+    const success = await waitForSync(instanceId, token);
+    if (!success) {
+      emitAnnotation(
+        'warning',
+        'Some ArgoCD Applications did not reach Synced+Healthy -- ArgoCD will continue retrying',
+        'ArgoCD Sync Timeout',
+      );
+      process.exit(1);
+    }
   }
 }
 
