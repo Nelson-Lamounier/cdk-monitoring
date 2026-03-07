@@ -5,6 +5,15 @@
 namespace: monitoring
 
 # ---------------------------------------------------------------------------
+# Admin Access Control
+# IPs provided by CI/CD pipeline via ArgoCD Helm parameter overrides.
+# ---------------------------------------------------------------------------
+adminAccess:
+  enabled: true
+  hostname: "ops.nelsonlamounier.com"
+  allowedIps: [] # Populated by pipeline: ALLOW_IPV4, ALLOW_IPV6
+
+# ---------------------------------------------------------------------------
 # Node Placement (applies to Deployments, NOT DaemonSets)
 # ---------------------------------------------------------------------------
 nodeSelector:
@@ -29,7 +38,7 @@ prometheus:
   retention: 15d
   scrapeInterval: 30s
   ingress:
-    enabled: false
+    enabled: true
     matchRule: "PathPrefix(`/prometheus`)"
 # ---------------------------------------------------------------------------
 # Grafana
@@ -50,7 +59,7 @@ grafana:
   service:
     port: 3000
   ingress:
-    enabled: false
+    enabled: true
     matchRule: "PathPrefix(`/grafana`)"
   alerting:
     snsTopicArn: ""

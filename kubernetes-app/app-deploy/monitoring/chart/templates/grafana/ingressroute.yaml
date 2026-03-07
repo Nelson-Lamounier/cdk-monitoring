@@ -8,12 +8,18 @@ metadata:
     {{- include "monitoring.fullLabels" "grafana" | nindent 4 }}
 spec:
   entryPoints:
-    - web
+    - websecure
   routes:
-    - match: {{ .Values.grafana.ingress.matchRule }}
+    - match: Host(`{{ .Values.adminAccess.hostname }}`) && {{ .Values.grafana.ingress.matchRule }}
       kind: Rule
       priority: 100
+      {{- if .Values.adminAccess.enabled }}
+      middlewares:
+        - name: admin-ip-allowlist
+      {{- end }}
       services:
         - name: grafana
           port: {{ .Values.grafana.service.port }}
+  tls:
+    certResolver: letsencrypt
 {{- end }}

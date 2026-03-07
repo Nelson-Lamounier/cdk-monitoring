@@ -443,6 +443,9 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 restrictAccess: nextjsConfig.restrictAccess,
                 allowedIps: nextjsConfig.allowedIpv4 ? [nextjsConfig.allowedIpv4] : [],
                 allowedIpv6s: nextjsConfig.allowedIpv6 ? [nextjsConfig.allowedIpv6] : [],
+                // Admin services (Grafana/Prometheus/ArgoCD) DNS
+                opsSubdomain: configs.edge.opsSubdomain,
+                baseDomain: configs.edge.baseDomain,
                 env: edgeEnv,
             },
         );

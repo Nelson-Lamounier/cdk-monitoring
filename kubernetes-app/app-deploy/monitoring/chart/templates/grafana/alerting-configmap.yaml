@@ -15,9 +15,8 @@ data:
           - uid: sns-receiver
             type: sns
             settings:
-              sns_topic_arn: "{{ .Values.grafana.alerting.snsTopicArn }}"
+              topic_arn: "{{ .Values.grafana.alerting.snsTopicArn }}"
               region: "{{ .Values.grafana.alerting.awsRegion }}"
-              auth_provider: default
             disableResolveMessage: false
 {{- else }}
       []

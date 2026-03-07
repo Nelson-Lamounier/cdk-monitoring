@@ -177,6 +177,10 @@ export interface K8sEdgeConfig {
     readonly enableRateLimiting: boolean;
     /** Enable IP reputation list @default true */
     readonly enableIpReputationList: boolean;
+    /** Admin services subdomain prefix (e.g., 'ops' -> ops.nelsonlamounier.com) */
+    readonly opsSubdomain?: string;
+    /** Root domain for ops DNS record (e.g., 'nelsonlamounier.com') */
+    readonly baseDomain?: string;
 }
 
 /**
@@ -258,6 +262,8 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             rateLimitPerIp: 2000,
             enableRateLimiting: true,
             enableIpReputationList: true,
+            opsSubdomain: 'ops',
+            baseDomain: 'nelsonlamounier.com',
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
@@ -324,6 +330,8 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             rateLimitPerIp: 2000,
             enableRateLimiting: true,
             enableIpReputationList: true,
+            opsSubdomain: 'ops',
+            baseDomain: 'nelsonlamounier.com',
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
@@ -390,6 +398,8 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             rateLimitPerIp: 2000,
             enableRateLimiting: true,
             enableIpReputationList: true,
+            opsSubdomain: 'ops',
+            baseDomain: 'nelsonlamounier.com',
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),

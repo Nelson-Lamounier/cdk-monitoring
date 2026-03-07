@@ -120,6 +120,14 @@ interface AcmCertificateProperties {
    * Used by the DnsAliasRecord custom resource
    */
   SkipCertificateCreation?: string;
+
+  /**
+   * Simple A record value (e.g., an Elastic IP address)
+   * When provided with SkipCertificateCreation=true and no CloudFrontDomainName,
+   * creates a simple A record pointing to this IP address.
+   * @example "1.2.3.4"
+   */
+  RecordValue?: string;
 }
 
 
@@ -211,6 +219,29 @@ async function handleCreate(
     CrossAccountRoleArn,
     Environment,
   } = props;
+
+  // Simple A record mode: Create a plain A record pointing to an IP (e.g., EIP)
+  if (props.SkipCertificateCreation === 'true' && props.RecordValue && !props.CloudFrontDomainName) {
+    console.log(`Simple A record mode: Creating A record for ${DomainName} -> ${props.RecordValue}`);
+    console.log(`  Hosted Zone: ${HostedZoneId}`);
+
+    const credentials = await assumeCrossAccountRole(CrossAccountRoleArn);
+    await createSimpleARecord(
+      HostedZoneId,
+      DomainName,
+      props.RecordValue,
+      credentials,
+    );
+
+    return {
+      PhysicalResourceId: `dns-a-record-${DomainName}`,
+      Data: {
+        DomainName,
+        RecordValue: props.RecordValue,
+        ARecordCreated: 'true',
+      },
+    };
+  }
 
   // DNS-only mode: Only create CloudFront alias record, skip certificate
   if (props.SkipCertificateCreation === 'true' && props.CloudFrontDomainName) {
@@ -370,6 +401,36 @@ async function handleDelete(
       : "acm-certificate-cleanup";
 
   const props = event.ResourceProperties as unknown as AcmCertificateProperties;
+
+  // Simple A record mode: Delete A record pointing to EIP
+  if (physicalResourceId.startsWith('dns-a-record-') && props.RecordValue) {
+    console.log(`Simple A record mode: Deleting A record for ${props.DomainName}`);
+
+    try {
+      const credentials = await assumeCrossAccountRole(props.CrossAccountRoleArn);
+      await deleteSimpleARecord(
+        props.HostedZoneId,
+        props.DomainName,
+        props.RecordValue,
+        credentials,
+      );
+      console.log("Simple A record deleted");
+    } catch (error: unknown) {
+      const errName = (error as { name?: string })?.name ?? 'Unknown';
+      const errMsg = (error as { message?: string })?.message ?? String(error);
+      if (errName === 'AccessDeniedException' || errName === 'AccessDenied') {
+        console.warn(`Cross-account role may have been deleted: ${errMsg}`);
+      } else {
+        console.warn(`A record deletion failed (${errName}): ${errMsg}`);
+      }
+      console.log("Continuing — A record may already be deleted");
+    }
+
+    return {
+      PhysicalResourceId: physicalResourceId,
+      Data: {},
+    };
+  }
 
   // DNS-only mode: Only delete CloudFront alias record, skip certificate deletion
   if (physicalResourceId.startsWith('dns-alias-') && props.CloudFrontDomainName) {
@@ -952,6 +1013,95 @@ async function deleteCloudFrontAliasRecord(
   } catch (_error) {
     // If record doesn't exist, that's fine
     console.log(`CloudFront alias record may already be deleted: ${domainName}`);
+  }
+}
+
+/**
+ * Create or update a simple A record in Route 53 pointing to an IP address
+ * Used for admin service DNS (e.g., ops.nelsonlamounier.com -> EIP)
+ */
+async function createSimpleARecord(
+  hostedZoneId: string,
+  domainName: string,
+  ipAddress: string,
+  credentials: CrossAccountCredentials,
+): Promise<void> {
+  console.log(`Creating simple A record for ${domainName} -> ${ipAddress}`);
+
+  const route53Client = new Route53Client({
+    region: "us-east-1",
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+      sessionToken: credentials.sessionToken,
+    },
+  });
+
+  const command = new ChangeResourceRecordSetsCommand({
+    HostedZoneId: hostedZoneId,
+    ChangeBatch: {
+      Comment: `A record for ${domainName} -> ${ipAddress}`,
+      Changes: [
+        {
+          Action: ChangeAction.UPSERT,
+          ResourceRecordSet: {
+            Name: domainName,
+            Type: "A",
+            TTL: 300,
+            ResourceRecords: [{ Value: ipAddress }],
+          },
+        },
+      ],
+    },
+  });
+
+  await route53Client.send(command);
+  console.log(`Simple A record created: ${domainName} -> ${ipAddress}`);
+}
+
+/**
+ * Delete a simple A record from Route 53
+ */
+async function deleteSimpleARecord(
+  hostedZoneId: string,
+  domainName: string,
+  ipAddress: string,
+  credentials: CrossAccountCredentials,
+): Promise<void> {
+  console.log(`Deleting simple A record for ${domainName}`);
+
+  const route53Client = new Route53Client({
+    region: "us-east-1",
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+      sessionToken: credentials.sessionToken,
+    },
+  });
+
+  const command = new ChangeResourceRecordSetsCommand({
+    HostedZoneId: hostedZoneId,
+    ChangeBatch: {
+      Comment: `Deleting A record for ${domainName}`,
+      Changes: [
+        {
+          Action: ChangeAction.DELETE,
+          ResourceRecordSet: {
+            Name: domainName,
+            Type: "A",
+            TTL: 300,
+            ResourceRecords: [{ Value: ipAddress }],
+          },
+        },
+      ],
+    },
+  });
+
+  try {
+    await route53Client.send(command);
+    console.log(`Simple A record deleted: ${domainName}`);
+  } catch (_error) {
+    console.log(`A record may already be deleted: ${domainName}`);
   }
 }
 

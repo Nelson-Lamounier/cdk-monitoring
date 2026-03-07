@@ -170,6 +170,19 @@ export interface KubernetesEdgeStackProps extends cdk.StackProps {
      * @default []
      */
     readonly allowedIpv6s?: string[];
+
+    /**
+     * Subdomain prefix for admin services (e.g., 'ops').
+     * Creates an A record (ops.domain.com) pointing to the EIP for
+     * Traefik-managed HTTPS access to Grafana, Prometheus, ArgoCD.
+     */
+    readonly opsSubdomain?: string;
+
+    /**
+     * Root domain (e.g., 'nelsonlamounier.com') for the ops A record.
+     * Required when opsSubdomain is set.
+     */
+    readonly baseDomain?: string;
 }
 
 // =============================================================================
@@ -647,6 +660,27 @@ export class KubernetesEdgeStack extends cdk.Stack {
         });
 
         dnsAliasRecord.node.addDependency(this.distribution);
+
+        // =====================================================================
+        // OPS DNS A RECORD (Admin services — ops.domain.com → EIP)
+        // =====================================================================
+        // Creates a simple A record for the admin services domain (e.g., ops.nelsonlamounier.com)
+        // pointing directly to the Elastic IP. TLS is handled by Traefik Let's Encrypt.
+        if (props.opsSubdomain && props.baseDomain) {
+            const opsDomainName = `${props.opsSubdomain}.${props.baseDomain}`;
+            new cdk.CustomResource(this, 'OpsDnsRecord', {
+                serviceToken: dnsAliasProvider.serviceToken,
+                properties: {
+                    DomainName: opsDomainName,
+                    HostedZoneId: props.hostedZoneId,
+                    CrossAccountRoleArn: props.crossAccountRoleArn,
+                    Environment: envName,
+                    SkipCertificateCreation: 'true',
+                    RecordValue: eipAddress,
+                },
+                removalPolicy: logRemovalPolicy,
+            });
+        }
 
         // Suppress cdk-nag warning for CDK-managed framework Lambda runtime
         NagSuppressions.addResourceSuppressionsByPath(
