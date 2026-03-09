@@ -364,6 +364,43 @@ export class KubernetesDataStack extends cdk.Stack {
             description: 'AWS region for K8s application',
         });
 
+        // =================================================================
+        // MONITORING ADMIN IP ALLOWLIST SSM PARAMETERS
+        //
+        // These parameters are consumed by bootstrap_argocd.py (Step 5b)
+        // to populate the admin-ip-allowlist Traefik Middleware in the
+        // monitoring namespace via ArgoCD Helm parameter overrides.
+        //
+        // Without these, the IPAllowList middleware renders with an empty
+        // sourceRange and Traefik returns 403 for all Grafana/Prometheus
+        // requests. Values are sourced from ALLOW_IPV4/ALLOW_IPV6 env
+        // vars (the same GitHub Secrets passed to CDK synth for the WAF).
+        //
+        // Paths consumed by bootstrap script:
+        //   /k8s/{env}/monitoring/allow-ipv4
+        //   /k8s/{env}/monitoring/allow-ipv6
+        // =================================================================
+
+        const allowIpv4 = process.env.ALLOW_IPV4 ?? '';
+        const allowIpv6 = process.env.ALLOW_IPV6 ?? '';
+        const k8sPrefix = `/k8s/${targetEnvironment}`;
+
+        if (allowIpv4) {
+            new ssm.StringParameter(this, 'SsmMonitoringAllowIpv4', {
+                parameterName: `${k8sPrefix}/monitoring/allow-ipv4`,
+                stringValue: allowIpv4,
+                description: 'IPv4 CIDR for Traefik admin-ip-allowlist middleware (Grafana/Prometheus/ArgoCD)',
+            });
+        }
+
+        if (allowIpv6) {
+            new ssm.StringParameter(this, 'SsmMonitoringAllowIpv6', {
+                parameterName: `${k8sPrefix}/monitoring/allow-ipv6`,
+                stringValue: allowIpv6,
+                description: 'IPv6 CIDR for Traefik admin-ip-allowlist middleware (Grafana/Prometheus/ArgoCD)',
+            });
+        }
+
         if (dynamoEncryptionKey) {
             new ssm.StringParameter(this, 'SsmDynamoDbKmsKeyArn', {
                 parameterName: paths.dynamodbKmsKeyArn,

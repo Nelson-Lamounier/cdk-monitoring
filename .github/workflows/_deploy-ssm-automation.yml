@@ -94,6 +94,12 @@ on:
       VERIFICATION_SECRET:
         description: "Email verification HMAC secret (needed for CDK synth)"
         required: false
+      ALLOW_IPV4:
+        description: "IPv4 CIDR for Traefik admin-ip-allowlist (Grafana/Prometheus/ArgoCD)"
+        required: false
+      ALLOW_IPV6:
+        description: "IPv6 CIDR for Traefik admin-ip-allowlist (Grafana/Prometheus/ArgoCD)"
+        required: false
 
 env:
   NODE_VERSION: "22"
@@ -210,6 +216,51 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
+
+      # -----------------------------------------------------------------------
+      # Write Admin IPs to SSM
+      #
+      # bootstrap_argocd.py (Step 5b) reads these paths to inject
+      # adminAccess.allowedIps into the monitoring ArgoCD Application
+      # via Helm parameter overrides, populating the admin-ip-allowlist
+      # Traefik Middleware. Without this, the middleware renders with an
+      # empty sourceRange and Traefik returns 403 for all
+      # Grafana/Prometheus/ArgoCD requests.
+      #
+      # The Data stack CDK deploy also writes these (Fix A), but this step
+      # ensures the SSM params are current on script-only re-bootstraps.
+      # -----------------------------------------------------------------------
+      - name: Write Admin IPs to SSM
+        env:
+          ALLOW_IPV4: ${{ secrets.ALLOW_IPV4 }}
+          ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
+        run: |
+          SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}/monitoring"
+          REGION="${{ env.AWS_REGION }}"
+
+          if [ -n "$ALLOW_IPV4" ]; then
+            aws ssm put-parameter \
+              --name "${SSM_PREFIX}/allow-ipv4" \
+              --value "$ALLOW_IPV4" \
+              --type String \
+              --overwrite \
+              --region "$REGION"
+            echo "[OK] Wrote ${SSM_PREFIX}/allow-ipv4"
+          else
+            echo "[SKIP] ALLOW_IPV4 not set — skipping"
+          fi
+
+          if [ -n "$ALLOW_IPV6" ]; then
+            aws ssm put-parameter \
+              --name "${SSM_PREFIX}/allow-ipv6" \
+              --value "$ALLOW_IPV6" \
+              --type String \
+              --overwrite \
+              --region "$REGION"
+            echo "[OK] Wrote ${SSM_PREFIX}/allow-ipv6"
+          else
+            echo "[SKIP] ALLOW_IPV6 not set — skipping"
+          fi
 
       - name: Sync Scripts to S3
         run: just ci-sync-scripts --environment ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
