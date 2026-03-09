@@ -147,12 +147,15 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
         });
 
         // Single-node cluster: max=1 (EBS can only attach to one instance)
+        // Scaling policy disabled — Kubernetes owns scaling decisions, not AWS.
+        // The ASG provides self-healing (replacement on termination) only.
         const asgConstruct = new AutoScalingGroupConstruct(this, 'Compute', {
             vpc,
             launchTemplate: launchTemplateConstruct.launchTemplate,
             minCapacity: 1,
             maxCapacity: 1,
             desiredCapacity: 1,
+            disableScalingPolicy: true,
             rollingUpdate: {
                 minInstancesInService: 0,
                 pauseTimeMinutes: configs.compute.signalsTimeoutMinutes,

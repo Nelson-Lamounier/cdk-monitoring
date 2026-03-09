@@ -268,13 +268,16 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
             resources: ['*'],
         }));
 
-        // ASG: min=0 allows scaling down to save costs, max=1 for single worker
+        // ASG: min=0 allows scaling down to save costs, max=1 for single worker.
+        // Scaling policy disabled — Kubernetes owns scaling decisions via HPA.
+        // If node-level scaling is needed later, install Cluster Autoscaler.
         const asgConstruct = new AutoScalingGroupConstruct(this, 'WorkerAsg', {
             vpc,
             launchTemplate: launchTemplateConstruct.launchTemplate,
             minCapacity: 0,
             maxCapacity: 1,
             desiredCapacity: 1,
+            disableScalingPolicy: true,
             namePrefix: workerPrefix,
             useSignals: workerConfig.useSignals,
             signalsTimeoutMinutes: workerConfig.signalsTimeoutMinutes,

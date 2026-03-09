@@ -358,13 +358,15 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
             },
         }));
 
-        // ASG: min=0 allows scaling down to save costs, max=1 for single monitoring worker
+        // ASG: min=0 allows scaling down to save costs, max=1 for single monitoring worker.
+        // Scaling policy disabled — Kubernetes owns scaling decisions, not AWS.
         const asgConstruct = new AutoScalingGroupConstruct(this, 'MonWorkerAsg', {
             vpc,
             launchTemplate: launchTemplateConstruct.launchTemplate,
             minCapacity: 0,
             maxCapacity: 1,
             desiredCapacity: 1,
+            disableScalingPolicy: true,
             namePrefix: workerPrefix,
             useSignals: monitoringWorkerConfig.useSignals,
             signalsTimeoutMinutes: monitoringWorkerConfig.signalsTimeoutMinutes,
