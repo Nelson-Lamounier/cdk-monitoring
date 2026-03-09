@@ -366,12 +366,20 @@ async function checkApp(
   token: string,
   app: string,
 ): Promise<AppStatus> {
-  // Curl that returns JSON body only (for parsing sync/health status)
+  // Curl that returns only sync/health status (piped through Python to avoid
+  // SSM output truncation — the monitoring app's full JSON exceeds 24KB).
+  const pythonFilter = [
+    `import json,sys`,
+    `try:`,
+    `  d=json.load(sys.stdin)`,
+    `  print(json.dumps({"error":d.get("error",""),"sync":d.get("status",{}).get("sync",{}).get("status","Unknown"),"health":d.get("status",{}).get("health",{}).get("status","Unknown")}))`,
+    `except: print(json.dumps({"error":"parse-failed"}))`,
+  ].join('\\n');
   const curlCmd = buildArgoCDCurl(
     '-sk --max-time 10',
     `/api/v1/applications/${app}`,
     `-H 'Authorization: Bearer ${token}'`,
-  );
+  ) + ` | python3 -c "${pythonFilter}"`;
 
   const output = await ssmCurl(instanceId, curlCmd);
 
@@ -387,13 +395,11 @@ async function checkApp(
   try {
     const data = JSON.parse(output) as {
       error?: string;
-      status?: {
-        sync?: { status?: string };
-        health?: { status?: string };
-      };
+      sync?: string;
+      health?: string;
     };
 
-    if (data.error) {
+    if (data.error && data.error !== '') {
       return {
         app,
         syncStatus: 'Unknown',
@@ -405,8 +411,8 @@ async function checkApp(
 
     return {
       app,
-      syncStatus: data.status?.sync?.status || 'Unknown',
-      healthStatus: data.status?.health?.status || 'Unknown',
+      syncStatus: data.sync || 'Unknown',
+      healthStatus: data.health || 'Unknown',
       reachable: true,
     };
   } catch {
