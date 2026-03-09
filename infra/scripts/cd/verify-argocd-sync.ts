@@ -96,6 +96,11 @@ const mode = (args.mode as string) || 'sync';
 const awsConfig = buildAwsConfig(args);
 const pollInterval = parseInt(args['poll-interval'] as string, 10) || 30;
 const maxPolls = parseInt(args['max-polls'] as string, 10) || 12;
+
+// ArgoCD server ClusterIP address inside K8s.
+// Bypasses Traefik (whose IngressRoute requires websecure + Host header).
+const ARGOCD_BASE = 'http://argocd-server.argocd.svc.cluster.local/argocd';
+
 const ssmPrefix = `/k8s/${environment}`;
 
 // =============================================================================
@@ -299,7 +304,7 @@ async function diagnosticProbe(
   token: string,
 ): Promise<void> {
   const probeApp = EXPECTED_APPS[0];
-  const curlCmd = `curl -sk -w '\\n%{http_code}' --max-time 10 -H 'Authorization: Bearer ${token}' 'http://localhost/argocd/api/v1/applications/${probeApp}' 2>/dev/null || echo 'UNREACHABLE'`;
+  const curlCmd = `curl -s -w '\\n%{http_code}' --max-time 10 -H 'Authorization: Bearer ${token}' '${ARGOCD_BASE}/api/v1/applications/${probeApp}' 2>/dev/null`;
 
   logger.info(
     `Diagnostic probe: ArgoCD API /applications/${probeApp} (via SSM)`,
@@ -345,7 +350,7 @@ async function checkApp(
   app: string,
 ): Promise<AppStatus> {
   // Curl that returns JSON body only (for parsing sync/health status)
-  const curlCmd = `curl -sk --max-time 10 -H 'Authorization: Bearer ${token}' 'http://localhost/argocd/api/v1/applications/${app}' 2>/dev/null || echo '{}'`;
+  const curlCmd = `curl -s --max-time 10 -H 'Authorization: Bearer ${token}' '${ARGOCD_BASE}/api/v1/applications/${app}' 2>/dev/null`;
 
   const output = await ssmCurl(instanceId, curlCmd);
 
@@ -505,7 +510,7 @@ async function healthCheck(
     `Health check: polling until HTTP 200 (timeout: ${totalWait}s)...`,
   );
 
-  const curlCmd = `curl -sk -o /dev/null -w '%{http_code}' --max-time 10 -H 'Authorization: Bearer ${token}' 'http://localhost/argocd/api/v1/applications' 2>/dev/null || echo 000`;
+  const curlCmd = `curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H 'Authorization: Bearer ${token}' '${ARGOCD_BASE}/api/v1/applications' 2>/dev/null`;
 
   for (let attempt = 1; attempt <= maxPolls; attempt++) {
     const output = await ssmCurl(instanceId, curlCmd);
