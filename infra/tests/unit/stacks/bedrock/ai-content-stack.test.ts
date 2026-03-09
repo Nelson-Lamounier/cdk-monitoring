@@ -45,12 +45,7 @@ function createContentStack(
         'TestAiContentStack',
         {
             namePrefix: NAME_PREFIX,
-            // Import bucket by name — avoids cross-stack cyclic deps in tests
-            assetsBucket: s3.Bucket.fromBucketName(
-                new cdk.Stack(app, 'BucketLookup', { env: TEST_ENV_EU }),
-                'ImportedBucket',
-                TEST_BUCKET_NAME,
-            ),
+            assetsBucketName: TEST_BUCKET_NAME,
             draftPrefix: 'drafts/',
             publishedPrefix: 'published/',
             contentPrefix: 'content/',

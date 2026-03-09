@@ -44,8 +44,8 @@ import { Construct } from 'constructs';
 export interface AiContentStackProps extends cdk.StackProps {
     /** Name prefix for resources (e.g. 'bedrock-development') */
     readonly namePrefix: string;
-    /** The S3 bucket for raw drafts and published output (from DataStack) */
-    readonly assetsBucket: s3.IBucket;
+    /** Name of the S3 bucket for raw drafts and published output (from DataStack) */
+    readonly assetsBucketName: string;
     /** S3 key prefix for raw draft markdown files */
     readonly draftPrefix: string;
     /** S3 key prefix for published MDX output */
@@ -112,8 +112,16 @@ export class AiContentStack extends cdk.Stack {
         super(scope, id, props);
 
         const { namePrefix } = props;
-        this.assetsBucket = props.assetsBucket;
         this.contentPrefix = props.contentPrefix;
+
+        // Import the bucket by name to avoid cross-stack notification handler
+        // placement, which causes cyclic dependencies (Data ↔ Content).
+        const assetsBucket = s3.Bucket.fromBucketName(
+            this,
+            'ImportedAssetsBucket',
+            props.assetsBucketName,
+        );
+        this.assetsBucket = assetsBucket;
 
         // =================================================================
         // DynamoDB — Article Metadata Table (Metadata Brain)
@@ -200,7 +208,7 @@ export class AiContentStack extends cdk.Stack {
             memorySize: props.lambdaMemoryMb,
             timeout: cdk.Duration.seconds(props.lambdaTimeoutSeconds),
             environment: {
-                ASSETS_BUCKET: props.assetsBucket.bucketName,
+                ASSETS_BUCKET: assetsBucket.bucketName,
                 DRAFT_PREFIX: props.draftPrefix,
                 PUBLISHED_PREFIX: props.publishedPrefix,
                 CONTENT_PREFIX: props.contentPrefix,
@@ -248,9 +256,9 @@ export class AiContentStack extends cdk.Stack {
         //
         // Lambda reads from drafts/, writes to published/ AND content/
         // =================================================================
-        props.assetsBucket.grantRead(this.publisherFunction, `${props.draftPrefix}*`);
-        props.assetsBucket.grantWrite(this.publisherFunction, `${props.publishedPrefix}*`);
-        props.assetsBucket.grantWrite(this.publisherFunction, `${props.contentPrefix}*`);
+        assetsBucket.grantRead(this.publisherFunction, `${props.draftPrefix}*`);
+        assetsBucket.grantWrite(this.publisherFunction, `${props.publishedPrefix}*`);
+        assetsBucket.grantWrite(this.publisherFunction, `${props.contentPrefix}*`);
 
         // =================================================================
         // IAM — DynamoDB write access
@@ -260,7 +268,7 @@ export class AiContentStack extends cdk.Stack {
         // =================================================================
         // S3 Event Notification — Trigger on new drafts
         // =================================================================
-        props.assetsBucket.addEventNotification(
+        assetsBucket.addEventNotification(
             s3.EventType.OBJECT_CREATED,
             new s3n.LambdaDestination(this.publisherFunction),
             {
