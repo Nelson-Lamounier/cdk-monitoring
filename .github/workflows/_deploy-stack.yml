@@ -85,6 +85,11 @@ on:
         required: false
         type: number
         default: 20
+      use-container:
+        description: "Run inside CI container (set false for stacks requiring Docker, e.g. Bedrock)"
+        required: false
+        type: boolean
+        default: true
     secrets:
       AWS_OIDC_ROLE:
         description: "AWS OIDC role ARN for authentication (resolved from environment if not passed)"
@@ -118,8 +123,9 @@ jobs:
   deploy:
     name: ${{ inputs.stack-name }}
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    # When use-container is false, runs directly on ubuntu-latest (has Docker preinstalled).
+    # Required for Bedrock stacks that need Docker for CDK synth (VectorKnowledgeBase).
+    container: ${{ inputs.use-container && 'ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest' || null }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     environment: ${{ inputs.environment }}
     outputs:
