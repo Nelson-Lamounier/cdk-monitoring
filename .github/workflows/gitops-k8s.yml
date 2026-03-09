@@ -26,9 +26,9 @@
 name: "GitOps: K8s Applications (Dev)"
 
 on:
-  push:
-    branches:
-      - develop
+  # push:
+  #   branches:
+  #     - develop
   #     - feature/k3s-kubernetes-migration
   #   paths:
   #     # Helm charts (ArgoCD watches these paths in Git)
