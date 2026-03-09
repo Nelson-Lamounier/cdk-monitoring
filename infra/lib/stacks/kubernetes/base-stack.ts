@@ -229,6 +229,11 @@ export class KubernetesBaseStack extends cdk.Stack {
             ec2.Port.udp(53),
             'CoreDNS UDP (intra-cluster)',
         );
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcp(5473),
+            'Calico Typha (intra-cluster)',
+        );
 
         // Pod CIDR → critical services (kube-proxy DNATs ClusterIP to node IP;
         // source IP stays in pod CIDR, which self-ref SG rules do NOT match)
