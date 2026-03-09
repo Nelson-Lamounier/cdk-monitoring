@@ -98,12 +98,14 @@ const pollInterval = parseInt(args['poll-interval'] as string, 10) || 30;
 const maxPolls = parseInt(args['max-polls'] as string, 10) || 12;
 
 // ArgoCD API path builder.
-// The ClusterIP serves the API at the root — the /argocd rootpath is only
-// used by Traefik for external routing, NOT on the ClusterIP directly.
+// server.rootpath=/argocd is set in argocd-cmd-params-cm, so ALL API
+// endpoints (including via ClusterIP) are served under /argocd/...
 // We resolve the ClusterIP dynamically via kubectl because:
 //   1. Nodes can't resolve .svc.cluster.local DNS (VPC DNS only)
 //   2. server.insecure=true means ArgoCD serves plain HTTP on port 8080
 //      (Service port 80 → targetPort 8080), so we use http:// not https://
+
+const ARGOCD_ROOT_PATH = '/argocd';
 
 /** Build a shell command that resolves the ArgoCD ClusterIP then curls it. */
 function buildArgoCDCurl(curlFlags: string, apiPath: string, extraHeaders: string = ''): string {
@@ -111,7 +113,7 @@ function buildArgoCDCurl(curlFlags: string, apiPath: string, extraHeaders: strin
     'export KUBECONFIG=/etc/kubernetes/admin.conf',
     'ARGOCD_IP=$(kubectl get svc argocd-server -n argocd -o jsonpath=\'{.spec.clusterIP}\' 2>/dev/null)',
     'if [ -z "$ARGOCD_IP" ]; then echo "UNREACHABLE"; exit 0; fi',
-    `curl ${curlFlags} ${extraHeaders} "http://\${ARGOCD_IP}${apiPath}" 2>/dev/null`,
+    `curl ${curlFlags} ${extraHeaders} "http://\${ARGOCD_IP}${ARGOCD_ROOT_PATH}${apiPath}" 2>/dev/null`,
   ].join(' && ');
 }
 
