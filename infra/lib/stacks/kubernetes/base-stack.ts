@@ -37,6 +37,7 @@ import * as dlm from 'aws-cdk-lib/aws-dlm';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
@@ -106,12 +107,19 @@ export interface KubernetesBaseStackProps extends cdk.StackProps {
 // STACK
 // =============================================================================
 
+/** Internal domain name for the private hosted zone. */
+const K8S_INTERNAL_DOMAIN = 'k8s.internal';
+
+/** DNS name for the Kubernetes API server (stable endpoint). */
+const K8S_API_DNS_NAME = `k8s-api.${K8S_INTERNAL_DOMAIN}`;
+
 /**
  * Kubernetes Base Stack — Long-Lived Infrastructure.
  *
  * Contains VPC lookup, Security Group, KMS Key, EBS Volume, Elastic IP,
- * S3 scripts bucket, and SSM discovery parameters. These resources rarely
- * change and are decoupled from the runtime compute stack.
+ * Route 53 private hosted zone, S3 scripts bucket, and SSM discovery
+ * parameters. These resources rarely change and are decoupled from the
+ * runtime compute stack.
  */
 export class KubernetesBaseStack extends cdk.Stack {
     /** The looked-up VPC */
@@ -141,6 +149,12 @@ export class KubernetesBaseStack extends cdk.Stack {
 
     /** S3 bucket for k8s scripts and manifests */
     public readonly scriptsBucket: s3.IBucket;
+
+    /** Route 53 private hosted zone for internal DNS discovery */
+    public readonly hostedZone: route53.PrivateHostedZone;
+
+    /** DNS name for the Kubernetes API server (stable endpoint) */
+    public readonly apiDnsName: string;
 
     /** Elastic IP for stable external access */
     public readonly elasticIp: ec2.CfnEIP;
@@ -501,6 +515,32 @@ export class KubernetesBaseStack extends cdk.Stack {
         });
 
         // =====================================================================
+        // Route 53 Private Hosted Zone (stable API server DNS)
+        //
+        // Provides a DNS-based control plane endpoint so that workers
+        // referencing k8s-api.k8s.internal survive control plane
+        // re-provisioning without manual kubelet reconfiguration.
+        // The control plane updates the A record at boot via IMDS.
+        // =====================================================================
+        this.hostedZone = new route53.PrivateHostedZone(this, 'K8sInternalZone', {
+            zoneName: K8S_INTERNAL_DOMAIN,
+            vpc: this.vpc,
+            comment: `Internal DNS for ${namePrefix} Kubernetes API server discovery`,
+        });
+        this.apiDnsName = K8S_API_DNS_NAME;
+
+        // Placeholder A record — updated by the control plane at boot.
+        // Using a VPC-internal IP (10.0.0.1) so it never accidentally routes
+        // anywhere before the control plane updates it.
+        new route53.ARecord(this, 'K8sApiRecord', {
+            zone: this.hostedZone,
+            recordName: K8S_API_DNS_NAME,
+            target: route53.RecordTarget.fromIpAddresses('10.0.0.1'),
+            ttl: cdk.Duration.seconds(30),
+            comment: 'Kubernetes API server — updated by control plane user-data',
+        });
+
+        // =====================================================================
         // S3 Access Logs Bucket (AwsSolutions-S1)
         // =====================================================================
         const accessLogsBucketConstruct = new S3BucketConstruct(this, 'K8sScriptsAccessLogsBucket', {
@@ -566,6 +606,20 @@ export class KubernetesBaseStack extends cdk.Stack {
             tier: ssm.ParameterTier.STANDARD,
         });
 
+        new ssm.StringParameter(this, 'HostedZoneIdParam', {
+            parameterName: `${props.ssmPrefix}/hosted-zone-id`,
+            stringValue: this.hostedZone.hostedZoneId,
+            description: 'Route 53 private hosted zone ID for k8s API DNS discovery',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
+        new ssm.StringParameter(this, 'ApiDnsNameParam', {
+            parameterName: `${props.ssmPrefix}/api-dns-name`,
+            stringValue: K8S_API_DNS_NAME,
+            description: 'DNS name for Kubernetes API server (stable endpoint)',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
         // =====================================================================
         // Tags
         // =====================================================================
@@ -593,6 +647,16 @@ export class KubernetesBaseStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'EbsVolumeId', {
             value: this.ebsVolume.volumeId,
             description: 'Kubernetes data EBS volume ID',
+        });
+
+        new cdk.CfnOutput(this, 'HostedZoneId', {
+            value: this.hostedZone.hostedZoneId,
+            description: 'Route 53 private hosted zone ID (k8s.internal)',
+        });
+
+        new cdk.CfnOutput(this, 'ApiDnsName', {
+            value: K8S_API_DNS_NAME,
+            description: 'Stable DNS name for the Kubernetes API server',
         });
 
         new cdk.CfnOutput(this, 'LogGroupKmsKeyArn', {

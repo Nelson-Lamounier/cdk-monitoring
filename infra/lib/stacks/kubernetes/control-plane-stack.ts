@@ -251,6 +251,8 @@ export S3_BUCKET="${scriptsBucket.bucketName}"
 export CALICO_VERSION="${configs.image.bakedVersions.calico}"
 export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
 export EIP_ALLOC_ID="${baseStack.elasticIp.attrAllocationId}"
+export HOSTED_ZONE_ID="${baseStack.hostedZone.hostedZoneId}"
+export API_DNS_NAME="${baseStack.apiDnsName}"
 
 # Persist env vars for SSM Automation to source later
 cat > /etc/profile.d/k8s-env.sh << 'ENVEOF'
@@ -268,6 +270,8 @@ export S3_BUCKET="${scriptsBucket.bucketName}"
 export CALICO_VERSION="${configs.image.bakedVersions.calico}"
 export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
 export EIP_ALLOC_ID="${baseStack.elasticIp.attrAllocationId}"
+export HOSTED_ZONE_ID="${baseStack.hostedZone.hostedZoneId}"
+export API_DNS_NAME="${baseStack.apiDnsName}"
 ENVEOF
 
 # ─── Resolve instance ID via IMDSv2 ──────────────────────────────────
@@ -352,6 +356,17 @@ echo "SSM Automation will be triggered by the CI pipeline"
             region: this.region,
             account: this.account,
         });
+
+        // Grant Route 53 record update for DNS-based API server discovery.
+        // The control plane updates k8s-api.k8s.internal → its private IP at boot.
+        this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'Route53ApiDnsUpdate',
+            effect: iam.Effect.ALLOW,
+            actions: ['route53:ChangeResourceRecordSets'],
+            resources: [
+                `arn:aws:route53:::hostedzone/${baseStack.hostedZone.hostedZoneId}`,
+            ],
+        }));
 
         // Publish instance role ARN to SSM for cross-stack import (AppIamStack)
         new ssm.StringParameter(this, 'InstanceRoleArnParam', {
