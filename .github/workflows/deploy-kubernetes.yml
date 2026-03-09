@@ -15,9 +15,9 @@
 name: Deploy K8s to Development
 
 on:
-  # push:
-  #   branches:
-  #     - develop
+  push:
+    branches:
+      - develop
   # Weekly: AMI refresh for OS security patches
   schedule:
     - cron: "0 6 * * 1"
