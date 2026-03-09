@@ -23,6 +23,9 @@ A beginner-friendly, step-by-step guide to diagnosing and resolving Kubernetes n
   - [Issue 4: CloudFront 504 Gateway Timeout — Origin Unreachable](#issue-4-cloudfront-504-gateway-timeout--origin-unreachable)
   - [Issue 5: kubectl Works with sudo But Fails Without](#issue-5-kubectl-works-with-sudo-but-fails-without)
   - [Issue 6: bridge-nf-call-iptables Disabled After Node Reboot](#issue-6-bridge-nf-call-iptables-disabled-after-node-reboot)
+  - [Issue 7: Calico Nodes 0/1 — BGP vs VXLAN Mismatch](#issue-7-calico-nodes-01--bgp-vs-vxlan-mismatch)
+  - [Issue 8: Calico Typha Connection Timeout — Missing SG Rule for Port 5473](#issue-8-calico-typha-connection-timeout--missing-sg-rule-for-port-5473)
+  - [Issue 9: VXLAN Cross-Node Networking Broken — Tunnel Diagnostics](#issue-9-vxlan-cross-node-networking-broken--tunnel-diagnostics)
 - [CDK Security Group Reference](#cdk-security-group-reference)
 - [Glossary](#glossary)
 
@@ -757,6 +760,176 @@ echo "br_netfilter" | sudo tee /etc/modules-load.d/k8s.conf
 
 ---
 
+### Issue 7: Calico Nodes 0/1 — BGP vs VXLAN Mismatch
+
+**Symptoms:** `calico-node` DaemonSet pods show `0/1 Running` indefinitely — they never become Ready. All cross-node pod networking is broken.
+
+```bash
+sudo kubectl get pods -n calico-system -l k8s-app=calico-node
+```
+
+```text
+NAME                READY   STATUS    RESTARTS   AGE
+calico-node-abc12   0/1     Running   0          45h
+calico-node-def34   0/1     Running   0          45h
+```
+
+**Root Cause:** The Calico Installation resource uses `encapsulation: VXLAN` (VXLAN-only mode), but the Tigera operator **defaults `bgp: Enabled`** when `bgp` is not explicitly set. This starts the BIRD BGP daemon, which fails because BIRD config files (`/etc/calico/confd/config/bird.cfg`) don't exist in VXLAN mode. The readiness probe checks both `-bird-ready` and `-felix-ready`, so BIRD's failure blocks readiness.
+
+**Diagnose:**
+
+```bash
+# 1. Check the readiness probe command
+sudo kubectl describe pod -n calico-system -l k8s-app=calico-node | grep "Readiness:"
+# Output: exec [/bin/calico-node -bird-ready -felix-ready]
+
+# 2. Run the readiness check manually
+sudo kubectl exec -n calico-system <CALICO_POD> -- \
+  /bin/calico-node -bird-ready -felix-ready 2>&1
+# Output: BIRD is not ready: unable to connect to BIRDv4 socket
+
+# 3. Check the Installation resource for the mismatch
+sudo kubectl get installation default -o yaml | grep -A5 "calicoNetwork"
+# Look for: bgp: Enabled  ← THIS IS THE PROBLEM with VXLAN encapsulation
+
+# 4. Confirm VXLAN mode in IPPool
+sudo kubectl get ippools -o yaml | grep -E "ipipMode|vxlanMode"
+# Expected: ipipMode: Never, vxlanMode: Always
+```
+
+**Fix:**
+
+```bash
+# Disable BGP in the Installation resource
+sudo kubectl patch installation default --type=merge -p '{
+  "spec": {
+    "calicoNetwork": {
+      "bgp": "Disabled"
+    }
+  }
+}'
+
+# The operator will rolling-restart calico-node pods
+sudo kubectl get pods -n calico-system -l k8s-app=calico-node -w
+```
+
+**Permanent Fix (Code):** In `kubernetes-app/k8s-bootstrap/boot/steps/03_install_calico.py`, ensure the Installation resource includes `bgp: Disabled`:
+
+```yaml
+spec:
+  calicoNetwork:
+    bgp: Disabled          # ← REQUIRED for VXLAN-only mode
+    ipPools:
+      - cidr: 192.168.0.0/16
+        encapsulation: VXLAN
+        natOutgoing: Enabled
+        nodeSelector: all()
+    linuxDataplane: Iptables
+```
+
+> [!CAUTION]
+> If `bgp` is omitted, the Tigera operator defaults to `bgp: Enabled`. This is harmless in BGP mode but **breaks readiness in VXLAN-only mode**. Always explicitly set `bgp: Disabled` when using `encapsulation: VXLAN`.
+
+### Issue 8: Calico Typha Connection Timeout — Missing SG Rule for Port 5473
+
+**Symptoms:** `calico-node` on **worker nodes** stays `0/1` while `calico-node` on the **control plane** goes `1/1`. Logs show Felix can't connect to Typha:
+
+```text
+Failed to connect to typha endpoint 10.0.0.198:5473.
+  error=dial tcp 10.0.0.198:5473: i/o timeout
+```
+
+**Root Cause:** Calico Typha runs on the control plane (port **5473**). Felix on worker nodes must connect over the network. If port 5473 is missing from the cluster SG, the connection is silently dropped. The control plane calico-node works because Felix connects via **localhost** (no SG involved).
+
+**Diagnose:**
+
+```bash
+# 1. Check which node the failing calico-node is on
+sudo kubectl get pod <CALICO_POD> -n calico-system -o wide
+
+# 2. Check Felix logs for Typha connection errors
+sudo kubectl logs <CALICO_POD> -n calico-system --tail=30 | grep -i typha
+
+# 3. Test Typha port from the worker node
+curl -k --connect-timeout 3 https://<CONTROL_PLANE_IP>:5473
+```
+
+**Fix (Hotfix):**
+
+```bash
+aws ec2 authorize-security-group-ingress \
+  --region eu-west-1 --profile dev-account \
+  --group-id <CLUSTER_SG_ID> --protocol tcp --port 5473 \
+  --source-group <CLUSTER_SG_ID> \
+  --description "Calico Typha (intra-cluster)"
+```
+
+**Permanent Fix (CDK):** In `infra/lib/stacks/kubernetes/base-stack.ts`:
+
+```typescript
+this.securityGroup.addIngressRule(
+    this.securityGroup,
+    ec2.Port.tcp(5473),
+    'Calico Typha (intra-cluster)',
+);
+```
+
+After adding the SG rule, restart the failing calico-node:
+
+```bash
+sudo kubectl delete pod <CALICO_POD> -n calico-system
+```
+
+### Issue 9: VXLAN Cross-Node Networking Broken — Tunnel Diagnostics
+
+**Symptoms:** Pods on one node cannot reach pods or services on another node. Local pod traffic works. `calico-node` pods may show `0/1 Running`.
+
+**Root Cause:** In VXLAN mode (`vxlanMode: Always`), all cross-node pod traffic is encapsulated in VXLAN (UDP 4789). If calico-node is unhealthy (Issues 7/8), the VXLAN tunnels never fully establish.
+
+**Diagnose:**
+
+```bash
+# 1. Check VXLAN interface exists and is UP
+ip link show vxlan.calico
+# Expected: <BROADCAST,MULTICAST,UP,LOWER_UP>
+
+# 2. Check VXLAN FDB entries (should list remote node IPs)
+bridge fdb show dev vxlan.calico
+# Expected: <MAC> dst <WORKER_IP> self permanent
+
+# 3. Check Calico routes via VXLAN
+ip route | grep vxlan
+# Expected: 192.168.x.0/26 via 192.168.x.y dev vxlan.calico onlink
+
+# 4. Ping a pod on a remote node from the control plane
+WORKER_POD_IP=$(sudo kubectl get pod <POD_ON_WORKER> \
+  -n <NS> -o jsonpath='{.status.podIP}')
+ping -c 3 $WORKER_POD_IP
+# 100% packet loss → VXLAN tunnel is broken
+
+# 5. Test from a specific node to isolate cross-node issues
+CTRL=$(sudo kubectl get nodes \
+  -l node-role.kubernetes.io/control-plane \
+  -o jsonpath='{.items[0].metadata.name}')
+sudo kubectl run test-local --rm -it --image=busybox \
+  --restart=Never \
+  --overrides="{\"spec\":{\"nodeName\":\"$CTRL\"}}" -- \
+  wget --timeout=5 -qO- https://10.96.0.1:443 \
+  --no-check-certificate
+```
+
+**Fix:** Resolve the underlying calico-node health issue:
+
+1. Fix BGP/VXLAN mismatch → [Issue 7](#issue-7-calico-nodes-01--bgp-vs-vxlan-mismatch)
+2. Fix Typha SG port → [Issue 8](#issue-8-calico-typha-connection-timeout--missing-sg-rule-for-port-5473)
+3. Once calico-nodes are `1/1`, tunnels re-establish automatically
+4. Delete stuck pods to trigger recovery
+
+> [!TIP]
+> To isolate cross-node vs local issues, schedule a test pod on a specific node using `--overrides` with `nodeName`. If it passes on the control plane but fails on a worker, the VXLAN tunnel to that worker is the problem.
+
+---
+
 ## CDK Security Group Reference
 
 ### Complete Cluster SG Rules (base-stack.ts)
@@ -775,7 +948,8 @@ The `k8s-{env}-k8s-cluster` Security Group should have the following rules:
 | 30000–32767 | TCP | Self | NodePort services |
 | 53 | TCP/UDP | Self | CoreDNS |
 | 4789 | UDP | Self | VXLAN overlay |
-| 179 | TCP | Self | Calico BGP peering |
+| 5473 | TCP | Self | Calico Typha |
+| 179 | TCP | Self | Calico BGP peering (legacy — can remove if `bgp: Disabled`) |
 
 **Pod CIDR rules (pod-to-node communication):**
 
@@ -807,3 +981,9 @@ The `k8s-{env}-k8s-cluster` Security Group should have the following rules:
 | **CreateContainerConfigError** | Kubernetes status indicating the container cannot start because a referenced ConfigMap or Secret does not exist. |
 | **Init container** | A special container that runs to completion before the main containers start. If an init container crashes, the pod's main containers never start. |
 | **secret-init** | An ArgoCD init container that checks for (and creates if missing) the Redis authentication secret on first deployment. |
+| **Calico Typha** | A fan-out proxy that sits between Felix (the per-node policy engine) and the Kubernetes API server. Reduces API server load in multi-node clusters. Listens on port **5473**. |
+| **Felix** | Calico's per-node agent. Programs routes, ACLs, and other network policies. Must connect to Typha to receive configuration updates. |
+| **BIRD** | The BGP Internet Routing Daemon. Used by Calico in BGP mode to advertise pod routes between nodes. **Not used** when `vxlanMode: Always` is configured. |
+| **VXLAN** | Virtual Extensible LAN — an encapsulation protocol (UDP port 4789) used by Calico to tunnel pod traffic between nodes. The alternative to BGP routing. |
+| **Tigera Operator** | A Kubernetes operator that manages the Calico CNI lifecycle. Watches the `Installation` custom resource and deploys/configures all Calico components. |
+| **Installation CR** | The `Installation` custom resource (apiVersion: `operator.tigera.io/v1`) that configures Calico's networking mode, IP pools, and features. Managed by the Tigera operator. |
