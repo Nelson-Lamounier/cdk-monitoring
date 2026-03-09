@@ -599,6 +599,13 @@ export class KubernetesBaseStack extends cdk.Stack {
             tier: ssm.ParameterTier.STANDARD,
         });
 
+        new ssm.StringParameter(this, 'ElasticIpAllocationIdParam', {
+            parameterName: `${props.ssmPrefix}/elastic-ip-allocation-id`,
+            stringValue: this.elasticIp.attrAllocationId,
+            description: 'EIP allocation ID for automatic association during instance bootstrap',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
         new ssm.StringParameter(this, 'ScriptsBucketParam', {
             parameterName: `${props.ssmPrefix}/scripts-bucket`,
             stringValue: this.scriptsBucket.bucketName,
@@ -642,6 +649,11 @@ export class KubernetesBaseStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'ElasticIpAddress', {
             value: this.elasticIp.ref,
             description: 'Kubernetes cluster Elastic IP address',
+        });
+
+        new cdk.CfnOutput(this, 'ElasticIpAllocationId', {
+            value: this.elasticIp.attrAllocationId,
+            description: 'Kubernetes cluster Elastic IP allocation ID',
         });
 
         new cdk.CfnOutput(this, 'EbsVolumeId', {
