@@ -511,7 +511,7 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
             // 3. Derive output paths
             const slug = deriveSlug(key);
             const publishedKey = derivePublishedKey(key);
-            const contentKey = deriveContentKey(key, 1); // v1 for initial publish
+            const contentKey = deriveContentKey(key, Date.now());
 
             // 4. Transform via Bedrock Converse API (budget scales with complexity)
             console.log(`Invoking ${FOUNDATION_MODEL} with Adaptive Thinking (budget: ${complexity.budgetTokens} tokens)`);

@@ -3,7 +3,13 @@
  * Bedrock API Stack
  *
  * API Gateway + Lambda frontend for the Bedrock Agent.
- * Provides a REST endpoint to invoke the agent.
+ * Provides a secured REST endpoint to invoke the agent.
+ *
+ * Security features:
+ * - API Key authentication with Usage Plan + throttling
+ * - Request body validation
+ * - CloudWatch access logging
+ * - Scoped CORS origins
  */
 
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
@@ -33,12 +39,20 @@ export interface BedrockApiStackProps extends cdk.StackProps {
     readonly logRetention: logs.RetentionDays;
     /** Removal policy for resources */
     readonly removalPolicy: cdk.RemovalPolicy;
+    /** Whether to enable API Key authentication */
+    readonly enableApiKey: boolean;
+    /** Allowed CORS origins */
+    readonly allowedOrigins: string[];
+    /** API Gateway throttle — sustained requests per second */
+    readonly throttlingRateLimit: number;
+    /** API Gateway throttle — burst capacity */
+    readonly throttlingBurstLimit: number;
 }
 
 /**
  * API Stack for Bedrock Agent.
  *
- * Creates a REST API Gateway backed by a Lambda function that
+ * Creates a secured REST API Gateway backed by a Lambda function that
  * invokes the Bedrock Agent using the AWS SDK.
  */
 export class BedrockApiStack extends cdk.Stack {
@@ -50,6 +64,9 @@ export class BedrockApiStack extends cdk.Stack {
 
     /** The API URL */
     public readonly apiUrl: string;
+
+    /** The API Key (if enabled) */
+    public readonly apiKey?: apigateway.IApiKey;
 
     constructor(scope: Construct, id: string, props: BedrockApiStackProps) {
         super(scope, id, props);
@@ -93,6 +110,15 @@ export class BedrockApiStack extends cdk.Stack {
         }));
 
         // =================================================================
+        // CloudWatch Log Group — API Gateway Access Logging
+        // =================================================================
+        const accessLogGroup = new logs.LogGroup(this, 'ApiAccessLogGroup', {
+            logGroupName: `/aws/apigateway/${namePrefix}-agent-api`,
+            retention: props.logRetention,
+            removalPolicy: props.removalPolicy,
+        });
+
+        // =================================================================
         // API Gateway — REST API
         // =================================================================
         this.api = new apigateway.RestApi(this, 'AgentApi', {
@@ -102,23 +128,104 @@ export class BedrockApiStack extends cdk.Stack {
                 stageName: 'v1',
                 tracingEnabled: true,
                 loggingLevel: apigateway.MethodLoggingLevel.INFO,
+                accessLogDestination: new apigateway.LogGroupLogDestination(accessLogGroup),
+                accessLogFormat: apigateway.AccessLogFormat.jsonWithStandardFields({
+                    caller: true,
+                    httpMethod: true,
+                    ip: true,
+                    protocol: true,
+                    requestTime: true,
+                    resourcePath: true,
+                    responseLength: true,
+                    status: true,
+                    user: true,
+                }),
+                throttlingRateLimit: props.throttlingRateLimit,
+                throttlingBurstLimit: props.throttlingBurstLimit,
             },
             defaultCorsPreflightOptions: {
-                allowOrigins: apigateway.Cors.ALL_ORIGINS,
+                allowOrigins: props.allowedOrigins,
                 allowMethods: ['POST', 'OPTIONS'],
-                allowHeaders: ['Content-Type', 'Authorization'],
+                allowHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
             },
         });
 
+        // =================================================================
+        // Request Validator — Validate body on POST /invoke
+        // =================================================================
+        const requestValidator = new apigateway.RequestValidator(this, 'InvokeRequestValidator', {
+            restApi: this.api,
+            requestValidatorName: `${namePrefix}-invoke-validator`,
+            validateRequestBody: true,
+            validateRequestParameters: false,
+        });
+
+        // Define request model for the invoke endpoint
+        const invokeModel = this.api.addModel('InvokeRequestModel', {
+            contentType: 'application/json',
+            modelName: 'InvokeRequest',
+            schema: {
+                type: apigateway.JsonSchemaType.OBJECT,
+                required: ['prompt'],
+                properties: {
+                    prompt: {
+                        type: apigateway.JsonSchemaType.STRING,
+                        minLength: 1,
+                        maxLength: 10000,
+                        description: 'The user prompt to send to the Bedrock Agent',
+                    },
+                    sessionId: {
+                        type: apigateway.JsonSchemaType.STRING,
+                        description: 'Optional session ID for conversation continuity',
+                    },
+                },
+            },
+        });
+
+        // =================================================================
         // POST /invoke — Invoke the agent
+        // =================================================================
         const invokeResource = this.api.root.addResource('invoke');
         invokeResource.addMethod('POST', new apigateway.LambdaIntegration(this.invokeFunction), {
+            apiKeyRequired: props.enableApiKey,
+            requestValidator,
+            requestModels: {
+                'application/json': invokeModel,
+            },
             methodResponses: [
                 { statusCode: '200' },
                 { statusCode: '400' },
                 { statusCode: '500' },
             ],
         });
+
+        // =================================================================
+        // API Key + Usage Plan (throttling + quota)
+        // =================================================================
+        if (props.enableApiKey) {
+            this.apiKey = this.api.addApiKey('AgentApiKey', {
+                apiKeyName: `${namePrefix}-agent-api-key`,
+                description: `API Key for ${namePrefix} Bedrock Agent API`,
+            });
+
+            const usagePlan = this.api.addUsagePlan('AgentUsagePlan', {
+                name: `${namePrefix}-usage-plan`,
+                description: `Usage plan for ${namePrefix} Bedrock Agent API`,
+                throttle: {
+                    rateLimit: props.throttlingRateLimit,
+                    burstLimit: props.throttlingBurstLimit,
+                },
+                quota: {
+                    limit: 10000,
+                    period: apigateway.Period.MONTH,
+                },
+            });
+
+            usagePlan.addApiKey(this.apiKey);
+            usagePlan.addApiStage({
+                stage: this.api.deploymentStage,
+            });
+        }
 
         this.apiUrl = this.api.url;
 

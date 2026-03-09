@@ -50,12 +50,23 @@ export interface ApiLambdaAllocation {
 }
 
 /**
+ * API Gateway throttling allocation
+ */
+export interface ApiGatewayAllocation {
+    /** Sustained request rate limit (requests/second) */
+    readonly throttlingRateLimit: number;
+    /** Burst capacity (maximum concurrent requests) */
+    readonly throttlingBurstLimit: number;
+}
+
+/**
  * Complete resource allocations for Bedrock project
  */
 export interface BedrockAllocations {
     readonly agent: AgentAllocation;
     readonly actionGroupLambda: ActionGroupLambdaAllocation;
     readonly apiLambda: ApiLambdaAllocation;
+    readonly apiGateway: ApiGatewayAllocation;
 }
 
 // =============================================================================
@@ -79,6 +90,10 @@ export const BEDROCK_ALLOCATIONS: Record<Environment, BedrockAllocations> = {
             memoryMb: 256,
             timeoutSeconds: 60,
         },
+        apiGateway: {
+            throttlingRateLimit: 10,
+            throttlingBurstLimit: 20,
+        },
     },
 
     [Environment.STAGING]: {
@@ -94,6 +109,10 @@ export const BEDROCK_ALLOCATIONS: Record<Environment, BedrockAllocations> = {
             memoryMb: 512,
             timeoutSeconds: 60,
         },
+        apiGateway: {
+            throttlingRateLimit: 50,
+            throttlingBurstLimit: 100,
+        },
     },
 
     [Environment.PRODUCTION]: {
@@ -108,6 +127,10 @@ export const BEDROCK_ALLOCATIONS: Record<Environment, BedrockAllocations> = {
         apiLambda: {
             memoryMb: 1024,
             timeoutSeconds: 120,
+        },
+        apiGateway: {
+            throttlingRateLimit: 100,
+            throttlingBurstLimit: 200,
         },
     },
 };

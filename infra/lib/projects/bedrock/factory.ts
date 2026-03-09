@@ -142,6 +142,10 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 lambdaTimeoutSeconds: allocs.apiLambda.timeoutSeconds,
                 logRetention: configs.logRetention,
                 removalPolicy: configs.removalPolicy,
+                enableApiKey: configs.api.enableApiKey,
+                allowedOrigins: configs.api.allowedOrigins,
+                throttlingRateLimit: allocs.apiGateway.throttlingRateLimit,
+                throttlingBurstLimit: allocs.apiGateway.throttlingBurstLimit,
                 env,
             }
         );

@@ -39,6 +39,9 @@ export class BedrockDataStack extends cdk.Stack {
     /** The S3 bucket for Knowledge Base documents */
     public readonly dataBucket: s3.Bucket;
 
+    /** S3 bucket for server access logs */
+    public readonly accessLogsBucket: s3.Bucket;
+
     /** Optional KMS encryption key (production only) */
     public readonly encryptionKey?: kms.Key;
 
@@ -63,6 +66,29 @@ export class BedrockDataStack extends cdk.Stack {
         }
 
         // =================================================================
+        // S3 Bucket — Access Logs (required by AwsSolutions-S1)
+        // =================================================================
+        this.accessLogsBucket = new s3.Bucket(this, 'AccessLogsBucket', {
+            bucketName: `${namePrefix}-access-logs`,
+            encryption: s3.BucketEncryption.S3_MANAGED,
+            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+            enforceSSL: true,
+            removalPolicy,
+            autoDeleteObjects: removalPolicy === cdk.RemovalPolicy.DESTROY,
+            lifecycleRules: [
+                {
+                    expiration: cdk.Duration.days(90),
+                    transitions: [
+                        {
+                            storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+                            transitionAfter: cdk.Duration.days(30),
+                        },
+                    ],
+                },
+            ],
+        });
+
+        // =================================================================
         // S3 Bucket — Knowledge Base Data Source
         // =================================================================
         this.dataBucket = new s3.Bucket(this, 'DataBucket', {
@@ -76,6 +102,8 @@ export class BedrockDataStack extends cdk.Stack {
             versioned: true,
             removalPolicy,
             autoDeleteObjects: removalPolicy === cdk.RemovalPolicy.DESTROY,
+            serverAccessLogsBucket: this.accessLogsBucket,
+            serverAccessLogsPrefix: 'data-bucket/',
         });
         this.bucketName = this.dataBucket.bucketName;
 
@@ -107,6 +135,11 @@ export class BedrockDataStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'DataBucketArn', {
             value: this.dataBucket.bucketArn,
             description: 'Knowledge Base data bucket ARN',
+        });
+
+        new cdk.CfnOutput(this, 'AccessLogsBucketName', {
+            value: this.accessLogsBucket.bucketName,
+            description: 'Server access logs bucket name',
         });
     }
 }

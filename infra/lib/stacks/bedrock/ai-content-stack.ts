@@ -28,6 +28,7 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -95,6 +96,9 @@ export class AiContentStack extends cdk.Stack {
     /** Lambda function for content transformation */
     public readonly publisherFunction: lambdaNode.NodejsFunction;
 
+    /** Dead Letter Queue for failed S3 event processing */
+    public readonly publisherDlq: sqs.Queue;
+
     /** The S3 bucket (for grantContentRead) */
     private readonly assetsBucket: s3.IBucket;
 
@@ -138,6 +142,18 @@ export class AiContentStack extends cdk.Stack {
             removalPolicy: props.removalPolicy,
         });
         this.tableName = this.contentTable.tableName;
+
+        // =================================================================
+        // SQS — Dead Letter Queue for publisher Lambda
+        //
+        // Captures failed S3 event processing (e.g., Bedrock throttling,
+        // timeout, malformed markdown) so events are not silently lost.
+        // =================================================================
+        this.publisherDlq = new sqs.Queue(this, 'PublisherDlq', {
+            queueName: `${namePrefix}-publisher-dlq`,
+            retentionPeriod: cdk.Duration.days(14),
+            removalPolicy: props.removalPolicy,
+        });
 
         // =================================================================
         // Lambda — Content Publisher (Bedrock Converse API)
@@ -207,6 +223,9 @@ export class AiContentStack extends cdk.Stack {
                     '@aws-sdk/*',
                 ],
             },
+            deadLetterQueue: this.publisherDlq,
+            deadLetterQueueEnabled: true,
+            retryAttempts: 2,
         });
 
         // =================================================================
@@ -264,6 +283,13 @@ export class AiContentStack extends cdk.Stack {
             parameterName: `/${namePrefix}/publisher-function-arn`,
             stringValue: this.publisherFunction.functionArn,
             description: `AI Publisher Lambda ARN for ${namePrefix}`,
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
+        new ssm.StringParameter(this, 'PublisherDlqUrlParam', {
+            parameterName: `/${namePrefix}/publisher-dlq-url`,
+            stringValue: this.publisherDlq.queueUrl,
+            description: `Publisher DLQ URL for ${namePrefix}`,
             tier: ssm.ParameterTier.STANDARD,
         });
 

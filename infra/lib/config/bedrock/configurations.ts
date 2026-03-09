@@ -35,6 +35,16 @@ export interface GuardrailConfig {
 }
 
 /**
+ * API Gateway configuration
+ */
+export interface ApiConfig {
+    /** Whether to require API Key authentication */
+    readonly enableApiKey: boolean;
+    /** Allowed CORS origins */
+    readonly allowedOrigins: string[];
+}
+
+/**
  * Complete resource configurations for Bedrock project
  */
 export interface BedrockConfigs {
@@ -44,6 +54,8 @@ export interface BedrockConfigs {
     readonly agentDescription: string;
     /** Guardrail configuration */
     readonly guardrail: GuardrailConfig;
+    /** API Gateway configuration */
+    readonly api: ApiConfig;
     /** CloudWatch log retention */
     readonly logRetention: logs.RetentionDays;
     /** Whether this is a production environment */
@@ -73,6 +85,10 @@ export const BEDROCK_CONFIGS: Record<Environment, BedrockConfigs> = {
             blockedInputMessaging: 'Sorry, I cannot process that request.',
             blockedOutputMessaging: 'Sorry, I cannot provide that response.',
         },
+        api: {
+            enableApiKey: true,
+            allowedOrigins: ['*'],
+        },
         logRetention: logs.RetentionDays.ONE_WEEK,
         isProduction: false,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -89,6 +105,10 @@ export const BEDROCK_CONFIGS: Record<Environment, BedrockConfigs> = {
             enableContentFilters: true,
             blockedInputMessaging: 'Sorry, I cannot process that request.',
             blockedOutputMessaging: 'Sorry, I cannot provide that response.',
+        },
+        api: {
+            enableApiKey: true,
+            allowedOrigins: ['https://staging.nelsonlamounier.com'],
         },
         logRetention: logs.RetentionDays.ONE_MONTH,
         isProduction: false,
@@ -107,6 +127,10 @@ export const BEDROCK_CONFIGS: Record<Environment, BedrockConfigs> = {
             enableContentFilters: true,
             blockedInputMessaging: 'Sorry, I cannot process that request.',
             blockedOutputMessaging: 'Sorry, I cannot provide that response.',
+        },
+        api: {
+            enableApiKey: true,
+            allowedOrigins: ['https://nelsonlamounier.com'],
         },
         logRetention: logs.RetentionDays.THREE_MONTHS,
         isProduction: true,
