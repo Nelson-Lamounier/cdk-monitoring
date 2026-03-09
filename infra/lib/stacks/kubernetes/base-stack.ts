@@ -230,6 +230,29 @@ export class KubernetesBaseStack extends cdk.Stack {
             'CoreDNS UDP (intra-cluster)',
         );
 
+        // Pod CIDR → critical services (kube-proxy DNATs ClusterIP to node IP;
+        // source IP stays in pod CIDR, which self-ref SG rules do NOT match)
+        this.securityGroup.addIngressRule(
+            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
+            ec2.Port.tcp(K8S_API_PORT),
+            'K8s API server (from pods)',
+        );
+        this.securityGroup.addIngressRule(
+            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
+            ec2.Port.tcp(10250),
+            'kubelet API (from pods)',
+        );
+        this.securityGroup.addIngressRule(
+            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
+            ec2.Port.udp(53),
+            'CoreDNS UDP (from pods)',
+        );
+        this.securityGroup.addIngressRule(
+            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
+            ec2.Port.tcp(53),
+            'CoreDNS TCP (from pods)',
+        );
+
         // =====================================================================
         // Security Group 2/4: Control Plane (control plane node only)
         // =====================================================================
