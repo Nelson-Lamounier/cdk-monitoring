@@ -371,18 +371,20 @@ async function checkApp(
 ): Promise<AppStatus> {
   // Curl that returns only sync/health status (piped through Python to avoid
   // SSM output truncation — the monitoring app's full JSON exceeds 24KB).
-  const pythonFilter = [
-    `import json,sys`,
-    `try:`,
-    `  d=json.load(sys.stdin)`,
-    `  print(json.dumps({"error":d.get("error",""),"sync":d.get("status",{}).get("sync",{}).get("status","Unknown"),"health":d.get("status",{}).get("health",{}).get("status","Unknown")}))`,
-    `except: print(json.dumps({"error":"parse-failed"}))`,
-  ].join('\\n');
+  // NOTE: The python filter must be a single semicolon-separated line because
+  // SSM send-command doesn't preserve newlines in the command string.
+  // Shell single-quotes wrap the python code so inner double-quotes are safe.
+  const pythonFilter =
+    'import json,sys;' +
+    'd=json.loads(sys.stdin.read());' +
+    'print(json.dumps({"error":d.get("error",""),' +
+    '"sync":d.get("status",{}).get("sync",{}).get("status","Unknown"),' +
+    '"health":d.get("status",{}).get("health",{}).get("status","Unknown")}))';
   const curlCmd = buildArgoCDCurl(
     '-s --max-time 10',
     `/api/v1/applications/${app}`,
     `-H 'Authorization: Bearer ${token}'`,
-  ) + ` | python3 -c "${pythonFilter}"`;
+  ) + ` | python3 -c '${pythonFilter}'`;
 
   const output = await ssmCurl(instanceId, curlCmd);
 
