@@ -520,6 +520,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
                             `export AWS_REGION="{{ Region }}"`,
                             `export S3_BUCKET="{{ S3Bucket }}"`,
                             `export MOUNT_POINT="/data"`,
+                            `export KUBECONFIG="/etc/kubernetes/admin.conf"`,
                             ``,
                             `cd "$STEPS_DIR"`,
                             `python3 "$SCRIPT" 2>&1`,
