@@ -267,7 +267,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
-            nodeLabel: 'role=monitoring',
+            nodeLabel: 'workload=monitoring',
             detailedMonitoring: false,
             useSignals: true,
             signalsTimeoutMinutes: 40,
@@ -335,7 +335,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
-            nodeLabel: 'role=monitoring',
+            nodeLabel: 'workload=monitoring',
             detailedMonitoring: true,
             useSignals: true,
             signalsTimeoutMinutes: 40,
@@ -403,7 +403,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
-            nodeLabel: 'role=monitoring',
+            nodeLabel: 'workload=monitoring',
             detailedMonitoring: true,
             useSignals: true,
             signalsTimeoutMinutes: 40,

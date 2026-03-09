@@ -67,7 +67,7 @@ export const NEXTJS_K8S_CONFIGS: Record<Environment, NextJsK8sConfig> = {
     [Environment.DEVELOPMENT]: {
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
         capacityType: 'on-demand',
-        nodeLabel: 'role=application',
+        nodeLabel: 'workload=frontend',
         controlPlaneSsmPrefix: '/k8s/development',
         detailedMonitoring: false,
         useSignals: true,
@@ -79,7 +79,7 @@ export const NEXTJS_K8S_CONFIGS: Record<Environment, NextJsK8sConfig> = {
     [Environment.STAGING]: {
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
         capacityType: 'on-demand',
-        nodeLabel: 'role=application',
+        nodeLabel: 'workload=frontend',
         controlPlaneSsmPrefix: '/k8s/staging',
         detailedMonitoring: true,
         useSignals: true,
@@ -91,7 +91,7 @@ export const NEXTJS_K8S_CONFIGS: Record<Environment, NextJsK8sConfig> = {
     [Environment.PRODUCTION]: {
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
         capacityType: 'on-demand', // Switch to reserved via AWS console/CLI after purchase
-        nodeLabel: 'role=application',
+        nodeLabel: 'workload=frontend',
         controlPlaneSsmPrefix: '/k8s/production',
         detailedMonitoring: true,
         useSignals: true,

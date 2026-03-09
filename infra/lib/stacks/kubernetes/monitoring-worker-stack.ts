@@ -13,7 +13,7 @@
  *   Mon Worker    (t3.small) — Monitoring stack only (this stack)
  *
  * Workload isolation is enforced via:
- *   - Node label: role=monitoring
+ *   - Node label: workload=monitoring (matches monitoring Helm chart nodeSelector)
  *   - Node taint: none (Hybrid-HA — all nodes accept all workloads)
  *   - Pod tolerations + nodeSelector in monitoring Helm values
  *

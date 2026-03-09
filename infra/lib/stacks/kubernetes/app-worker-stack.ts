@@ -11,7 +11,7 @@
  *   Worker Node   (t3.small)  — Next.js application pods only
  *
  * Workload placement is guided via:
- *   - Node label: role=application (observability — not exclusive)
+ *   - Node label: workload=frontend (matches nextjs Helm chart nodeSelector)
  *   - Pod anti-affinity in manifests (Hybrid-HA spread)
  *
  * Resources Created:
@@ -92,7 +92,7 @@ export interface KubernetesAppWorkerStackProps extends cdk.StackProps {
  * Kubernetes Worker Stack — Dedicated Application Node.
  *
  * Runs a t3.small EC2 instance that joins the kubeadm cluster
- * as a worker node labeled for application workloads only.
+ * as a worker node labeled for frontend application workloads only.
  * The control plane must be running and have published its
  * join token to SSM before this node boots.
  */
