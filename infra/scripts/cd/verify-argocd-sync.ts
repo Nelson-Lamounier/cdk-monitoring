@@ -102,7 +102,8 @@ const maxPolls = parseInt(args['max-polls'] as string, 10) || 12;
 // used by Traefik for external routing, NOT on the ClusterIP directly.
 // We resolve the ClusterIP dynamically via kubectl because:
 //   1. Nodes can't resolve .svc.cluster.local DNS (VPC DNS only)
-//   2. ArgoCD redirects HTTP → HTTPS (307), so we use https + -k
+//   2. server.insecure=true means ArgoCD serves plain HTTP on port 8080
+//      (Service port 80 → targetPort 8080), so we use http:// not https://
 
 /** Build a shell command that resolves the ArgoCD ClusterIP then curls it. */
 function buildArgoCDCurl(curlFlags: string, apiPath: string, extraHeaders: string = ''): string {
@@ -110,7 +111,7 @@ function buildArgoCDCurl(curlFlags: string, apiPath: string, extraHeaders: strin
     'export KUBECONFIG=/etc/kubernetes/admin.conf',
     'ARGOCD_IP=$(kubectl get svc argocd-server -n argocd -o jsonpath=\'{.spec.clusterIP}\' 2>/dev/null)',
     'if [ -z "$ARGOCD_IP" ]; then echo "UNREACHABLE"; exit 0; fi',
-    `curl ${curlFlags} ${extraHeaders} "https://\${ARGOCD_IP}${apiPath}" 2>/dev/null`,
+    `curl ${curlFlags} ${extraHeaders} "http://\${ARGOCD_IP}${apiPath}" 2>/dev/null`,
   ].join(' && ');
 }
 
@@ -318,7 +319,7 @@ async function diagnosticProbe(
 ): Promise<void> {
   const probeApp = EXPECTED_APPS[0];
   const curlCmd = buildArgoCDCurl(
-    `-sk -w '\\n%{http_code}' --max-time 10`,
+    `-s -w '\\n%{http_code}' --max-time 10`,
     `/api/v1/applications/${probeApp}`,
     `-H 'Authorization: Bearer ${token}'`,
   );
@@ -376,7 +377,7 @@ async function checkApp(
     `except: print(json.dumps({"error":"parse-failed"}))`,
   ].join('\\n');
   const curlCmd = buildArgoCDCurl(
-    '-sk --max-time 10',
+    '-s --max-time 10',
     `/api/v1/applications/${app}`,
     `-H 'Authorization: Bearer ${token}'`,
   ) + ` | python3 -c "${pythonFilter}"`;
@@ -538,7 +539,7 @@ async function healthCheck(
   );
 
   const curlCmd = buildArgoCDCurl(
-    `-sk -o /dev/null -w '%{http_code}' --max-time 10`,
+    `-s -o /dev/null -w '%{http_code}' --max-time 10`,
     '/api/v1/applications',
     `-H 'Authorization: Bearer ${token}'`,
   );
