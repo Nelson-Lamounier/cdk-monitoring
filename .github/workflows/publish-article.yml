@@ -6,9 +6,11 @@
 #
 # When a .md file is added or modified in articles-draft/, this workflow:
 #   1. Detects the changed .md files via git diff
-#   2. Resolves the S3 bucket name from SSM
+#   2. Resolves infrastructure names from SSM
 #   3. Uploads each file to s3://{bucket}/drafts/{filename}.md
-#   4. The existing S3 event notification triggers the Publisher Lambda
+#   4. Waits for and monitors the Publisher Lambda processing
+#   5. Verifies S3 output and DynamoDB metadata
+#   6. Reports full results in the GitHub Step Summary
 #
 # The Lambda handles: Bedrock transformation → S3 published/ → DynamoDB
 # =============================================================================
@@ -36,9 +38,9 @@ env:
 
 jobs:
   publish:
-    name: Upload Drafts to S3
+    name: Publish & Verify
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     environment: development
 
     steps:
@@ -48,7 +50,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2 # Need previous commit to diff against
+          fetch-depth: 2
 
       # ------------------------------------------------------------------
       # 2. Detect changed .md files in articles-draft/
@@ -56,42 +58,48 @@ jobs:
       - name: Detect Changed Articles
         id: detect
         run: |
-          echo "## Detecting changed articles..." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          # Get list of added/modified .md files in articles-draft/
           CHANGED_FILES=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'articles-draft/**/*.md' 'articles-draft/*.md' || true)
+
+          # Filter out README.md
+          CHANGED_FILES=$(echo "$CHANGED_FILES" | grep -v 'README.md' || true)
 
           if [ -z "$CHANGED_FILES" ]; then
             echo "No article drafts changed."
-            echo "- No article drafts changed" >> $GITHUB_STEP_SUMMARY
             echo "has_changes=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          echo "Changed files:"
-          echo "$CHANGED_FILES"
-          echo ""
-
-          # Count files
           FILE_COUNT=$(echo "$CHANGED_FILES" | wc -l | tr -d ' ')
           echo "has_changes=true" >> $GITHUB_OUTPUT
           echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
 
-          # Store as multiline output
+          # Build slug list for verification (filename without .md extension)
+          SLUGS=""
+          while IFS= read -r F; do
+            SLUG=$(basename "$F" .md)
+            SLUGS="${SLUGS}${SLUG},"
+          done <<< "$CHANGED_FILES"
+          SLUGS="${SLUGS%,}"
+          echo "slugs=$SLUGS" >> $GITHUB_OUTPUT
+
           {
             echo "files<<EOF"
             echo "$CHANGED_FILES"
             echo "EOF"
           } >> $GITHUB_OUTPUT
 
-          echo "- **${FILE_COUNT} article(s) detected**" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "$CHANGED_FILES" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "## 📝 Article Drafts Detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Slug |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          while IFS= read -r F; do
+            SLUG=$(basename "$F" .md)
+            echo "| \`$(basename "$F")\` | \`$SLUG\` |" >> $GITHUB_STEP_SUMMARY
+          done <<< "$CHANGED_FILES"
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       # ------------------------------------------------------------------
-      # 3. AWS Credentials
+      # 3. AWS Credentials (OIDC)
       # ------------------------------------------------------------------
       - name: Configure AWS Credentials
         if: steps.detect.outputs.has_changes == 'true'
@@ -102,54 +110,69 @@ jobs:
           audience: sts.amazonaws.com
 
       # ------------------------------------------------------------------
-      # 4. Resolve S3 bucket from SSM
+      # 4. Resolve infrastructure names from SSM
       # ------------------------------------------------------------------
-      - name: Resolve S3 Bucket Name
+      - name: Resolve Infrastructure
         if: steps.detect.outputs.has_changes == 'true'
-        id: ssm
+        id: infra
         run: |
           BUCKET_NAME=$(aws ssm get-parameter \
             --name "/${{ env.SSM_PREFIX }}/assets-bucket-name" \
-            --query 'Parameter.Value' \
-            --output text)
-
+            --query 'Parameter.Value' --output text)
           echo "bucket_name=$BUCKET_NAME" >> $GITHUB_OUTPUT
-          echo "Resolved bucket: $BUCKET_NAME"
+
+          TABLE_NAME=$(aws ssm get-parameter \
+            --name "/${{ env.SSM_PREFIX }}/content-table-name" \
+            --query 'Parameter.Value' --output text)
+          echo "table_name=$TABLE_NAME" >> $GITHUB_OUTPUT
+
+          LAMBDA_ARN=$(aws ssm get-parameter \
+            --name "/${{ env.SSM_PREFIX }}/publisher-function-arn" \
+            --query 'Parameter.Value' --output text)
+          # Extract function name from ARN
+          LAMBDA_NAME=$(echo "$LAMBDA_ARN" | awk -F: '{print $NF}')
+          echo "lambda_name=$LAMBDA_NAME" >> $GITHUB_OUTPUT
+
+          echo "## 🏗️ Infrastructure" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| S3 Bucket | \`$BUCKET_NAME\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| DynamoDB Table | \`$TABLE_NAME\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lambda Function | \`$LAMBDA_NAME\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       # ------------------------------------------------------------------
       # 5. Upload each draft to S3 drafts/ prefix
       # ------------------------------------------------------------------
       - name: Upload Drafts to S3
         if: steps.detect.outputs.has_changes == 'true'
+        id: upload
         run: |
-          BUCKET="${{ steps.ssm.outputs.bucket_name }}"
+          BUCKET="${{ steps.infra.outputs.bucket_name }}"
           UPLOAD_COUNT=0
           FAILED_COUNT=0
+          UPLOAD_TIME=$(date -u +%s)
 
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Upload Results" >> $GITHUB_STEP_SUMMARY
+          echo "## ⬆️ S3 Upload" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           while IFS= read -r FILE; do
-            # Extract just the filename (strip articles-draft/ path)
             FILENAME=$(basename "$FILE")
-
             echo "Uploading: $FILE → s3://$BUCKET/drafts/$FILENAME"
 
             if aws s3 cp "$FILE" "s3://$BUCKET/drafts/$FILENAME" \
               --content-type "text/markdown"; then
-              echo "  ✅ Uploaded successfully"
               echo "- ✅ \`$FILENAME\` → \`s3://$BUCKET/drafts/$FILENAME\`" >> $GITHUB_STEP_SUMMARY
               UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
             else
-              echo "  ❌ Upload failed"
               echo "- ❌ \`$FILENAME\` — upload failed" >> $GITHUB_STEP_SUMMARY
               FAILED_COUNT=$((FAILED_COUNT + 1))
             fi
           done <<< "${{ steps.detect.outputs.files }}"
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**${UPLOAD_COUNT} uploaded, ${FAILED_COUNT} failed**" >> $GITHUB_STEP_SUMMARY
+          echo "upload_time=$UPLOAD_TIME" >> $GITHUB_OUTPUT
 
           if [ "$FAILED_COUNT" -gt 0 ]; then
             echo "::error::${FAILED_COUNT} file(s) failed to upload"
@@ -157,16 +180,234 @@ jobs:
           fi
 
       # ------------------------------------------------------------------
-      # 6. Summary
+      # 6. Wait for Lambda processing
       # ------------------------------------------------------------------
-      - name: Pipeline Summary
+      - name: Wait for Bedrock Processing
+        if: steps.detect.outputs.has_changes == 'true'
+        id: wait
+        run: |
+          LAMBDA_NAME="${{ steps.infra.outputs.lambda_name }}"
+          LOG_GROUP="/aws/lambda/$LAMBDA_NAME"
+          FILE_COUNT="${{ steps.detect.outputs.file_count }}"
+          UPLOAD_TIME="${{ steps.upload.outputs.upload_time }}"
+          # Convert to milliseconds for CloudWatch
+          START_MS=$((UPLOAD_TIME * 1000))
+
+          echo "## ⏳ Bedrock Processing" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "Waiting for Lambda to process $FILE_COUNT article(s)..."
+          echo "Log group: $LOG_GROUP"
+
+          # Poll for up to 5 minutes (Lambda timeout is ~2 min for Bedrock)
+          MAX_WAIT=300
+          POLL_INTERVAL=15
+          ELAPSED=0
+          PROCESSING_COMPLETE=false
+
+          # Initial wait — Lambda cold start + S3 event delivery
+          echo "Waiting 20s for S3 event delivery + cold start..."
+          sleep 20
+          ELAPSED=20
+
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            echo "Checking logs... (${ELAPSED}s / ${MAX_WAIT}s)"
+
+            # Fetch recent logs since upload
+            LOGS=$(aws logs filter-log-events \
+              --log-group-name "$LOG_GROUP" \
+              --start-time "$START_MS" \
+              --filter-pattern "\"All records processed successfully\" || \"Failed to process\"" \
+              --query 'events[*].message' \
+              --output text 2>/dev/null || echo "")
+
+            if echo "$LOGS" | grep -q "All records processed successfully"; then
+              echo "✅ Lambda processing completed successfully!"
+              PROCESSING_COMPLETE=true
+              break
+            fi
+
+            if echo "$LOGS" | grep -q "Failed to process"; then
+              echo "❌ Lambda processing failed!"
+              PROCESSING_COMPLETE=true
+              break
+            fi
+
+            sleep $POLL_INTERVAL
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
+          done
+
+          if [ "$PROCESSING_COMPLETE" = false ]; then
+            echo "⚠️ Timed out waiting for Lambda (${MAX_WAIT}s)"
+            echo "processing_status=timeout" >> $GITHUB_OUTPUT
+          fi
+
+          # ---- Capture full Lambda logs ----
+          echo "Fetching full Lambda logs..."
+          FULL_LOGS=$(aws logs filter-log-events \
+            --log-group-name "$LOG_GROUP" \
+            --start-time "$START_MS" \
+            --query 'events[*].message' \
+            --output text 2>/dev/null || echo "No logs found")
+
+          echo "### Lambda Logs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Parse and display key log lines
+          echo "$FULL_LOGS" | grep -E "Processing|Complexity|Invoking|Transform complete|Content written|Metadata written|Failed|Error|shotList|Director" | while IFS= read -r line; do
+            echo "$line" >> $GITHUB_STEP_SUMMARY
+          done
+
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # ---- Check for errors ----
+          ERROR_LOGS=$(echo "$FULL_LOGS" | grep -E "ERROR|Failed|Exception" || true)
+          if [ -n "$ERROR_LOGS" ]; then
+            echo "### ❌ Errors Detected" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$ERROR_LOGS" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "processing_status=error" >> $GITHUB_OUTPUT
+          else
+            echo "- ✅ No errors in Lambda logs" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "processing_status=success" >> $GITHUB_OUTPUT
+          fi
+
+      # ------------------------------------------------------------------
+      # 7. Verify S3 published output
+      # ------------------------------------------------------------------
+      - name: Verify S3 Output
+        if: steps.detect.outputs.has_changes == 'true'
+        id: s3check
+        run: |
+          BUCKET="${{ steps.infra.outputs.bucket_name }}"
+          SLUGS="${{ steps.detect.outputs.slugs }}"
+
+          echo "## 📦 S3 Verification" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          S3_OK=0
+          S3_MISSING=0
+
+          IFS=',' read -ra SLUG_ARRAY <<< "$SLUGS"
+          for SLUG in "${SLUG_ARRAY[@]}"; do
+            PUBLISHED_KEY="published/${SLUG}.mdx"
+
+            # Check if published file exists
+            if aws s3api head-object --bucket "$BUCKET" --key "$PUBLISHED_KEY" 2>/dev/null; then
+              SIZE=$(aws s3api head-object --bucket "$BUCKET" --key "$PUBLISHED_KEY" \
+                --query 'ContentLength' --output text)
+              MODIFIED=$(aws s3api head-object --bucket "$BUCKET" --key "$PUBLISHED_KEY" \
+                --query 'LastModified' --output text)
+              echo "- ✅ \`$PUBLISHED_KEY\` — ${SIZE} bytes (${MODIFIED})" >> $GITHUB_STEP_SUMMARY
+              S3_OK=$((S3_OK + 1))
+            else
+              echo "- ❌ \`$PUBLISHED_KEY\` — **not found**" >> $GITHUB_STEP_SUMMARY
+              S3_MISSING=$((S3_MISSING + 1))
+            fi
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "s3_ok=$S3_OK" >> $GITHUB_OUTPUT
+          echo "s3_missing=$S3_MISSING" >> $GITHUB_OUTPUT
+
+      # ------------------------------------------------------------------
+      # 8. Verify DynamoDB metadata
+      # ------------------------------------------------------------------
+      - name: Verify DynamoDB Metadata
+        if: steps.detect.outputs.has_changes == 'true'
+        id: ddbcheck
+        run: |
+          TABLE="${{ steps.infra.outputs.table_name }}"
+          SLUGS="${{ steps.detect.outputs.slugs }}"
+
+          echo "## 🗄️ DynamoDB Verification" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          DDB_OK=0
+          DDB_MISSING=0
+
+          IFS=',' read -ra SLUG_ARRAY <<< "$SLUGS"
+          for SLUG in "${SLUG_ARRAY[@]}"; do
+            PK="ARTICLE#${SLUG}"
+
+            # Query METADATA record
+            RESULT=$(aws dynamodb get-item \
+              --table-name "$TABLE" \
+              --key "{\"pk\":{\"S\":\"$PK\"},\"sk\":{\"S\":\"METADATA\"}}" \
+              --projection-expression "title, readingTime, shotListCount, updatedAt" \
+              --output json 2>/dev/null || echo "{}")
+
+            if echo "$RESULT" | jq -e '.Item' > /dev/null 2>&1; then
+              TITLE=$(echo "$RESULT" | jq -r '.Item.title.S // "N/A"')
+              READING_TIME=$(echo "$RESULT" | jq -r '.Item.readingTime.N // "N/A"')
+              SHOT_COUNT=$(echo "$RESULT" | jq -r '.Item.shotListCount.N // "0"')
+              UPDATED=$(echo "$RESULT" | jq -r '.Item.updatedAt.S // "N/A"')
+
+              echo "- ✅ \`$PK\`" >> $GITHUB_STEP_SUMMARY
+              echo "  - **Title:** $TITLE" >> $GITHUB_STEP_SUMMARY
+              echo "  - **Reading Time:** ${READING_TIME} min" >> $GITHUB_STEP_SUMMARY
+              echo "  - **Shot List:** ${SHOT_COUNT} items" >> $GITHUB_STEP_SUMMARY
+              echo "  - **Updated:** $UPDATED" >> $GITHUB_STEP_SUMMARY
+              DDB_OK=$((DDB_OK + 1))
+            else
+              echo "- ❌ \`$PK\` — **METADATA record not found**" >> $GITHUB_STEP_SUMMARY
+              DDB_MISSING=$((DDB_MISSING + 1))
+            fi
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "ddb_ok=$DDB_OK" >> $GITHUB_OUTPUT
+          echo "ddb_missing=$DDB_MISSING" >> $GITHUB_OUTPUT
+
+      # ------------------------------------------------------------------
+      # 9. Final Summary
+      # ------------------------------------------------------------------
+      - name: Pipeline Result
         if: steps.detect.outputs.has_changes == 'true'
         run: |
+          PROCESSING="${{ steps.wait.outputs.processing_status }}"
+          S3_OK="${{ steps.s3check.outputs.s3_ok }}"
+          S3_MISSING="${{ steps.s3check.outputs.s3_missing }}"
+          DDB_OK="${{ steps.ddbcheck.outputs.ddb_ok }}"
+          DDB_MISSING="${{ steps.ddbcheck.outputs.ddb_missing }}"
+
+          echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "## 🏁 Pipeline Result" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "The S3 event trigger will invoke the **Bedrock Publisher Lambda**." >> $GITHUB_STEP_SUMMARY
-          echo "Monitor progress in CloudWatch Logs:" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "aws logs tail /aws/lambda/bedrock-development-publisher --follow --region ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$PROCESSING" = "success" ]; then
+            echo "| Lambda Processing | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          elif [ "$PROCESSING" = "timeout" ]; then
+            echo "| Lambda Processing | ⚠️ Timed out |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Lambda Processing | ❌ Error |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$S3_MISSING" = "0" ] && [ "$S3_OK" != "0" ]; then
+            echo "| S3 Published Output | ✅ ${S3_OK} file(s) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| S3 Published Output | ❌ ${S3_MISSING} missing |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$DDB_MISSING" = "0" ] && [ "$DDB_OK" != "0" ]; then
+            echo "| DynamoDB Metadata | ✅ ${DDB_OK} record(s) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| DynamoDB Metadata | ❌ ${DDB_MISSING} missing |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Fail the workflow if processing errored
+          if [ "$PROCESSING" = "error" ]; then
+            echo "::error::Bedrock processing failed — check Lambda logs above"
+            exit 1
+          fi
