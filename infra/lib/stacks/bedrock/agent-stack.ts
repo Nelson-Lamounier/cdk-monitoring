@@ -6,7 +6,7 @@
  * Creates the Bedrock Agent, Knowledge Base (vector store with S3),
  * Guardrail, Action Group Lambda, and Agent Alias.
  *
- * Uses @cdklabs/generative-ai-cdk-constructs for L2 Bedrock constructs.
+ * Uses @cdklabs/generative-ai-cdk-constructs for L2 Bedrock constructs. Test
  */
 
 import {
