@@ -619,6 +619,13 @@ export class KubernetesBaseStack extends cdk.Stack {
             tier: ssm.ParameterTier.STANDARD,
         });
 
+        new ssm.StringParameter(this, 'EbsVolumeIdParam', {
+            parameterName: `${props.ssmPrefix}/ebs-volume-id`,
+            stringValue: this.ebsVolume.volumeId,
+            description: 'Persistent EBS data volume ID for K8s node attachment',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
         new ssm.StringParameter(this, 'HostedZoneIdParam', {
             parameterName: `${props.ssmPrefix}/hosted-zone-id`,
             stringValue: this.hostedZone.hostedZoneId,
