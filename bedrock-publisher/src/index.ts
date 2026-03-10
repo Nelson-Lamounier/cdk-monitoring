@@ -383,29 +383,70 @@ function deriveSlug(draftKey: string): string {
 
 /**
  * Parse Claude's response into structured TransformResult.
- * Expects a JSON object in the text response.
  *
- * Claude's MDX content often contains literal newlines, tabs, and
- * other control characters inside JSON string values.  We sanitise
- * these before calling JSON.parse so the pipeline does not choke
- * on otherwise-valid content.
+ * Claude's MDX content contains literal newlines, tabs, and backtick
+ * code fences.  A naïve regex-based extraction or blanket control-char
+ * replacement breaks either the extraction (nested ```) or the JSON
+ * structure (structural newlines converted to \\n).
+ *
+ * Strategy:
+ *   1. Locate the outermost { … } in the response text.
+ *   2. Walk through the JSON char-by-char, tracking whether we are
+ *      inside a JSON string value (between unescaped quotes).
+ *   3. Only escape control characters (U+0000-U+001F) when inside a
+ *      string value; structural whitespace is left alone.
  */
 function parseTransformResult(responseText: string): TransformResult {
-    // Claude may wrap JSON in markdown code fences
-    const jsonMatch = responseText.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-    let jsonStr = jsonMatch ? jsonMatch[1].trim() : responseText.trim();
+    // ── Step 1: find the outermost JSON object ──
+    const firstBrace = responseText.indexOf('{');
+    const lastBrace  = responseText.lastIndexOf('}');
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+        console.error(`No JSON object found in response (length=${responseText.length}). First 500 chars:\n${responseText.substring(0, 500)}`);
+        throw new Error('No JSON object found in Bedrock response');
+    }
+    const rawJson = responseText.substring(firstBrace, lastBrace + 1);
 
-    // ── Sanitise control characters inside JSON string values ──
-    // Replace unescaped control chars (U+0000-U+001F except already-
-    // escaped sequences) with their JSON-safe \\uXXXX or \\n / \\t forms.
-    jsonStr = jsonStr.replace(/[\x00-\x1f]/g, (ch) => {
-        switch (ch) {
-            case '\n': return '\\n';
-            case '\r': return '\\r';
-            case '\t': return '\\t';
-            default:   return '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0');
+    // ── Step 2: sanitise control chars inside string values only ──
+    const out: string[] = [];
+    let inString = false;
+    let escaped  = false;
+
+    for (let i = 0; i < rawJson.length; i++) {
+        const ch = rawJson[i];
+
+        if (escaped) {
+            out.push(ch);
+            escaped = false;
+            continue;
         }
-    });
+
+        if (ch === '\\' && inString) {
+            out.push(ch);
+            escaped = true;
+            continue;
+        }
+
+        if (ch === '"') {
+            inString = !inString;
+            out.push(ch);
+            continue;
+        }
+
+        // Only escape control chars when inside a JSON string
+        if (inString && ch.charCodeAt(0) < 0x20) {
+            switch (ch) {
+                case '\n': out.push('\\n'); break;
+                case '\r': out.push('\\r'); break;
+                case '\t': out.push('\\t'); break;
+                default:   out.push('\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
+            }
+            continue;
+        }
+
+        out.push(ch);
+    }
+
+    const jsonStr = out.join('');
 
     let parsed: TransformResult;
     try {
@@ -415,10 +456,10 @@ function parseTransformResult(responseText: string): TransformResult {
         const posMatch = String(err).match(/position (\d+)/);
         const pos = posMatch ? parseInt(posMatch[1], 10) : -1;
         const snippet = pos >= 0
-            ? jsonStr.substring(Math.max(0, pos - 120), pos + 120)
+            ? jsonStr.substring(Math.max(0, pos - 200), pos + 200)
             : jsonStr.substring(0, 500);
         console.error(`JSON parse failed at position ${pos}. Snippet around failure:\n${snippet}`);
-        console.error(`Full response length: ${responseText.length} chars, jsonStr length: ${jsonStr.length} chars`);
+        console.error(`Raw response: ${responseText.length} chars, extracted JSON: ${rawJson.length} chars, sanitised: ${jsonStr.length} chars`);
         throw err;
     }
 
