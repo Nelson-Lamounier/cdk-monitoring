@@ -369,7 +369,7 @@ export class KubernetesBaseStack extends cdk.Stack {
         this.ingressSg.addIngressRule(
             ec2.Peer.anyIpv4(),
             ec2.Port.tcp(TRAEFIK_HTTP_PORT),
-            'HTTP from anywhere (Let\'s Encrypt HTTP-01 + CloudFront origin)',
+            'HTTP from anywhere (LetsEncrypt HTTP-01 + CloudFront origin)',
         );
 
         // Admin IP → Traefik HTTPS (direct ops access: Grafana, ArgoCD, Prometheus)
