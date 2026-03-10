@@ -362,24 +362,24 @@ export class KubernetesBaseStack extends cdk.Stack {
             'HTTP from CloudFront origin-facing IPs',
         );
 
-        // Admin IP → Traefik (direct ops access: Grafana, ArgoCD, Prometheus)
-        // IPv4 is required — deployment fails without ALLOW_IPV4.
+        // HTTP from anywhere — required for Let's Encrypt HTTP-01 challenge.
+        // ACME validation servers connect on port 80 from public IPs that
+        // are NOT in the CloudFront prefix list. Admin service access control
+        // is enforced at the Traefik middleware layer (IPAllowList), not SG.
         this.ingressSg.addIngressRule(
-            ec2.Peer.ipv4(props.allowedIpv4),
+            ec2.Peer.anyIpv4(),
             ec2.Port.tcp(TRAEFIK_HTTP_PORT),
-            'HTTP from admin IPv4 (ops services)',
+            'HTTP from anywhere (Let\'s Encrypt HTTP-01 + CloudFront origin)',
         );
+
+        // Admin IP → Traefik HTTPS (direct ops access: Grafana, ArgoCD, Prometheus)
+        // IPv4 is required — deployment fails without ALLOW_IPV4.
         this.ingressSg.addIngressRule(
             ec2.Peer.ipv4(props.allowedIpv4),
             ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
             'HTTPS from admin IPv4 (ops services)',
         );
         if (props.allowedIpv6) {
-            this.ingressSg.addIngressRule(
-                ec2.Peer.ipv6(props.allowedIpv6),
-                ec2.Port.tcp(TRAEFIK_HTTP_PORT),
-                'HTTP from admin IPv6 (ops services)',
-            );
             this.ingressSg.addIngressRule(
                 ec2.Peer.ipv6(props.allowedIpv6),
                 ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
