@@ -301,11 +301,16 @@ async function writeMetadataToDynamoDB(
 
     // 1. METADATA record — clean, consumer-facing entity
     //    Only the fields the Next.js app needs to render article cards.
+    //    gsi1pk/gsi1sk populate the gsi1-status-date GSI for the
+    //    "all published articles, newest first" listing query.
+    const datePrefix = now.substring(0, 10); // YYYY-MM-DD
     await dynamoClient.send(new PutCommand({
         TableName: TABLE_NAME,
         Item: {
             pk,
             sk: 'METADATA',
+            gsi1pk: 'STATUS#published',
+            gsi1sk: `${datePrefix}#${slug}`,
             title: metadata.title,
             tags: metadata.tags,
             heroImageUrl: metadata.heroImageUrl ?? '',

@@ -132,6 +132,11 @@ export class AiContentStack extends cdk.Stack {
         // sk: METADATA        (latest AI-enhanced metadata)
         // sk: CONTENT#v<ts>   (versioned content pointer)
         //
+        // GSI: gsi1-status-date
+        //   gsi1pk: STATUS#published    → groups articles by status
+        //   gsi1sk: YYYY-MM-DD#<slug>   → date + slug for sort order
+        //   Query: all published articles, newest first (frontend listing)
+        //
         // Content blobs live in S3 — table stores only s3Key pointers,
         // AI summaries, reading time, and technical confidence scores.
         // =================================================================
@@ -150,6 +155,21 @@ export class AiContentStack extends cdk.Stack {
                 pointInTimeRecoveryEnabled: true,
             },
             removalPolicy: props.removalPolicy,
+            globalSecondaryIndexes: [
+                {
+                    indexName: 'gsi1-status-date',
+                    partitionKey: {
+                        name: 'gsi1pk',
+                        type: dynamodb.AttributeType.STRING,
+                    },
+                    sortKey: {
+                        name: 'gsi1sk',
+                        type: dynamodb.AttributeType.STRING,
+                    },
+                    // ALL projection — frontend listing needs title, tags,
+                    // aiSummary, readingTime etc. without separate GetItem calls
+                },
+            ],
         });
         this.tableName = this.contentTable.tableName;
 
