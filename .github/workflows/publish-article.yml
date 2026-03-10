@@ -1,0 +1,172 @@
+# =============================================================================
+# Workflow: Publish Article Drafts
+# =============================================================================
+#
+# Push-to-Compute pipeline for the Bedrock Publisher.
+#
+# When a .md file is added or modified in articles-draft/, this workflow:
+#   1. Detects the changed .md files via git diff
+#   2. Resolves the S3 bucket name from SSM
+#   3. Uploads each file to s3://{bucket}/drafts/{filename}.md
+#   4. The existing S3 event notification triggers the Publisher Lambda
+#
+# The Lambda handles: Bedrock transformation → S3 published/ → DynamoDB
+# =============================================================================
+
+name: Publish Article Drafts
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "articles-draft/**/*.md"
+      - "articles-draft/*.md"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: publish-articles
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  SSM_PREFIX: bedrock-development
+
+jobs:
+  publish:
+    name: Upload Drafts to S3
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: development
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # Need previous commit to diff against
+
+      # ------------------------------------------------------------------
+      # 2. Detect changed .md files in articles-draft/
+      # ------------------------------------------------------------------
+      - name: Detect Changed Articles
+        id: detect
+        run: |
+          echo "## Detecting changed articles..." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Get list of added/modified .md files in articles-draft/
+          CHANGED_FILES=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'articles-draft/**/*.md' 'articles-draft/*.md' || true)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No article drafts changed."
+            echo "- No article drafts changed" >> $GITHUB_STEP_SUMMARY
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          echo ""
+
+          # Count files
+          FILE_COUNT=$(echo "$CHANGED_FILES" | wc -l | tr -d ' ')
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+
+          # Store as multiline output
+          {
+            echo "files<<EOF"
+            echo "$CHANGED_FILES"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+          echo "- **${FILE_COUNT} article(s) detected**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$CHANGED_FILES" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # ------------------------------------------------------------------
+      # 3. AWS Credentials
+      # ------------------------------------------------------------------
+      - name: Configure AWS Credentials
+        if: steps.detect.outputs.has_changes == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      # ------------------------------------------------------------------
+      # 4. Resolve S3 bucket from SSM
+      # ------------------------------------------------------------------
+      - name: Resolve S3 Bucket Name
+        if: steps.detect.outputs.has_changes == 'true'
+        id: ssm
+        run: |
+          BUCKET_NAME=$(aws ssm get-parameter \
+            --name "/${{ env.SSM_PREFIX }}/assets-bucket-name" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          echo "bucket_name=$BUCKET_NAME" >> $GITHUB_OUTPUT
+          echo "Resolved bucket: $BUCKET_NAME"
+
+      # ------------------------------------------------------------------
+      # 5. Upload each draft to S3 drafts/ prefix
+      # ------------------------------------------------------------------
+      - name: Upload Drafts to S3
+        if: steps.detect.outputs.has_changes == 'true'
+        run: |
+          BUCKET="${{ steps.ssm.outputs.bucket_name }}"
+          UPLOAD_COUNT=0
+          FAILED_COUNT=0
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Upload Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          while IFS= read -r FILE; do
+            # Extract just the filename (strip articles-draft/ path)
+            FILENAME=$(basename "$FILE")
+
+            echo "Uploading: $FILE → s3://$BUCKET/drafts/$FILENAME"
+
+            if aws s3 cp "$FILE" "s3://$BUCKET/drafts/$FILENAME" \
+              --content-type "text/markdown"; then
+              echo "  ✅ Uploaded successfully"
+              echo "- ✅ \`$FILENAME\` → \`s3://$BUCKET/drafts/$FILENAME\`" >> $GITHUB_STEP_SUMMARY
+              UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
+            else
+              echo "  ❌ Upload failed"
+              echo "- ❌ \`$FILENAME\` — upload failed" >> $GITHUB_STEP_SUMMARY
+              FAILED_COUNT=$((FAILED_COUNT + 1))
+            fi
+          done <<< "${{ steps.detect.outputs.files }}"
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**${UPLOAD_COUNT} uploaded, ${FAILED_COUNT} failed**" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FAILED_COUNT" -gt 0 ]; then
+            echo "::error::${FAILED_COUNT} file(s) failed to upload"
+            exit 1
+          fi
+
+      # ------------------------------------------------------------------
+      # 6. Summary
+      # ------------------------------------------------------------------
+      - name: Pipeline Summary
+        if: steps.detect.outputs.has_changes == 'true'
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The S3 event trigger will invoke the **Bedrock Publisher Lambda**." >> $GITHUB_STEP_SUMMARY
+          echo "Monitor progress in CloudWatch Logs:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "aws logs tail /aws/lambda/bedrock-development-publisher --follow --region ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
