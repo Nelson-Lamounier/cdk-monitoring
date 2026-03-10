@@ -321,6 +321,13 @@ jobs:
             fi
           done
 
+          # Full listing of all published articles
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### All Published Files" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          aws s3 ls "s3://$BUCKET/published/" 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "(no files)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "s3_ok=$S3_OK" >> $GITHUB_OUTPUT
           echo "s3_missing=$S3_MISSING" >> $GITHUB_OUTPUT
@@ -369,6 +376,16 @@ jobs:
               DDB_MISSING=$((DDB_MISSING + 1))
             fi
           done
+
+          # Full table scan for overview of all articles
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### All Articles in DynamoDB" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          aws dynamodb scan --table-name "$TABLE" \
+            --projection-expression "pk, sk, title, updatedAt" \
+            --max-items 10 \
+            --output json 2>/dev/null | jq '.Items[] | {pk: .pk.S, sk: .sk.S, title: .title.S, updatedAt: .updatedAt.S}' >> $GITHUB_STEP_SUMMARY || echo "(no records)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "ddb_ok=$DDB_OK" >> $GITHUB_OUTPUT
