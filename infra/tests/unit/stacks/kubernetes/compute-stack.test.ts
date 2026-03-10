@@ -102,6 +102,7 @@ function createComputeStack(
         namePrefix: 'k8s-dev',
         ssmPrefix: '/k8s/development',
         vpcName: 'shared-vpc-development',
+        allowedIpv4: '203.0.113.42/32',
     });
 
     const stack = new KubernetesControlPlaneStack(app, 'TestK8sComputeStack', {

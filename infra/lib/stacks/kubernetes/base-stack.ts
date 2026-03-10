@@ -91,9 +91,11 @@ export interface KubernetesBaseStackProps extends cdk.StackProps {
      * Admin IPv4 CIDR for direct access to Traefik (ops services).
      * Sourced from ALLOW_IPV4 env var. Added to the ingress SG
      * alongside the CloudFront managed prefix list.
+     *
+     * Required — deployment fails if ALLOW_IPV4 is not set.
      * @example '203.0.113.42/32'
      */
-    readonly allowedIpv4?: string;
+    readonly allowedIpv4: string;
 
     /**
      * Admin IPv6 CIDR for direct access to Traefik (ops services).
@@ -361,18 +363,17 @@ export class KubernetesBaseStack extends cdk.Stack {
         );
 
         // Admin IP → Traefik (direct ops access: Grafana, ArgoCD, Prometheus)
-        if (props.allowedIpv4) {
-            this.ingressSg.addIngressRule(
-                ec2.Peer.ipv4(props.allowedIpv4),
-                ec2.Port.tcp(TRAEFIK_HTTP_PORT),
-                'HTTP from admin IPv4 (ops services)',
-            );
-            this.ingressSg.addIngressRule(
-                ec2.Peer.ipv4(props.allowedIpv4),
-                ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
-                'HTTPS from admin IPv4 (ops services)',
-            );
-        }
+        // IPv4 is required — deployment fails without ALLOW_IPV4.
+        this.ingressSg.addIngressRule(
+            ec2.Peer.ipv4(props.allowedIpv4),
+            ec2.Port.tcp(TRAEFIK_HTTP_PORT),
+            'HTTP from admin IPv4 (ops services)',
+        );
+        this.ingressSg.addIngressRule(
+            ec2.Peer.ipv4(props.allowedIpv4),
+            ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
+            'HTTPS from admin IPv4 (ops services)',
+        );
         if (props.allowedIpv6) {
             this.ingressSg.addIngressRule(
                 ec2.Peer.ipv6(props.allowedIpv6),
