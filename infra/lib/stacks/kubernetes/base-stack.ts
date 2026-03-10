@@ -273,6 +273,11 @@ export class KubernetesBaseStack extends cdk.Stack {
             ec2.Port.tcp(53),
             'CoreDNS TCP (from pods)',
         );
+        this.securityGroup.addIngressRule(
+            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
+            ec2.Port.tcp(9100),
+            'Traefik + Node Exporter metrics (from pods)',
+        );
 
         // =====================================================================
         // Security Group 2/4: Control Plane (control plane node only)
