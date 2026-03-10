@@ -12,6 +12,7 @@
 import {
     bedrock,
 } from '@cdklabs/generative-ai-cdk-constructs';
+import { NagSuppressions } from 'cdk-nag';
 
 import * as cdkBedrock from 'aws-cdk-lib/aws-bedrock';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -167,6 +168,19 @@ export class BedrockAgentStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(props.actionGroupLambdaTimeoutSeconds),
             description: `Action Group handler for ${namePrefix} agent`,
         });
+
+        // CDK-Nag suppression: NODEJS_22_X is the latest Node.js LTS runtime;
+        // AwsSolutions-L1 may not recognize it as latest yet.
+        NagSuppressions.addResourceSuppressions(
+            this.actionGroupFunction,
+            [
+                {
+                    id: 'AwsSolutions-L1',
+                    reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
+                },
+            ],
+            true,
+        );
 
         // =================================================================
         // Bedrock Agent
