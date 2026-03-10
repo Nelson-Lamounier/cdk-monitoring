@@ -458,12 +458,19 @@ async function waitForSync(
   console.log(`Poll interval: ${pollInterval}s, max polls: ${maxPolls}`);
   console.log('');
 
+  // Grace period: newly-added Applications may not exist in ArgoCD yet
+  // because the root App-of-Apps hasn't reconciled. ArgoCD returns
+  // "permission denied" for non-existent apps (security: prevents info leak).
+  // During the grace window, treat these as "pending discovery" rather than errors.
+  const gracePollCount = 3; // ~90s at 30s interval
+
   // Run diagnostic probe on first app
   await diagnosticProbe(instanceId, token);
 
   for (let poll = 1; poll <= maxPolls; poll++) {
     const timestamp = new Date().toISOString().slice(11, 19);
     let allSynced = true;
+    const inGracePeriod = poll <= gracePollCount;
 
     console.log(`--- Poll ${poll}/${maxPolls} (${timestamp}) ---`);
 
@@ -474,7 +481,17 @@ async function waitForSync(
         console.log(`  ${app}: [WARN] API unreachable`);
         allSynced = false;
       } else if (status.error) {
-        console.log(`  ${app}: [ERROR] ${status.error}`);
+        // "permission denied" means the app doesn't exist in ArgoCD yet
+        // (ArgoCD hides 404 behind 403 for security). During grace period,
+        // treat as pending; after grace period, treat as error.
+        const isNotFound = status.error.toLowerCase().includes('permission denied');
+        if (isNotFound && inGracePeriod) {
+          console.log(`  ${app}: [WAIT] Not yet discovered by ArgoCD (grace period ${poll}/${gracePollCount})`);
+        } else if (isNotFound) {
+          console.log(`  ${app}: [ERROR] Not found in ArgoCD — check root App-of-Apps sync`);
+        } else {
+          console.log(`  ${app}: [ERROR] ${status.error}`);
+        }
         allSynced = false;
       } else if (
         status.syncStatus === 'Synced' &&
