@@ -317,6 +317,27 @@ export class AiContentStack extends cdk.Stack {
             tier: ssm.ParameterTier.STANDARD,
         });
 
+        new ssm.StringParameter(this, 'ContentTableArnParam', {
+            parameterName: `/${namePrefix}/content-table-arn`,
+            stringValue: this.contentTable.tableArn,
+            description: `AI Content table ARN for ${namePrefix}`,
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
+        new ssm.StringParameter(this, 'AssetsBucketNameParam', {
+            parameterName: `/${namePrefix}/assets-bucket-name`,
+            stringValue: this.assetsBucket.bucketName,
+            description: `Assets bucket name for ${namePrefix}`,
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
+        new ssm.StringParameter(this, 'PublishedPrefixParam', {
+            parameterName: `/${namePrefix}/published-prefix`,
+            stringValue: props.publishedPrefix,
+            description: `S3 prefix for published MDX content`,
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
         // =================================================================
         // Stack Outputs
         // =================================================================

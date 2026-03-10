@@ -103,6 +103,8 @@ readingTime: "X min read"             # Estimated reading time
 
 ### Mermaid Diagrams
 - Provide all Mermaid diagram code directly in the markdown — no external image files for architecture diagrams.
+- For complex architectures or multi-service data flows, ALWAYS include a Mermaid diagram showing the architecture or data flow.
+- Use the \`\`\`mermaid code fence — the consumer renders this client-side via mermaid.js.
 - All Mermaid diagrams must use coloured \`style\` fills for key nodes to improve scannability:
 \`\`\`mermaid
 graph LR
@@ -110,6 +112,19 @@ graph LR
     style A fill:#2d6a4f,color:#fff
     style B fill:#d32f2f,color:#fff
 \`\`\`
+- Quote node labels containing special characters (parentheses, brackets): \`id["Label (Info)"]\`
+- Avoid HTML tags in Mermaid labels.
+
+### Screenshot Placeholders (ImageRequest)
+When a section describes a visual element that requires a real screenshot
+(e.g., AWS Console views, Grafana dashboards, monitoring graphs), insert:
+\`\`\`mdx
+<ImageRequest id="descriptive-id" instruction="What to capture" />
+\`\`\`
+- \`id\`: kebab-case identifier (used as the eventual filename, e.g., \`vpc-flow.png\`)
+- \`instruction\`: Clear, specific description of what screenshot is needed
+- Only insert when the section genuinely benefits from a visual — do NOT insert for code snippets or config files (code blocks are sufficient)
+- Maximum 3-4 ImageRequest tags per article to avoid placeholder overload
 
 ### Code Blocks
 - Always specify the language for syntax highlighting.
@@ -122,7 +137,7 @@ scrape_configs:
 
 ### Asset References
 - Screenshots and external assets use: \`docs/portfolio/assets/[topic]/filename.png\`
-- Screenshot placeholders use: \`{/* SCREENSHOT: description of what to capture */}\``;
+- Screenshot placeholders use: \`<ImageRequest />\` tags as described above`;
 
 /**
  * Part 4: Output JSON Schema & Writing Guidelines.
@@ -143,7 +158,9 @@ You MUST return a valid JSON object with exactly this structure:
     "readingTime": 8,
     "category": "DevOps|Cloud|Kubernetes|IaC|CI-CD|Security|Monitoring",
     "aiSummary": "A 2-3 sentence teaser that captures the article's key insight for SEO and social sharing.",
-    "technicalConfidence": 92
+    "technicalConfidence": 92,
+    "mermaidDiagramCount": 2,
+    "imageRequestCount": 1
   }
 }
 \`\`\`
@@ -152,6 +169,8 @@ You MUST return a valid JSON object with exactly this structure:
 - **readingTime**: Numeric value in minutes (integer). Calculate based on ~200 words per minute.
 - **aiSummary**: A compelling 2-3 sentence teaser for SEO meta descriptions and social cards. Must capture the core insight and make the reader want to click through.
 - **technicalConfidence**: Integer 0-100 rating of how confident you are that all code snippets, commands, and configurations in the article are technically correct and would work as written. Score lower if you had to infer missing context.
+- **mermaidDiagramCount**: Integer count of \`\`\`mermaid code blocks in the generated MDX content.
+- **imageRequestCount**: Integer count of \`<ImageRequest />\` tags in the generated MDX content.
 
 ## Writing Guidelines
 1. **Preserve technical accuracy** — never alter commands, configs, or architecture details

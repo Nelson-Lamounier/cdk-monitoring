@@ -183,14 +183,35 @@ export class BedrockAgentStack extends cdk.Stack {
         );
 
         // =================================================================
+        // Resolve Foundation Model
+        //
+        // If the foundationModel ID starts with a geo prefix (e.g. 'eu.'),
+        // use CrossRegionInferenceProfile to create a proper inference
+        // profile for the Agent. Otherwise, use the direct model ID.
+        // =================================================================
+        const geoMatch = props.foundationModel.match(/^(eu|us|apac)\.(.*)/); 
+        const agentModel = geoMatch
+            ? bedrock.CrossRegionInferenceProfile.fromConfig({
+                geoRegion: geoMatch[1] === 'eu'
+                    ? bedrock.CrossRegionInferenceProfileRegion.EU
+                    : geoMatch[1] === 'us'
+                        ? bedrock.CrossRegionInferenceProfileRegion.US
+                        : bedrock.CrossRegionInferenceProfileRegion.APAC,
+                model: bedrock.BedrockFoundationModel.fromCdkFoundationModelId(
+                    new cdkBedrock.FoundationModelIdentifier(geoMatch[2]),
+                ),
+            })
+            : bedrock.BedrockFoundationModel.fromCdkFoundationModelId(
+                new cdkBedrock.FoundationModelIdentifier(props.foundationModel),
+            );
+
+        // =================================================================
         // Bedrock Agent
         // =================================================================
         this.agent = new bedrock.Agent(this, 'Agent', {
             name: `${namePrefix}-agent`,
             description: props.agentDescription,
-            foundationModel: bedrock.BedrockFoundationModel.fromCdkFoundationModelId(
-                new cdkBedrock.FoundationModelIdentifier(props.foundationModel),
-            ),
+            foundationModel: agentModel,
             instruction: props.agentInstruction,
             idleSessionTTL: cdk.Duration.seconds(props.idleSessionTtlInSeconds),
         });

@@ -77,6 +77,10 @@ interface TransformResult {
         technicalConfidence: number;
         /** Hero image URL for article cards and social sharing */
         heroImageUrl?: string;
+        /** Number of Mermaid diagrams in the content */
+        mermaidDiagramCount: number;
+        /** Number of ImageRequest placeholders in the content */
+        imageRequestCount: number;
     };
 }
 
@@ -290,6 +294,8 @@ async function writeMetadataToDynamoDB(
             contentRef,
             aiSummary: metadata.aiSummary,
             readingTime: metadata.readingTime,
+            mermaidDiagramCount: metadata.mermaidDiagramCount,
+            imageRequestCount: metadata.imageRequestCount,
         },
     }));
 
@@ -384,6 +390,14 @@ function parseTransformResult(responseText: string): TransformResult {
         parsed.metadata.technicalConfidence = 0;
     }
 
+    // Count Mermaid diagrams and ImageRequest tags from the actual content
+    // (overrides whatever Claude reported to ensure accuracy)
+    const mermaidBlocks = parsed.mdxContent.match(/```mermaid/g) ?? [];
+    parsed.metadata.mermaidDiagramCount = mermaidBlocks.length;
+
+    const imageRequests = parsed.mdxContent.match(/<ImageRequest\s/g) ?? [];
+    parsed.metadata.imageRequestCount = imageRequests.length;
+
     return parsed;
 }
 
@@ -464,9 +478,9 @@ async function transformWithBedrock(
     // Extract text from output content blocks (skip thinking blocks)
     const outputBlocks = response.output?.message?.content ?? [];
     const textContent = outputBlocks
-        .filter((block: Record<string, unknown>): block is { text: string } =>
-            'text' in block && typeof block.text === 'string')
-        .map((block: { text: string }) => block.text)
+        .filter((block): block is { text: string } =>
+            typeof block === 'object' && block !== null && 'text' in block && typeof (block as { text?: unknown }).text === 'string')
+        .map((block) => block.text)
         .join('');
 
     if (!textContent) {
@@ -479,6 +493,31 @@ async function transformWithBedrock(
 // =============================================================================
 // LAMBDA HANDLER
 // =============================================================================
+
+/**
+ * Validate Mermaid code blocks in MDX content.
+ *
+ * Basic pre-checks before writing to S3:
+ * - No empty Mermaid blocks
+ * - No YAML frontmatter leaked into Mermaid blocks
+ * Returns an array of warning strings (empty = all good).
+ */
+export function validateMermaidSyntax(mdxContent: string): string[] {
+    const mermaidBlockRegex = /```mermaid\n([\s\S]*?)```/g;
+    const errors: string[] = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = mermaidBlockRegex.exec(mdxContent)) !== null) {
+        const code = match[1].trim();
+        if (!code) {
+            errors.push('Empty Mermaid block found');
+        }
+        if (code.startsWith('---')) {
+            errors.push('YAML frontmatter detected inside Mermaid block');
+        }
+    }
+    return errors;
+}
 
 /**
  * S3 event handler for the MD-to-Blog pipeline.
@@ -516,8 +555,13 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
             // 4. Transform via Bedrock Converse API (budget scales with complexity)
             console.log(`Invoking ${FOUNDATION_MODEL} with Adaptive Thinking (budget: ${complexity.budgetTokens} tokens)`);
             const result = await transformWithBedrock(markdownContent, slug, complexity);
-            console.log(`Transform complete: "${result.metadata.title}" (${result.metadata.readingTime} min, confidence: ${result.metadata.technicalConfidence}%)`);
+            console.log(`Transform complete: "${result.metadata.title}" (${result.metadata.readingTime} min, confidence: ${result.metadata.technicalConfidence}%, mermaid: ${result.metadata.mermaidDiagramCount}, imageRequests: ${result.metadata.imageRequestCount})`);
 
+            // 4b. Mermaid syntax pre-check (warn but don't block)
+            const mermaidWarnings = validateMermaidSyntax(result.mdxContent);
+            if (mermaidWarnings.length > 0) {
+                console.warn(`Mermaid syntax warnings for ${slug}:`, mermaidWarnings);
+            }
             // 5. Write MDX content to S3 (published/ + content/v1/)
             await writeContentToS3(ASSETS_BUCKET, publishedKey, contentKey, result.mdxContent);
             console.log(`Content written to s3://${ASSETS_BUCKET}/${publishedKey} + ${contentKey}`);

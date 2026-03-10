@@ -373,12 +373,18 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 configs,
                 ssmPrefix,
 
-                // Application-tier IAM grants (Next.js)
+                // Application-tier IAM grants (Next.js + Bedrock content)
                 ssmParameterPath: ssmPaths.wildcard,
                 secretsManagerPathPattern: `${nextjsNamePrefix}/${environment}/*`,
-                s3ReadBucketArns: [`arn:aws:s3:::${resourceNames.assetsBucketName}`],
+                s3ReadBucketArns: [
+                    `arn:aws:s3:::${resourceNames.assetsBucketName}`,
+                    // Bedrock content pipeline — published MDX blobs
+                    `arn:aws:s3:::bedrock-${environment}-kb-data`,
+                ],
                 dynamoTableArns: [
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/${resourceNames.dynamoTableName}`,
+                    // Bedrock content pipeline — AI-enhanced article metadata
+                    `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
                 ],
                 dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
             },
