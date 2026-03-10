@@ -151,7 +151,12 @@ Rules for MermaidChart:
 When a section describes something visual — an AWS Console view, a Grafana dashboard, a CLI output, or an abstract architecture that cannot be expressed in Mermaid — insert an \`<ImageRequest />\` tag:
 
 \`\`\`mdx
-<ImageRequest id="descriptive-id" type="diagram" instruction="What to capture or create" />
+<ImageRequest
+  id="descriptive-id"
+  type="diagram"
+  instruction="What to capture or create"
+  context="Why this visual matters for the reader's understanding."
+/>
 \`\`\`
 
 Props:
@@ -161,6 +166,7 @@ Props:
   - \`screenshot\`: AWS Console views, CLI outputs, monitoring dashboards
   - \`hero\`: The article's banner/hero image (maximum ONE per article)
 - \`instruction\`: Clear, specific description of what the visual should show
+- \`context\`: Why this visual matters for the reader — used for SEO alt-text and as developer guidance in the placeholder. Write this as a complete sentence explaining what the reader needs to see to understand the surrounding text
 
 Guidelines:
 - Maximum 4–5 ImageRequest tags per article (excluding hero)
@@ -206,12 +212,14 @@ You MUST return a valid JSON object with exactly this structure:
     {
       "id": "k8s-pod-architecture",
       "type": "diagram",
-      "instruction": "A diagram showing a single Pod with two containers communicating via localhost:5432."
+      "instruction": "A diagram showing a single Pod with two containers communicating via localhost:5432.",
+      "context": "The reader needs to visualise the sidecar pattern to understand why localhost networking is sufficient."
     },
     {
       "id": "grafana-cpu-panel",
       "type": "screenshot",
-      "instruction": "Grafana dashboard showing the CPU usage panel for the K8s worker node."
+      "instruction": "Grafana dashboard showing the CPU usage panel for the K8s worker node.",
+      "context": "Seeing the actual dashboard confirms the Prometheus scrape config is working end-to-end."
     }
   ]
 }
@@ -229,6 +237,7 @@ You MUST return a valid JSON object with exactly this structure:
 - The \`id\` field must be identical between the inline tag and the shotList entry
 - The \`type\` must be one of: \`"screenshot"\`, \`"diagram"\`, \`"hero"\`
 - Write clear, actionable \`instruction\` text — a designer or engineer should be able to produce the asset from the instruction alone
+- Write a \`context\` sentence explaining why this visual is important for the reader — this becomes the SEO alt-text and the developer placeholder hint
 
 ## Writing Guidelines
 1. **Preserve technical accuracy** — never alter commands, configs, or architecture details

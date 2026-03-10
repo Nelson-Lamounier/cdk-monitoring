@@ -68,6 +68,8 @@ interface ShotListItem {
     type: 'screenshot' | 'diagram' | 'hero';
     /** Clear, actionable description of what the visual should show */
     instruction: string;
+    /** Why this visual matters — used for SEO alt-text and developer placeholder hint */
+    context?: string;
 }
 
 /**
