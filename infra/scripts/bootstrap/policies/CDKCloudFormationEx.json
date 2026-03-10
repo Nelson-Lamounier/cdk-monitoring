@@ -144,6 +144,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "BedrockAIServices",
+      "Effect": "Allow",
+      "Action": ["bedrock:*", "aoss:*"],
+      "Resource": "*"
+    },
+    {
       "Sid": "STSAccess",
       "Effect": "Allow",
       "Action": ["sts:AssumeRole", "sts:GetCallerIdentity"],
