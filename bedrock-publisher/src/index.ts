@@ -384,13 +384,43 @@ function deriveSlug(draftKey: string): string {
 /**
  * Parse Claude's response into structured TransformResult.
  * Expects a JSON object in the text response.
+ *
+ * Claude's MDX content often contains literal newlines, tabs, and
+ * other control characters inside JSON string values.  We sanitise
+ * these before calling JSON.parse so the pipeline does not choke
+ * on otherwise-valid content.
  */
 function parseTransformResult(responseText: string): TransformResult {
     // Claude may wrap JSON in markdown code fences
     const jsonMatch = responseText.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-    const jsonStr = jsonMatch ? jsonMatch[1].trim() : responseText.trim();
+    let jsonStr = jsonMatch ? jsonMatch[1].trim() : responseText.trim();
 
-    const parsed = JSON.parse(jsonStr) as TransformResult;
+    // ── Sanitise control characters inside JSON string values ──
+    // Replace unescaped control chars (U+0000-U+001F except already-
+    // escaped sequences) with their JSON-safe \\uXXXX or \\n / \\t forms.
+    jsonStr = jsonStr.replace(/[\x00-\x1f]/g, (ch) => {
+        switch (ch) {
+            case '\n': return '\\n';
+            case '\r': return '\\r';
+            case '\t': return '\\t';
+            default:   return '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0');
+        }
+    });
+
+    let parsed: TransformResult;
+    try {
+        parsed = JSON.parse(jsonStr) as TransformResult;
+    } catch (err) {
+        // Log context around the failure position for debugging
+        const posMatch = String(err).match(/position (\d+)/);
+        const pos = posMatch ? parseInt(posMatch[1], 10) : -1;
+        const snippet = pos >= 0
+            ? jsonStr.substring(Math.max(0, pos - 120), pos + 120)
+            : jsonStr.substring(0, 500);
+        console.error(`JSON parse failed at position ${pos}. Snippet around failure:\n${snippet}`);
+        console.error(`Full response length: ${responseText.length} chars, jsonStr length: ${jsonStr.length} chars`);
+        throw err;
+    }
 
     // Validate required fields (new schema uses 'content' not 'mdxContent')
     if (!parsed.content || !parsed.metadata?.slug) {
