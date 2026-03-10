@@ -9,7 +9,7 @@
  * ```typescript
  * import { getBedrockAllocations } from '../../config/bedrock';
  * const allocs = getBedrockAllocations(Environment.PRODUCTION);
- * const model = allocs.foundationModel; // 'anthropic.claude-sonnet-4-6'
+ * const model = allocs.foundationModel; // 'eu.anthropic.claude-sonnet-4-6'
  * ```
  */
 
@@ -79,7 +79,7 @@ export interface BedrockAllocations {
 export const BEDROCK_ALLOCATIONS: Record<Environment, BedrockAllocations> = {
     [Environment.DEVELOPMENT]: {
         agent: {
-            foundationModel: 'anthropic.claude-sonnet-4-6',
+            foundationModel: 'eu.anthropic.claude-sonnet-4-6',
             idleSessionTtlInSeconds: 600, // 10 minutes
         },
         actionGroupLambda: {
@@ -98,7 +98,7 @@ export const BEDROCK_ALLOCATIONS: Record<Environment, BedrockAllocations> = {
 
     [Environment.STAGING]: {
         agent: {
-            foundationModel: 'anthropic.claude-sonnet-4-6',
+            foundationModel: 'eu.anthropic.claude-sonnet-4-6',
             idleSessionTtlInSeconds: 900, // 15 minutes
         },
         actionGroupLambda: {
@@ -117,7 +117,7 @@ export const BEDROCK_ALLOCATIONS: Record<Environment, BedrockAllocations> = {
 
     [Environment.PRODUCTION]: {
         agent: {
-            foundationModel: 'anthropic.claude-sonnet-4-6',
+            foundationModel: 'eu.anthropic.claude-sonnet-4-6',
             idleSessionTtlInSeconds: 1800, // 30 minutes
         },
         actionGroupLambda: {

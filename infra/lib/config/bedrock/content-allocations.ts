@@ -71,7 +71,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
             timeoutSeconds: 120,
         },
         model: {
-            foundationModel: 'anthropic.claude-sonnet-4-6',
+            foundationModel: 'eu.anthropic.claude-sonnet-4-6',
             maxTokens: 8192,
             thinkingBudgetTokens: 10240,
         },
@@ -83,7 +83,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
             timeoutSeconds: 120,
         },
         model: {
-            foundationModel: 'anthropic.claude-sonnet-4-6',
+            foundationModel: 'eu.anthropic.claude-sonnet-4-6',
             maxTokens: 8192,
             thinkingBudgetTokens: 16000,
         },
