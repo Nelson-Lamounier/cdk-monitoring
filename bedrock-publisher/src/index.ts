@@ -728,6 +728,31 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
             );
             console.log(`Metadata written to ${TABLE_NAME} (pk=ARTICLE#${result.metadata.slug || slug})`);
 
+            // 7. On-demand ISR revalidation (opt-in via REVALIDATION_URL env var)
+            //    Tells the Next.js frontend to purge cached pages for this article
+            //    so it's visible immediately without waiting for the ISR interval.
+            const revalidationUrl = process.env.REVALIDATION_URL;
+            const revalidationSecret = process.env.REVALIDATION_SECRET;
+            if (revalidationUrl) {
+                try {
+                    const articleSlug = result.metadata.slug || slug;
+                    const url = new URL(revalidationUrl);
+                    url.searchParams.set('slug', articleSlug);
+                    if (revalidationSecret) {
+                        url.searchParams.set('secret', revalidationSecret);
+                    }
+                    const response = await fetch(url.toString(), { method: 'GET' });
+                    if (response.ok) {
+                        console.log(`ISR revalidation triggered for /blog/${articleSlug}`);
+                    } else {
+                        console.warn(`ISR revalidation returned ${response.status}: ${await response.text()}`);
+                    }
+                } catch (revalError) {
+                    // Non-blocking — article is already published to S3/DynamoDB
+                    console.warn('ISR revalidation failed (non-blocking):', revalError);
+                }
+            }
+
         } catch (error) {
             console.error(`Failed to process ${key}:`, error);
             throw error; // Let Lambda retry / send to DLQ

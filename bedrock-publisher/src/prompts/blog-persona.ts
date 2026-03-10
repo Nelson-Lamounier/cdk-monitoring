@@ -120,7 +120,7 @@ slug: "url-friendly-slug"              # kebab-case, matches filename
 publishDate: "YYYY-MM-DD"              # ISO date
 author: "Nelson Lamounier"             # Always this author
 category: "DevOps"                     # One of: DevOps | Cloud | Kubernetes | IaC | CI-CD | Security | Monitoring
-readingTime: "X min read"             # Estimated reading time
+readingTime: 8                         # Numeric minutes (integer, e.g. 8)
 ---
 \`\`\`
 
