@@ -255,11 +255,13 @@ export class AiContentStack extends cdk.Stack {
         // =================================================================
         // IAM — Bedrock InvokeModel permission
         //
-        // The publisher uses a cross-region inference profile (eu.anthropic.*)
-        // which has a different ARN format from direct foundation models:
-        //   foundation-model: arn:aws:bedrock:{region}::foundation-model/{modelId}
-        //   inference-profile: arn:aws:bedrock:{region}:{account}:inference-profile/{profileId}
+        // Cross-region inference profiles (eu.anthropic.*) route requests
+        // to the underlying foundation model in ANY EU region
+        // (eu-north-1, eu-west-3, etc.). The IAM policy must cover:
+        //   1. The inference profile itself in the local region
+        //   2. The foundation model in ANY region (wildcard)
         // =================================================================
+        const baseModelId = props.foundationModel.replace(/^eu\./, '');
         this.publisherFunction.addToRolePolicy(new iam.PolicyStatement({
             sid: 'InvokeBedrockModel',
             effect: iam.Effect.ALLOW,
@@ -268,10 +270,10 @@ export class AiContentStack extends cdk.Stack {
                 'bedrock:InvokeModelWithResponseStream',
             ],
             resources: [
-                // Direct foundation model ARN (fallback)
-                `arn:aws:bedrock:${this.region}::foundation-model/${props.foundationModel}`,
-                // Cross-region inference profile ARN (primary — used by publisher)
+                // Cross-region inference profile (local region, account-scoped)
                 `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${props.foundationModel}`,
+                // Foundation model in ANY region (cross-region routing target)
+                `arn:aws:bedrock:*::foundation-model/${baseModelId}`,
             ],
         }));
 
