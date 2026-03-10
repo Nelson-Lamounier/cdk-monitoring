@@ -499,6 +499,19 @@ async function transformWithBedrock(
 
     const response = await bedrockClient.send(command);
 
+    // Log usage and stop reason for debugging
+    const stopReason = response.stopReason ?? 'unknown';
+    const usage = response.usage;
+    console.log(`Bedrock response: stopReason=${stopReason}, inputTokens=${usage?.inputTokens}, outputTokens=${usage?.outputTokens}`);
+
+    // Check for truncated response
+    if (stopReason === 'max_tokens') {
+        throw new Error(
+            `Response truncated — output hit maxTokens limit (${usage?.outputTokens} tokens used). ` +
+            `Increase MAX_TOKENS env var or reduce article complexity.`
+        );
+    }
+
     // Extract text from output content blocks (skip thinking blocks)
     const outputBlocks = response.output?.message?.content ?? [];
     const textContent = outputBlocks

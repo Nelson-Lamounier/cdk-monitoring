@@ -60,7 +60,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
         },
         model: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',
-            maxTokens: 8192,
+            maxTokens: 16384,
             thinkingBudgetTokens: 4096,
         },
     },
@@ -72,7 +72,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
         },
         model: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',
-            maxTokens: 8192,
+            maxTokens: 16384,
             thinkingBudgetTokens: 10240,
         },
     },
@@ -84,7 +84,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
         },
         model: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',
-            maxTokens: 8192,
+            maxTokens: 16384,
             thinkingBudgetTokens: 16000,
         },
     },
