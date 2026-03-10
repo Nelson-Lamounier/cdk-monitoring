@@ -250,6 +250,12 @@ export class KubernetesBaseStack extends cdk.Stack {
             ec2.Port.tcp(5473),
             'Calico Typha (intra-cluster)',
         );
+        // Traefik + Node Exporter metrics (Prometheus scraping across nodes)
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcp(9100),
+            'Traefik + Node Exporter metrics (intra-cluster)',
+        );
 
         // Pod CIDR → critical services (kube-proxy DNATs ClusterIP to node IP;
         // source IP stays in pod CIDR, which self-ref SG rules do NOT match)
