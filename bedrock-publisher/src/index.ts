@@ -300,25 +300,56 @@ async function writeMetadataToDynamoDB(
     const contentRef = `s3://${ASSETS_BUCKET}/${publishedKey}`;
 
     // 1. METADATA record — clean, consumer-facing entity
-    //    Only the fields the Next.js app needs to render article cards.
-    //    gsi1pk/gsi1sk populate the gsi1-status-date GSI for the
-    //    "all published articles, newest first" listing query.
-    const datePrefix = now.substring(0, 10); // YYYY-MM-DD
+    //    All fields the Next.js app needs to render article cards
+    //    and the /articles listing page.  gsi1pk/gsi1sk populate the
+    //    gsi1-status-date GSI for "all published, newest first".
+    const datePrefix = metadata.publishDate
+        ? metadata.publishDate.substring(0, 10)
+        : now.substring(0, 10); // YYYY-MM-DD
+
+    const metadataItem: Record<string, unknown> = {
+        pk,
+        sk: 'METADATA',
+        entityType: 'ARTICLE_METADATA',
+
+        // Core fields
+        slug,
+        title: metadata.title,
+        description: metadata.description,
+        author: 'Nelson Lamounier',
+        date: datePrefix,
+        status: 'published',
+        category: metadata.category,
+        tags: metadata.tags,
+        readingTimeMinutes: metadata.readingTime,
+
+        // S3 pointer
+        contentRef,
+        contentType: 'mdx',
+
+        // AI fields
+        aiSummary: metadata.aiSummary,
+        shotListCount: shotList.length,
+
+        // Timestamps
+        createdAt: now,
+        updatedAt: now,
+        publishedAt: now,
+        version: 1,
+
+        // GSI keys (frontend listing query)
+        gsi1pk: 'STATUS#published',
+        gsi1sk: `${datePrefix}#${slug}`,
+    };
+
+    // Only include heroImageUrl if non-empty
+    if (metadata.heroImageUrl) {
+        metadataItem.heroImageUrl = metadata.heroImageUrl;
+    }
+
     await dynamoClient.send(new PutCommand({
         TableName: TABLE_NAME,
-        Item: {
-            pk,
-            sk: 'METADATA',
-            gsi1pk: 'STATUS#published',
-            gsi1sk: `${datePrefix}#${slug}`,
-            title: metadata.title,
-            tags: metadata.tags,
-            heroImageUrl: metadata.heroImageUrl ?? '',
-            contentRef,
-            aiSummary: metadata.aiSummary,
-            readingTime: metadata.readingTime,
-            shotListCount: shotList.length,
-        },
+        Item: metadataItem,
     }));
 
     // 2. CONTENT version record — immutable audit trail
