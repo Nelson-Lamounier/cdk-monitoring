@@ -12,7 +12,6 @@
 
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import * as logs from 'aws-cdk-lib/aws-logs';
-import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { AiContentStack } from '../../../../lib/stacks/bedrock/ai-content-stack';
