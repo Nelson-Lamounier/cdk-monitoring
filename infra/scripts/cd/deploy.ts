@@ -67,16 +67,26 @@ if (!stackName || !project || !environment) {
 }
 
 // ---------------------------------------------------------------------------
+// IAM tag sanitisation
+// ---------------------------------------------------------------------------
+
+/** Strip characters that are invalid in IAM tag values. */
+function sanitizeTagValue(value: string): string {
+  // IAM allows: unicode letters, spaces, digits, and _ . : / = + - @
+  return value.replace(/[^\p{L}\p{Z}\p{N}_.:/=+\-@]/gu, '');
+}
+
+// ---------------------------------------------------------------------------
 // Build provenance tags (SLSA-inspired audit metadata)
 // ---------------------------------------------------------------------------
 function buildProvenanceTags(): Record<string, string> {
   return {
-    DeployCommit: process.env.GITHUB_SHA ?? 'local',
-    DeployRunId: process.env.GITHUB_RUN_ID ?? '0',
-    DeployActor: process.env.GITHUB_ACTOR ?? 'local',
-    DeployRepo: process.env.GITHUB_REPOSITORY ?? 'local',
+    DeployCommit: sanitizeTagValue(process.env.GITHUB_SHA ?? 'local'),
+    DeployRunId: sanitizeTagValue(process.env.GITHUB_RUN_ID ?? '0'),
+    DeployActor: sanitizeTagValue(process.env.GITHUB_ACTOR ?? 'local'),
+    DeployRepo: sanitizeTagValue(process.env.GITHUB_REPOSITORY ?? 'local'),
     DeployTimestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-    DeployWorkflow: process.env.GITHUB_WORKFLOW ?? 'manual',
+    DeployWorkflow: sanitizeTagValue(process.env.GITHUB_WORKFLOW ?? 'manual'),
   };
 }
 
