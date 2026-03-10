@@ -491,8 +491,9 @@ async function transformWithBedrock(
         },
         additionalModelRequestFields: {
             thinking: {
-                type: 'enabled',
-                budgetTokens: complexity.budgetTokens,
+                enabled: {
+                    budget_tokens: complexity.budgetTokens,
+                },
             },
         },
     });
