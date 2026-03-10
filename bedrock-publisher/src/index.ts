@@ -487,7 +487,7 @@ async function transformWithBedrock(
         ],
         inferenceConfig: {
             maxTokens: MAX_TOKENS,
-            temperature: complexity.tier === 'HIGH' ? 0.2 : complexity.tier === 'MID' ? 0.3 : 0.4,
+            // temperature must be 1 (or omitted) when thinking is enabled
         },
         additionalModelRequestFields: {
             thinking: {
