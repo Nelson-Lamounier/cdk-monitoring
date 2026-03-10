@@ -56,12 +56,28 @@ const dynamoClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 // =============================================================================
 
 /**
+ * A single entry in the Director's Shot List.
+ *
+ * Each visual asset requested by the AI Director has a matching
+ * inline <ImageRequest /> tag in the content AND an entry here.
+ */
+interface ShotListItem {
+    /** Kebab-case identifier matching the inline <ImageRequest id="..." /> */
+    id: string;
+    /** The type of visual asset */
+    type: 'screenshot' | 'diagram' | 'hero';
+    /** Clear, actionable description of what the visual should show */
+    instruction: string;
+}
+
+/**
  * Structured output from Claude's content transformation.
  *
- * metadata fields are AI-enhanced for the Metadata Brain model.
+ * Uses the Principal Editor schema with Director's Shot List.
  */
 interface TransformResult {
-    mdxContent: string;
+    /** Full MDX article body with frontmatter, MermaidChart, and ImageRequest components */
+    content: string;
     metadata: {
         title: string;
         description: string;
@@ -77,11 +93,9 @@ interface TransformResult {
         technicalConfidence: number;
         /** Hero image URL for article cards and social sharing */
         heroImageUrl?: string;
-        /** Number of Mermaid diagrams in the content */
-        mermaidDiagramCount: number;
-        /** Number of ImageRequest placeholders in the content */
-        imageRequestCount: number;
     };
+    /** Director's Shot List — manifest of all visual assets requested */
+    shotList: ShotListItem[];
 }
 
 /**
@@ -252,7 +266,8 @@ async function writeContentToS3(
  *
  * 1. METADATA (sk: "METADATA") — the clean, consumer-facing record.
  *    This is what the Next.js app on K8s queries to render article cards.
- *    Shape matches the "Modified Brain Entity" spec:
+ *    Includes a shotListCount for the consumer to know how many visuals
+ *    are pending or available.
  *    ```json
  *    {
  *      "pk": "ARTICLE#devsecops-pipeline",
@@ -273,6 +288,7 @@ async function writeContentToS3(
 async function writeMetadataToDynamoDB(
     slug: string,
     metadata: TransformResult['metadata'],
+    shotList: ShotListItem[],
     sourceKey: string,
     publishedKey: string,
     complexity: ComplexityAnalysis,
@@ -294,13 +310,13 @@ async function writeMetadataToDynamoDB(
             contentRef,
             aiSummary: metadata.aiSummary,
             readingTime: metadata.readingTime,
-            mermaidDiagramCount: metadata.mermaidDiagramCount,
-            imageRequestCount: metadata.imageRequestCount,
+            shotListCount: shotList.length,
         },
     }));
 
     // 2. CONTENT version record — immutable audit trail
     //    Full enrichment for pipeline diagnostics and version history.
+    //    Includes the full shotList for visual asset tracking.
     await dynamoClient.send(new PutCommand({
         TableName: TABLE_NAME,
         Item: {
@@ -323,6 +339,7 @@ async function writeMetadataToDynamoDB(
             complexityTier: complexity.tier,
             complexityReason: complexity.reason,
             thinkingBudgetUsed: complexity.budgetTokens,
+            shotList,
         },
     }));
 }
@@ -373,9 +390,14 @@ function parseTransformResult(responseText: string): TransformResult {
 
     const parsed = JSON.parse(jsonStr) as TransformResult;
 
-    // Validate required fields
-    if (!parsed.mdxContent || !parsed.metadata?.slug) {
-        throw new Error('Invalid transform result: missing mdxContent or metadata.slug');
+    // Validate required fields (new schema uses 'content' not 'mdxContent')
+    if (!parsed.content || !parsed.metadata?.slug) {
+        throw new Error('Invalid transform result: missing content or metadata.slug');
+    }
+
+    // Ensure shotList is an array (default to empty if missing)
+    if (!Array.isArray(parsed.shotList)) {
+        parsed.shotList = [];
     }
 
     // Coerce readingTime to number if Claude returns a string
@@ -390,13 +412,13 @@ function parseTransformResult(responseText: string): TransformResult {
         parsed.metadata.technicalConfidence = 0;
     }
 
-    // Count Mermaid diagrams and ImageRequest tags from the actual content
-    // (overrides whatever Claude reported to ensure accuracy)
-    const mermaidBlocks = parsed.mdxContent.match(/```mermaid/g) ?? [];
-    parsed.metadata.mermaidDiagramCount = mermaidBlocks.length;
-
-    const imageRequests = parsed.mdxContent.match(/<ImageRequest\s/g) ?? [];
-    parsed.metadata.imageRequestCount = imageRequests.length;
+    // Cross-validate: count inline ImageRequest tags vs shotList
+    const inlineImageRequests = parsed.content.match(/<ImageRequest\s/g) ?? [];
+    if (inlineImageRequests.length !== parsed.shotList.length) {
+        console.warn(
+            `shotList mismatch: ${inlineImageRequests.length} inline <ImageRequest> tags vs ${parsed.shotList.length} shotList entries`,
+        );
+    }
 
     return parsed;
 }
@@ -495,25 +517,26 @@ async function transformWithBedrock(
 // =============================================================================
 
 /**
- * Validate Mermaid code blocks in MDX content.
+ * Validate MermaidChart components in MDX content.
  *
  * Basic pre-checks before writing to S3:
- * - No empty Mermaid blocks
- * - No YAML frontmatter leaked into Mermaid blocks
+ * - No empty chart props
+ * - No YAML frontmatter leaked into chart props
  * Returns an array of warning strings (empty = all good).
  */
 export function validateMermaidSyntax(mdxContent: string): string[] {
-    const mermaidBlockRegex = /```mermaid\n([\s\S]*?)```/g;
+    // Match <MermaidChart chart={`...`} /> components
+    const mermaidComponentRegex = /<MermaidChart\s+chart=\{`([\s\S]*?)`\}\s*\/>/g;
     const errors: string[] = [];
     let match: RegExpExecArray | null;
 
-    while ((match = mermaidBlockRegex.exec(mdxContent)) !== null) {
+    while ((match = mermaidComponentRegex.exec(mdxContent)) !== null) {
         const code = match[1].trim();
         if (!code) {
-            errors.push('Empty Mermaid block found');
+            errors.push('Empty MermaidChart component found');
         }
         if (code.startsWith('---')) {
-            errors.push('YAML frontmatter detected inside Mermaid block');
+            errors.push('YAML frontmatter detected inside MermaidChart component');
         }
     }
     return errors;
@@ -555,21 +578,28 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
             // 4. Transform via Bedrock Converse API (budget scales with complexity)
             console.log(`Invoking ${FOUNDATION_MODEL} with Adaptive Thinking (budget: ${complexity.budgetTokens} tokens)`);
             const result = await transformWithBedrock(markdownContent, slug, complexity);
-            console.log(`Transform complete: "${result.metadata.title}" (${result.metadata.readingTime} min, confidence: ${result.metadata.technicalConfidence}%, mermaid: ${result.metadata.mermaidDiagramCount}, imageRequests: ${result.metadata.imageRequestCount})`);
+            console.log(`Transform complete: "${result.metadata.title}" (${result.metadata.readingTime} min, confidence: ${result.metadata.technicalConfidence}%, shotList: ${result.shotList.length} items)`);
 
-            // 4b. Mermaid syntax pre-check (warn but don't block)
-            const mermaidWarnings = validateMermaidSyntax(result.mdxContent);
+            // 4b. MermaidChart syntax pre-check (warn but don't block)
+            const mermaidWarnings = validateMermaidSyntax(result.content);
             if (mermaidWarnings.length > 0) {
-                console.warn(`Mermaid syntax warnings for ${slug}:`, mermaidWarnings);
+                console.warn(`MermaidChart syntax warnings for ${slug}:`, mermaidWarnings);
             }
+
+            // 4c. Log Director's Shot List
+            if (result.shotList.length > 0) {
+                console.log(`Director's Shot List for ${slug}:`, JSON.stringify(result.shotList, null, 2));
+            }
+
             // 5. Write MDX content to S3 (published/ + content/v1/)
-            await writeContentToS3(ASSETS_BUCKET, publishedKey, contentKey, result.mdxContent);
+            await writeContentToS3(ASSETS_BUCKET, publishedKey, contentKey, result.content);
             console.log(`Content written to s3://${ASSETS_BUCKET}/${publishedKey} + ${contentKey}`);
 
-            // 6. Write AI-enhanced metadata to DynamoDB (Metadata Brain)
+            // 6. Write AI-enhanced metadata + shotList to DynamoDB (Metadata Brain)
             await writeMetadataToDynamoDB(
                 result.metadata.slug || slug,
                 result.metadata,
+                result.shotList,
                 key,
                 publishedKey,
                 complexity,
