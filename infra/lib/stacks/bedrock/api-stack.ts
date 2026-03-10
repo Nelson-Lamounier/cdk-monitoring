@@ -12,6 +12,8 @@
  * - Scoped CORS origins
  */
 
+import { NagSuppressions } from 'cdk-nag';
+
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -96,6 +98,14 @@ export class BedrockApiStack extends cdk.Stack {
             },
             description: `Agent invocation handler for ${namePrefix}`,
         });
+
+        // CDK-Nag suppression: NODEJS_22_X is the latest Node.js LTS runtime;
+        // AwsSolutions-L1 may not recognize it as latest yet.
+        NagSuppressions.addResourceSuppressions(
+            this.invokeFunction,
+            [{ id: 'AwsSolutions-L1', reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime' }],
+            true,
+        );
 
         // Grant Bedrock Agent invoke permissions
         this.invokeFunction.addToRolePolicy(new iam.PolicyStatement({
@@ -228,6 +238,39 @@ export class BedrockApiStack extends cdk.Stack {
         }
 
         this.apiUrl = this.api.url;
+
+        // =================================================================
+        // CDK-Nag Suppressions
+        // =================================================================
+
+        // APIG2: Request validation IS enabled via requestValidator + model
+        // on POST /invoke (lines above). CDK Nag requires it set at the API
+        // level as a default; suppress since it is explicitly wired per-method.
+        NagSuppressions.addResourceSuppressions(
+            this.api,
+            [{ id: 'AwsSolutions-APIG2', reason: 'Request validation is configured per-method with RequestValidator and InvokeRequestModel on POST /invoke' }],
+            true,
+        );
+
+        // APIG4 + COG4: This API uses API Key authentication with Usage Plan
+        // throttling — Cognito authorizer is not applicable for this
+        // machine-to-machine integration pattern.
+        NagSuppressions.addResourceSuppressions(
+            invokeResource,
+            [
+                { id: 'AwsSolutions-APIG4', reason: 'API uses API Key authentication with Usage Plan throttling; Cognito not applicable for M2M integration' },
+                { id: 'AwsSolutions-COG4', reason: 'API uses API Key authentication; Cognito user pool authorizer not applicable for M2M integration' },
+            ],
+            true,
+        );
+
+        // APIG3: WAF not required for this development portfolio API.
+        // Production deployments should add WAFv2 WebACL.
+        NagSuppressions.addResourceSuppressions(
+            this.api.deploymentStage,
+            [{ id: 'AwsSolutions-APIG3', reason: 'WAFv2 WebACL not required for development portfolio API; add for production' }],
+            true,
+        );
 
         // =================================================================
         // SSM Parameter Exports
