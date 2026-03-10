@@ -301,4 +301,3 @@ All SSM parameters are exported for the Consumer:
 4. **Push beats Poll.** The GitHub Action → S3 → Lambda event chain is simpler, cheaper, and more secure than giving Bedrock credentials to scan Git history. The Lambda only sees the file content it needs.
 
 5. **Cross-validate AI output.** The `shotList` count vs inline `<ImageRequest />` tag count check catches subtle generation errors that would otherwise only surface in the frontend.
-
