@@ -21,6 +21,8 @@
 
 import * as path from 'path';
 
+import { NagSuppressions } from 'cdk-nag';
+
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -160,6 +162,7 @@ export class AiContentStack extends cdk.Stack {
         this.publisherDlq = new sqs.Queue(this, 'PublisherDlq', {
             queueName: `${namePrefix}-publisher-dlq`,
             retentionPeriod: cdk.Duration.days(14),
+            enforceSSL: true,
             removalPolicy: props.removalPolicy,
         });
 
@@ -235,6 +238,19 @@ export class AiContentStack extends cdk.Stack {
             deadLetterQueueEnabled: true,
             retryAttempts: 2,
         });
+
+        // CDK-Nag suppression: NODEJS_22_X is the latest Node.js LTS runtime;
+        // AwsSolutions-L1 may not recognize it as latest yet.
+        NagSuppressions.addResourceSuppressions(
+            this.publisherFunction,
+            [
+                {
+                    id: 'AwsSolutions-L1',
+                    reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
+                },
+            ],
+            true,
+        );
 
         // =================================================================
         // IAM — Bedrock InvokeModel permission
