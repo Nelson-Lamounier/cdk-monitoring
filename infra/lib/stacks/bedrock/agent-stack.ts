@@ -197,9 +197,14 @@ export class BedrockAgentStack extends cdk.Stack {
                     : geoMatch[1] === 'us'
                         ? bedrock.CrossRegionInferenceProfileRegion.US
                         : bedrock.CrossRegionInferenceProfileRegion.APAC,
-                model: bedrock.BedrockFoundationModel.fromCdkFoundationModelId(
-                    new cdkBedrock.FoundationModelIdentifier(geoMatch[2]),
-                ),
+                // Use explicit constructor so supportsCrossRegion is set to true.
+                // fromCdkFoundationModelId() does not set this flag, causing the
+                // CrossRegionInferenceProfile to reject newer models not yet in
+                // the library's hardcoded whitelist.
+                model: new bedrock.BedrockFoundationModel(geoMatch[2], {
+                    supportsAgents: true,
+                    supportsCrossRegion: true,
+                }),
             })
             : bedrock.BedrockFoundationModel.fromCdkFoundationModelId(
                 new cdkBedrock.FoundationModelIdentifier(props.foundationModel),
