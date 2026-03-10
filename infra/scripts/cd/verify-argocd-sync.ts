@@ -124,11 +124,20 @@ const ssmPrefix = `/k8s/${environment}`;
 // =============================================================================
 
 const EXPECTED_APPS = [
-  'nextjs',
+  // Wave 0: Certificate infrastructure
+  'cert-manager',
+  // Wave 1: TLS configuration
+  'cert-manager-config',
+  // Wave 2: Ingress controller
   'traefik',
+  // Wave 3: Applications & infrastructure
+  'nextjs',
+  'monitoring',
   'metrics-server',
   'local-path-provisioner',
-  'monitoring',
+  'ecr-token-refresh',
+  'argocd-image-updater',
+  'argocd-notifications',
 ];
 
 // =============================================================================
@@ -492,10 +501,21 @@ async function waitForSync(
         `✅ All ${EXPECTED_APPS.length} Applications are **Synced + Healthy**`,
       );
       writeSummary('');
-      writeSummary('| Application | Sync | Health |');
-      writeSummary('|:---|:---|:---|');
+      writeSummary('### Deployment Map');
+      writeSummary('');
+      writeSummary('| Wave | Application | Sync | Health | ArgoCD |');
+      writeSummary('|:---|:---|:---|:---|:---|');
+
+      const waveMap: Record<string, string> = {
+        'cert-manager': '0',
+        'cert-manager-config': '1',
+        'traefik': '2',
+      };
+
       for (const app of EXPECTED_APPS) {
-        writeSummary(`| ${app} | Synced | Healthy |`);
+        const wave = waveMap[app] || '3';
+        const argoLink = `[View](https://ops.nelsonlamounier.com/argocd/applications/argocd/${app})`;
+        writeSummary(`| ${wave} | ${app} | ✅ Synced | ✅ Healthy | ${argoLink} |`);
       }
 
       return true;
