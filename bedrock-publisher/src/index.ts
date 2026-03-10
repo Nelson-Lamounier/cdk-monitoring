@@ -93,6 +93,8 @@ interface TransformResult {
         aiSummary: string;
         /** AI-scored technical accuracy rating (0–100) */
         technicalConfidence: number;
+        /** Brief note about what made this draft interesting/challenging */
+        processingNote?: string;
         /** Hero image URL for article cards and social sharing */
         heroImageUrl?: string;
     };
@@ -329,6 +331,7 @@ async function writeMetadataToDynamoDB(
 
         // AI fields
         aiSummary: metadata.aiSummary,
+        processingNote: metadata.processingNote || '',
         shotListCount: shotList.length,
 
         // Timestamps
