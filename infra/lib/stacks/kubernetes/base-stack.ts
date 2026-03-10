@@ -408,6 +408,11 @@ export class KubernetesBaseStack extends cdk.Stack {
             'Node Exporter metrics from VPC',
         );
         this.monitoringSg.addIngressRule(
+            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
+            ec2.Port.tcp(NODE_EXPORTER_PORT),
+            'Node Exporter metrics from pods (Prometheus scraping)',
+        );
+        this.monitoringSg.addIngressRule(
             ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
             ec2.Port.tcp(LOKI_NODEPORT),
             'Loki push API from VPC (cross-stack log shipping)',
