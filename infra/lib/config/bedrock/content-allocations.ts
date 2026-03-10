@@ -56,7 +56,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
     [Environment.DEVELOPMENT]: {
         lambda: {
             memoryMb: 512,
-            timeoutSeconds: 120,
+            timeoutSeconds: 300,
         },
         model: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',
@@ -68,7 +68,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
     [Environment.STAGING]: {
         lambda: {
             memoryMb: 1024,
-            timeoutSeconds: 120,
+            timeoutSeconds: 300,
         },
         model: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',
@@ -80,7 +80,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
     [Environment.PRODUCTION]: {
         lambda: {
             memoryMb: 1024,
-            timeoutSeconds: 120,
+            timeoutSeconds: 300,
         },
         model: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',
