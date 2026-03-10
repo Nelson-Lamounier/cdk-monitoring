@@ -23,6 +23,7 @@ on:
     paths:
       - "articles-draft/**/*.md"
       - "articles-draft/*.md"
+      - ".github/workflows/publish-article.yml"
 
 permissions:
   id-token: write
@@ -190,7 +191,6 @@ jobs:
           LOG_GROUP="/aws/lambda/$LAMBDA_NAME"
           FILE_COUNT="${{ steps.detect.outputs.file_count }}"
           UPLOAD_TIME="${{ steps.upload.outputs.upload_time }}"
-          # Convert to milliseconds for CloudWatch
           START_MS=$((UPLOAD_TIME * 1000))
 
           echo "## ⏳ Bedrock Processing" >> $GITHUB_STEP_SUMMARY
@@ -198,14 +198,13 @@ jobs:
 
           echo "Waiting for Lambda to process $FILE_COUNT article(s)..."
           echo "Log group: $LOG_GROUP"
+          echo "Start time (ms): $START_MS"
 
-          # Poll for up to 5 minutes (Lambda timeout is ~2 min for Bedrock)
           MAX_WAIT=300
           POLL_INTERVAL=15
           ELAPSED=0
           PROCESSING_COMPLETE=false
 
-          # Initial wait — Lambda cold start + S3 event delivery
           echo "Waiting 20s for S3 event delivery + cold start..."
           sleep 20
           ELAPSED=20
@@ -213,24 +212,31 @@ jobs:
           while [ $ELAPSED -lt $MAX_WAIT ]; do
             echo "Checking logs... (${ELAPSED}s / ${MAX_WAIT}s)"
 
-            # Fetch recent logs since upload
+            # CloudWatch filter pattern: ? prefix = OR between terms
             LOGS=$(aws logs filter-log-events \
               --log-group-name "$LOG_GROUP" \
               --start-time "$START_MS" \
-              --filter-pattern "\"All records processed successfully\" || \"Failed to process\"" \
+              --filter-pattern '?"All records processed successfully" ?"Failed to process"' \
               --query 'events[*].message' \
               --output text 2>/dev/null || echo "")
 
-            if echo "$LOGS" | grep -q "All records processed successfully"; then
-              echo "✅ Lambda processing completed successfully!"
-              PROCESSING_COMPLETE=true
-              break
-            fi
+            if [ -n "$LOGS" ]; then
+              echo "--- Log match found ---"
+              echo "$LOGS"
 
-            if echo "$LOGS" | grep -q "Failed to process"; then
-              echo "❌ Lambda processing failed!"
-              PROCESSING_COMPLETE=true
-              break
+              if echo "$LOGS" | grep -q "All records processed successfully"; then
+                echo "✅ Lambda processing completed successfully!"
+                PROCESSING_COMPLETE=true
+                echo "processing_status=success" >> $GITHUB_OUTPUT
+                break
+              fi
+
+              if echo "$LOGS" | grep -q "Failed to process"; then
+                echo "❌ Lambda processing failed!"
+                PROCESSING_COMPLETE=true
+                echo "processing_status=error" >> $GITHUB_OUTPUT
+                break
+              fi
             fi
 
             sleep $POLL_INTERVAL
@@ -243,22 +249,23 @@ jobs:
           fi
 
           # ---- Capture full Lambda logs ----
-          echo "Fetching full Lambda logs..."
+          echo ""
+          echo "========== Full Lambda Logs =========="
           FULL_LOGS=$(aws logs filter-log-events \
             --log-group-name "$LOG_GROUP" \
             --start-time "$START_MS" \
             --query 'events[*].message' \
             --output text 2>/dev/null || echo "No logs found")
 
+          # Show raw logs in runner output for debugging
+          echo "$FULL_LOGS"
+
+          # Write key lines to Step Summary
           echo "### Lambda Logs" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-
-          # Parse and display key log lines
-          echo "$FULL_LOGS" | grep -E "Processing|Complexity|Invoking|Transform complete|Content written|Metadata written|Failed|Error|shotList|Director" | while IFS= read -r line; do
-            echo "$line" >> $GITHUB_STEP_SUMMARY
-          done
-
+          KEY_LINES=$(echo "$FULL_LOGS" | grep -E "Processing|Complexity|Invoking|Transform complete|Content written|Metadata written|Failed|ERROR|shotList|Director|All records" || echo "No matching log lines found")
+          echo "$KEY_LINES" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -271,11 +278,13 @@ jobs:
             echo "$ERROR_LOGS" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "processing_status=error" >> $GITHUB_OUTPUT
-          else
-            echo "- ✅ No errors in Lambda logs" >> $GITHUB_STEP_SUMMARY
+            # Only override status if not already set
+            if [ "$PROCESSING_COMPLETE" = false ]; then
+              echo "processing_status=error" >> $GITHUB_OUTPUT
+            fi
+          elif [ "$PROCESSING_COMPLETE" = false ]; then
+            echo "- ⏳ No completion or error signals found in logs" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "processing_status=success" >> $GITHUB_OUTPUT
           fi
 
       # ------------------------------------------------------------------
