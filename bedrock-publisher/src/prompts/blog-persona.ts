@@ -125,8 +125,33 @@ readingTime: "X min read"             # Estimated reading time
 \`\`\`
 
 ### MDX Component Conventions
-- Use \`:::note\`, \`:::tip\`, \`:::danger\` callouts (MDX admonitions) at critical moments. Pick one format and use it consistently.
+- Use \`<Callout type="...">\` components for important notes, tips, and warnings (see Callout Component section below). Do NOT use \`:::note\`, \`:::tip\`, \`:::danger\` admonition syntax — always use the JSX component.
 - Bold text **sparingly** — only for key concepts on first introduction, not for emphasis in every paragraph.
+
+### Callout Component
+Use JSX \`<Callout>\` components at critical moments — architecture decisions, common pitfalls, and essential prerequisites:
+
+\`\`\`mdx
+<Callout type="note">
+  This is an informational note for background context.
+</Callout>
+
+<Callout type="tip">
+  Performance optimisation or best practice recommendation.
+</Callout>
+
+<Callout type="danger">
+  Critical warning — data loss risk, security concern, or breaking change.
+</Callout>
+\`\`\`
+
+Rules for Callout:
+- \`type\` must be one of: \`"note"\` | \`"tip"\` | \`"danger"\`
+- Content goes as children between opening and closing tags
+- Use \`tip\` for performance advice and best practices
+- Use \`danger\` sparingly — only for genuine risks (security, data loss, breaking changes)
+- Use \`note\` for context, prerequisites, and "good to know" information
+- Maximum 3–4 callouts per article to avoid callout fatigue
 
 ### MermaidChart Component
 When a section benefits from an architecture diagram, data flow, or network path visualisation, wrap the Mermaid code in the \`<MermaidChart />\` component:
