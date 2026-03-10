@@ -254,6 +254,11 @@ export class AiContentStack extends cdk.Stack {
 
         // =================================================================
         // IAM — Bedrock InvokeModel permission
+        //
+        // The publisher uses a cross-region inference profile (eu.anthropic.*)
+        // which has a different ARN format from direct foundation models:
+        //   foundation-model: arn:aws:bedrock:{region}::foundation-model/{modelId}
+        //   inference-profile: arn:aws:bedrock:{region}:{account}:inference-profile/{profileId}
         // =================================================================
         this.publisherFunction.addToRolePolicy(new iam.PolicyStatement({
             sid: 'InvokeBedrockModel',
@@ -263,7 +268,10 @@ export class AiContentStack extends cdk.Stack {
                 'bedrock:InvokeModelWithResponseStream',
             ],
             resources: [
+                // Direct foundation model ARN (fallback)
                 `arn:aws:bedrock:${this.region}::foundation-model/${props.foundationModel}`,
+                // Cross-region inference profile ARN (primary — used by publisher)
+                `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${props.foundationModel}`,
             ],
         }));
 
