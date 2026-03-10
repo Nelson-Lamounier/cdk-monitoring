@@ -60,7 +60,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
         },
         model: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',
-            maxTokens: 4096,
+            maxTokens: 8192,
             thinkingBudgetTokens: 4096,
         },
     },
