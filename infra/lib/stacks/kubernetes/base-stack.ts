@@ -250,11 +250,17 @@ export class KubernetesBaseStack extends cdk.Stack {
             ec2.Port.tcp(5473),
             'Calico Typha (intra-cluster)',
         );
-        // Traefik + Node Exporter metrics (Prometheus scraping across nodes)
+        // Traefik metrics (Prometheus scraping across nodes)
         this.securityGroup.addIngressRule(
             this.securityGroup,
             ec2.Port.tcp(9100),
-            'Traefik + Node Exporter metrics (intra-cluster)',
+            'Traefik metrics (intra-cluster)',
+        );
+        // Node Exporter metrics (port 9101 — offset from Traefik's 9100)
+        this.securityGroup.addIngressRule(
+            this.securityGroup,
+            ec2.Port.tcp(9101),
+            'Node Exporter metrics (intra-cluster)',
         );
 
         // Pod CIDR → critical services (kube-proxy DNATs ClusterIP to node IP;
@@ -282,7 +288,12 @@ export class KubernetesBaseStack extends cdk.Stack {
         this.securityGroup.addIngressRule(
             ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
             ec2.Port.tcp(9100),
-            'Traefik + Node Exporter metrics (from pods)',
+            'Traefik metrics (from pods)',
+        );
+        this.securityGroup.addIngressRule(
+            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
+            ec2.Port.tcp(9101),
+            'Node Exporter metrics (from pods)',
         );
 
         // =====================================================================
