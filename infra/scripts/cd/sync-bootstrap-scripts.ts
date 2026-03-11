@@ -7,8 +7,8 @@
  *
  * Sync targets:
  *   1. k8s-bootstrap/     → s3://{bucket}/k8s-bootstrap/
- *   2. app-deploy/nextjs/  → s3://{bucket}/app-deploy/nextjs/   (excl. chart/, nextjs-values.yaml)
- *   3. app-deploy/monitoring/ → s3://{bucket}/app-deploy/monitoring/ (excl. chart/)
+ *   2. workloads/charts/nextjs/  → s3://{bucket}/app-deploy/nextjs/   (excl. chart/, nextjs-values.yaml)
+ *   3. platform/charts/monitoring/ → s3://{bucket}/app-deploy/monitoring/ (excl. chart/)
  *
  * Usage:
  *   npx tsx sync-bootstrap-scripts.ts \
@@ -94,14 +94,14 @@ const SYNC_TARGETS: SyncTarget[] = [
     },
     {
         label: 'Next.js App Deploy Scripts',
-        sourceDir: 'kubernetes-app/app-deploy/nextjs',
+        sourceDir: 'kubernetes-app/workloads/charts/nextjs',
         s3Prefix: 'app-deploy/nextjs/',
         excludes: ['chart/*', 'nextjs-values.yaml', '__pycache__/*'],
         optional: true,
     },
     {
         label: 'Monitoring Deploy Scripts',
-        sourceDir: 'kubernetes-app/app-deploy/monitoring',
+        sourceDir: 'kubernetes-app/platform/charts/monitoring',
         s3Prefix: 'app-deploy/monitoring/',
         excludes: ['chart/*', '__pycache__/*'],
         optional: true,
