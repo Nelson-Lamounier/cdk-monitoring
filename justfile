@@ -243,7 +243,7 @@ ci-argocd-health *ARGS:
 # Usage: just ci-deploy-manifests kubernetes development --region eu-west-1
 [group('ci')]
 ci-deploy-manifests *ARGS:
-    npx tsx kubernetes-app/app-deploy/monitoring/scripts/deploy-manifests.ts {{ARGS}}
+    npx tsx kubernetes-app/platform/charts/monitoring/scripts/deploy-manifests.ts {{ARGS}}
 
 # CI smoke tests (Kubernetes Infrastructure — full kubeadm deployment)
 [group('ci')]
@@ -395,13 +395,13 @@ k8s-build-golden-ami env="development" region="eu-west-1":
 # Called by: .github/workflows/gitops-k8s-dev.yml → validate job
 [group('k8s')]
 validate-dashboards:
-    npx tsx kubernetes-app/app-deploy/monitoring/scripts/validate-dashboards.ts
+    npx tsx kubernetes-app/platform/charts/monitoring/scripts/validate-dashboards.ts
 
 # Run dashboard validation test suite (per-file granularity)
 # Uses node:test for IDE integration and detailed test reports.
 [group('test')]
 test-dashboards:
-    npx tsx --test kubernetes-app/app-deploy/monitoring/tests/validate-dashboards.test.ts
+    npx tsx --test kubernetes-app/platform/charts/monitoring/tests/validate-dashboards.test.ts
 
 # Validate all Helm charts (lint + template render)
 # Catches rendering errors (broken delimiters, missing values) BEFORE ArgoCD sync.
@@ -417,42 +417,42 @@ helm-validate-charts:
 
     # --- Next.js chart ---
     echo "--- Next.js chart ---"
-    if helm lint kubernetes-app/app-deploy/nextjs/chart \
-         -f kubernetes-app/app-deploy/nextjs/chart/values.yaml 2>&1; then
+    if helm lint kubernetes-app/workloads/charts/nextjs/chart \
+         -f kubernetes-app/workloads/charts/nextjs/chart/values.yaml 2>&1; then
       echo "  ✓ lint passed"
     else
       echo "  ✗ lint FAILED"
       ERRORS=$((ERRORS + 1))
     fi
 
-    if helm template nextjs-app kubernetes-app/app-deploy/nextjs/chart \
-         -f kubernetes-app/app-deploy/nextjs/chart/values.yaml > /dev/null 2>&1; then
+    if helm template nextjs-app kubernetes-app/workloads/charts/nextjs/chart \
+         -f kubernetes-app/workloads/charts/nextjs/chart/values.yaml > /dev/null 2>&1; then
       echo "  ✓ template render passed"
     else
       echo "  ✗ template render FAILED"
-      helm template nextjs-app kubernetes-app/app-deploy/nextjs/chart \
-        -f kubernetes-app/app-deploy/nextjs/chart/values.yaml 2>&1 || true
+      helm template nextjs-app kubernetes-app/workloads/charts/nextjs/chart \
+        -f kubernetes-app/workloads/charts/nextjs/chart/values.yaml 2>&1 || true
       ERRORS=$((ERRORS + 1))
     fi
     echo ""
 
     # --- Monitoring chart ---
     echo "--- Monitoring chart ---"
-    if helm lint kubernetes-app/app-deploy/monitoring/chart \
-         -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml 2>&1; then
+    if helm lint kubernetes-app/platform/charts/monitoring/chart \
+         -f kubernetes-app/platform/charts/monitoring/chart/values-development.yaml 2>&1; then
       echo "  ✓ lint passed"
     else
       echo "  ✗ lint FAILED"
       ERRORS=$((ERRORS + 1))
     fi
 
-    if helm template monitoring-stack kubernetes-app/app-deploy/monitoring/chart \
-         -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml > /dev/null 2>&1; then
+    if helm template monitoring-stack kubernetes-app/platform/charts/monitoring/chart \
+         -f kubernetes-app/platform/charts/monitoring/chart/values-development.yaml > /dev/null 2>&1; then
       echo "  ✓ template render passed"
     else
       echo "  ✗ template render FAILED"
-      helm template monitoring-stack kubernetes-app/app-deploy/monitoring/chart \
-        -f kubernetes-app/app-deploy/monitoring/chart/values-development.yaml 2>&1 || true
+      helm template monitoring-stack kubernetes-app/platform/charts/monitoring/chart \
+        -f kubernetes-app/platform/charts/monitoring/chart/values-development.yaml 2>&1 || true
       ERRORS=$((ERRORS + 1))
     fi
     echo ""
@@ -470,8 +470,8 @@ helm-verify-selectors:
     set -euo pipefail
     echo "=== NextJS Chart ==="
     helm template nextjs-app \
-      kubernetes-app/app-deploy/nextjs/chart \
-      -f kubernetes-app/app-deploy/nextjs/chart/values.yaml \
+      kubernetes-app/workloads/charts/nextjs/chart \
+      -f kubernetes-app/workloads/charts/nextjs/chart/values.yaml \
       --namespace nextjs-app | grep -c "workload: frontend" | \
       xargs -I{} echo "  nodeSelector entries: {} (expected 1)"
     echo "Done."
@@ -740,9 +740,9 @@ sync-k8s-bootstrap environment="development" profile="dev-account":
     FILE_COUNT=$(aws s3 ls "s3://${BUCKET}/k8s-bootstrap/" --recursive --profile "{{profile}}" | wc -l | tr -d ' ')
     echo "✓ Bootstrap sync complete (${FILE_COUNT} files on S3)"
 
-# Sync app-deploy manifests (Helm charts) to S3 (e.g., just sync-k8s-app-deploy development dev-account)
+# Sync platform + workloads charts to S3 (e.g., just sync-k8s-charts development dev-account)
 [group('k8s')]
-sync-k8s-app-deploy environment="development" profile="dev-account":
+sync-k8s-charts environment="development" profile="dev-account":
     #!/usr/bin/env bash
     set -euo pipefail
     SSM_KEY="/k8s/{{environment}}/scripts-bucket"
@@ -756,13 +756,17 @@ sync-k8s-app-deploy environment="development" profile="dev-account":
       echo "❌ SSM parameter ${SSM_KEY} not found. Has the Infra pipeline been deployed?"
       exit 1
     fi
-    echo "→ Syncing kubernetes-app/app-deploy → s3://${BUCKET}/app-deploy/"
-    aws s3 sync kubernetes-app/app-deploy "s3://${BUCKET}/app-deploy/" \
+    echo "→ Syncing platform charts → s3://${BUCKET}/platform/charts/"
+    aws s3 sync kubernetes-app/platform/charts "s3://${BUCKET}/platform/charts/" \
       --delete --region eu-west-1 --profile "{{profile}}"
-    FILE_COUNT=$(aws s3 ls "s3://${BUCKET}/app-deploy/" --recursive --profile "{{profile}}" | wc -l | tr -d ' ')
-    echo "✓ App-deploy sync complete (${FILE_COUNT} files on S3)"
+    echo "→ Syncing workloads charts → s3://${BUCKET}/workloads/charts/"
+    aws s3 sync kubernetes-app/workloads/charts "s3://${BUCKET}/workloads/charts/" \
+      --delete --region eu-west-1 --profile "{{profile}}"
+    PLATFORM_COUNT=$(aws s3 ls "s3://${BUCKET}/platform/charts/" --recursive --profile "{{profile}}" | wc -l | tr -d ' ')
+    WORKLOADS_COUNT=$(aws s3 ls "s3://${BUCKET}/workloads/charts/" --recursive --profile "{{profile}}" | wc -l | tr -d ' ')
+    echo "✓ Charts sync complete (platform: ${PLATFORM_COUNT}, workloads: ${WORKLOADS_COUNT} files on S3)"
 
-# Sync ALL k8s content (bootstrap + app-deploy) to S3
+# Sync ALL k8s content (bootstrap + charts) to S3
 [group('k8s')]
 sync-k8s-all environment="development" profile="dev-account":
     #!/usr/bin/env bash
@@ -771,7 +775,7 @@ sync-k8s-all environment="development" profile="dev-account":
     echo ""
     just sync-k8s-bootstrap "{{environment}}" "{{profile}}"
     echo ""
-    just sync-k8s-app-deploy "{{environment}}" "{{profile}}"
+    just sync-k8s-charts "{{environment}}" "{{profile}}"
     echo ""
     echo "✓ All K8s content synced"
 

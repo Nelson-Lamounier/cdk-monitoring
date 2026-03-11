@@ -1,0 +1,28 @@
+# ---------------------------------------------------------------
+# Canary Service — routes traffic to canary ReplicaSet only
+#
+# Argo Rollouts requires a separate "canary" Service so it can
+# route a percentage of traffic to the new version's pods during
+# a canary deployment. The stable Service (nextjs) continues
+# routing to the stable ReplicaSet.
+#
+# During rollout: canary pods ← nextjs-canary Service
+#                 stable pods ← nextjs Service (unchanged)
+# After promotion: all pods ← nextjs Service
+# ---------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextjs-canary
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "nextjs.fullLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "nextjs.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.port }}
+      protocol: TCP

@@ -1,0 +1,120 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: nextjs
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "nextjs.fullLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "nextjs.selectorLabels" . | nindent 6 }}
+  strategy:
+    canary:
+      # ---------------------------------------------------------------
+      # Canary Strategy — Prometheus-validated progressive delivery
+      #
+      # Traffic flow: 20% → analysis → 50% → analysis → 100%
+      # At each step, an AnalysisRun queries Prometheus for error rate
+      # and P95 latency. If metrics breach thresholds, the rollout
+      # auto-aborts and rolls back to the stable revision.
+      # ---------------------------------------------------------------
+      canaryService: nextjs-canary
+      stableService: nextjs
+      analysis:
+        templates:
+          - templateName: nextjs-canary-analysis
+        startingStep: 1  # run analysis from the first pause onward
+        args:
+          - name: service-name
+            value: "nextjs-frontend"
+      steps:
+        - setWeight: {{ .Values.rollout.steps.firstWeight }}
+        - pause:
+            duration: {{ .Values.rollout.steps.firstPauseDuration }}
+        - setWeight: {{ .Values.rollout.steps.secondWeight }}
+        - pause:
+            duration: {{ .Values.rollout.steps.secondPauseDuration }}
+      maxSurge: {{ .Values.rollout.maxSurge | default "25%" }}
+      maxUnavailable: {{ .Values.rollout.maxUnavailable | default 0 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nextjs.fullLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      {{- if .Values.otel.enabled }}
+      initContainers:
+        # ---------------------------------------------------------------
+        # Wait-for-Tempo — blocks pod start until Tempo OTLP gRPC is reachable.
+        # Prevents OTel SDK from buffering/dropping spans during Tempo restarts.
+        # Uses nc (netcat) TCP check; exits 0 once the port accepts connections.
+        # ---------------------------------------------------------------
+        - name: wait-for-tempo
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Tempo OTLP endpoint..."
+              until nc -z tempo.monitoring.svc.cluster.local 4317 2>/dev/null; do
+                echo "Tempo not ready — retrying in 5s..."
+                sleep 5
+              done
+              echo "Tempo is reachable — proceeding with app startup"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 10m
+              memory: 16Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+      {{- end }}
+      containers:
+        - name: nextjs
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.port }}
+              name: http
+              protocol: TCP
+          env:
+            - name: OTEL_SDK_DISABLED
+              value: "{{ not .Values.otel.enabled }}"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "{{ .Values.otel.endpoint }}"
+            - name: OTEL_SERVICE_NAME
+              value: "{{ .Values.otel.serviceName }}"
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secrets.name }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: {{ .Values.port }}
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: {{ .Values.port }}
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
