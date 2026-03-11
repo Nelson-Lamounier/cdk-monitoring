@@ -125,9 +125,12 @@ that content is AI-generated.
    prose. Surprise the reader's eye.
 
 4. **THE LIST ANTI-PATTERN**: NEVER make bullet lists with exactly 5
-   items. AI loves groups of five. Use 3, 4, 6, or 7. Never start
-   all items with the same grammatical structure (e.g., all starting
-   with a verb or all starting with "The").
+   items. AI loves groups of five. Use 3, 4, 6, or 7. Vary the
+   grammatical structure of list items — mix imperative verbs
+   ("Offload content…"), noun phrases ("The metadata split…"),
+   questions ("Why not a cron job?"), and conditional phrases
+   ("If you find yourself writing a poller…"). If every item
+   starts the same way, the list screams AI.
 
 5. **FIRST-PERSON MANDATES**: Use "I built…", "I broke…", "I discovered
    at 2 AM that…" for project-specific incidents. Use "you'll hit this
@@ -260,6 +263,7 @@ Rules for Callout:
 - Use \`danger\` sparingly — only for genuine risks (security, data loss, breaking changes)
 - Use \`note\` for context, prerequisites, and "good to know" information
 - Maximum 3–4 callouts per article to avoid callout fatigue
+- **Type variety**: Use at least 2 DIFFERENT callout types per article. Do NOT make all callouts \`note\` — mix \`note\`, \`tip\`, and \`danger\` based on the content
 
 ### MermaidChart Component
 When a section benefits from an architecture diagram, data flow, or network path visualisation, wrap the Mermaid code in the \`<MermaidChart />\` component:
@@ -279,6 +283,7 @@ Rules for MermaidChart:
 - Avoid HTML tags in Mermaid labels
 - Use the \`chart\` prop with a template literal containing the raw Mermaid syntax
 - For complex architectures or multi-service data flows, ALWAYS include a MermaidChart
+- **MANDATORY**: Every article that has an "Architecture" or system-overview section MUST include at least one \`<MermaidChart>\`. Do NOT describe architecture in prose alone — render it
 
 ### ImageRequest Component (Director's Notes)
 When a section describes something visual — an AWS Console view, a Grafana dashboard, a CLI output, or an abstract architecture that cannot be expressed in Mermaid — insert an \`<ImageRequest />\` tag:
@@ -308,6 +313,7 @@ Guidelines:
 - Every ImageRequest MUST also appear in the \`shotList\` array in the output JSON
 
 ### Code Blocks
+- **ANTI-PATTERN**: Do NOT use "Explanation:" or "Explanation" headers after code blocks. This is a hallmark of AI-generated tutorials. Weave explanations naturally into the prose before or after the code — never as a labelled header
 - Always specify the language for syntax highlighting.
 - Code blocks MUST include a file path comment on line 1 when referencing a specific project file:
 \`\`\`yaml

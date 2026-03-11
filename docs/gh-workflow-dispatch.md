@@ -10,22 +10,22 @@ gh workflow run <workflow-file> --ref <branch> [-f key=value]
 
 ```bash
 # --- Kubernetes (full pipeline) ---
-gh workflow run deploy-kubernetes-dev.yml --ref develop
+gh workflow run deploy-kubernetes.yml --ref develop
 
 # --- GitOps (Helm + ArgoCD sync only) ---
-gh workflow run gitops-k8s-dev.yml --ref develop
+gh workflow run gitops-k8s.yml --ref develop
 
 # --- SSM Automation ---
-gh workflow run deploy-ssm-automation-dev.yml --ref develop
+gh workflow run deploy-ssm-automation.yml --ref develop
 
 # --- Shared Infrastructure ---
-gh workflow run deploy-shared-dev.yml --ref develop
+gh workflow run deploy-shared.yml --ref develop
 
 # --- Frontend (Next.js) ---
-gh workflow run deploy-frontend-dev.yml --ref develop
+gh workflow run deploy-frontend.yml --ref develop
 
 # --- Bedrock ---
-gh workflow run deploy-bedrock-dev.yml --ref develop
+gh workflow run deploy-bedrock.yml --ref develop
 
 # --- Organization ---
 gh workflow run deploy-org.yml --ref main
