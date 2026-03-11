@@ -107,7 +107,7 @@ function createComputeStack(
 
     const stack = new KubernetesControlPlaneStack(app, 'TestK8sComputeStack', {
         vpcId: baseStack.vpc.vpcId,
-        securityGroupId: baseStack.securityGroup.securityGroupId,
+
         env: TEST_ENV_EU,
         targetEnvironment: Environment.DEVELOPMENT,
         configs: TEST_CONFIGS,

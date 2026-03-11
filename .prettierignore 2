@@ -1,8 +1,0 @@
-# Build outputs
-dist/
-cdk.out/
-node_modules/
-coverage/
-
-# Helm templates contain {{ }} syntax that Prettier breaks
-kubernetes-app/**/chart/templates/**

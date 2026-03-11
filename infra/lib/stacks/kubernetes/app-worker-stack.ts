@@ -65,9 +65,6 @@ export interface KubernetesAppWorkerStackProps extends cdk.StackProps {
     /** VPC ID from base stack (SSM lookup in factory) */
     readonly vpcId: string;
 
-    /** Cluster security group ID from base stack (SSM lookup in factory) */
-    readonly securityGroupId: string;
-
     /** Target deployment environment */
     readonly targetEnvironment: Environment;
 
@@ -122,7 +119,8 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
         // =====================================================================
         const vpc = ec2.Vpc.fromLookup(this, 'Vpc', { vpcId: props.vpcId });
         const securityGroup = ec2.SecurityGroup.fromSecurityGroupId(
-            this, 'ClusterSg', props.securityGroupId,
+            this, 'ClusterSg',
+            ssm.StringParameter.valueForStringParameter(this, `${props.controlPlaneSsmPrefix}/security-group-id`),
         );
 
         // SSM paths used by Python orchestrator for discovery

@@ -44,9 +44,6 @@ export interface GoldenAmiStackProps extends cdk.StackProps {
     /** VPC ID from base stack (SSM lookup in factory) */
     readonly vpcId: string;
 
-    /** Security group ID from base stack (SSM lookup in factory) */
-    readonly securityGroupId: string;
-
     /** Target environment (development, staging, production) */
     readonly targetEnvironment: Environment;
 
@@ -95,7 +92,9 @@ export class GoldenAmiStack extends cdk.Stack {
             clusterConfig: configs.cluster,
             vpc,
             subnetId: vpc.publicSubnets[0].subnetId,
-            securityGroupId: props.securityGroupId,
+            securityGroupId: ssm.StringParameter.valueForStringParameter(
+                this, `${props.ssmPrefix}/security-group-id`,
+            ),
             scriptsBucket,
         });
         this.imageId = this.imageBuilder.imageId;
