@@ -126,6 +126,13 @@ export interface AutoScalingGroupConstructProps {
     readonly newInstancesProtectedFromScaleIn?: boolean;
 
     /**
+     * Human-friendly name for instances launched by this ASG.
+     * Sets the EC2 `Name` tag (visible in AWS Console).
+     * @default namePrefix
+     */
+    readonly instanceName?: string;
+
+    /**
      * Enable termination lifecycle hook for EBS detach pattern.
      * When enabled, creates a lifecycle hook that pauses termination
      * and fires an EventBridge event for the EbsLifecycleStack Lambda.
@@ -306,6 +313,12 @@ export class AutoScalingGroupConstruct extends Construct {
                 // No notification target - EventBridge captures the event automatically
             });
         }
+
+        // Name tag: gives instances a clean name instead of CDK construct tree path
+        // (e.g. 'k8s-dev-control-plane' instead of 'ControlPlane-development/LaunchTemplate/LaunchTemplate')
+        cdk.Tags.of(this.autoScalingGroup).add('Name', props.instanceName ?? `${namePrefix}`, {
+            applyToLaunchedInstances: true,
+        });
 
         // Tags: all 6 tags applied by TaggingAspect at stack level
     }

@@ -189,6 +189,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
                 pauseTimeMinutes: configs.compute.signalsTimeoutMinutes,
             },
             namePrefix,
+            instanceName: `${namePrefix}-control-plane`,
             enableTerminationLifecycleHook: true,
             useSignals: configs.compute.useSignals,
             signalsTimeoutMinutes: configs.compute.signalsTimeoutMinutes,
@@ -304,13 +305,27 @@ TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \\
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \\
   http://169.254.169.254/latest/meta-data/instance-id)
 
-# Publish instance ID so the pipeline can target SSM Automation
-aws ssm put-parameter \\
-  --name "\${SSM_PREFIX}/bootstrap/control-plane-instance-id" \\
-  --value "$INSTANCE_ID" \\
-  --type String \\
-  --overwrite \\
-  --region "\${AWS_REGION}" 2>/dev/null || true
+# Publish instance ID to SSM (retry — IAM instance profile may take ~15s to propagate)
+SSM_WRITE_OK=false
+for SSM_ATTEMPT in 1 2 3 4 5; do
+  if aws ssm put-parameter \\
+    --name "\${SSM_PREFIX}/bootstrap/control-plane-instance-id" \\
+    --value "$INSTANCE_ID" \\
+    --type String \\
+    --overwrite \\
+    --region "\${AWS_REGION}" 2>&1; then
+    echo "SSM instance ID published (attempt $SSM_ATTEMPT)"
+    SSM_WRITE_OK=true
+    break
+  fi
+  echo "WARNING: SSM put-parameter failed (attempt $SSM_ATTEMPT/5), retrying in 5s..."
+  sleep 5
+done
+if [ "$SSM_WRITE_OK" = "false" ]; then
+  echo "ERROR: Failed to publish instance ID to SSM after 5 attempts"
+  echo "Pipeline may target the wrong instance. Manual fix:"
+  echo "  aws ssm put-parameter --name '\${SSM_PREFIX}/bootstrap/control-plane-instance-id' --value '$INSTANCE_ID' --type String --overwrite --region '\${AWS_REGION}'"
+fi
 
 echo "Infrastructure ready — instance $INSTANCE_ID"
 echo "SSM Automation will be triggered by the CI pipeline"

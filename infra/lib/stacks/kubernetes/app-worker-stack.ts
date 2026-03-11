@@ -292,6 +292,7 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
             desiredCapacity: 1,
             disableScalingPolicy: true,
             namePrefix: workerPrefix,
+            instanceName: `${namePrefix}-app-worker`,
             useSignals: workerConfig.useSignals,
             signalsTimeoutMinutes: workerConfig.signalsTimeoutMinutes,
             subnetSelection: {
