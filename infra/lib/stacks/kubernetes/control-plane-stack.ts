@@ -130,6 +130,10 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             this, 'ControlPlaneSg',
             ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/control-plane-sg-id`),
         );
+        const ingressSg = ec2.SecurityGroup.fromSecurityGroupId(
+            this, 'IngressSg',
+            ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/ingress-sg-id`),
+        );
         const logGroupKmsKey = kms.Key.fromKeyArn(
             this, 'LogKmsKey',
             ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/kms-key-arn`),
@@ -158,7 +162,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
 
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup,
-            additionalSecurityGroups: [controlPlaneSg],
+            additionalSecurityGroups: [controlPlaneSg, ingressSg],
             instanceType: configs.compute.instanceType,
             volumeSizeGb: configs.compute.rootVolumeSizeGb, // Must be >= Golden AMI snapshot size
             detailedMonitoring: configs.compute.detailedMonitoring,
