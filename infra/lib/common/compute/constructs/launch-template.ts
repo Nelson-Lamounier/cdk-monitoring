@@ -194,7 +194,7 @@ export class LaunchTemplateConstruct extends Construct {
     constructor(scope: Construct, id: string, props: LaunchTemplateConstructProps) {
         super(scope, id);
 
-        const namePrefix = props.namePrefix ?? 'monitoring';
+        const namePrefix = props.namePrefix;
         const volumeSize = props.volumeSizeGb ?? 30;
         const volumeIops = props.volumeIops ?? 3000;
         const volumeThroughput = props.volumeThroughput ?? 125;

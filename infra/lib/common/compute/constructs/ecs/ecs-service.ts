@@ -170,7 +170,7 @@ export class EcsServiceConstruct extends Construct {
     constructor(scope: Construct, id: string, props: EcsServiceConstructProps) {
         super(scope, id);
 
-        const namePrefix = props.namePrefix ?? 'nextjs';
+        const namePrefix = props.namePrefix;
         const environment = props.environment;
         const serviceName = props.serviceName ?? `${namePrefix}-service-${environment}`;
 

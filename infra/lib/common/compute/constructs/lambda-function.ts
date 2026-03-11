@@ -208,7 +208,7 @@ export class LambdaFunctionConstruct extends Construct {
     constructor(scope: Construct, id: string, props: LambdaFunctionConstructProps) {
         super(scope, id);
 
-        const namePrefix = props.namePrefix ?? 'monitoring';
+        const namePrefix = props.namePrefix;
         const functionName = props.functionName ?? `${namePrefix}-function`;
 
         // =================================================================

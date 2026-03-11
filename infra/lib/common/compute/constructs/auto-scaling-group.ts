@@ -183,7 +183,7 @@ export class AutoScalingGroupConstruct extends Construct {
     constructor(scope: Construct, id: string, props: AutoScalingGroupConstructProps) {
         super(scope, id);
 
-        const namePrefix = props.namePrefix ?? 'monitoring';
+        const namePrefix = props.namePrefix;
         const minCapacity = props.minCapacity ?? 1;
         const maxCapacity = props.maxCapacity ?? 2;
         // desiredCapacity is intentionally NOT defaulted - setting it causes ASG reset on every deploy

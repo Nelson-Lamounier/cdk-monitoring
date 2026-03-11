@@ -132,7 +132,7 @@ export class EcsClusterConstruct extends Construct {
         super(scope, id);
 
         const environment = props.environment ?? Environment.DEVELOPMENT;
-        const namePrefix = props.namePrefix ?? 'nextjs';
+        const namePrefix = props.namePrefix;
         const containerInsights = props.containerInsights ?? ecs.ContainerInsights.ENABLED;
         const capacityType = props.capacityType ?? EcsCapacityType.FARGATE;
         const enableFargateSpot = props.enableFargateSpot ?? false;

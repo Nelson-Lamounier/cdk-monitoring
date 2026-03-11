@@ -182,7 +182,7 @@ export class EventBridgeRuleConstruct extends Construct {
     constructor(scope: Construct, id: string, props: EventBridgeRuleConstructProps) {
         super(scope, id);
 
-        const namePrefix = props.namePrefix ?? 'monitoring';
+        const namePrefix = props.namePrefix;
         const ruleName = props.ruleName ?? `${namePrefix}-rule`;
 
         // Store event bus reference

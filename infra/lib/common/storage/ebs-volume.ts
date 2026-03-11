@@ -91,7 +91,7 @@ export class EncryptedEbsVolumeConstruct extends Construct {
     constructor(scope: Construct, id: string, props: EncryptedEbsVolumeConstructProps) {
         super(scope, id);
 
-        const namePrefix = props.namePrefix ?? 'monitoring';
+        const namePrefix = props.namePrefix;
         const sizeGb = props.sizeGb ?? 30;
         const volumeType = props.volumeType ?? ec2.EbsDeviceVolumeType.GP3;
         const iops = props.iops ?? (volumeType === ec2.EbsDeviceVolumeType.GP3 ? 3000 : undefined);

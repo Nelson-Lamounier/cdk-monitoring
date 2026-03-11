@@ -198,7 +198,7 @@ export class EcsSecurityGroupConstruct extends Construct {
     constructor(scope: Construct, id: string, props: EcsSecurityGroupConstructProps) {
         super(scope, id);
 
-        const namePrefix = props.namePrefix ?? 'ecs';
+        const namePrefix = props.namePrefix;
         const environment = props.environment ?? 'dev';
         const restrictOutbound = props.restrictOutbound ?? true;
 
@@ -369,7 +369,7 @@ export class NextJsTaskSecurityGroupConstruct extends Construct {
     constructor(scope: Construct, id: string, props: NextJsTaskSecurityGroupConstructProps) {
         super(scope, id);
 
-        const namePrefix = props.namePrefix ?? 'nextjs';
+        const namePrefix = props.namePrefix;
         const environment = props.environment ?? 'dev';
         const applicationPort = props.applicationPort ?? 3000;
         const databasePort = props.databasePort ?? 5432;
