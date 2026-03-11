@@ -25,7 +25,7 @@
 #   deploy → sync-scripts → trigger-bootstrap → watch-bootstrap → deploy-nextjs-secrets → verify
 #
 #   1. deploy              - CDK deploy of the ssmAutomation stack
-#   2. sync-scripts        - aws s3 sync of k8s-bootstrap/ + app-deploy/nextjs/ to S3
+#   2. sync-scripts        - aws s3 sync of k8s-bootstrap/ + workloads/charts/nextjs/ to S3
 #   3. trigger-bootstrap   - Resolves instance IDs from SSM parameters,
 #                            triggers SSM Automation per node role
 #   4. watch-bootstrap     - Polls SSM step status, streams CloudWatch logs
@@ -47,8 +47,8 @@
 #
 # ─── Day-1 Deployment ──────────────────────────────────────────────
 # Run after the CDK infra pipeline completes:
-#   1. deploy-kubernetes-dev.yml  → provisions infrastructure
-#   2. deploy-ssm-automation-dev.yml → bootstrap (this pipeline)
+#   1. deploy-kubernetes.yml  → provisions infrastructure
+#   2. deploy-ssm-automation.yml → bootstrap (this pipeline)
 #
 # ─── Day-2+ Updates ───────────────────────────────────────────────
 # Push changes to boot/steps/ or ssm-automation-stack.ts to trigger
@@ -94,6 +94,12 @@ on:
       VERIFICATION_SECRET:
         description: "Email verification HMAC secret (needed for CDK synth)"
         required: false
+      ALLOW_IPV4:
+        description: "IPv4 CIDR for Traefik admin-ip-allowlist (Grafana/Prometheus/ArgoCD)"
+        required: false
+      ALLOW_IPV6:
+        description: "IPv6 CIDR for Traefik admin-ip-allowlist (Grafana/Prometheus/ArgoCD)"
+        required: false
 
 env:
   NODE_VERSION: "22"
@@ -106,6 +112,8 @@ jobs:
   deploy:
     name: Deploy SSM Automation
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
     outputs:
@@ -114,9 +122,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -125,7 +133,7 @@ jobs:
         run: just build
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -137,7 +145,6 @@ jobs:
       # GitHub environment variables even though we only deploy the SSM stack.
       - name: CDK Synth
         id: synth
-        working-directory: infra
         env:
           HOSTED_ZONE_ID: ${{ vars.HOSTED_ZONE_ID }}
           CROSS_ACCOUNT_ROLE_ARN: ${{ vars.DNS_VALIDATION_ROLE }}
@@ -146,7 +153,7 @@ jobs:
           SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL || '' }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET || '' }}
           VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL || '' }}
-        run: npx tsx scripts/deployment/synthesize-ci.ts kubernetes ${{ inputs.cdk-environment }}
+        run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
 
       # Deploy only the SSM Automation stack
       - name: CDK Deploy — SSM Automation
@@ -186,91 +193,77 @@ jobs:
     needs: [deploy]
     if: inputs.trigger-bootstrap
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 5
     environment: ${{ inputs.environment }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build TypeScript
+        run: just build
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Sync Scripts to S3
+      # -----------------------------------------------------------------------
+      # Write Admin IPs to SSM
+      #
+      # bootstrap_argocd.py (Step 5b) reads these paths to inject
+      # adminAccess.allowedIps into the monitoring ArgoCD Application
+      # via Helm parameter overrides, populating the admin-ip-allowlist
+      # Traefik Middleware. Without this, the middleware renders with an
+      # empty sourceRange and Traefik returns 403 for all
+      # Grafana/Prometheus/ArgoCD requests.
+      #
+      # The Data stack CDK deploy also writes these (Fix A), but this step
+      # ensures the SSM params are current on script-only re-bootstraps.
+      # -----------------------------------------------------------------------
+      - name: Write Admin IPs to SSM
         env:
-          SSM_PREFIX: /k8s/${{ inputs.environment }}
-          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          ALLOW_IPV4: ${{ secrets.ALLOW_IPV4 }}
+          ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
         run: |
-          # Resolve scripts bucket from SSM
-          BUCKET=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/scripts-bucket" \
-            --query "Parameter.Value" --output text \
-            --region "$REGION" 2>/dev/null || echo "")
+          SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}/monitoring"
+          REGION="${{ env.AWS_REGION }}"
 
-          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
-            echo "::error::Scripts bucket not found at ${SSM_PREFIX}/scripts-bucket"
-            exit 1
-          fi
-          echo "Resolved scripts bucket: ${BUCKET}"
-
-          SOURCE_DIR="./kubernetes-app/k8s-bootstrap"
-          if [ ! -d "$SOURCE_DIR" ]; then
-            echo "::error::Source directory not found: ${SOURCE_DIR}"
-            exit 1
-          fi
-
-          FILE_COUNT=$(find "$SOURCE_DIR" -type f | wc -l | tr -d ' ')
-          echo "Syncing ${FILE_COUNT} files from ${SOURCE_DIR} to s3://${BUCKET}/k8s-bootstrap/"
-
-          aws s3 sync "$SOURCE_DIR" "s3://${BUCKET}/k8s-bootstrap/" \
-            --delete --region "$REGION"
-
-          echo "[OK] ${FILE_COUNT} bootstrap files synced"
-
-          # ── Sync Next.js deploy scripts ──────────────────────────────
-          # deploy.py, deploy-manifests.sh, requirements.txt
-          # NOTE: chart/ and nextjs-values.yaml are NOT synced here —
-          # ArgoCD handles Helm chart deployment via GitOps.
-          APP_DIR="./kubernetes-app/app-deploy/nextjs"
-          if [ -d "$APP_DIR" ]; then
-            APP_COUNT=$(find "$APP_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')
-            echo "Syncing ${APP_COUNT} app-deploy files from ${APP_DIR} to s3://${BUCKET}/app-deploy/nextjs/"
-
-            aws s3 sync "$APP_DIR" "s3://${BUCKET}/app-deploy/nextjs/" \
-              --delete \
-              --exclude 'chart/*' \
-              --exclude 'nextjs-values.yaml' \
-              --exclude '__pycache__/*' \
+          if [ -n "$ALLOW_IPV4" ]; then
+            aws ssm put-parameter \
+              --name "${SSM_PREFIX}/allow-ipv4" \
+              --value "$ALLOW_IPV4" \
+              --type String \
+              --overwrite \
               --region "$REGION"
-
-            echo "[OK] App deploy scripts synced"
+            echo "[OK] Wrote ${SSM_PREFIX}/allow-ipv4"
           else
-            echo "[SKIP] ${APP_DIR} not found — no app-deploy scripts to sync"
+            echo "[SKIP] ALLOW_IPV4 not set — skipping"
           fi
 
-          # ── Sync Monitoring deploy scripts ────────────────────────────
-          # deploy.py, deploy-manifests.sh, requirements.txt
-          # NOTE: chart/ is NOT synced here —
-          # ArgoCD handles Helm chart deployment via GitOps.
-          MON_DIR="./kubernetes-app/app-deploy/monitoring"
-          if [ -d "$MON_DIR" ]; then
-            MON_COUNT=$(find "$MON_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')
-            echo "Syncing ${MON_COUNT} monitoring deploy files from ${MON_DIR} to s3://${BUCKET}/app-deploy/monitoring/"
-
-            aws s3 sync "$MON_DIR" "s3://${BUCKET}/app-deploy/monitoring/" \
-              --delete \
-              --exclude 'chart/*' \
-              --exclude '__pycache__/*' \
+          if [ -n "$ALLOW_IPV6" ]; then
+            aws ssm put-parameter \
+              --name "${SSM_PREFIX}/allow-ipv6" \
+              --value "$ALLOW_IPV6" \
+              --type String \
+              --overwrite \
               --region "$REGION"
-
-            echo "[OK] Monitoring deploy scripts synced"
+            echo "[OK] Wrote ${SSM_PREFIX}/allow-ipv6"
           else
-            echo "[SKIP] ${MON_DIR} not found — no monitoring deploy scripts to sync"
+            echo "[SKIP] ALLOW_IPV6 not set — skipping"
           fi
+
+      - name: Sync Scripts to S3
+        run: just ci-sync-scripts --environment ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # Trigger SSM Bootstrap — Start SSM Automation on existing nodes
@@ -284,6 +277,8 @@ jobs:
     needs: [deploy, sync-scripts]
     if: inputs.trigger-bootstrap
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
     outputs:
@@ -292,168 +287,27 @@ jobs:
       mon-worker-execution-id: ${{ steps.trigger.outputs.mon_worker_execution_id }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build TypeScript
+        run: just build
+
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
       - name: Trigger SSM Automation on Nodes
         id: trigger
-        env:
-          SSM_PREFIX: /k8s/${{ inputs.environment }}
-          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: |
-          echo "=== Triggering SSM Automation Bootstrap ==="
-
-          # ── Helper: resolve instance ID and trigger SSM ────────────
-          trigger_ssm() {
-            local ROLE="$1"           # control-plane, app-worker, mon-worker
-            local SSM_PARAM="$2"      # SSM param for instance ID
-            local DOC_PARAM="$3"      # SSM param for automation doc name
-            local EXEC_PARAM="$4"     # SSM param to publish execution ID
-
-            echo ""
-            echo "--- $ROLE ---"
-
-            # Resolve instance ID from SSM (already published by user data)
-            INSTANCE_ID=$(aws ssm get-parameter \
-              --name "$SSM_PARAM" \
-              --query "Parameter.Value" --output text \
-              --region "$REGION" 2>/dev/null || echo "")
-
-            if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-              echo "  [SKIP] No instance ID at $SSM_PARAM — node not deployed"
-              return 0
-            fi
-
-            echo "  Instance: $INSTANCE_ID"
-
-            # Get SSM Automation document name
-            DOC_NAME=$(aws ssm get-parameter \
-              --name "$DOC_PARAM" \
-              --query "Parameter.Value" --output text \
-              --region "$REGION" 2>/dev/null || echo "")
-
-            if [ -z "$DOC_NAME" ] || [ "$DOC_NAME" = "None" ]; then
-              echo "::warning::SSM doc name not found at $DOC_PARAM — skipping $ROLE"
-              return 0
-            fi
-
-            echo "  Document: $DOC_NAME"
-
-            # Resolve S3 bucket for bootstrap scripts
-            S3_BUCKET=$(aws ssm get-parameter \
-              --name "${SSM_PREFIX}/scripts-bucket" \
-              --query "Parameter.Value" --output text \
-              --region "$REGION" 2>/dev/null || echo "")
-
-            # Start SSM Automation
-            EXECUTION_ID=$(aws ssm start-automation-execution \
-              --document-name "$DOC_NAME" \
-              --parameters "InstanceId=$INSTANCE_ID,SsmPrefix=${SSM_PREFIX},S3Bucket=${S3_BUCKET},Region=${REGION}" \
-              --region "$REGION" \
-              --query "AutomationExecutionId" --output text)
-
-            echo "  Execution: $EXECUTION_ID"
-
-            # Publish execution ID for the observer
-            aws ssm put-parameter \
-              --name "$EXEC_PARAM" \
-              --value "$EXECUTION_ID" \
-              --type String \
-              --overwrite \
-              --region "$REGION" 2>/dev/null || true
-
-            echo "  [PASS] $ROLE SSM Automation triggered"
-
-            # Expose execution ID as GitHub Actions output
-            local OUTPUT_KEY=""
-            case "$ROLE" in
-              control-plane) OUTPUT_KEY="cp_execution_id" ;;
-              app-worker)    OUTPUT_KEY="worker_execution_id" ;;
-              mon-worker)    OUTPUT_KEY="mon_worker_execution_id" ;;
-            esac
-            if [ -n "$OUTPUT_KEY" ]; then
-              echo "${OUTPUT_KEY}=${EXECUTION_ID}" >> "$GITHUB_OUTPUT"
-            fi
-          }
-
-          # ── Helper: wait for SSM Automation to complete ────────────
-          wait_for_automation() {
-            local ROLE="$1"
-            local EXECUTION_ID="$2"
-            local MAX_WAIT=${3:-600}      # default 10 min
-            local POLL_INTERVAL=15
-            local WAITED=0
-
-            echo ""
-            echo "--- Waiting for $ROLE automation ($EXECUTION_ID) ---"
-
-            while [ $WAITED -lt $MAX_WAIT ]; do
-              STATUS=$(aws ssm get-automation-execution \
-                --automation-execution-id "$EXECUTION_ID" \
-                --query "AutomationExecution.AutomationExecutionStatus" \
-                --output text --region "$REGION" 2>/dev/null || echo "Unknown")
-
-              case "$STATUS" in
-                Success)
-                  echo "  [PASS] $ROLE automation completed successfully (${WAITED}s)"
-                  return 0
-                  ;;
-                Failed|Cancelled|TimedOut|CompletedWithFailure)
-                  echo "  [FAIL] $ROLE automation finished with status: $STATUS (${WAITED}s)"
-                  return 1
-                  ;;
-                *)
-                  echo "  $ROLE status: $STATUS (${WAITED}s / ${MAX_WAIT}s)"
-                  sleep $POLL_INTERVAL
-                  WAITED=$((WAITED + POLL_INTERVAL))
-                  ;;
-              esac
-            done
-
-            echo "  [FAIL] $ROLE automation did not complete within ${MAX_WAIT}s"
-            return 1
-          }
-
-          # ── Trigger ControlPlane ─────────────────────────────────────
-          trigger_ssm "control-plane" \
-            "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
-            "${SSM_PREFIX}/bootstrap/control-plane-doc-name" \
-            "${SSM_PREFIX}/bootstrap/execution-id"
-
-          # ── Wait for control-plane to finish before triggering workers
-          # Workers need the join credentials (token, CA hash, endpoint)
-          # that the control-plane publishes to SSM during initKubeadm.
-          CP_EXEC_ID=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/bootstrap/execution-id" \
-            --query "Parameter.Value" --output text \
-            --region "$REGION" 2>/dev/null || echo "")
-
-          if [ -n "$CP_EXEC_ID" ] && [ "$CP_EXEC_ID" != "None" ]; then
-            if ! wait_for_automation "control-plane" "$CP_EXEC_ID" 600; then
-              echo "::warning::Control-plane bootstrap did not succeed — triggering workers anyway"
-            fi
-          else
-            echo "::warning::Could not read control-plane execution ID — triggering workers immediately"
-          fi
-
-          # ── Trigger App Worker (if instance exists) ──────────────────
-          trigger_ssm "app-worker" \
-            "${SSM_PREFIX}/bootstrap/app-worker-instance-id" \
-            "${SSM_PREFIX}/bootstrap/worker-doc-name" \
-            "${SSM_PREFIX}/bootstrap/worker-execution-id"
-
-          # ── Trigger Monitoring Worker (if instance exists) ───────────
-          trigger_ssm "mon-worker" \
-            "${SSM_PREFIX}/bootstrap/mon-worker-instance-id" \
-            "${SSM_PREFIX}/bootstrap/worker-doc-name" \
-            "${SSM_PREFIX}/bootstrap/mon-worker-execution-id"
-
-          echo ""
-          echo "=== SSM Automation triggers complete ==="
+        run: just ci-trigger-bootstrap --environment ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
 
   # ===========================================================================
   # SSM Bootstrap Observer — Monitor SSM Automation Execution (parallel)
@@ -471,149 +325,28 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js & Install dependencies
+        uses: ./.github/actions/setup-node-yarn
+
+      - name: Build TypeScript
+        run: just build
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
           audience: sts.amazonaws.com
 
       - name: Stream SSM Bootstrap Logs
-        env:
-          SSM_PREFIX: /k8s/${{ inputs.environment }}
-          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          LOG_GROUP: /ssm/k8s/${{ inputs.environment }}/bootstrap
-          EC2_LOG_GROUP: /ec2/k8s-${{ inputs.cdk-environment || inputs.environment }}/instances
-          CP_EXECUTION_ID: ${{ needs.trigger-bootstrap.outputs.cp-execution-id }}
-        run: |
-          echo "=== Watching SSM Automation Bootstrap ==="
-          WATCH_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)  # ISO 8601 for aws logs tail --since
-
-          # Read execution ID directly from trigger job output
-          EXECUTION_ID="$CP_EXECUTION_ID"
-
-          if [ -z "$EXECUTION_ID" ]; then
-            echo "::warning::No control-plane execution ID received from trigger job — nothing to observe"
-            exit 0
-          fi
-
-          echo "Tracking control-plane execution: $EXECUTION_ID"
-          echo ""
-
-          # ── Poll SSM Automation + stream CloudWatch logs ──────────────
-          FINAL_STATUS=""
-          while true; do
-            EXECUTION=$(aws ssm get-automation-execution \
-              --automation-execution-id "$EXECUTION_ID" \
-              --region "$REGION" 2>/dev/null)
-
-            STATUS=$(echo "$EXECUTION" | jq -r '.AutomationExecution.AutomationExecutionStatus')
-
-            # Show step-level progress
-            echo "::group::SSM Bootstrap Steps (Status: $STATUS)"
-            echo "$EXECUTION" | jq -r '
-              .AutomationExecution.StepExecutions[] |
-              if .StepStatus == "Success" then "  [PASS] \(.StepName)"
-              elif .StepStatus == "Failed" then "  [FAIL] \(.StepName): \(.FailureMessage // "unknown")"
-              elif .StepStatus == "InProgress" then "  [RUN]  \(.StepName)"
-              else "  [WAIT] \(.StepName) (\(.StepStatus))"
-              end
-            ' 2>/dev/null || true
-            echo "::endgroup::"
-
-            # Stream recent CloudWatch logs for this run
-            echo "::group::Bootstrap Logs (CloudWatch)"
-            aws logs tail "$LOG_GROUP" \
-              --since "${WATCH_START}" \
-              --format short \
-              --region "$REGION" 2>&1 || echo "  (log group not yet created)"
-            echo "::endgroup::"
-
-            # Stream EC2 boot logs (cloud-init, kubelet, boot-k8s.sh output)
-            echo "::group::EC2 Boot Logs (CloudWatch)"
-            aws logs tail "$EC2_LOG_GROUP" \
-              --since "${WATCH_START}" \
-              --format short \
-              --region "$REGION" 2>&1 || echo "  (log group not yet created)"
-            echo "::endgroup::"
-
-            case "$STATUS" in
-              Success)
-                FINAL_STATUS="success"
-                break
-                ;;
-              Failed|Cancelled|TimedOut)
-                FINAL_STATUS="$STATUS"
-                break
-                ;;
-              *)
-                sleep 15
-                ;;
-            esac
-          done
-
-          echo ""
-          # ── Final result ────────────────────────────────────────────
-          if [ "$FINAL_STATUS" = "success" ]; then
-            echo "[PASS] SSM Automation completed successfully"
-
-            echo "::group::Full Bootstrap Logs"
-            aws logs tail "$LOG_GROUP" \
-              --since "${WATCH_START}" \
-              --format short \
-              --region "$REGION" 2>&1 || true
-            echo "::endgroup::"
-
-            echo "::group::Full EC2 Boot Logs"
-            aws logs tail "$EC2_LOG_GROUP" \
-              --since "${WATCH_START}" \
-              --format short \
-              --region "$REGION" 2>&1 || true
-            echo "::endgroup::"
-          else
-            echo "[FAIL] SSM Automation $FINAL_STATUS"
-
-            # Show failed step details
-            echo "$EXECUTION" | jq -r '
-              .AutomationExecution.StepExecutions[] |
-              select(.StepStatus == "Failed") |
-              "FAILED STEP: \(.StepName)\nReason: \(.FailureMessage // "unknown")"
-            ' 2>/dev/null || true
-
-            # Dump full CloudWatch logs for debugging
-            echo "::group::Full Bootstrap Logs (for debugging)"
-            aws logs tail "$LOG_GROUP" \
-              --since "${WATCH_START}" \
-              --format short \
-              --region "$REGION" 2>&1 || echo "  (no logs available)"
-            echo "::endgroup::"
-
-            echo "::group::Full EC2 Boot Logs (for debugging)"
-            aws logs tail "$EC2_LOG_GROUP" \
-              --since "${WATCH_START}" \
-              --format short \
-              --region "$REGION" 2>&1 || echo "  (no logs available)"
-            echo "::endgroup::"
-
-            # Also try to get the RunCommand output directly
-            FAILED_STEP=$(echo "$EXECUTION" | jq -r '.AutomationExecution.StepExecutions[] | select(.StepStatus == "Failed") | .StepName' 2>/dev/null | head -1)
-            COMMAND_ID=$(echo "$EXECUTION" | jq -r ".AutomationExecution.StepExecutions[] | select(.StepName == \"$FAILED_STEP\") | .Outputs[\"RunCommand.CommandId\"][0] // empty" 2>/dev/null || echo "")
-            if [ -n "$COMMAND_ID" ]; then
-              INSTANCE_ID=$(echo "$EXECUTION" | jq -r '.AutomationExecution.Parameters.InstanceId[0] // empty' 2>/dev/null || echo "")
-              if [ -n "$INSTANCE_ID" ]; then
-                echo "::group::RunCommand Output ($FAILED_STEP)"
-                aws ssm get-command-invocation \
-                  --command-id "$COMMAND_ID" \
-                  --instance-id "$INSTANCE_ID" \
-                  --region "$REGION" 2>/dev/null | jq -r '"STDOUT:\n\(.StandardOutputContent)\n\nSTDERR:\n\(.StandardErrorContent)"' || true
-                echo "::endgroup::"
-              fi
-            fi
-
-            exit 1
-          fi
+        run: >-
+          just ci-observe-bootstrap
+          --environment ${{ inputs.environment }}
+          --execution-id ${{ needs.trigger-bootstrap.outputs.cp-execution-id }}
+          --cdk-environment ${{ inputs.cdk-environment || inputs.environment }}
+          --region ${{ vars.AWS_REGION || 'eu-west-1' }}
 
   # ===========================================================================
   # Deploy Next.js Secrets — Create K8s Secret from SSM Parameters
@@ -635,104 +368,33 @@ jobs:
       && needs.watch-bootstrap.result == 'success'
       && inputs.trigger-bootstrap == true
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     environment: ${{ inputs.environment }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js & Install dependencies
+        uses: ./.github/actions/setup-node-yarn
+
+      - name: Build TypeScript
+        run: just build
+
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
           audience: sts.amazonaws.com
 
-      - name: Run deploy.py via SSM Automation
-        env:
-          SSM_PREFIX: /k8s/${{ inputs.environment }}
-          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      - name: Deploy Next.js Secrets
         run: |
-          echo "=== Deploy Next.js Secrets ==="
-
-          # ── Resolve control-plane instance ID ─────────────────────────
-          INSTANCE_ID=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
-            --query "Parameter.Value" --output text \
-            --region "$REGION" 2>/dev/null || echo "")
-
-          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "::error::Control plane instance ID not found at ${SSM_PREFIX}/bootstrap/control-plane-instance-id"
-            exit 1
-          fi
-          echo "Target instance: $INSTANCE_ID"
-
-          # ── Resolve SSM Automation document name ───────────────────────
-          DOC_NAME=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/deploy/nextjs-secrets-doc-name" \
-            --query "Parameter.Value" --output text \
-            --region "$REGION" 2>/dev/null || echo "")
-
-          if [ -z "$DOC_NAME" ] || [ "$DOC_NAME" = "None" ]; then
-            echo "::error::Nextjs secrets doc name not found at ${SSM_PREFIX}/deploy/nextjs-secrets-doc-name"
-            exit 1
-          fi
-          echo "Automation document: $DOC_NAME"
-
-          # ── Resolve S3 bucket for script sync ──────────────────────────
-          S3_BUCKET=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/scripts-bucket" \
-            --query "Parameter.Value" --output text \
-            --region "$REGION" 2>/dev/null || echo "")
-
-          # ── Start SSM Automation execution ─────────────────────────────
-          EXECUTION_ID=$(aws ssm start-automation-execution \
-            --document-name "$DOC_NAME" \
-            --parameters "InstanceId=$INSTANCE_ID,SsmPrefix=${SSM_PREFIX},S3Bucket=${S3_BUCKET},Region=${REGION}" \
-            --region "$REGION" \
-            --query "AutomationExecutionId" --output text)
-
-          echo "Execution ID: $EXECUTION_ID"
-
-          # ── Poll for completion ────────────────────────────────────────
-          MAX_WAIT=300
-          WAITED=0
-          POLL_INTERVAL=15
-
-          while [ $WAITED -lt $MAX_WAIT ]; do
-            sleep $POLL_INTERVAL
-            WAITED=$((WAITED + POLL_INTERVAL))
-
-            STATUS=$(aws ssm get-automation-execution \
-              --automation-execution-id "$EXECUTION_ID" \
-              --query "AutomationExecution.AutomationExecutionStatus" \
-              --output text --region "$REGION" 2>/dev/null || echo "Unknown")
-
-            case "$STATUS" in
-              Success)
-                echo "[PASS] deploy.py completed successfully (${WAITED}s)"
-                break
-                ;;
-              Failed|Cancelled|TimedOut|CompletedWithFailure)
-                echo "[FAIL] deploy.py automation failed with status: $STATUS (${WAITED}s)"
-
-                echo "::group::Automation Step Details"
-                aws ssm describe-automation-step-executions \
-                  --automation-execution-id "$EXECUTION_ID" \
-                  --region "$REGION" 2>/dev/null | \
-                  jq -r '.StepExecutions[] | "Step: \(.StepName) | Status: \(.StepStatus) | Output: \(.Outputs // {} | tostring)"' || true
-                echo "::endgroup::"
-
-                exit 1
-                ;;
-              *)
-                echo "  Status: $STATUS (${WAITED}s / ${MAX_WAIT}s)"
-                ;;
-            esac
-          done
-
-          if [ $WAITED -ge $MAX_WAIT ]; then
-            echo "[FAIL] deploy.py automation did not complete within ${MAX_WAIT}s"
-            exit 1
-          fi
+          just ci-deploy-nextjs-secrets \
+            --environment ${{ inputs.environment }} \
+            --region ${{ vars.AWS_REGION || 'eu-west-1' }}
 
   # ===========================================================================
   # Deploy Monitoring Secrets — Create K8s Secrets from SSM Parameters
@@ -754,104 +416,33 @@ jobs:
       && needs.watch-bootstrap.result == 'success'
       && inputs.trigger-bootstrap == true
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js & Install dependencies
+        uses: ./.github/actions/setup-node-yarn
+
+      - name: Build TypeScript
+        run: just build
+
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
           audience: sts.amazonaws.com
 
-      - name: Run deploy.py via SSM Automation
-        env:
-          SSM_PREFIX: /k8s/${{ inputs.environment }}
-          REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: |
-          echo "=== Deploy Monitoring Secrets ==="
-
-          # ── Resolve control-plane instance ID ─────────────────────────
-          INSTANCE_ID=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
-            --query "Parameter.Value" --output text \
-            --region "$REGION" 2>/dev/null || echo "")
-
-          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "::error::Control plane instance ID not found at ${SSM_PREFIX}/bootstrap/control-plane-instance-id"
-            exit 1
-          fi
-          echo "Target instance: $INSTANCE_ID"
-
-          # ── Resolve SSM Automation document name ───────────────────────
-          DOC_NAME=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/deploy/monitoring-secrets-doc-name" \
-            --query "Parameter.Value" --output text \
-            --region "$REGION" 2>/dev/null || echo "")
-
-          if [ -z "$DOC_NAME" ] || [ "$DOC_NAME" = "None" ]; then
-            echo "::error::Monitoring secrets doc name not found at ${SSM_PREFIX}/deploy/monitoring-secrets-doc-name"
-            exit 1
-          fi
-          echo "Automation document: $DOC_NAME"
-
-          # ── Resolve S3 bucket for script sync ──────────────────────────
-          S3_BUCKET=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/scripts-bucket" \
-            --query "Parameter.Value" --output text \
-            --region "$REGION" 2>/dev/null || echo "")
-
-          # ── Start SSM Automation execution ─────────────────────────────
-          EXECUTION_ID=$(aws ssm start-automation-execution \
-            --document-name "$DOC_NAME" \
-            --parameters "InstanceId=$INSTANCE_ID,SsmPrefix=${SSM_PREFIX},S3Bucket=${S3_BUCKET},Region=${REGION}" \
-            --region "$REGION" \
-            --query "AutomationExecutionId" --output text)
-
-          echo "Execution ID: $EXECUTION_ID"
-
-          # ── Poll for completion ────────────────────────────────────────
-          MAX_WAIT=600
-          WAITED=0
-          POLL_INTERVAL=15
-
-          while [ $WAITED -lt $MAX_WAIT ]; do
-            sleep $POLL_INTERVAL
-            WAITED=$((WAITED + POLL_INTERVAL))
-
-            STATUS=$(aws ssm get-automation-execution \
-              --automation-execution-id "$EXECUTION_ID" \
-              --query "AutomationExecution.AutomationExecutionStatus" \
-              --output text --region "$REGION" 2>/dev/null || echo "Unknown")
-
-            case "$STATUS" in
-              Success)
-                echo "[PASS] deploy.py completed successfully (${WAITED}s)"
-                break
-                ;;
-              Failed|Cancelled|TimedOut|CompletedWithFailure)
-                echo "[FAIL] deploy.py automation failed with status: $STATUS (${WAITED}s)"
-
-                echo "::group::Automation Step Details"
-                aws ssm describe-automation-step-executions \
-                  --automation-execution-id "$EXECUTION_ID" \
-                  --region "$REGION" 2>/dev/null | \
-                  jq -r '.StepExecutions[] | "Step: \(.StepName) | Status: \(.StepStatus) | Output: \(.Outputs // {} | tostring)"' || true
-                echo "::endgroup::"
-
-                exit 1
-                ;;
-              *)
-                echo "  Status: $STATUS (${WAITED}s / ${MAX_WAIT}s)"
-                ;;
-            esac
-          done
-
-          if [ $WAITED -ge $MAX_WAIT ]; then
-            echo "[FAIL] deploy.py automation did not complete within ${MAX_WAIT}s"
-            exit 1
-          fi
+      - name: Deploy Monitoring Secrets
+        run: >-
+          just ci-deploy-monitoring-secrets
+          --environment ${{ inputs.environment }}
+          --region ${{ vars.AWS_REGION || 'eu-west-1' }}
 
   # ===========================================================================
   # Verify & Smoke Tests
@@ -877,15 +468,22 @@ jobs:
       && (needs.deploy-monitoring-secrets.result == 'success' || needs.deploy-monitoring-secrets.result == 'skipped')
       && inputs.trigger-bootstrap == true
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -923,11 +521,11 @@ jobs:
           echo "::warning::ArgoCD token not found after ${MAX_ATTEMPTS} attempts — Day-0 bootstrap; skipping ArgoCD verification"
 
       # -----------------------------------------------------------------------
-      # ArgoCD Server Health
+      # ArgoCD Server Health (via SSM send-command)
       #
       # Verifies the ArgoCD SERVER is reachable after bootstrap.
-      # bootstrapArgoCD (SSM step) installs ArgoCD, so this check only
-      # makes sense after the SSM pipeline completes.
+      # Uses the same verify-argocd-sync.ts script in --mode health,
+      # which runs curl on the control plane node via SSM send-command.
       #
       # On Day-0 (no token), this step is skipped gracefully.
       # -----------------------------------------------------------------------
@@ -936,39 +534,11 @@ jobs:
         env:
           ARGOCD_TOKEN: ${{ steps.argocd-token.outputs.token }}
         run: |
-          SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}"
-          EIP=$(aws ssm get-parameter \
-            --name "${SSM_PREFIX}/elastic-ip" \
-            --query 'Parameter.Value' --output text 2>/dev/null || echo "")
-
-          if [ -z "$EIP" ]; then
-            echo "::error::Could not resolve EIP from SSM — cannot verify ArgoCD"
-            exit 1
-          fi
-
-          ARGOCD_SERVER="http://${EIP}/argocd"
-          echo "ArgoCD server: ${ARGOCD_SERVER}"
-
-          MAX_POLL=6
-          POLL_INTERVAL=20
-          echo "Verifying ArgoCD server is reachable (timeout: $(( MAX_POLL * POLL_INTERVAL ))s)..."
-
-          for ATTEMPT in $(seq 1 $MAX_POLL); do
-            HTTP_CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
-              -H "Authorization: Bearer ${ARGOCD_TOKEN}" \
-              "${ARGOCD_SERVER}/api/v1/applications" 2>/dev/null || echo "000")
-
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "[PASS] ArgoCD server is reachable (HTTP ${HTTP_CODE})"
-              exit 0
-            fi
-
-            echo "  Attempt $ATTEMPT/$MAX_POLL — HTTP ${HTTP_CODE}, retrying in ${POLL_INTERVAL}s..."
-            sleep $POLL_INTERVAL
-          done
-
-          echo "::error::ArgoCD server unreachable after $(( MAX_POLL * POLL_INTERVAL ))s — bootstrapArgoCD may have failed"
-          exit 1
+          just ci-argocd-health \
+            --environment ${{ inputs.cdk-environment }} \
+            --region ${{ env.AWS_REGION }} \
+            --max-polls 6 \
+            --poll-interval 20
 
       - name: Run K8s Smoke Tests
         id: smoke

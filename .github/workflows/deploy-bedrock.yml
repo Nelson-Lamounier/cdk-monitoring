@@ -19,7 +19,7 @@ on:
       - "infra/lib/projects/bedrock/**"
       - "bedrock-publisher/src/**"
       - "infra/bin/app.ts"
-      - ".github/workflows/deploy-bedrock-*.yml"
+      - ".github/workflows/deploy-bedrock*.yml"
       - ".github/workflows/_deploy-stack.yml"
       - ".github/actions/**"
 
@@ -45,6 +45,7 @@ jobs:
       aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
+      use-container: false # Bedrock needs Docker for VectorKnowledgeBase synth
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
@@ -63,6 +64,7 @@ jobs:
       aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
+      use-container: false
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
@@ -81,6 +83,7 @@ jobs:
       aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
+      use-container: false
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
@@ -100,5 +103,6 @@ jobs:
       aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
+      use-container: false
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}

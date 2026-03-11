@@ -7,7 +7,7 @@
 #
 # 8-Stack Architecture: Data → Base → Compute → AppIam → Api → Edge.
 # Application workloads (traefik, metrics-server) are managed by
-# ArgoCD via Pipeline B (gitops-k8s-dev.yml).
+# ArgoCD via Pipeline B (gitops-k8s.yml).
 #
 # Prerequisites:
 #   - Shared VPC from deploy-shared workflow
@@ -18,28 +18,16 @@ on:
   push:
     branches:
       - develop
-      - feature/k3s-kubernetes-migration
     paths:
-      # CDK infrastructure
-      - "infra/lib/config/k8s/**"
-      - "infra/lib/config/projects.ts"
-      - "infra/lib/config/defaults.ts"
-      - "infra/lib/projects/k8s/**"
       - "infra/lib/stacks/kubernetes/**"
-      - "infra/lib/common/compute/builders/user-data-builder.ts"
-      - "infra/lambda/**"
+      - "infra/lib/config/kubernetes/**"
+      - "infra/lib/config/nextjs/**"
+      - "infra/lib/projects/kubernetes/**"
+      - "infra/scripts/cd/**"
       - "infra/bin/app.ts"
-      # Bootstrap scripts (synced to S3 inside _deploy-kubernetes.yml)
-      - "kubernetes-app/k8s-bootstrap/**"
-      # Golden AMI image construct
-      - "infra/lib/common/compute/constructs/golden-ami-image.ts"
-      # Golden AMI recipes
-      - "kubernetes-app/infra-ami/**"
-      # Pipeline definitions
-      - ".github/workflows/deploy-kubernetes-dev.yml"
+      - ".github/workflows/deploy-kubernetes*.yml"
       - ".github/workflows/_deploy-kubernetes.yml"
       - ".github/workflows/_deploy-stack.yml"
-      - ".github/workflows/_iac-security-scan.yml"
       - ".github/actions/**"
   # Weekly: AMI refresh for OS security patches
   schedule:
