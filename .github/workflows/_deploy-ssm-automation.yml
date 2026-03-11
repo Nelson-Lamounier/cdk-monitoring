@@ -153,6 +153,8 @@ jobs:
           SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL || '' }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET || '' }}
           VERIFICATION_BASE_URL: ${{ vars.VERIFICATION_BASE_URL || '' }}
+          ALLOW_IPV4: ${{ secrets.ALLOW_IPV4 }}
+          ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 || '' }}
         run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
 
       # Deploy only the SSM Automation stack
