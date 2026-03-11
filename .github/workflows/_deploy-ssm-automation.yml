@@ -25,7 +25,7 @@
 #   deploy → sync-scripts → trigger-bootstrap → watch-bootstrap → deploy-nextjs-secrets → verify
 #
 #   1. deploy              - CDK deploy of the ssmAutomation stack
-#   2. sync-scripts        - aws s3 sync of k8s-bootstrap/ + app-deploy/nextjs/ to S3
+#   2. sync-scripts        - aws s3 sync of k8s-bootstrap/ + workloads/charts/nextjs/ to S3
 #   3. trigger-bootstrap   - Resolves instance IDs from SSM parameters,
 #                            triggers SSM Automation per node role
 #   4. watch-bootstrap     - Polls SSM step status, streams CloudWatch logs

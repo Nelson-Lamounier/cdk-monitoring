@@ -8,15 +8,16 @@
 #
 # Separation from Pipeline A:
 #   Pipeline A (Infra): infra/ + k8s-bootstrap/ → CDK, EC2, S3 sync, AMI build
-#   Pipeline B (GitOps): app-deploy/ → Validate, ArgoCD auto-sync from Git
+#   Pipeline B (GitOps): platform/ + workloads/ → Validate, ArgoCD auto-sync from Git
 #
 #   boot-k8s.sh, ArgoCD manifests, and Calico config are INFRASTRUCTURE.
 #   They are synced to S3 by Pipeline A's sync-bootstrap-content job.
 #   This pipeline does NOT touch S3 or EC2. - Test
 #
-# What ArgoCD syncs from Git (managed by App-of-Apps root):
-#   - kubernetes-app/k8s-bootstrap/system/argocd/applications/ → child Application manifests
-#   - kubernetes-app/app-deploy/nextjs/chart         → nextjs Application
+# What ArgoCD syncs from Git (managed by App-of-Apps roots):
+#   - kubernetes-app/platform/argocd-apps/   → platform Application manifests
+#   - kubernetes-app/workloads/argocd-apps/  → workload Application manifests
+#   - kubernetes-app/workloads/charts/nextjs/chart  → nextjs Application
 #   - kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml → traefik Application - Test
 #
 # Prerequisites:
@@ -32,14 +33,15 @@ on:
       - feature/k3s-kubernetes-migration
     paths:
       # Helm charts (ArgoCD watches these paths in Git)
-      - "kubernetes-app/app-deploy/nextjs/**"
-      - "kubernetes-app/app-deploy/monitoring/**"
+      - "kubernetes-app/platform/charts/**"
+      - "kubernetes-app/workloads/charts/**"
+      # ArgoCD Application manifests
+      - "kubernetes-app/platform/argocd-apps/**"
+      - "kubernetes-app/workloads/argocd-apps/**"
       # Traefik values (ArgoCD multi-source references this from Git)
       - "kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml"
       # cert-manager config (ClusterIssuer, Certificate CRs)
       - "kubernetes-app/k8s-bootstrap/system/cert-manager/**"
-      # App-of-Apps child Application manifests
-      - "kubernetes-app/k8s-bootstrap/system/argocd/applications/**"
       # Pipeline definition
       - ".github/workflows/gitops-k8s.yml"
   workflow_call:
@@ -84,7 +86,7 @@ jobs:
         with:
           filters: |
             steampipe:
-              - 'kubernetes-app/app-deploy/monitoring/steampipe/**'
+              - 'kubernetes-app/platform/charts/monitoring/steampipe/**'
 
   build-steampipe-image:
     name: Build Steampipe Image
@@ -120,7 +122,7 @@ jobs:
           docker build --platform linux/amd64 \
             -t ${ECR_REGISTRY}/steampipe-aws:latest \
             -t ${ECR_REGISTRY}/steampipe-aws:${IMAGE_TAG} \
-            kubernetes-app/app-deploy/monitoring/steampipe/
+            kubernetes-app/platform/charts/monitoring/steampipe/
 
           echo "Pushing to ECR..."
           docker push ${ECR_REGISTRY}/steampipe-aws:latest
@@ -166,7 +168,7 @@ jobs:
           fi
 
           # Validate Helm values files
-          for f in $(find kubernetes-app/app-deploy -name 'values*.yaml' -type f 2>/dev/null); do
+          for f in $(find kubernetes-app/platform/charts kubernetes-app/workloads/charts -name 'values*.yaml' -type f 2>/dev/null); do
             if python3 -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null; then
               echo "  ✓ $f"
             else

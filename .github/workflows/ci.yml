@@ -83,7 +83,8 @@ jobs:
             any-tests:
               - 'infra/tests/**/*.ts'
             k8s-content:
-              - 'kubernetes-app/app-deploy/**/chart/**'
+              - 'kubernetes-app/platform/charts/**/chart/**'
+              - 'kubernetes-app/workloads/charts/**/chart/**'
               - 'kubernetes-app/k8s-bootstrap/**'
 
       - name: Compute Run Flags
@@ -454,8 +455,8 @@ jobs:
       - name: Template Render (Next.js)
         run: |
           helm template nextjs-app \
-            kubernetes-app/app-deploy/nextjs/chart \
-            -f kubernetes-app/app-deploy/nextjs/nextjs-values.yaml \
+            kubernetes-app/workloads/charts/nextjs/chart \
+            -f kubernetes-app/workloads/charts/nextjs/nextjs-values.yaml \
             --namespace nextjs-app \
             > /tmp/nextjs-rendered.yaml
 
