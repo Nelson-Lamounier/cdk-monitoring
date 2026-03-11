@@ -176,6 +176,11 @@ ci-rollback *ARGS:
 ci-drift *ARGS:
     npx tsx infra/scripts/ci/drift-detection.ts {{ARGS}}
 
+# CI log group audit: find empty CloudWatch log groups (no streams)
+[group('ci')]
+ci-log-audit *ARGS:
+    npx tsx infra/scripts/ci/log-group-audit.ts {{ARGS}}
+
 # CI golden AMI observer: stream Image Builder build logs during deployment
 [group('ci')]
 ci-golden-ami-observer *ARGS:
