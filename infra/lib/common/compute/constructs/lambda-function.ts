@@ -338,13 +338,7 @@ export class LambdaFunctionConstruct extends Construct {
             ...(props.encryptionKey && { environmentEncryption: props.encryptionKey }),
         });
 
-        // =================================================================
-        // TAGS
-        //
-        // Organizational tags (Environment, Project, Owner, ManagedBy) are
-        // applied by TaggingAspect at the app level — not duplicated here.
-        // =================================================================
-        cdk.Tags.of(this.function).add('Component', 'Lambda');
+        // Tags: all 6 tags applied by TaggingAspect at stack level
 
         // CDK-Nag suppression: NODEJS_22_X is the latest LTS runtime
         // AwsSolutions-L1 may not recognize it as latest yet

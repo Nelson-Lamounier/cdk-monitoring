@@ -390,6 +390,7 @@ jobs:
           SES_FROM_EMAIL: ci-validation@placeholder.local
           VERIFICATION_SECRET: ci-placeholder-secret
           ALLOW_IPV4: "203.0.113.0/32"
+          INFRA_VERSION: ${{ github.sha }}
 
       - name: Upload CDK Synthesis
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

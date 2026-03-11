@@ -112,10 +112,6 @@ export class EcrRepositoryConstruct extends Construct {
             lifecycleRules,
         });
 
-        // Apply tags
-        cdk.Tags.of(this.repository).add('Environment', environment);
-        cdk.Tags.of(this.repository).add('Application', 'NextJS');
-        cdk.Tags.of(this.repository).add('ManagedBy', 'CDK');
     }
 
     /**

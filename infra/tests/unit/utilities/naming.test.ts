@@ -7,13 +7,12 @@
  */
 
 import { Project } from '../../../lib/config/projects';
+import { shortEnv } from '../../../lib/config/environments';
 import {
     stackId,
     getStackId,
     STACK_REGISTRY,
-    resourceName,
-    logGroupName,
-    exportName,
+    flatName,
     describeCidr,
 } from '../../../lib/utilities/naming';
 
@@ -87,32 +86,48 @@ describe('Naming Utilities', () => {
     });
 
     // =========================================================================
-    // Existing utility functions
+    // shortEnv()
     // =========================================================================
-    describe('resourceName', () => {
-        it('should join parts with hyphens', () => {
-            expect(resourceName({ project: 'k8s', component: 'vpc', environment: 'development' }))
-                .toBe('k8s-vpc-development');
+    describe('shortEnv', () => {
+        it('should abbreviate development to dev', () => {
+            expect(shortEnv('development')).toBe('dev');
         });
 
-        it('should omit missing parts', () => {
-            expect(resourceName({ project: 'k8s' })).toBe('k8s');
+        it('should abbreviate staging to stg', () => {
+            expect(shortEnv('staging')).toBe('stg');
         });
-    });
 
-    describe('logGroupName', () => {
-        it('should generate /{project}/{component}/{environment}', () => {
-            expect(logGroupName('k8s', 'compute', 'development')).toBe('/k8s/compute/development');
+        it('should abbreviate production to prd', () => {
+            expect(shortEnv('production')).toBe('prd');
         });
     });
 
-    describe('exportName', () => {
-        it('should generate {project}-{component}-{output}-{environment}', () => {
-            expect(exportName('k8s', 'compute', 'role-arn', 'development'))
-                .toBe('k8s-compute-role-arn-development');
+    // =========================================================================
+    // flatName()
+    // =========================================================================
+    describe('flatName', () => {
+        it('should generate {project}-{component}-{shortEnv}', () => {
+            expect(flatName('k8s', 'ctrl', 'development')).toBe('k8s-ctrl-dev');
+        });
+
+        it('should lowercase all parts', () => {
+            expect(flatName('K8s', 'Ctrl', 'production')).toBe('k8s-ctrl-prd');
+        });
+
+        it('should handle empty component', () => {
+            expect(flatName('bedrock', '', 'staging')).toBe('bedrock-stg');
+        });
+
+        it('should produce short names for all environments', () => {
+            expect(flatName('k8s', 'worker', 'development')).toBe('k8s-worker-dev');
+            expect(flatName('k8s', 'worker', 'staging')).toBe('k8s-worker-stg');
+            expect(flatName('k8s', 'worker', 'production')).toBe('k8s-worker-prd');
         });
     });
 
+    // =========================================================================
+    // describeCidr()
+    // =========================================================================
     describe('describeCidr', () => {
         it('should describe /32 as IP', () => {
             expect(describeCidr('10.0.0.1/32')).toBe('IP 10.0.0.1');

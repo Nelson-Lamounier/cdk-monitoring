@@ -81,19 +81,7 @@ export interface Ec2InstanceConstructProps {
      */
     readonly subnetSelection?: ec2.SubnetSelection;
 
-    /**
-     * Application tag value. Applied as `Application: {value}` tag
-     * to the instance and all child resources.
-     * @default namePrefix value
-     */
-    readonly applicationTag?: string;
 
-    /**
-     * Purpose tag value. Applied as `Purpose: {value}` tag
-     * to the instance and all child resources.
-     * @default 'Compute'
-     */
-    readonly purposeTag?: string;
 
     /**
      * CloudWatch log retention period.
@@ -170,8 +158,6 @@ export class Ec2InstanceConstruct extends Construct {
 
         const namePrefix = props.namePrefix ?? 'ec2';
         const volumeSize = props.volumeSizeGb ?? 30;
-        const applicationTag = props.applicationTag ?? namePrefix;
-        const purposeTag = props.purposeTag ?? 'Compute';
 
         // =================================================================
         // CloudWatch Log Group
@@ -239,11 +225,7 @@ export class Ec2InstanceConstruct extends Construct {
             userData: props.userData,
         });
 
-        // =================================================================
-        // Resource Tagging
-        // =================================================================
-        cdk.Tags.of(this).add('Application', applicationTag);
-        cdk.Tags.of(this).add('Purpose', purposeTag);
+        // Tags: all 6 tags applied by TaggingAspect at stack level
     }
 
     // =====================================================================

@@ -24,7 +24,7 @@ import {
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import { CrossAccountDnsRoleStack } from '../../stacks/org';
-import { stackId } from '../../utilities/naming';
+import { stackId, flatName } from '../../utilities/naming';
 
 export interface OrgProjectConfig {
     /**
@@ -90,7 +90,7 @@ export class OrgProjectFactory implements IProjectFactory<OrgFactoryContext> {
     createAllStacks(scope: cdk.App, context: OrgFactoryContext): ProjectStackFamily {
         const stacks: cdk.Stack[] = [];
         const stackMap: Record<string, cdk.Stack> = {};
-        const namePrefix = `${this.namespace}-${this.environment}`;
+        const namePrefix = flatName('org', '', this.environment);
 
         // Resolve org-specific config: explicit context > CDK context
         const hostedZoneIdsRaw = context.hostedZoneIds

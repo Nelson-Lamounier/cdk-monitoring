@@ -262,8 +262,7 @@ export class GoldenAmiImageConstruct extends Construct {
             description: `Golden AMI ID for ${namePrefix} (managed by CloudFormation)`,
         });
 
-        // Tag for identification
-        cdk.Tags.of(this).add('Component', 'GoldenAmiImage');
+        // Tags: all 6 tags applied by TaggingAspect at stack level
     }
 
     // =====================================================================

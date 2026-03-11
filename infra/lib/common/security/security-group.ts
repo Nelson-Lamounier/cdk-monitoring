@@ -105,11 +105,6 @@ export class BaseSecurityGroupConstruct extends Construct {
             allowAllOutbound: props.allowAllOutbound ?? true,
         });
 
-        // Tags — only Component. Organizational tags from TaggingAspect.
-        cdk.Tags.of(this.securityGroup).add(
-            'Component',
-            `${props.namePrefix ?? 'app'}-security-group`,
-        );
     }
 
     /**
@@ -289,11 +284,6 @@ export class EcsSecurityGroupConstruct extends Construct {
         // NOTE: No SSH (port 22) - Use SSM Session Manager
         // NOTE: No direct ALB traffic - ALB talks to task ENI, not instance ENI
 
-        // =================================================================
-        // Tags
-        // =================================================================
-        cdk.Tags.of(this.securityGroup).add('Purpose', 'ECS-Instance');
-        cdk.Tags.of(this.securityGroup).add('Environment', environment);
     }
 
     /**
@@ -449,11 +439,6 @@ export class NextJsTaskSecurityGroupConstruct extends Construct {
         // Even though task has public IP (public subnet), internet traffic
         // cannot reach port 3000 because only ALB-SG is allowed
 
-        // =================================================================
-        // Tags
-        // =================================================================
-        cdk.Tags.of(this.securityGroup).add('Purpose', 'NextJS-Task');
-        cdk.Tags.of(this.securityGroup).add('Environment', environment);
     }
 
     /**
@@ -602,11 +587,7 @@ export class SecurityGroupConstruct extends Construct {
             allowAllOutbound: true,
         });
 
-        // Tags
-        cdk.Tags.of(this.securityGroup).add('Purpose', purpose);
-        if (ssmOnlyAccess) {
-            cdk.Tags.of(this.securityGroup).add('AccessMode', 'SSM-Only');
-        }
+
 
         // =================================================================
         // Ingress Rules

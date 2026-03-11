@@ -23,7 +23,6 @@ export {
     TEST_ENV_EU,
     createTestEnv,
     TEST_CIDRS,
-    DEFAULT_TAGS,
     DEFAULT_VPC_CONFIG,
     MONITORING_PORTS,
 } from './constants';

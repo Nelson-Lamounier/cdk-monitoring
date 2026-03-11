@@ -49,14 +49,6 @@ export const TEST_CIDRS = {
 };
 
 /**
- * Standard tags applied to monitoring resources
- */
-export const DEFAULT_TAGS = {
-    Purpose: 'Monitoring',
-    Application: 'Prometheus-Grafana',
-} as const;
-
-/**
  * Default VPC configuration for testing
  */
 export const DEFAULT_VPC_CONFIG = {

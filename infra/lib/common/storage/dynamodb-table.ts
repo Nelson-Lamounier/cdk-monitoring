@@ -513,21 +513,6 @@ export class DynamoDbTableConstruct extends Construct {
       });
     }
 
-    // ========================================================================
-    // APPLY TAGS
-    // ========================================================================
-
-    cdk.Tags.of(this.table).add("Environment", props.envName);
-    cdk.Tags.of(this.table).add("Project", props.projectName);
-    cdk.Tags.of(this.table).add("ManagedBy", "CDK");
-    cdk.Tags.of(this.table).add("TableName", props.tableName);
-
-    // Apply custom tags
-    if (props.tags) {
-      Object.entries(props.tags).forEach(([key, value]) => {
-        cdk.Tags.of(this.table).add(key, value);
-      });
-    }
 
     // ========================================================================
     // COST OPTIMISATION METADATA

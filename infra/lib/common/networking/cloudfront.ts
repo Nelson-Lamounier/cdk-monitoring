@@ -420,15 +420,6 @@ export class CloudFrontConstruct extends Construct {
         });
 
         // =====================================================================
-        // TAGGING
-        //
-        // Organizational tags (Environment, Project, Owner, ManagedBy) are
-        // applied by TaggingAspect at the app level — not duplicated here.
-        // Only the construct-specific Component tag is added.
-        // =====================================================================
-        cdk.Tags.of(this.distribution).add('Component', 'CloudFront');
-
-        // =====================================================================
         // CDK NAG SUPPRESSIONS
         // =====================================================================
         if (!configs.isProduction && !webAclId) {

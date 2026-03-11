@@ -55,7 +55,7 @@ import {
     KubernetesAppWorkerStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
-import { stackId } from '../../utilities/naming';
+import { stackId, flatName } from '../../utilities/naming';
 
 // =============================================================================
 // FACTORY CONTEXT
@@ -124,7 +124,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         const configs = getK8sConfigs(environment);
         const nextjsConfig = getNextJsConfigs(environment);
 
-        const namePrefix = `k8s-${environment}`;
+        const namePrefix = flatName('k8s', '', environment);
         const env = cdkEnvironment(environment);
         const ssmPrefix = `/k8s/${environment}`;
 

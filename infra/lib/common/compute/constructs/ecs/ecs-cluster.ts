@@ -274,11 +274,6 @@ export class EcsClusterConstruct extends Construct {
             description: `ECS task execution role for ${namePrefix} cluster`,
         });
 
-        // Apply tags
-        cdk.Tags.of(this.cluster).add('Environment', environment);
-        cdk.Tags.of(this.cluster).add('Application', 'NextJS');
-        cdk.Tags.of(this.cluster).add('ManagedBy', 'CDK');
-        cdk.Tags.of(this.cluster).add('CapacityType', capacityType);
     }
 
     /**

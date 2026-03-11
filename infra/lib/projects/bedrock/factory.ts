@@ -34,7 +34,7 @@ import {
     BedrockApiStack,
     AiContentStack,
 } from '../../stacks/bedrock';
-import { stackId } from '../../utilities/naming';
+import { stackId, flatName } from '../../utilities/naming';
 
 // =========================================================================
 // Factory Context
@@ -77,7 +77,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         // CDK environment: resolved from env vars via config
         const env = cdkEnvironment(this.environment);
 
-        const namePrefix = `${this.namespace.toLowerCase()}-${this.environment}`;
+        const namePrefix = flatName('bedrock', '', this.environment);
 
         // Context overrides > typed config defaults
         const agentInstruction = context.agentInstruction ?? configs.agentInstruction;

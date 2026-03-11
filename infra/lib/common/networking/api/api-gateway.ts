@@ -370,13 +370,6 @@ export class ApiGatewayConstruct extends Construct {
             validateRequestParameters: true,
         });
 
-        // =====================================================================
-        // TAGGING
-        //
-        // Organizational tags (Environment, Project, Owner, ManagedBy) are
-        // applied by TaggingAspect at the app level — not duplicated here.
-        // =====================================================================
-        cdk.Tags.of(this.api).add('Component', 'ApiGateway');
     }
 
     /**

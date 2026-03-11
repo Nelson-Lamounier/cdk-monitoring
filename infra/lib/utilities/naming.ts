@@ -145,82 +145,47 @@ export function getStackId(
 }
 
 // =============================================================================
-// RESOURCE NAMING FUNCTIONS
+// FLAT RESOURCE NAMING
 // =============================================================================
 
-/**
- * Options for resource naming
- */
-export interface NamingOptions {
-    /** Project name */
-    readonly project?: string;
-    /** Environment */
-    readonly environment?: EnvironmentName;
-    /** Resource component */
-    readonly component?: string;
-}
+import { shortEnv } from '../config/environments';
 
 /**
- * Generate a consistent resource name
+ * Generate a flat, semantic resource name using short environment abbreviations.
  *
- * Format: {project}-{component}-{environment}
+ * Format: {project}-{component}-{env}  (when component is non-empty)
+ *         {project}-{env}              (when component is empty)
+ *
+ * All parts are lowercased. Designed for AWS Console readability and
+ * CLI/Steampipe queryability (kebab-case, never truncated).
+ *
+ * @param project - Project identifier (e.g. 'k8s', 'bedrock', 'org')
+ * @param component - Resource component (e.g. 'ctrl', 'worker', 'api'). Empty string omits it.
+ * @param environment - Full environment name (e.g. 'development') — abbreviated automatically
+ * @returns Flat name (e.g. 'k8s-ctrl-dev', 'bedrock-api-prd')
  *
  * @example
- * resourceName({ project: 'monitoring', component: 'vpc', environment: 'dev' })
- * // Returns: 'monitoring-vpc-dev'
+ * flatName('k8s', 'ctrl', 'development')   // → 'k8s-ctrl-dev'
+ * flatName('k8s', '', 'development')        // → 'k8s-dev'
+ * flatName('bedrock', 'api', 'production')  // → 'bedrock-api-prd'
  */
-export function resourceName(options: NamingOptions): string {
-    const parts: string[] = [];
-
-    if (options.project) {
-        parts.push(options.project);
+export function flatName(
+    project: string,
+    component: string,
+    environment: EnvironmentName,
+): string {
+    const env = shortEnv(environment);
+    const parts = [project.toLowerCase()];
+    if (component) {
+        parts.push(component.toLowerCase());
     }
-
-    if (options.component) {
-        parts.push(options.component);
-    }
-
-    if (options.environment) {
-        parts.push(options.environment);
-    }
-
+    parts.push(env);
     return parts.join('-');
 }
 
-/**
- * Generate log group name
- *
- * Format: /{project}/{component}/{environment}
- */
-export function logGroupName(
-    project: string,
-    component: string,
-    environment?: EnvironmentName
-): string {
-    const parts = ['', project, component];
-    if (environment) {
-        parts.push(environment);
-    }
-    return parts.join('/');
-}
-
-/**
- * Generate CloudFormation export name
- *
- * Format: {project}-{component}-{output}-{environment}
- */
-export function exportName(
-    project: string,
-    component: string,
-    output: string,
-    environment?: EnvironmentName
-): string {
-    const parts = [project, component, output];
-    if (environment) {
-        parts.push(environment);
-    }
-    return parts.join('-');
-}
+// =============================================================================
+// UTILITY FUNCTIONS
+// =============================================================================
 
 /**
  * Describe a CIDR block in human-readable format
@@ -234,3 +199,4 @@ export function describeCidr(cidr: string): string {
     }
     return `CIDR ${cidr}`;
 }
+

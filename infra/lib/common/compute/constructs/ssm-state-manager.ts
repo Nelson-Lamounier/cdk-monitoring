@@ -303,7 +303,6 @@ export class SsmStateManagerConstruct extends Construct {
             }),
         );
 
-        // Tag for identification
-        cdk.Tags.of(this).add('Component', 'SsmStateManager');
+        // Tags: all 6 tags applied by TaggingAspect at stack level
     }
 }

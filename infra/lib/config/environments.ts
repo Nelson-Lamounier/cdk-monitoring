@@ -152,6 +152,30 @@ export function cdkEdgeEnvironment(env: Environment): cdk.Environment {
 }
 
 // =============================================================================
+// ENVIRONMENT ABBREVIATIONS (for flat resource naming)
+// =============================================================================
+
+/**
+ * Map full environment names to 3-char abbreviations for flat resource naming.
+ *
+ * Used by `flatName()` in naming.ts to produce short, CLI-friendly names
+ * like `k8s-ctrl-dev` instead of `k8s-ctrl-development`.
+ *
+ * @example
+ * shortEnv(Environment.DEVELOPMENT)  // → 'dev'
+ * shortEnv(Environment.PRODUCTION)   // → 'prd'
+ */
+const ENV_ABBREVIATIONS: Record<Environment, string> = {
+    [Environment.DEVELOPMENT]: 'dev',
+    [Environment.STAGING]: 'stg',
+    [Environment.PRODUCTION]: 'prd',
+};
+
+export function shortEnv(env: EnvironmentName): string {
+    return ENV_ABBREVIATIONS[env as Environment];
+}
+
+// =============================================================================
 // ENVIRONMENT UTILITY FUNCTIONS
 // =============================================================================
 

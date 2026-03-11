@@ -14,24 +14,11 @@ import * as path from 'path';
 
 import { Template, Match } from 'aws-cdk-lib/assertions';
 
-import { DEFAULT_TAGS } from './constants';
 
 /**
  * Collection of reusable stack assertions
  */
 export const StackAssertions = {
-    /**
-     * Assert that a resource has standard monitoring tags
-     */
-    hasMonitoringTags(template: Template, resourceType: string): void {
-        template.hasResourceProperties(resourceType, {
-            Tags: Match.arrayWith([
-                Match.objectLike({ Key: 'Purpose', Value: DEFAULT_TAGS.Purpose }),
-                Match.objectLike({ Key: 'Application', Value: DEFAULT_TAGS.Application }),
-            ]),
-        });
-    },
-
     /**
      * Assert that a KMS key has rotation enabled (CKV_AWS_7 compliance)
      */

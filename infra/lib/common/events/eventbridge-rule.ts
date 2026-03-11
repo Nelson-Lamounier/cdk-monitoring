@@ -220,9 +220,7 @@ export class EventBridgeRuleConstruct extends Construct {
             });
         }
 
-        // Apply tags
-        cdk.Tags.of(this.rule).add('ManagedBy', 'CDK');
-        cdk.Tags.of(this.rule).add('Component', 'EventBridge');
+        // Tags: all 6 tags applied by TaggingAspect at stack level
     }
 
     /**

@@ -132,14 +132,6 @@ export const DOCKER_VERSIONS = {
 } as const;
 
 /**
- * Tags applied to monitoring resources
- */
-export const DEFAULT_TAGS = {
-    Purpose: 'Monitoring',
-    Application: 'Prometheus-Grafana',
-} as const;
-
-/**
  * Log retention defaults by environment
  */
 export const LOG_RETENTION = {

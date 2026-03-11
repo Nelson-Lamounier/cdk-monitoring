@@ -306,13 +306,6 @@ export class ApplicationLoadBalancerConstruct extends Construct {
         }
 
         // ========================================
-        // COMPONENT-SPECIFIC TAGS
-        // (Environment/Project/ManagedBy via TaggingAspect)
-        // ========================================
-        cdk.Tags.of(this.loadBalancer).add('Component', 'ALB');
-        cdk.Tags.of(this.loadBalancer).add('Name', props.loadBalancerName);
-
-        // ========================================
         // CDK NAG SUPPRESSIONS
         // ========================================
         if (internetFacing) {

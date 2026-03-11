@@ -1,33 +1,72 @@
+/**
+ * @format
+ * Tagging Aspect — Single Source of Truth
+ *
+ * Applies exactly 6 kebab-case tags to every taggable resource.
+ * No manual `.add()` calls in constructs — this Aspect is the ONLY
+ * tag source, enforced at app level.
+ *
+ * Schema:
+ *   project:     k8s-platform | bedrock | org | shared
+ *   environment: development | staging | production
+ *   owner:       nelson-l
+ *   component:   compute | networking | data | edge | iam | api
+ *   managed-by:  cdk
+ *   version:     1.0.0
+ *
+ * Design:
+ * - All keys are lowercase kebab-case (CLI/Steampipe friendly)
+ * - `managed-by` is hardcoded to 'cdk' (always true)
+ * - No transient data (commit IDs, timestamps, run IDs) — that belongs in CI logs
+ * - No per-resource identity tags — use CloudFormation resource type + stack name
+ */
+
 import * as cdk from 'aws-cdk-lib/core';
 
 import { IConstruct } from 'constructs';
 
-import { Environment } from '../config/environments';
-
 /**
- * Tag configuration for resources
+ * Tag configuration for the 6-tag schema.
+ * All values except `managed-by` are caller-provided.
  */
 export interface TagConfig {
-    readonly environment: Environment;
+    /** Full environment name (e.g. 'development') */
+    readonly environment: string;
+    /** Project identifier (e.g. 'k8s-platform', 'bedrock') */
     readonly project: string;
+    /** Owner shorthand (e.g. 'nelson-l') */
     readonly owner: string;
-    readonly costCenter?: string;
+    /** Stack-level component (e.g. 'compute', 'networking', 'data') */
+    readonly component: string;
+    /** Semantic version of the infrastructure (e.g. '1.0.0') */
+    readonly version: string;
 }
 
 /**
- * Aspect that applies consistent tags to all taggable resources.
- * Uses direct tag manager manipulation to avoid priority conflicts.
+ * Aspect that applies the 6-tag kebab-case schema to all taggable resources.
+ *
+ * @example
+ * ```typescript
+ * cdk.Aspects.of(stack).add(new TaggingAspect({
+ *     environment: 'development',
+ *     project: 'k8s-platform',
+ *     owner: 'nelson-l',
+ *     component: 'compute',
+ *     version: '1.0.0',
+ * }));
+ * ```
  */
 export class TaggingAspect implements cdk.IAspect {
     private readonly tags: Record<string, string>;
 
     constructor(config: TagConfig) {
         this.tags = {
-            Environment: config.environment,
-            Project: config.project,
-            Owner: config.owner,
-            ManagedBy: 'CDK',
-            ...(config.costCenter && { CostCenter: config.costCenter }),
+            'project': config.project,
+            'environment': config.environment,
+            'owner': config.owner,
+            'component': config.component,
+            'managed-by': 'cdk',
+            'version': config.version,
         };
     }
 
@@ -38,22 +77,4 @@ export class TaggingAspect implements cdk.IAspect {
             });
         }
     }
-}
-
-/**
- * Helper function to apply tagging at app level using Tags.of() 
- * This is the recommended approach for applying tags across the entire app
- */
-export function applyTagging(scope: IConstruct, config: TagConfig): void {
-    const tags: Record<string, string> = {
-        Environment: config.environment,
-        Project: config.project,
-        Owner: config.owner,
-        ManagedBy: 'CDK',
-        ...(config.costCenter && { CostCenter: config.costCenter }),
-    };
-
-    Object.entries(tags).forEach(([key, value]) => {
-        cdk.Tags.of(scope).add(key, value);
-    });
 }

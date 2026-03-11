@@ -76,13 +76,32 @@ const { stacks } = factory.createAllStacks(app, {
 // 4. Cross-Cutting Aspects
 // ============================================================================
 
-// Tagging — enforces consistent 5-key schema across all resources
-cdk.Aspects.of(app).add(new TaggingAspect({
-    environment,
-    project: projectConfig.namespace || projectConfig.displayName,
-    owner: process.env.PROJECT_OWNER ?? 'Nelson Lamounier',
-    costCenter: process.env.COST_CENTER,
-}));
+// Tagging — enforces consistent 6-key kebab-case schema across all resources
+// Applied per-stack so `component` can vary (compute, networking, data, etc.)
+const INFRA_VERSION = process.env.INFRA_VERSION ?? '1.0.0';
+
+stacks.forEach(stack => {
+    cdk.Aspects.of(stack).add(new TaggingAspect({
+        environment,
+        project: projectConfig.namespace?.toLowerCase() || projectConfig.displayName.toLowerCase(),
+        owner: 'nelson-l',
+        component: inferComponent(stack.stackName),
+        version: INFRA_VERSION,
+    }));
+});
+
+/**
+ * Infer the component tag from a stack name.
+ * Maps stack names to infrastructure layers for Cost Explorer grouping.
+ */
+function inferComponent(stackName: string): string {
+    const name = stackName.toLowerCase();
+    if (name.includes('data') || name.includes('storage')) return 'data';
+    if (name.includes('edge') || name.includes('api') || name.includes('cloudfront')) return 'networking';
+    if (name.includes('iam') || name.includes('dns') || name.includes('role')) return 'iam';
+    if (name.includes('goldenami') || name.includes('ssm')) return 'tooling';
+    return 'compute';
+}
 
 // CDK-Nag compliance checks
 const enableNagChecks = app.node.tryGetContext('nagChecks') !== 'false';

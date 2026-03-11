@@ -13,7 +13,7 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { MONITORING_APP_TAG } from '../../config/defaults';
+
 
 /**
  * Props for EncryptedEbsVolumeConstruct
@@ -147,10 +147,6 @@ export class EncryptedEbsVolumeConstruct extends Construct {
 
         this.volume = newVolume;
 
-        // Apply tags
-        cdk.Tags.of(newVolume).add('Purpose', 'Monitoring');
-        cdk.Tags.of(newVolume).add(MONITORING_APP_TAG.key, MONITORING_APP_TAG.value);
-        cdk.Tags.of(newVolume).add('DataClassification', 'Internal');
     }
 
     private validateConfig(

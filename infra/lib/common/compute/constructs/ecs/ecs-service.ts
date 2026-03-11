@@ -279,11 +279,6 @@ export class EcsServiceConstruct extends Construct {
             );
         }
 
-        // =================================================================
-        // Tags
-        // =================================================================
-        cdk.Tags.of(this.service).add('Component', 'ECS-Service');
-        cdk.Tags.of(this.service).add('Environment', environment);
     }
 
     /**

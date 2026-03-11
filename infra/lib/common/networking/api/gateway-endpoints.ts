@@ -7,7 +7,6 @@
  */
 
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
@@ -51,7 +50,6 @@ export class GatewayEndpointsConstruct extends Construct {
                 service: ec2.GatewayVpcEndpointAwsService.S3,
                 subnets: props.subnets ? [props.subnets] : undefined,
             });
-            cdk.Tags.of(this.s3Endpoint).add('Name', 's3-gateway-endpoint');
         }
 
         // DynamoDB Gateway Endpoint
@@ -60,7 +58,6 @@ export class GatewayEndpointsConstruct extends Construct {
                 service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
                 subnets: props.subnets ? [props.subnets] : undefined,
             });
-            cdk.Tags.of(this.dynamoDbEndpoint).add('Name', 'dynamodb-gateway-endpoint');
         }
     }
 }

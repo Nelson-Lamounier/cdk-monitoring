@@ -255,13 +255,6 @@ export class AcmCertificateDnsValidationConstruct extends Construct {
         });
 
         // ========================================
-        // COMPONENT-SPECIFIC TAGS
-        // (Environment/Project/ManagedBy via TaggingAspect)
-        // ========================================
-        cdk.Tags.of(this).add('Component', 'ACM-Certificate');
-        cdk.Tags.of(this).add('DomainName', props.domainName);
-
-        // ========================================
         // CDK NAG SUPPRESSIONS
         // ========================================
         this.applyCdkNagSuppressions();

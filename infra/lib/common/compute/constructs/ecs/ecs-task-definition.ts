@@ -395,10 +395,5 @@ export class EcsTaskDefinitionConstruct extends Construct {
             props.repository.grantPull(this.executionRole);
         }
 
-        // =================================================================
-        // Component-specific Tags (Environment/Project/ManagedBy via TaggingAspect)
-        // =================================================================
-        cdk.Tags.of(this.taskDefinition).add('Component', 'ECS-TaskDefinition');
-        cdk.Tags.of(this.taskDefinition).add('LaunchType', this.launchType);
     }
 }

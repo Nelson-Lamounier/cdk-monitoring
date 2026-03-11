@@ -307,13 +307,7 @@ export class AutoScalingGroupConstruct extends Construct {
             });
         }
 
-        // =================================================================
-        // TAGS
-        //
-        // Organizational tags (Environment, Project, Owner, ManagedBy) are
-        // applied by TaggingAspect at the app level — not duplicated here.
-        // =================================================================
-        cdk.Tags.of(this.autoScalingGroup).add('Component', 'AutoScalingGroup');
+        // Tags: all 6 tags applied by TaggingAspect at stack level
     }
 
     /**

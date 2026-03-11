@@ -222,13 +222,6 @@ export class S3BucketConstruct extends Construct {
         });
 
         // ========================================
-        // COMPONENT-SPECIFIC TAGS
-        // (Environment/Project/ManagedBy via TaggingAspect)
-        // ========================================
-        cdk.Tags.of(this.bucket).add('Component', 'S3-Bucket');
-        cdk.Tags.of(this.bucket).add('Purpose', config.purpose);
-
-        // ========================================
         // PRODUCTION WARNINGS
         // ========================================
         if (isProduction) {

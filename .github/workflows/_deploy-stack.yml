@@ -90,6 +90,16 @@ on:
         required: false
         type: boolean
         default: true
+      additional-args:
+        description: "Additional CDK CLI arguments (e.g., --context key=value flags for org project)"
+        required: false
+        type: string
+        default: ""
+      root-account-id:
+        description: "Root/management AWS account ID (org project only — sets ROOT_ACCOUNT env var)"
+        required: false
+        type: string
+        default: ""
     secrets:
       AWS_OIDC_ROLE:
         description: "AWS OIDC role ARN for authentication (resolved from environment if not passed)"
@@ -118,6 +128,8 @@ env:
   # Node.js version is read from .nvmrc for centralization
   NODE_VERSION: "22" # Fallback - prefer .nvmrc
   CI_IMAGE: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+  # Injected into CDK TaggingAspect as the 'version' tag on all resources
+  INFRA_VERSION: ${{ github.sha }}
 
 jobs:
   deploy:
@@ -183,6 +195,7 @@ jobs:
           [[ -n "$MONITOR_DOMAIN_NAME"      ]] && echo "MONITOR_DOMAIN_NAME=$MONITOR_DOMAIN_NAME"           >> $GITHUB_ENV
           [[ -n "$ALLOW_IPV4"                ]] && echo "ALLOW_IPV4=$ALLOW_IPV4"                             >> $GITHUB_ENV
           [[ -n "$ALLOW_IPV6"                ]] && echo "ALLOW_IPV6=$ALLOW_IPV6"                             >> $GITHUB_ENV
+          [[ -n "$ROOT_ACCOUNT"              ]] && echo "ROOT_ACCOUNT=$ROOT_ACCOUNT"                         >> $GITHUB_ENV
           echo "✓ Scoped config applied"
         env:
           DOMAIN_NAME: ${{ inputs.domain-name }}
@@ -196,6 +209,7 @@ jobs:
           MONITOR_DOMAIN_NAME: ${{ inputs.monitor-domain-name }}
           ALLOW_IPV4: ${{ secrets.ALLOW_IPV4 }}
           ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
+          ROOT_ACCOUNT: ${{ inputs.root-account-id }}
 
       - name: Deploy CDK Stack
         id: deploy-stack
@@ -209,6 +223,7 @@ jobs:
           require-approval: ${{ inputs.require-approval }}
           verify-bootstrap: ${{ inputs.verify-bootstrap }}
           outputs-directory: ${{ inputs.outputs-directory }}
+          additional-args: ${{ inputs.additional-args }}
 
       - name: Upload Stack Outputs
         if: always() && inputs.outputs-directory != ''

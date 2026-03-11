@@ -311,13 +311,7 @@ export class LaunchTemplateConstruct extends Construct {
             }));
         }
 
-        // =================================================================
-        // TAGS
-        //
-        // Organizational tags (Environment, Project, Owner, ManagedBy) are
-        // applied by TaggingAspect at the app level — not duplicated here.
-        // =================================================================
-        cdk.Tags.of(this.launchTemplate).add('Component', 'LaunchTemplate');
+        // Tags: all 6 tags applied by TaggingAspect at stack level
     }
 
     // =========================================================================
