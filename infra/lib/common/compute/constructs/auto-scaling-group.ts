@@ -133,6 +133,20 @@ export interface AutoScalingGroupConstructProps {
     readonly instanceName?: string;
 
     /**
+     * K8s bootstrap role for this ASG (e.g. 'control-plane', 'app-worker', 'mon-worker').
+     * When set, tags the ASG with `k8s:bootstrap-role` and `k8s:ssm-prefix`
+     * so the auto-bootstrap Lambda can map launched instances to the correct
+     * SSM Automation document.
+     */
+    readonly bootstrapRole?: string;
+
+    /**
+     * SSM parameter prefix (e.g. '/k8s/development').
+     * Required when `bootstrapRole` is set — used for the `k8s:ssm-prefix` tag.
+     */
+    readonly ssmPrefix?: string;
+
+    /**
      * Enable termination lifecycle hook for EBS detach pattern.
      * When enabled, creates a lifecycle hook that pauses termination
      * and fires an EventBridge event for the EbsLifecycleStack Lambda.
@@ -319,6 +333,15 @@ export class AutoScalingGroupConstruct extends Construct {
         cdk.Tags.of(this.autoScalingGroup).add('Name', props.instanceName ?? `${namePrefix}`, {
             applyToLaunchedInstances: true,
         });
+
+        // Auto-bootstrap tags: the auto-bootstrap Lambda reads these to determine
+        // which SSM Automation document to trigger on instance launch.
+        if (props.bootstrapRole) {
+            cdk.Tags.of(this.autoScalingGroup).add('k8s:bootstrap-role', props.bootstrapRole);
+            if (props.ssmPrefix) {
+                cdk.Tags.of(this.autoScalingGroup).add('k8s:ssm-prefix', props.ssmPrefix);
+            }
+        }
 
         // Tags: all 6 tags applied by TaggingAspect at stack level
     }

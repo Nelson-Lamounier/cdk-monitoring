@@ -190,6 +190,8 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             },
             namePrefix,
             instanceName: `${namePrefix}-control-plane`,
+            bootstrapRole: 'control-plane',
+            ssmPrefix: props.ssmPrefix,
             enableTerminationLifecycleHook: true,
             useSignals: configs.compute.useSignals,
             signalsTimeoutMinutes: configs.compute.signalsTimeoutMinutes,

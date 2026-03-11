@@ -28,9 +28,13 @@
  * ```
  */
 
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
+import { NagSuppressions } from 'cdk-nag';
 
 import { Construct } from 'constructs';
 
@@ -439,6 +443,175 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             stringValue: automationRole.roleArn,
             description: 'IAM role ARN for SSM Automation execution',
         });
+
+        // =====================================================================
+        // Auto-Bootstrap Lambda — EventBridge → SSM Automation
+        //
+        // When an ASG launches a replacement instance, this Lambda:
+        //   1. Reads the ASG's k8s:bootstrap-role tag
+        //   2. Maps role → SSM Automation document
+        //   3. Updates the instance-id SSM parameter
+        //   4. Starts SSM Automation execution
+        //
+        // Non-K8s ASGs are silently ignored (no k8s:bootstrap-role tag).
+        // =====================================================================
+
+        const autoBootstrapFn = new lambda.Function(this, 'AutoBootstrapFn', {
+            functionName: `${prefix}-auto-bootstrap`,
+            runtime: lambda.Runtime.PYTHON_3_13,
+            handler: 'index.handler',
+            code: lambda.Code.fromInline(`
+import json, logging, os, boto3
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+asg_client = boto3.client("autoscaling")
+ssm_client = boto3.client("ssm")
+
+# Role → SSM parameter suffix for doc name and instance ID
+ROLE_MAP = {
+    "control-plane": {
+        "doc_param": "bootstrap/control-plane-doc-name",
+        "instance_param": "bootstrap/control-plane-instance-id",
+    },
+    "app-worker": {
+        "doc_param": "bootstrap/worker-doc-name",
+        "instance_param": "bootstrap/app-worker-instance-id",
+    },
+    "mon-worker": {
+        "doc_param": "bootstrap/worker-doc-name",
+        "instance_param": "bootstrap/mon-worker-instance-id",
+    },
+}
+
+def handler(event, context):
+    detail = event.get("detail", {})
+    instance_id = detail.get("EC2InstanceId", "")
+    asg_name = detail.get("AutoScalingGroupName", "")
+
+    if not instance_id or not asg_name:
+        logger.info("Missing instance or ASG info, skipping")
+        return {"statusCode": 200}
+
+    logger.info("Instance launched: %s in ASG %s", instance_id, asg_name)
+
+    # Read ASG tags to determine role
+    resp = asg_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
+    groups = resp.get("AutoScalingGroups", [])
+    if not groups:
+        logger.info("ASG %s not found, skipping", asg_name)
+        return {"statusCode": 200}
+
+    tags = {t["Key"]: t["Value"] for t in groups[0].get("Tags", [])}
+    role = tags.get("k8s:bootstrap-role")
+    ssm_prefix = tags.get("k8s:ssm-prefix")
+
+    if not role or not ssm_prefix:
+        logger.info("No k8s:bootstrap-role tag on ASG %s, skipping (not a K8s node)", asg_name)
+        return {"statusCode": 200}
+
+    if role not in ROLE_MAP:
+        logger.warning("Unknown bootstrap role: %s", role)
+        return {"statusCode": 400}
+
+    mapping = ROLE_MAP[role]
+    doc_param_path = f"{ssm_prefix}/{mapping['doc_param']}"
+    instance_param_path = f"{ssm_prefix}/{mapping['instance_param']}"
+    bucket_param_path = f"{ssm_prefix}/scripts-bucket"
+
+    # Update instance ID in SSM
+    ssm_client.put_parameter(
+        Name=instance_param_path,
+        Value=instance_id,
+        Type="String",
+        Overwrite=True,
+    )
+    logger.info("Updated SSM %s = %s", instance_param_path, instance_id)
+
+    # Resolve automation document name and S3 bucket
+    doc_name = ssm_client.get_parameter(Name=doc_param_path)["Parameter"]["Value"]
+    s3_bucket = ssm_client.get_parameter(Name=bucket_param_path)["Parameter"]["Value"]
+    region = os.environ.get("AWS_REGION", "eu-west-1")
+
+    # Start SSM Automation
+    result = ssm_client.start_automation_execution(
+        DocumentName=doc_name,
+        Parameters={
+            "InstanceId": [instance_id],
+            "SsmPrefix": [ssm_prefix],
+            "S3Bucket": [s3_bucket],
+            "Region": [region],
+        },
+    )
+
+    exec_id = result.get("AutomationExecutionId", "unknown")
+    logger.info("Started %s automation for %s: %s", role, instance_id, exec_id)
+
+    # Publish execution ID for observability
+    try:
+        exec_param = f"{ssm_prefix}/bootstrap/execution-id" if role == "control-plane" else f"{ssm_prefix}/bootstrap/{role.replace('-', '-')}-execution-id"
+        ssm_client.put_parameter(Name=exec_param, Value=exec_id, Type="String", Overwrite=True)
+    except Exception:
+        logger.warning("Could not publish execution ID (non-fatal)")
+
+    return {"statusCode": 200, "executionId": exec_id}
+`),
+            timeout: cdk.Duration.seconds(60),
+            memorySize: 128,
+            description: 'Auto-triggers SSM Automation bootstrap when an ASG launches a K8s instance',
+        });
+
+        // IAM: Allow Lambda to read ASG tags, manage SSM params, and start automation
+        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'AutoBootstrapDescribeAsg',
+            effect: iam.Effect.ALLOW,
+            actions: ['autoscaling:DescribeAutoScalingGroups'],
+            resources: ['*'],
+        }));
+
+        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'AutoBootstrapSsmParams',
+            effect: iam.Effect.ALLOW,
+            actions: ['ssm:GetParameter', 'ssm:PutParameter'],
+            resources: [
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
+            ],
+        }));
+
+        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'AutoBootstrapStartAutomation',
+            effect: iam.Effect.ALLOW,
+            actions: ['ssm:StartAutomationExecution'],
+            resources: [
+                `arn:aws:ssm:${this.region}:${this.account}:automation-definition/*`,
+                `arn:aws:ssm:${this.region}:${this.account}:automation-execution/*`,
+            ],
+        }));
+
+        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'AutoBootstrapPassRole',
+            effect: iam.Effect.ALLOW,
+            actions: ['iam:PassRole'],
+            resources: [automationRole.roleArn],
+        }));
+
+        // EventBridge: trigger on any ASG instance launch
+        new events.Rule(this, 'AutoBootstrapRule', {
+            ruleName: `${prefix}-auto-bootstrap`,
+            description: 'Trigger SSM Automation bootstrap when an ASG launches an instance',
+            eventPattern: {
+                source: ['aws.autoscaling'],
+                detailType: ['EC2 Instance Launch Successful'],
+            },
+            targets: [new targets.LambdaFunction(autoBootstrapFn)],
+        });
+
+        // cdk-nag: Python 3.13 is the latest GA runtime
+        NagSuppressions.addResourceSuppressions(autoBootstrapFn, [{
+            id: 'AwsSolutions-L1',
+            reason: 'Python 3.13 is the latest GA Lambda runtime. PYTHON_3_14 is a CDK placeholder for an unreleased version.',
+        }], true);
 
     }
 

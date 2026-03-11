@@ -388,6 +388,8 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
             disableScalingPolicy: true,
             namePrefix: workerPrefix,
             instanceName: `${namePrefix}-mon-worker`,
+            bootstrapRole: 'mon-worker',
+            ssmPrefix,
             useSignals: monitoringWorkerConfig.useSignals,
             signalsTimeoutMinutes: monitoringWorkerConfig.signalsTimeoutMinutes,
             subnetSelection: {
