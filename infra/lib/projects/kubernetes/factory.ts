@@ -56,6 +56,7 @@ import {
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId, flatName } from '../../utilities/naming';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 // =============================================================================
 // FACTORY CONTEXT
@@ -230,6 +231,10 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stacks.push(baseStack);
         stackMap.base = baseStack;
 
+        // Resolve shared resource IDs from SSM at synth time (concrete strings, no cross-stack tokens)
+        const sharedVpcId = ssm.StringParameter.valueFromLookup(baseStack, `${ssmPrefix}/vpc-id`);
+        const sharedSgId = ssm.StringParameter.valueFromLookup(baseStack, `${ssmPrefix}/security-group-id`);
+
         // =================================================================
         // Stack 2b: GOLDEN AMI STACK (Image Builder Pipeline)
         //
@@ -247,8 +252,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                     env,
                     description: `Golden AMI Image Builder pipeline — ${environment}`,
                     targetEnvironment: environment,
-                    vpcId: baseStack.vpc.vpcId,
-                    securityGroupId: baseStack.securityGroup.securityGroupId,
+                    vpcId: sharedVpcId,
+                    securityGroupId: sharedSgId,
                     configs,
                     namePrefix,
                     ssmPrefix,
@@ -294,8 +299,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             scope,
             stackId(this.namespace, 'ControlPlane', environment),
             {
-                vpcId: baseStack.vpc.vpcId,
-                securityGroupId: baseStack.securityGroup.securityGroupId,
+                vpcId: sharedVpcId,
+                securityGroupId: sharedSgId,
                 env,
                 description: `Shared kubeadm Kubernetes cluster (monitoring + application) — ${environment}`,
                 targetEnvironment: environment,
@@ -320,8 +325,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             scope,
             stackId(this.namespace, 'AppWorker', environment),
             {
-                vpcId: baseStack.vpc.vpcId,
-                securityGroupId: baseStack.securityGroup.securityGroupId,
+                vpcId: sharedVpcId,
+                securityGroupId: sharedSgId,
                 env,
                 description: `Kubernetes worker node for Next.js application — ${environment}`,
                 targetEnvironment: environment,
@@ -345,8 +350,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             scope,
             stackId(this.namespace, 'MonitoringWorker', environment),
             {
-                vpcId: baseStack.vpc.vpcId,
-                securityGroupId: baseStack.securityGroup.securityGroupId,
+                vpcId: sharedVpcId,
+                securityGroupId: sharedSgId,
                 env,
                 description: `Kubernetes monitoring worker node — ${environment}`,
                 targetEnvironment: environment,
