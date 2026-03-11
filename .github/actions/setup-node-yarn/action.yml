@@ -1,11 +1,11 @@
 # @format
 
-name: "Setup Node.js with Yarn and Caching"
-description: "Centralised composite action for Node.js, Yarn v4, and dependency caching"
+name: "Setup Environment and Dependencies"
+description: "Container-aware setup: installs Node.js/Yarn on bare runners, then restores dependency cache and runs yarn install on all environments."
 
 inputs:
   node-version:
-    description: "Node.js version. Use 'auto' to read from .nvmrc (fallback: 22)"
+    description: "Node.js version. Use 'auto' to read from .nvmrc (fallback: 22). Ignored when running in CI container."
     required: false
     default: "auto"
   install-dependencies:
@@ -31,32 +31,59 @@ outputs:
 runs:
   using: "composite"
   steps:
+    # ─── Detect CI Container ──────────────────────────────────────────
+    - name: Detect Environment
+      id: detect-env
+      shell: bash
+      run: |
+        # The CI Docker image sets tools in /usr/local/bin and /opt/ci-tools
+        # If Node, Just, Helm, and AWS CLI are all already present, we're in the container
+        if command -v node &> /dev/null && \
+           command -v just &> /dev/null && \
+           command -v helm &> /dev/null && \
+           command -v aws &> /dev/null; then
+          echo "in-container=true" >> $GITHUB_OUTPUT
+          echo "✓ CI container detected — skipping tool installation"
+        else
+          echo "in-container=false" >> $GITHUB_OUTPUT
+          echo "○ Bare runner detected — will install tools"
+        fi
+
+    # ─── Node.js Setup (bare runner only) ─────────────────────────────
     - name: Resolve Node.js Version
       id: resolve-node
       shell: bash
       run: |
-        INPUT_VERSION="${{ inputs.node-version }}"
-        if [ "$INPUT_VERSION" = "auto" ]; then
-          if [ -f .nvmrc ]; then
-            VERSION=$(cat .nvmrc | tr -d '[:space:]')
-            echo "Resolved Node.js $VERSION from .nvmrc"
-          else
-            VERSION="22"
-            echo "No .nvmrc found, using default Node.js $VERSION"
-          fi
+        if [ "${{ steps.detect-env.outputs.in-container }}" = "true" ]; then
+          VERSION=$(node -v | tr -d 'v' | cut -d. -f1)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using container Node.js $VERSION"
         else
-          VERSION="$INPUT_VERSION"
-          echo "Using explicit Node.js $VERSION"
+          INPUT_VERSION="${{ inputs.node-version }}"
+          if [ "$INPUT_VERSION" = "auto" ]; then
+            if [ -f .nvmrc ]; then
+              VERSION=$(cat .nvmrc | tr -d '[:space:]')
+              echo "Resolved Node.js $VERSION from .nvmrc"
+            else
+              VERSION="22"
+              echo "No .nvmrc found, using default Node.js $VERSION"
+            fi
+          else
+            VERSION="$INPUT_VERSION"
+            echo "Using explicit Node.js $VERSION"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
         fi
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
 
     - name: Setup Node.js
+      if: steps.detect-env.outputs.in-container != 'true'
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: ${{ steps.resolve-node.outputs.version }}
         # No built-in caching - we handle it explicitly below
 
     - name: Enable Corepack for Yarn v4
+      if: steps.detect-env.outputs.in-container != 'true'
       shell: bash
       run: |
         echo "Enabling Corepack for Yarn v4+ package manager..."
@@ -64,6 +91,7 @@ runs:
         echo "✓ Corepack enabled"
 
     - name: Install Just Task Runner
+      if: steps.detect-env.outputs.in-container != 'true'
       shell: bash
       run: |
         if ! command -v just &> /dev/null; then
@@ -91,6 +119,7 @@ runs:
         fi
         echo "Just version: $(just --version)"
 
+    # ─── Dependency Caching (always runs) ─────────────────────────────
     - name: Generate Dependency Cache Key
       id: cache-key
       shell: bash
@@ -137,6 +166,7 @@ runs:
         restore-keys: |
           ${{ runner.os }}-turbo-
 
+    # ─── Install Dependencies (always runs) ───────────────────────────
     - name: Install Dependencies (with retry)
       if: inputs.install-dependencies == 'true'
       shell: bash

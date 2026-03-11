@@ -45,13 +45,13 @@ jobs:
       # Checkout cdk-monitoring (owns migration scripts)
       # ------------------------------------------------------------------
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       # ------------------------------------------------------------------
       # Checkout frontend-portfolio (MDX article source files)
       # ------------------------------------------------------------------
       - name: Checkout Frontend Articles
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           repository: Nelson-Lamounier/frontend-portfolio
           token: ${{ secrets.CROSS_REPO_PAT }}
@@ -60,14 +60,14 @@ jobs:
             src/app/articles
           sparse-checkout-cone-mode: true
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
 
       # ------------------------------------------------------------------
       # AWS Credentials
       # ------------------------------------------------------------------
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}

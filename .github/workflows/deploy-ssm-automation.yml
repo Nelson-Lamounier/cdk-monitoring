@@ -1,0 +1,46 @@
+# @format
+# @description Deploy SSM Automation to Development
+#
+# Dedicated pipeline for the SSM Automation stack + bootstrap trigger.
+# Fully decoupled from the main K8s CDK pipeline.
+#
+# Triggers:
+#   - Push to main/develop when step scripts or SSM stack change
+#   - Manual dispatch (workflow_dispatch)
+#
+# This pipeline:
+#   1. Deploys SSM Automation documents (CDK stack)
+#   2. Syncs latest bootstrap scripts to S3
+#   3. Triggers SSM Automation on existing nodes
+#   4. Observes bootstrap progress with log streaming
+
+name: Deploy SSM Automation to Development
+
+on:
+  # push:
+  #   branches: [develop]
+  workflow_dispatch:
+    inputs:
+      trigger_bootstrap:
+        description: "Trigger SSM bootstrap on nodes after deploy"
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-ssm-automation-development
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Development
+    uses: ./.github/workflows/_deploy-ssm-automation.yml
+    with:
+      environment: development
+      cdk-environment: development
+      require-approval: never
+      trigger-bootstrap: ${{ github.event.inputs.trigger_bootstrap == '' && true || github.event.inputs.trigger_bootstrap == 'true' }}
+    secrets: inherit
