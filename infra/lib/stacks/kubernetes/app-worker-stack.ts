@@ -359,14 +359,6 @@ echo "SSM Automation will be triggered by the CI pipeline"
         this.logGroup = launchTemplateConstruct.logGroup;
 
         // =====================================================================
-        // Tags
-        // =====================================================================
-        cdk.Tags.of(this).add('Stack', 'KubernetesWorker');
-        cdk.Tags.of(this).add('Layer', 'Compute');
-        cdk.Tags.of(this).add('NodeRole', 'Worker');
-        cdk.Tags.of(this).add('Purpose', 'NextJS');
-
-        // =====================================================================
         // Stack Outputs
         // =====================================================================
         new cdk.CfnOutput(this, 'WorkerAsgName', {

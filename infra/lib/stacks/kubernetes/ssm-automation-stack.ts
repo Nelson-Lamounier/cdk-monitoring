@@ -434,12 +434,6 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             description: 'IAM role ARN for SSM Automation execution',
         });
 
-        // =====================================================================
-        // Tags
-        // =====================================================================
-
-        cdk.Tags.of(this).add('Component', 'ssm-automation');
-        cdk.Tags.of(this).add('Environment', props.targetEnvironment);
     }
 
     // =========================================================================

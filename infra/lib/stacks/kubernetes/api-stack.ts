@@ -541,12 +541,6 @@ export class NextJsApiStack extends cdk.Stack {
             ssmWriterPolicy,
         );
 
-        // =====================================================================
-        // TAGS
-        // =====================================================================
-        cdk.Tags.of(this).add('Stack', 'WebappApi');
-        cdk.Tags.of(this).add('Layer', 'API');
-
         // Suppress cdk-nag for AwsCustomResource Lambda (SSM parameter writer)
         NagSuppressions.addResourceSuppressionsByPath(
             this,

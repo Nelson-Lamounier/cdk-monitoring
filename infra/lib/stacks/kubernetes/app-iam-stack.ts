@@ -104,12 +104,6 @@ export class KubernetesAppIamStack extends cdk.Stack {
         });
 
         // =====================================================================
-        // Tags
-        // =====================================================================
-        cdk.Tags.of(this).add('Stack', 'KubernetesAppIam');
-        cdk.Tags.of(this).add('Layer', 'Application');
-
-        // =====================================================================
         // Stack Outputs
         // =====================================================================
         new cdk.CfnOutput(this, 'InstanceRoleArn', {

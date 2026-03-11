@@ -181,7 +181,5 @@ export class CrossAccountDnsRoleStack extends cdk.Stack {
         // =================================================================
         // COMPONENT-SPECIFIC TAGS
         // =================================================================
-        cdk.Tags.of(this).add('Component', 'DNS-Validation-Role');
-        cdk.Tags.of(this).add('Purpose', 'Cross-Account-ACM-Validation');
     }
 }

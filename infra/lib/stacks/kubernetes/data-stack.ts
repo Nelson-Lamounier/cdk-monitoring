@@ -439,8 +439,6 @@ export class KubernetesDataStack extends cdk.Stack {
     // NOTE: AwsCustomResource Lambda suppression removed — SSM now uses native StringParameter
 
     // Stack tags
-    cdk.Tags.of(this).add("Stack", "KubernetesData");
-    cdk.Tags.of(this).add("Layer", "Data");
 
     // =================================================================
     // STACK OUTPUTS

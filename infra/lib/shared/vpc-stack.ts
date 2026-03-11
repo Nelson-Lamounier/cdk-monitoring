@@ -142,11 +142,8 @@ export class SharedVpcStack extends cdk.Stack {
                 ],
             });
 
-            // Resource tags for discovery
-            cdk.Tags.of(this.ecrRepository).add('Environment', props.targetEnvironment);
-            cdk.Tags.of(this.ecrRepository).add('SharedResource', 'true');
-            cdk.Tags.of(this.ecrRepository).add('Application', 'NextJS');
-            cdk.Tags.of(this.ecrRepository).add('ManagedBy', 'CDK');
+
+
 
             // SSM Parameters for ECR discovery
             const ecrSsmPrefix = `/shared/ecr/${props.targetEnvironment}`;
