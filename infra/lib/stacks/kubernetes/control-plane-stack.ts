@@ -4,7 +4,7 @@
  *
  * Runtime compute resources for the kubeadm Kubernetes cluster.
  * Consumes long-lived base infrastructure (VPC, Security Group, KMS,
- * EBS, Elastic IP) from KubernetesBaseStack via cross-stack reference.
+ * EBS, Elastic IP) from KubernetesBaseStack via SSM parameter lookups.
  *
  * Resources Created:
  *   - Launch Template (Amazon Linux 2023, IMDSv2)
@@ -39,8 +39,10 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -58,8 +60,6 @@ import {
 import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
 
-import { KubernetesBaseStack } from './base-stack';
-
 // =============================================================================
 // PROPS
 // =============================================================================
@@ -71,8 +71,11 @@ import { KubernetesBaseStack } from './base-stack';
  * are optional — when omitted, the stack runs monitoring workloads only.
  */
 export interface KubernetesControlPlaneStackProps extends cdk.StackProps {
-    /** Reference to the base infrastructure stack (VPC, SG, KMS, EBS, EIP) */
-    readonly baseStack: KubernetesBaseStack;
+    /** VPC ID from base stack (SSM lookup in factory) */
+    readonly vpcId: string;
+
+    /** Cluster security group ID from base stack (SSM lookup in factory) */
+    readonly securityGroupId: string;
 
     /** Target deployment environment */
     readonly targetEnvironment: Environment;
@@ -115,13 +118,40 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props: KubernetesControlPlaneStackProps) {
         super(scope, id, props);
 
-        const { configs, targetEnvironment: _targetEnvironment, baseStack } = props;
+        const { configs, targetEnvironment: _targetEnvironment } = props;
         const namePrefix = props.namePrefix ?? 'k8s';
 
         // =====================================================================
-        // Consume base infrastructure (from KubernetesBaseStack)
+        // Resolve base infrastructure via SSM (no cross-stack exports)
         // =====================================================================
-        const { vpc, securityGroup, logGroupKmsKey, ebsVolume } = baseStack;
+        const vpc = ec2.Vpc.fromLookup(this, 'Vpc', { vpcId: props.vpcId });
+        const securityGroup = ec2.SecurityGroup.fromSecurityGroupId(
+            this, 'ClusterSg', props.securityGroupId,
+        );
+        const controlPlaneSg = ec2.SecurityGroup.fromSecurityGroupId(
+            this, 'ControlPlaneSg',
+            ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/control-plane-sg-id`),
+        );
+        const logGroupKmsKey = kms.Key.fromKeyArn(
+            this, 'LogKmsKey',
+            ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/kms-key-arn`),
+        );
+        const ebsVolumeId = ssm.StringParameter.valueForStringParameter(
+            this, `${props.ssmPrefix}/ebs-volume-id`,
+        );
+        const scriptsBucketName = ssm.StringParameter.valueForStringParameter(
+            this, `${props.ssmPrefix}/scripts-bucket`,
+        );
+        const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
+        const eipAllocationId = ssm.StringParameter.valueForStringParameter(
+            this, `${props.ssmPrefix}/elastic-ip-allocation-id`,
+        );
+        const hostedZoneId = ssm.StringParameter.valueForStringParameter(
+            this, `${props.ssmPrefix}/hosted-zone-id`,
+        );
+        const apiDnsName = ssm.StringParameter.valueForStringParameter(
+            this, `${props.ssmPrefix}/api-dns-name`,
+        );
 
         // =====================================================================
         // Launch Template + ASG
@@ -130,7 +160,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
 
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup,
-            additionalSecurityGroups: [baseStack.controlPlaneSg],
+            additionalSecurityGroups: [controlPlaneSg],
             instanceType: configs.compute.instanceType,
             volumeSizeGb: configs.compute.rootVolumeSizeGb, // Must be >= Golden AMI snapshot size
             detailedMonitoring: configs.compute.detailedMonitoring,
@@ -175,15 +205,8 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             .defaultChild as cdk.CfnResource;
         const asgLogicalId = asgCfnResource.logicalId;
 
-        // =====================================================================
-        // S3 Bucket (consumed from BaseStack — Day-1 safety)
-        //
-        // The scripts bucket lives in BaseStack so that the CI sync job can
-        // seed bootstrap scripts BEFORE the Compute stack launches EC2 instances.
-        // Content sync (k8s-bootstrap/, app-deploy/) is handled by CI via
-        // `aws s3 sync`, NOT by CDK BucketDeployment.
-        // =====================================================================
-        const scriptsBucket = baseStack.scriptsBucket;
+        // S3 Bucket resolved above from SSM (Day-1 safety — lives in BaseStack
+        // so CI sync seeds scripts BEFORE compute launches EC2 instances).
 
 
 
@@ -240,7 +263,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
         new UserDataBuilder(userData, { skipPreamble: true })
             .addCustomScript(`
 # Export runtime values (CDK tokens resolved at synth time)
-export VOLUME_ID="${ebsVolume.volumeId}"
+export VOLUME_ID="${ebsVolumeId}"
 export MOUNT_POINT="${configs.storage.mountPoint}"
 export STACK_NAME="${this.stackName}"
 export ASG_LOGICAL_ID="${asgLogicalId}"
@@ -250,16 +273,16 @@ export DATA_DIR="${configs.cluster.dataDir}"
 export POD_CIDR="${configs.cluster.podNetworkCidr}"
 export SERVICE_CIDR="${configs.cluster.serviceSubnet}"
 export SSM_PREFIX="${props.ssmPrefix}"
-export S3_BUCKET="${scriptsBucket.bucketName}"
+export S3_BUCKET="${scriptsBucketName}"
 export CALICO_VERSION="${configs.image.bakedVersions.calico}"
 export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
-export EIP_ALLOC_ID="${baseStack.elasticIp.attrAllocationId}"
-export HOSTED_ZONE_ID="${baseStack.hostedZone.hostedZoneId}"
-export API_DNS_NAME="${baseStack.apiDnsName}"
+export EIP_ALLOC_ID="${eipAllocationId}"
+export HOSTED_ZONE_ID="${hostedZoneId}"
+export API_DNS_NAME="${apiDnsName}"
 
 # Persist env vars for SSM Automation to source later
 cat > /etc/profile.d/k8s-env.sh << 'ENVEOF'
-export VOLUME_ID="${ebsVolume.volumeId}"
+export VOLUME_ID="${ebsVolumeId}"
 export MOUNT_POINT="${configs.storage.mountPoint}"
 export STACK_NAME="${this.stackName}"
 export ASG_LOGICAL_ID="${asgLogicalId}"
@@ -269,12 +292,12 @@ export DATA_DIR="${configs.cluster.dataDir}"
 export POD_CIDR="${configs.cluster.podNetworkCidr}"
 export SERVICE_CIDR="${configs.cluster.serviceSubnet}"
 export SSM_PREFIX="${props.ssmPrefix}"
-export S3_BUCKET="${scriptsBucket.bucketName}"
+export S3_BUCKET="${scriptsBucketName}"
 export CALICO_VERSION="${configs.image.bakedVersions.calico}"
 export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
-export EIP_ALLOC_ID="${baseStack.elasticIp.attrAllocationId}"
-export HOSTED_ZONE_ID="${baseStack.hostedZone.hostedZoneId}"
-export API_DNS_NAME="${baseStack.apiDnsName}"
+export EIP_ALLOC_ID="${eipAllocationId}"
+export HOSTED_ZONE_ID="${hostedZoneId}"
+export API_DNS_NAME="${apiDnsName}"
 ENVEOF
 
 # ─── Resolve instance ID via IMDSv2 ──────────────────────────────────
@@ -367,7 +390,7 @@ echo "SSM Automation will be triggered by the CI pipeline"
             effect: iam.Effect.ALLOW,
             actions: ['route53:ChangeResourceRecordSets'],
             resources: [
-                `arn:aws:route53:::hostedzone/${baseStack.hostedZone.hostedZoneId}`,
+                `arn:aws:route53:::hostedzone/${hostedZoneId}`,
             ],
         }));
 
@@ -437,7 +460,7 @@ def handler(event, context):
             timeout: cdk.Duration.seconds(30),
             memorySize: 128,
             environment: {
-                EIP_ALLOCATION_ID: baseStack.elasticIp.attrAllocationId,
+                EIP_ALLOCATION_ID: eipAllocationId,
                 CLUSTER_TAG_KEY: MONITORING_APP_TAG.key,
                 CLUSTER_TAG_VALUE: MONITORING_APP_TAG.value,
             },
@@ -513,7 +536,7 @@ def handler(event, context):
 
 
         new cdk.CfnOutput(this, 'ScriptsBucketName', {
-            value: scriptsBucket.bucketName,
+            value: scriptsBucketName,
             description: 'S3 bucket containing k8s scripts and manifests',
         });
 

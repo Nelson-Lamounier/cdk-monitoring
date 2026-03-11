@@ -36,8 +36,8 @@ export interface BedrockAgentStackProps extends cdk.StackProps {
     readonly agentDescription: string;
     /** Idle session timeout in seconds */
     readonly idleSessionTtlInSeconds: number;
-    /** S3 bucket for Knowledge Base data source (from DataStack) */
-    readonly dataBucket: s3.IBucket;
+    /** S3 bucket name for Knowledge Base data source (from DataStack via SSM/factory) */
+    readonly dataBucketName: string;
     /** Whether to enable content filters on the guardrail */
     readonly enableContentFilters: boolean;
     /** Blocked input messaging for guardrail */
@@ -84,6 +84,9 @@ export class BedrockAgentStack extends cdk.Stack {
         super(scope, id, props);
 
         const { namePrefix } = props;
+
+        // Reconstruct data bucket from name (avoids cross-stack export)
+        const dataBucket = s3.Bucket.fromBucketName(this, 'DataBucket', props.dataBucketName);
 
         // =================================================================
         // Guardrail — Content Filtering & Topic Denial
@@ -139,7 +142,7 @@ export class BedrockAgentStack extends cdk.Stack {
 
         // Add S3 data source to Knowledge Base
         new bedrock.S3DataSource(this, 'KBDataSource', {
-            bucket: props.dataBucket,
+            bucket: dataBucket,
             knowledgeBase: this.knowledgeBase,
             dataSourceName: `${namePrefix}-s3-source`,
         });

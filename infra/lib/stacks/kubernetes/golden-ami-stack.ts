@@ -23,6 +23,9 @@
  * ```
  */
 
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -33,15 +36,16 @@ import {
 import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
 
-import { KubernetesBaseStack } from './base-stack';
-
 // =============================================================================
 // PROPS
 // =============================================================================
 
 export interface GoldenAmiStackProps extends cdk.StackProps {
-    /** Base stack providing VPC, security group, and scripts bucket */
-    readonly baseStack: KubernetesBaseStack;
+    /** VPC ID from base stack (SSM lookup in factory) */
+    readonly vpcId: string;
+
+    /** Security group ID from base stack (SSM lookup in factory) */
+    readonly securityGroupId: string;
 
     /** Target environment (development, staging, production) */
     readonly targetEnvironment: Environment;
@@ -51,6 +55,9 @@ export interface GoldenAmiStackProps extends cdk.StackProps {
 
     /** Environment-aware name prefix (e.g., 'k8s-development') */
     readonly namePrefix: string;
+
+    /** SSM parameter prefix for the base stack */
+    readonly ssmPrefix: string;
 }
 
 // =============================================================================
@@ -73,16 +80,23 @@ export class GoldenAmiStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props: GoldenAmiStackProps) {
         super(scope, id, props);
 
-        const { baseStack, configs, namePrefix } = props;
+        const { configs, namePrefix } = props;
+
+        // Resolve base infrastructure via SSM (no cross-stack exports)
+        const vpc = ec2.Vpc.fromLookup(this, 'Vpc', { vpcId: props.vpcId });
+        const scriptsBucketName = ssm.StringParameter.valueForStringParameter(
+            this, `${props.ssmPrefix}/scripts-bucket`,
+        );
+        const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
 
         this.imageBuilder = new GoldenAmiImageConstruct(this, 'GoldenAmi', {
             namePrefix,
             imageConfig: configs.image,
             clusterConfig: configs.cluster,
-            vpc: baseStack.vpc,
-            subnetId: baseStack.vpc.publicSubnets[0].subnetId,
-            securityGroupId: baseStack.securityGroup.securityGroupId,
-            scriptsBucket: baseStack.scriptsBucket,
+            vpc,
+            subnetId: vpc.publicSubnets[0].subnetId,
+            securityGroupId: props.securityGroupId,
+            scriptsBucket,
         });
         this.imageId = this.imageBuilder.imageId;
     }

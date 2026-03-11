@@ -43,6 +43,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -58,8 +59,6 @@ import {
 import { Environment } from '../../config/environments';
 import { MonitoringWorkerConfig } from '../../config/kubernetes';
 
-import { KubernetesBaseStack } from './base-stack';
-
 // =============================================================================
 // PROPS
 // =============================================================================
@@ -68,8 +67,11 @@ import { KubernetesBaseStack } from './base-stack';
  * Props for KubernetesMonitoringWorkerStack.
  */
 export interface KubernetesMonitoringWorkerStackProps extends cdk.StackProps {
-    /** Reference to the base infrastructure stack (VPC, SG) */
-    readonly baseStack: KubernetesBaseStack;
+    /** VPC ID from base stack (SSM lookup in factory) */
+    readonly vpcId: string;
+
+    /** Cluster security group ID from base stack (SSM lookup in factory) */
+    readonly securityGroupId: string;
 
     /** Target deployment environment */
     readonly targetEnvironment: Environment;
@@ -122,14 +124,40 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props: KubernetesMonitoringWorkerStackProps) {
         super(scope, id, props);
 
-        const { monitoringWorkerConfig, baseStack } = props;
+        const { monitoringWorkerConfig } = props;
         const namePrefix = props.namePrefix ?? 'k8s';
         const workerPrefix = `${namePrefix}-mon-worker`;
 
         // =====================================================================
-        // Consume base infrastructure (from KubernetesBaseStack)
+        // Resolve base infrastructure via SSM (no cross-stack exports)
         // =====================================================================
-        const { vpc, securityGroup } = baseStack;
+        const vpc = ec2.Vpc.fromLookup(this, 'Vpc', { vpcId: props.vpcId });
+        const securityGroup = ec2.SecurityGroup.fromSecurityGroupId(
+            this, 'ClusterSg', props.securityGroupId,
+        );
+
+        // SSM paths used by Python orchestrator for discovery
+        const ssmPrefix = props.controlPlaneSsmPrefix;
+        const tokenSsmPath = `${ssmPrefix}/join-token`;
+        const caHashSsmPath = `${ssmPrefix}/ca-hash`;
+        const controlPlaneEndpointSsmPath = `${ssmPrefix}/control-plane-endpoint`;
+
+        const logGroupKmsKey = kms.Key.fromKeyArn(
+            this, 'LogKmsKey',
+            ssm.StringParameter.valueForStringParameter(this, `${ssmPrefix}/kms-key-arn`),
+        );
+        const ingressSg = ec2.SecurityGroup.fromSecurityGroupId(
+            this, 'IngressSg',
+            ssm.StringParameter.valueForStringParameter(this, `${ssmPrefix}/ingress-sg-id`),
+        );
+        const monitoringSg = ec2.SecurityGroup.fromSecurityGroupId(
+            this, 'MonitoringSg',
+            ssm.StringParameter.valueForStringParameter(this, `${ssmPrefix}/monitoring-sg-id`),
+        );
+        const scriptsBucketName = ssm.StringParameter.valueForStringParameter(
+            this, `${ssmPrefix}/scripts-bucket`,
+        );
+        const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
 
         // =====================================================================
         // User Data — kubeadm join
@@ -140,13 +168,6 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
         //   3. exec into boot script (handles join + cfn-signal)
         // =====================================================================
         const userData = ec2.UserData.forLinux();
-        const { scriptsBucket } = baseStack;
-
-        // SSM paths used by Python orchestrator for discovery
-        const ssmPrefix = props.controlPlaneSsmPrefix;
-        const tokenSsmPath = `${ssmPrefix}/join-token`;
-        const caHashSsmPath = `${ssmPrefix}/ca-hash`;
-        const controlPlaneEndpointSsmPath = `${ssmPrefix}/control-plane-endpoint`;
 
         // =====================================================================
         // Launch Template + ASG (created first so asgLogicalId is available
@@ -154,13 +175,13 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
         // =====================================================================
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup,
-            additionalSecurityGroups: [baseStack.ingressSg, baseStack.monitoringSg],
+            additionalSecurityGroups: [ingressSg, monitoringSg],
             instanceType: monitoringWorkerConfig.instanceType,
             volumeSizeGb: monitoringWorkerConfig.rootVolumeSizeGb,
             detailedMonitoring: monitoringWorkerConfig.detailedMonitoring,
             userData,
             namePrefix: workerPrefix,
-            logGroupKmsKey: baseStack.logGroupKmsKey,
+            logGroupKmsKey,
             machineImage: ec2.MachineImage.fromSsmParameter(
                 `${ssmPrefix}/golden-ami/latest`,
             ),
@@ -404,7 +425,7 @@ export ASG_LOGICAL_ID="${asgLogicalId}"
 export AWS_REGION="${this.region}"
 export SSM_PREFIX="${ssmPrefix}"
 export NODE_LABEL="${monitoringWorkerConfig.nodeLabel}"
-export S3_BUCKET="${scriptsBucket.bucketName}"
+export S3_BUCKET="${scriptsBucketName}"
 export LOG_GROUP_NAME="${logGroupName}"
 
 # Persist env vars for SSM Automation to source later
@@ -414,7 +435,7 @@ export ASG_LOGICAL_ID="${asgLogicalId}"
 export AWS_REGION="${this.region}"
 export SSM_PREFIX="${ssmPrefix}"
 export NODE_LABEL="${monitoringWorkerConfig.nodeLabel}"
-export S3_BUCKET="${scriptsBucket.bucketName}"
+export S3_BUCKET="${scriptsBucketName}"
 export LOG_GROUP_NAME="${logGroupName}"
 ENVEOF
 

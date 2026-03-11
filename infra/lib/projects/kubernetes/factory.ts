@@ -247,9 +247,11 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                     env,
                     description: `Golden AMI Image Builder pipeline — ${environment}`,
                     targetEnvironment: environment,
-                    baseStack,
+                    vpcId: baseStack.vpc.vpcId,
+                    securityGroupId: baseStack.securityGroup.securityGroupId,
                     configs,
                     namePrefix,
+                    ssmPrefix,
                 },
             );
             goldenAmiStack.addDependency(baseStack);
@@ -274,7 +276,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 configs,
                 namePrefix,
                 ssmPrefix,
-                scriptsBucketName: baseStack.scriptsBucket.bucketName,
+                scriptsBucketName: `${namePrefix}-k8s-scripts-${env.account}`,
             },
         );
         ssmAutomationStack.addDependency(baseStack);
@@ -292,7 +294,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             scope,
             stackId(this.namespace, 'ControlPlane', environment),
             {
-                baseStack,
+                vpcId: baseStack.vpc.vpcId,
+                securityGroupId: baseStack.securityGroup.securityGroupId,
                 env,
                 description: `Shared kubeadm Kubernetes cluster (monitoring + application) — ${environment}`,
                 targetEnvironment: environment,
@@ -317,7 +320,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             scope,
             stackId(this.namespace, 'AppWorker', environment),
             {
-                baseStack,
+                vpcId: baseStack.vpc.vpcId,
+                securityGroupId: baseStack.securityGroup.securityGroupId,
                 env,
                 description: `Kubernetes worker node for Next.js application — ${environment}`,
                 targetEnvironment: environment,
@@ -341,7 +345,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             scope,
             stackId(this.namespace, 'MonitoringWorker', environment),
             {
-                baseStack,
+                vpcId: baseStack.vpc.vpcId,
+                securityGroupId: baseStack.securityGroup.securityGroupId,
                 env,
                 description: `Kubernetes monitoring worker node — ${environment}`,
                 targetEnvironment: environment,

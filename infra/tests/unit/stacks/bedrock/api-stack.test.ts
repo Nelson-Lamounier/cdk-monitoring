@@ -44,8 +44,6 @@ function createApiStack(
         'TestBedrockApiStack',
         {
             namePrefix: NAME_PREFIX,
-            agentId: AGENT_ID,
-            agentAliasId: AGENT_ALIAS_ID,
             lambdaMemoryMb: 256,
             lambdaTimeoutSeconds: 60,
             logRetention: logs.RetentionDays.ONE_WEEK,
@@ -150,12 +148,12 @@ describe('BedrockApiStack', () => {
             });
         });
 
-        it('should configure agent environment variables', () => {
+        it('should configure agent environment variables from SSM parameters', () => {
             template.hasResourceProperties('AWS::Lambda::Function', {
                 Environment: {
                     Variables: Match.objectLike({
-                        AGENT_ID: AGENT_ID,
-                        AGENT_ALIAS_ID: AGENT_ALIAS_ID,
+                        AGENT_ID: Match.anyValue(),
+                        AGENT_ALIAS_ID: Match.anyValue(),
                     }),
                 },
             });

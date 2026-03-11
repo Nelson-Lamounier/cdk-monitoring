@@ -54,11 +54,7 @@ describe('BedrockAgentStack', () => {
                     agentInstruction: 'You are a helpful AI assistant for testing.',
                     agentDescription: 'Test agent',
                     idleSessionTtlInSeconds: 600,
-                    dataBucket: s3.Bucket.fromBucketName(
-                        new cdk.Stack(app, 'BucketLookup', { env: TEST_ENV_EU }),
-                        'ImportedBucket',
-                        TEST_BUCKET_NAME,
-                    ),
+                    dataBucketName: TEST_BUCKET_NAME,
                     enableContentFilters: true,
                     blockedInputMessaging: 'Sorry, I cannot process that request.',
                     blockedOutputsMessaging: 'Sorry, I cannot provide that response.',

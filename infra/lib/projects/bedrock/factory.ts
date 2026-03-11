@@ -114,7 +114,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 agentInstruction,
                 agentDescription: configs.agentDescription,
                 idleSessionTtlInSeconds: allocs.agent.idleSessionTtlInSeconds,
-                dataBucket: dataStack.dataBucket,
+                dataBucketName: `${namePrefix}-kb-data`,
                 enableContentFilters: configs.guardrail.enableContentFilters,
                 blockedInputMessaging: configs.guardrail.blockedInputMessaging,
                 blockedOutputsMessaging: configs.guardrail.blockedOutputMessaging,
@@ -136,8 +136,6 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
             stackId(this.namespace, 'Api', this.environment),
             {
                 namePrefix,
-                agentId: agentStack.agentId,
-                agentAliasId: agentStack.agentAliasId,
                 lambdaMemoryMb: allocs.apiLambda.memoryMb,
                 lambdaTimeoutSeconds: allocs.apiLambda.timeoutSeconds,
                 logRetention: configs.logRetention,
@@ -163,7 +161,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
             stackId(this.namespace, 'Content', this.environment),
             {
                 namePrefix,
-                assetsBucketName: dataStack.bucketName,
+                assetsBucketName: `${namePrefix}-kb-data`,
                 draftPrefix: contentConfigs.s3.draftPrefix,
                 publishedPrefix: contentConfigs.s3.publishedPrefix,
                 contentPrefix: contentConfigs.s3.contentPrefix,

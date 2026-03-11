@@ -29,10 +29,6 @@ import { Construct } from 'constructs';
 export interface BedrockApiStackProps extends cdk.StackProps {
     /** Name prefix for resources (e.g. 'bedrock-development') */
     readonly namePrefix: string;
-    /** Bedrock Agent ID (from AgentStack) */
-    readonly agentId: string;
-    /** Bedrock Agent Alias ID (from AgentStack) */
-    readonly agentAliasId: string;
     /** Lambda memory in MB */
     readonly lambdaMemoryMb: number;
     /** Lambda timeout in seconds */
@@ -75,6 +71,14 @@ export class BedrockApiStack extends cdk.Stack {
 
         const { namePrefix } = props;
 
+        // Resolve Agent IDs from SSM (avoids cross-stack exports from AgentStack)
+        const agentId = ssm.StringParameter.valueForStringParameter(
+            this, `/${namePrefix}/agent-id`,
+        );
+        const agentAliasId = ssm.StringParameter.valueForStringParameter(
+            this, `/${namePrefix}/agent-alias-id`,
+        );
+
         // =================================================================
         // Invoke Lambda — Calls Bedrock Agent via SDK
         // =================================================================
@@ -93,8 +97,8 @@ export class BedrockApiStack extends cdk.Stack {
             memorySize: props.lambdaMemoryMb,
             timeout: cdk.Duration.seconds(props.lambdaTimeoutSeconds),
             environment: {
-                AGENT_ID: props.agentId,
-                AGENT_ALIAS_ID: props.agentAliasId,
+                AGENT_ID: agentId,
+                AGENT_ALIAS_ID: agentAliasId,
             },
             description: `Agent invocation handler for ${namePrefix}`,
         });
@@ -115,7 +119,7 @@ export class BedrockApiStack extends cdk.Stack {
                 'bedrock:InvokeAgent',
             ],
             resources: [
-                `arn:aws:bedrock:${this.region}:${this.account}:agent-alias/${props.agentId}/${props.agentAliasId}`,
+                `arn:aws:bedrock:${this.region}:${this.account}:agent-alias/${agentId}/${agentAliasId}`,
             ],
         }));
 

@@ -662,6 +662,41 @@ export class KubernetesBaseStack extends cdk.Stack {
             tier: ssm.ParameterTier.STANDARD,
         });
 
+        new ssm.StringParameter(this, 'VpcIdParam', {
+            parameterName: `${props.ssmPrefix}/vpc-id`,
+            stringValue: this.vpc.vpcId,
+            description: 'Shared VPC ID for cross-stack discovery',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
+        new ssm.StringParameter(this, 'ControlPlaneSgIdParam', {
+            parameterName: `${props.ssmPrefix}/control-plane-sg-id`,
+            stringValue: this.controlPlaneSg.securityGroupId,
+            description: 'Control plane security group ID',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
+        new ssm.StringParameter(this, 'IngressSgIdParam', {
+            parameterName: `${props.ssmPrefix}/ingress-sg-id`,
+            stringValue: this.ingressSg.securityGroupId,
+            description: 'Ingress (Traefik) security group ID',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
+        new ssm.StringParameter(this, 'MonitoringSgIdParam', {
+            parameterName: `${props.ssmPrefix}/monitoring-sg-id`,
+            stringValue: this.monitoringSg.securityGroupId,
+            description: 'Monitoring security group ID',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
+        new ssm.StringParameter(this, 'KmsKeyArnParam', {
+            parameterName: `${props.ssmPrefix}/kms-key-arn`,
+            stringValue: this.logGroupKmsKey.keyArn,
+            description: 'KMS key ARN for CloudWatch log group encryption',
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
         // =====================================================================
         // Stack Outputs
         // =====================================================================
