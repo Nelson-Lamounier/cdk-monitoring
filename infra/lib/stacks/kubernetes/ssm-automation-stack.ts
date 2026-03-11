@@ -7,7 +7,7 @@
  * stack so that bootstrap scripts can be updated without re-deploying EC2.
  *
  * Resources Created:
- *   - SSM Automation Document: Control plane bootstrap (8 steps)
+ *   - SSM Automation Document: Control plane bootstrap (9 steps)
  *   - SSM Automation Document: Worker node bootstrap (3 steps)
  *   - SSM Parameter: Document name for discovery by EC2 user data
  *   - IAM Role: Automation execution role with RunCommand permissions
@@ -73,6 +73,12 @@ interface AutomationStep {
 }
 
 const CONTROL_PLANE_STEPS: AutomationStep[] = [
+    {
+        name: 'associateElasticIp',
+        scriptPath: 'boot/steps/01a_associate_eip.py',
+        timeoutSeconds: 60,
+        description: 'Associate the CDK-managed Elastic IP with this instance',
+    },
     {
         name: 'validateGoldenAMI',
         scriptPath: 'boot/steps/01_validate_ami.py',
@@ -309,7 +315,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             documentType: 'Automation',
             name: cpDocName,
             content: this.buildAutomationContent({
-                description: 'Orchestrates Kubernetes control plane bootstrap (8 steps)',
+                description: 'Orchestrates Kubernetes control plane bootstrap (9 steps)',
                 steps: CONTROL_PLANE_STEPS,
                 ssmPrefix: props.ssmPrefix,
                 s3Bucket: props.scriptsBucketName,

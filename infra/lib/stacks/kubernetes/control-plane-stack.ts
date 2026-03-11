@@ -493,13 +493,19 @@ def handler(event, context):
             resources: ['*'],
         }));
 
-        // EventBridge rule: trigger on any ASG instance termination
+        // EventBridge rule: trigger on ASG instance termination OR launch
+        // Belt-and-suspenders: termination handles failover, launch handles
+        // the race condition where minInstancesInService=0 causes the old
+        // instance to terminate before the replacement is running.
         new events.Rule(this, 'EipFailoverRule', {
             ruleName: `${namePrefix}-eip-failover`,
-            description: 'Trigger EIP failover when an ASG instance terminates',
+            description: 'Trigger EIP failover on ASG instance terminate or launch',
             eventPattern: {
                 source: ['aws.autoscaling'],
-                detailType: ['EC2 Instance Terminate Successful'],
+                detailType: [
+                    'EC2 Instance Terminate Successful',
+                    'EC2 Instance Launch Successful',
+                ],
             },
             targets: [new targets.LambdaFunction(eipFailoverFn)],
         });
