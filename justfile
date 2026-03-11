@@ -161,6 +161,11 @@ ci-synth project environment:
 ci-preflight *ARGS:
     npx tsx infra/scripts/ci/preflight-checks.ts {{ARGS}}
 
+# CI rescue: detect and import orphaned CloudFormation resources before deploy
+[group('ci')]
+ci-cfn-rescue *ARGS:
+    npx tsx infra/scripts/ci/cfn-import-rescue.ts {{ARGS}}
+
 # CI deploy: deploy a specific stack (e.g., just ci-deploy ControlPlane-development)
 [group('ci')]
 ci-deploy *ARGS:
