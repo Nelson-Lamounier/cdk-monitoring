@@ -44,7 +44,7 @@ jobs:
       # 1. Checkout cdk-monitoring (owns scripts/sync-static-to-s3.ts)
       # ------------------------------------------------------------------
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -53,7 +53,7 @@ jobs:
       # 2. AWS Credentials
       # ------------------------------------------------------------------
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -63,7 +63,7 @@ jobs:
       # 3. Download & extract static assets from Docker image artifact
       # ------------------------------------------------------------------
       - name: Download Docker Image Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: docker-image-${{ inputs.environment }}
           path: /tmp

@@ -71,13 +71,13 @@ jobs:
       # IMPORTANT: Checkout MUST come first - it clears the working directory!
       # Downloading artifacts before checkout would result in them being deleted.
       - name: Checkout for Custom Config
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           sparse-checkout: .checkov
           sparse-checkout-cone-mode: false
 
       - name: Download CDK Synthesis Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: cdk-synthesis
           path: ${{ inputs.cdk-output-path }}
@@ -228,7 +228,7 @@ jobs:
 
       - name: Upload Security Report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: security-scan-${{ inputs.environment }}
           path: security-reports/
@@ -237,7 +237,7 @@ jobs:
 
       - name: Upload SARIF to GitHub Security
         if: always() && hashFiles('security-reports/results_sarif.sarif') != ''
-        uses: github/codeql-action/upload-sarif@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
+        uses: github/codeql-action/upload-sarif@0d579ffd059c29b07949a3cce3983f0780820c98 # v4.32.6
         with:
           sarif_file: security-reports/results_sarif.sarif
           category: checkov-${{ inputs.environment }}
