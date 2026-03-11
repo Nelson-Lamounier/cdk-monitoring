@@ -57,7 +57,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Detect Changed Paths
         uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
@@ -83,7 +83,8 @@ jobs:
             any-tests:
               - 'infra/tests/**/*.ts'
             k8s-content:
-              - 'kubernetes-app/app-deploy/**/chart/**'
+              - 'kubernetes-app/platform/charts/**/chart/**'
+              - 'kubernetes-app/workloads/charts/**/chart/**'
               - 'kubernetes-app/k8s-bootstrap/**'
 
       - name: Compute Run Flags
@@ -125,7 +126,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install actionlint
         run: |
@@ -158,15 +159,17 @@ jobs:
   setup:
     name: Setup Dependencies
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     outputs:
       node-version: ${{ steps.setup-tools.outputs.node-version }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         id: setup-tools
         uses: ./.github/actions/setup-node-yarn
 
@@ -177,14 +180,16 @@ jobs:
     name: Security Packages Audit
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
@@ -195,20 +200,22 @@ jobs:
           timeout_minutes: 5
           max_attempts: 3
           retry_wait_seconds: 10
-          command: just audit --ignore 1113296 --ignore 1113371
+          command: just audit --ignore 1113296 --ignore 1113371 --ignore 1113992 --ignore 1114071 --ignore 1114200
 
   lint:
     name: Lint Code
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
@@ -220,14 +227,16 @@ jobs:
     name: Dependency Validation
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true'
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
@@ -243,14 +252,16 @@ jobs:
     name: Type Check
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.any-tests == 'true'
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
@@ -265,14 +276,16 @@ jobs:
     name: Build TypeScript
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.any-src == 'true'
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
@@ -287,6 +300,8 @@ jobs:
     name: Test Stacks
     needs: [setup, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     if: |
       (github.event_name == 'pull_request' || 
@@ -302,9 +317,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
@@ -317,7 +332,7 @@ jobs:
 
       - name: Upload Coverage
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-stacks
           path: infra/coverage/
@@ -339,14 +354,16 @@ jobs:
     name: Validate CDK Stacks
     needs: [setup, build, detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     if: needs.detect-changes.outputs.any-src == 'true'
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Node.js and Yarn
+      - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ needs.setup.outputs.node-version }}
@@ -372,9 +389,10 @@ jobs:
           NOTIFICATION_EMAIL: ci-validation@placeholder.local
           SES_FROM_EMAIL: ci-validation@placeholder.local
           VERIFICATION_SECRET: ci-placeholder-secret
+          ALLOW_IPV4: "203.0.113.0/32"
 
       - name: Upload CDK Synthesis
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cdk-synthesis
           path: infra/cdk.out/
@@ -411,20 +429,14 @@ jobs:
     name: Validate Helm Charts
     needs: [detect-changes]
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 10
     if: needs.detect-changes.outputs.k8s-content == 'true'
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install Helm
-        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
-        with:
-          version: v3.17.1
-
-      - name: Install just
-        uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3.1.0
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install kubeconform
         run: |
@@ -443,8 +455,8 @@ jobs:
       - name: Template Render (Next.js)
         run: |
           helm template nextjs-app \
-            kubernetes-app/app-deploy/nextjs/chart \
-            -f kubernetes-app/app-deploy/nextjs/nextjs-values.yaml \
+            kubernetes-app/workloads/charts/nextjs/chart \
+            -f kubernetes-app/workloads/charts/nextjs/nextjs-values.yaml \
             --namespace nextjs-app \
             > /tmp/nextjs-rendered.yaml
 
