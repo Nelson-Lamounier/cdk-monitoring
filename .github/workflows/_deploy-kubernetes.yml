@@ -272,7 +272,7 @@ jobs:
     with:
       environment: ${{ inputs.environment }}
       enforce-blocking: ${{ inputs.security-scan-blocking }}
-      cdk-output-path: "cdk.out"
+      cdk-output-path: "infra/cdk.out"
       cache-key: cdk-synth-k8s-${{ inputs.cdk-environment }}-${{ github.run_id }}-${{ github.run_attempt }}
       skip-checks: ""
       soft-fail-on: ${{ inputs.security-scan-blocking && '' || 'LOW' }}
@@ -335,14 +335,12 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Restore Synthesized Templates
-        id: restore-templates
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: cdk.out/
+          path: infra/cdk.out/
           key: cdk-synth-k8s-${{ inputs.cdk-environment }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Validate CloudFormation Templates
-        if: steps.restore-templates.outputs.cache-hit == 'true'
         shell: python3 {0}
         run: |
           import sys, glob
@@ -350,7 +348,7 @@ jobs:
           from cfnlint import decode, runner
           from cfnlint.config import ConfigMixIn
 
-          templates = sorted(glob.glob("cdk.out/**/*.template.json", recursive=True))
+          templates = sorted(glob.glob("infra/cdk.out/**/*.template.json", recursive=True))
           print(f"Validating {len(templates)} templates...")
           total_errors = 0
           for tpl in templates:
