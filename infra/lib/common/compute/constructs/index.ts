@@ -8,6 +8,7 @@ export * from './ec2-instance';
 export * from './ecs/ecs-cluster';
 export * from './ecs/ecs-service';
 export * from './ecs/ecs-task-definition';
+export * from './eip-failover';
 export * from './golden-ami-image';
 export * from './launch-template';
 export * from './lambda-function';
