@@ -291,9 +291,11 @@ export interface K8sConfigs {
 /**
  * Default security group configuration for Kubernetes clusters.
  *
- * These rules cover the kubeadm control plane, worker nodes, and monitoring
- * stack. The Ingress SG is NOT included here because its rules depend on
- * runtime values (CloudFront prefix list, admin IP from env vars).
+ * All 4 SGs are defined here with their static rules. The Ingress SG
+ * includes static rules only (HTTP from anyIpv4). Runtime-dependent rules
+ * (CloudFront managed prefix list, admin IPs from `/admin/allowed-ips` SSM
+ * parameter) are added imperatively in `base-stack.ts` after the config-driven
+ * loop because they require deploy-time API lookups or synth-time SSM resolution.
  */
 const DEFAULT_K8S_SECURITY_GROUPS: K8sSecurityGroupConfig = {
     clusterBase: {

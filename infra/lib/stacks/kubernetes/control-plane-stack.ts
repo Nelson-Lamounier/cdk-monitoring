@@ -1,29 +1,30 @@
 /**
  * @format
- * Kubernetes Compute Stack — Runtime Layer
+ * Kubernetes Control Plane Stack — Runtime Layer
  *
  * Runtime compute resources for the kubeadm Kubernetes cluster.
- * Consumes long-lived base infrastructure (VPC, Security Group, KMS,
- * EBS, Elastic IP) from KubernetesBaseStack via SSM parameter lookups.
+ * Consumes long-lived base infrastructure from KubernetesBaseStack
+ * via SSM parameter lookups (no cross-stack CloudFormation exports).
  *
  * Resources Created:
- *   - Launch Template (Amazon Linux 2023, IMDSv2)
- *   - ASG (min=1, max=1, single-node cluster)
- *   - IAM Role (monitoring grants + optional application grants)
- *   - SSM Run Command Document (manifest re-deploy)
- *   - Golden AMI Pipeline (optional, Image Builder)
- *   - SSM State Manager (optional, post-boot configuration)
+ *   - Launch Template (Amazon Linux 2023, IMDSv2, Golden AMI from SSM)
+ *   - ASG (min=1, max=1, single-node cluster with self-healing)
+ *   - IAM Role (SSM, EBS, S3, Route53, KMS, CloudWatch grants)
+ *   - EIP Failover Lambda (EventBridge → auto-associate on instance replace)
+ *   - CloudWatch Log Group (KMS-encrypted)
+ *   - SSM State Manager (optional post-boot configuration)
  *
- * Resources from KubernetesBaseStack (consumed, not created):
- *   - VPC, Security Group, KMS Key, EBS Volume, Elastic IP
- *   - S3 Bucket (k8s scripts & manifests)
+ * Resources from KubernetesBaseStack (resolved via SSM):
+ *   - VPC, Security Groups ×3 (cluster, control-plane, ingress)
+ *   - KMS Key, EBS Volume, Elastic IP
+ *   - S3 Bucket (scripts & manifests), Route 53 Hosted Zone
  *
  * @example
  * ```typescript
  * const computeStack = new KubernetesControlPlaneStack(app, 'K8s-Compute-dev', {
  *     env: cdkEnvironment(Environment.DEVELOPMENT),
  *     targetEnvironment: Environment.DEVELOPMENT,
- *     baseStack: kubernetesBaseStack,
+ *     vpcId: 'vpc-xxxx',
  *     configs: getK8sConfigs(Environment.DEVELOPMENT),
  *     namePrefix: 'k8s-development',
  *     ssmPrefix: '/k8s/development',
@@ -89,14 +90,15 @@ export interface KubernetesControlPlaneStackProps extends cdk.StackProps {
 // =============================================================================
 
 /**
- * Kubernetes Compute Stack — Runtime Layer.
+ * Kubernetes Control Plane Stack — Runtime Layer.
  *
  * Runs a kubeadm Kubernetes cluster hosting both monitoring and application
- * workloads. Consumes base infrastructure (VPC, Security Group, KMS, EBS,
- * Elastic IP) from KubernetesBaseStack.
+ * workloads. Resolves all base infrastructure (VPC, 3 Security Groups, KMS,
+ * EBS, EIP, S3 scripts bucket, Route 53 hosted zone) from SSM parameters
+ * published by KubernetesBaseStack — no cross-stack CloudFormation exports.
  *
- * Security and resource isolation between tiers is enforced
- * at the Kubernetes layer (Namespaces, NetworkPolicies, ResourceQuotas,
+ * Security and resource isolation between tiers is enforced at the
+ * Kubernetes layer (Namespaces, NetworkPolicies, ResourceQuotas,
  * PriorityClasses).
  */
 export class KubernetesControlPlaneStack extends cdk.Stack {

@@ -9,12 +9,18 @@
  *
  * Resources Created:
  *   - VPC Lookup (Shared VPC from deploy-shared workflow)
- *   - Security Groups (role-specific: cluster-base, control-plane, ingress, monitoring)
- *   - KMS Key (CloudWatch log group encryption)
+ *   - Security Groups ×4 (config-driven via SecurityGroupConstruct):
+ *       • Cluster Base — intra-cluster communication (etcd, kubelet, VXLAN, etc.)
+ *       • Control Plane — K8s API server access from VPC
+ *       • Ingress — Traefik HTTP/HTTPS (CloudFront prefix list + admin IPs from SSM)
+ *       • Monitoring — Prometheus, Node Exporter, Loki, Tempo
+ *   - KMS Key (CloudWatch log group encryption, auto-rotation enabled)
  *   - EBS Volume (persistent storage for Kubernetes data + PVCs)
+ *   - DLM Snapshot Policy (daily EBS snapshots with 7-day retention)
  *   - Elastic IP (shared by Next.js CloudFront and SSM access)
+ *   - Route 53 Private Hosted Zone (k8s.internal — stable API server DNS)
  *   - S3 Bucket (k8s scripts & manifests — synced by CI pipeline)
- *   - SSM Parameters (cross-stack discovery: SG ID, EIP, scripts-bucket)
+ *   - SSM Parameters ×12 (cross-stack discovery via SsmParameterStoreConstruct)
  *
  * Lifecycle: Only re-deployed when hardware specs, networking rules,
  * or storage configuration changes. Typically stable for weeks/months.
@@ -98,10 +104,16 @@ const K8S_API_DNS_NAME = `k8s-api.${K8S_INTERNAL_DOMAIN}`;
 /**
  * Kubernetes Base Stack — Long-Lived Infrastructure.
  *
- * Contains VPC lookup, Security Group, KMS Key, EBS Volume, Elastic IP,
- * Route 53 private hosted zone, S3 scripts bucket, and SSM discovery
- * parameters. These resources rarely change and are decoupled from the
- * runtime compute stack.
+ * Provisions VPC lookup, 4 config-driven Security Groups, KMS Key,
+ * EBS Volume, DLM snapshot policy, Elastic IP, Route 53 private hosted
+ * zone (k8s.internal), S3 scripts bucket, and 12 SSM parameters for
+ * cross-stack discovery. These resources rarely change and are decoupled
+ * from the runtime compute stack.
+ *
+ * Security Groups are created via a data-driven loop using
+ * {@link SecurityGroupConstruct.fromK8sRules}. Runtime-dependent rules
+ * (CloudFront prefix list, admin IPs from SSM) are added imperatively
+ * after the loop.
  */
 export class KubernetesBaseStack extends cdk.Stack {
     /** The looked-up VPC */
