@@ -335,6 +335,7 @@ jobs:
 
       - name: Upload Coverage
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-stacks
@@ -396,6 +397,7 @@ jobs:
           INFRA_VERSION: ${{ github.sha }}
 
       - name: Upload CDK Synthesis
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cdk-synthesis
