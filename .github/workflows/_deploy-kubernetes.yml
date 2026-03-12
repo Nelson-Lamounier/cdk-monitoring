@@ -438,7 +438,7 @@ jobs:
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes $CDK_ENV --testPathPatterns="data-stack" --verbose
+        run: just ci-integration-test kubernetes/data-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Golden AMI Deploy Observer — Real-time build log streaming (parallel)
@@ -645,7 +645,7 @@ jobs:
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes $CDK_ENV --testPathPatterns="control-plane-stack" --verbose
+        run: just ci-integration-test kubernetes/control-plane-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy App Worker Stack (3b/8) — Application Worker Node
@@ -708,7 +708,7 @@ jobs:
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes $CDK_ENV --testPathPatterns="app-worker-stack" --verbose
+        run: just ci-integration-test kubernetes/app-worker-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy Monitoring Worker Stack (3c/8) — Monitoring Worker Node
@@ -771,7 +771,7 @@ jobs:
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes $CDK_ENV --testPathPatterns="monitoring-worker-stack" --verbose
+        run: just ci-integration-test kubernetes/monitoring-worker-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy AppIam Stack (4/8) — Application-tier IAM grants
