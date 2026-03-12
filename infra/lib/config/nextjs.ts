@@ -1,23 +1,31 @@
 /**
  * @format
- * NextJS Project - Resource Configurations
+ * NextJS Project Configuration (Consolidated)
  *
- * Centralized resource configurations (throttles, timeouts, CORS) by environment.
- * Configurations are "how it behaves" - policies, limits, settings.
+ * Single source of truth for all Next.js project infrastructure configuration:
+ * - Resource names and naming conventions
+ * - Resource allocations (CPU, memory, scaling) by environment
+ * - Resource configurations (throttles, timeouts, CORS) by environment
+ * - Kubernetes deployment configurations by environment
  *
- * Usage:
+ * @example
  * ```typescript
- * import { getNextJsConfigs } from '../../config/nextjs';
- * const configs = getNextJsConfigs(Environment.PRODUCTION);
- * const throttle = configs.apiGateway.throttle; // { rateLimit: 1000, burstLimit: 2000 }
+ * import {
+ *     getNextJsConfigs,
+ *     getNextJsAllocations,
+ *     getNextJsK8sConfig,
+ *     nextjsResourceNames,
+ *     DYNAMO_TABLE_STEM,
+ * } from '../../config/nextjs';
  * ```
  */
 
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment } from '../environments';
+import { Environment } from './environments';
 
 // =============================================================================
 // ENVIRONMENT VARIABLE HELPER
@@ -32,7 +40,271 @@ function fromEnv(key: string): string | undefined {
 }
 
 // =============================================================================
-// TYPE DEFINITIONS
+// RESOURCE NAMES
+// =============================================================================
+
+/** DynamoDB table name stem (used by DynamoDbTableConstruct) */
+export const DYNAMO_TABLE_STEM = 'personal-portfolio';
+
+/** S3 assets bucket purpose stem (used by S3BucketConstruct) */
+export const ASSETS_BUCKET_STEM = 'article-assets';
+
+/**
+ * Resolved resource names for a given environment.
+ */
+export interface NextjsResourceNames {
+    /**
+     * Full DynamoDB table name: `{namePrefix}-personal-portfolio-{env}`
+     * Matches what DynamoDbTableConstruct creates internally.
+     */
+    readonly dynamoTableName: string;
+    /**
+     * Full S3 assets bucket name: `{namePrefix}-article-assets-{env}`
+     * Matches what S3BucketConstruct creates.
+     */
+    readonly assetsBucketName: string;
+}
+
+/**
+ * Build deterministic, fully-qualified resource names for a Next.js environment.
+ * Use these for IAM ARN patterns in the factory / compute stack.
+ *
+ * @param namePrefix - Project name prefix (e.g. 'nextjs')
+ * @param environment - Target deployment environment
+ *
+ * @example
+ * ```typescript
+ * const names = nextjsResourceNames('nextjs', Environment.DEVELOPMENT);
+ * names.dynamoTableName  // 'nextjs-personal-portfolio-development'
+ * names.assetsBucketName // 'nextjs-article-assets-development'
+ * ```
+ */
+export function nextjsResourceNames(
+    namePrefix: string,
+    environment: Environment,
+): NextjsResourceNames {
+    return {
+        dynamoTableName: `${namePrefix}-${DYNAMO_TABLE_STEM}-${environment}`,
+        assetsBucketName: `${namePrefix}-${ASSETS_BUCKET_STEM}-${environment}`,
+    };
+}
+
+// =============================================================================
+// ALLOCATION TYPE DEFINITIONS
+// =============================================================================
+
+/**
+ * Lambda function resource allocation
+ */
+export interface LambdaAllocation {
+    readonly memoryMiB: number;
+    readonly reservedConcurrency?: number;
+}
+
+/**
+ * ECS task resource allocation
+ */
+export interface EcsAllocation {
+    readonly cpu: number;
+    readonly memoryMiB: number;
+}
+
+/**
+ * ECS task definition allocation (includes security settings)
+ */
+export interface EcsTaskAllocation {
+    readonly cpu: number;
+    readonly memoryMiB: number;
+    /** Tmpfs size for Next.js cache in MiB */
+    readonly tmpfsSizeMiB: number;
+    /** NOFILE ulimit (open file descriptors) */
+    readonly nofileLimit: number;
+    /** Graceful shutdown timeout in seconds */
+    readonly stopTimeoutSeconds: number;
+}
+
+/**
+ * Auto Scaling Group allocation
+ */
+export interface AsgAllocation {
+    readonly minCapacity: number;
+    readonly maxCapacity: number;
+    readonly desiredCapacity?: number;
+}
+
+/**
+ * DynamoDB allocation
+ */
+export interface DynamoDbAllocation {
+    readonly readCapacity?: number;
+    readonly writeCapacity?: number;
+}
+
+/**
+ * ECS service auto-scaling allocation
+ */
+export interface ServiceScalingAllocation {
+    /** Minimum number of tasks */
+    readonly minCapacity: number;
+    /** Maximum number of tasks */
+    readonly maxCapacity: number;
+    /** CPU utilization target for scaling (0-100) */
+    readonly cpuTargetUtilizationPercent: number;
+    /** Memory utilization target for scaling (0-100) */
+    readonly memoryTargetUtilizationPercent: number;
+}
+
+/**
+ * Complete resource allocations for NextJS project
+ */
+export interface NextJsAllocations {
+    readonly lambda: LambdaAllocation;
+    readonly ecs: EcsAllocation;
+    readonly ecsTask: EcsTaskAllocation;
+    readonly asg: AsgAllocation;
+    readonly dynamodb: DynamoDbAllocation;
+    readonly serviceScaling: ServiceScalingAllocation;
+}
+
+// =============================================================================
+// ALLOCATIONS BY ENVIRONMENT
+// =============================================================================
+
+/**
+ * NextJS resource allocations by environment
+ */
+export const NEXTJS_ALLOCATIONS: Record<Environment, NextJsAllocations> = {
+    [Environment.DEVELOPMENT]: {
+        lambda: {
+            memoryMiB: 256,
+            reservedConcurrency: undefined, // No limit in dev
+        },
+        ecs: {
+            cpu: 256,      // 0.25 vCPU
+            memoryMiB: 512,
+        },
+        ecsTask: {
+            cpu: 256,
+            memoryMiB: 512,
+            tmpfsSizeMiB: 128,
+            nofileLimit: 65536,
+            stopTimeoutSeconds: 30, // Faster turnover in dev
+        },
+        asg: {
+            minCapacity: 1,
+            maxCapacity: 2,
+            desiredCapacity: 1,
+        },
+        dynamodb: {
+            // On-demand billing (no capacity units)
+        },
+        serviceScaling: {
+            minCapacity: 1,
+            maxCapacity: 4,
+            cpuTargetUtilizationPercent: 70,
+            memoryTargetUtilizationPercent: 80,
+        },
+    },
+
+    [Environment.STAGING]: {
+        lambda: {
+            memoryMiB: 512,
+            reservedConcurrency: undefined,
+        },
+        ecs: {
+            cpu: 512,      // 0.5 vCPU
+            memoryMiB: 1024,
+        },
+        ecsTask: {
+            cpu: 512,
+            memoryMiB: 1024,
+            tmpfsSizeMiB: 256,
+            nofileLimit: 65536,
+            stopTimeoutSeconds: 60,
+        },
+        asg: {
+            minCapacity: 1,
+            maxCapacity: 3,
+            desiredCapacity: 1,
+        },
+        dynamodb: {
+            // On-demand billing
+        },
+        serviceScaling: {
+            minCapacity: 1,
+            maxCapacity: 6,
+            cpuTargetUtilizationPercent: 70,
+            memoryTargetUtilizationPercent: 80,
+        },
+    },
+
+    [Environment.PRODUCTION]: {
+        lambda: {
+            memoryMiB: 512,
+            reservedConcurrency: 10, // Limit concurrency for cost control
+        },
+        ecs: {
+            cpu: 512,      // 0.5 vCPU
+            memoryMiB: 1024,
+        },
+        ecsTask: {
+            cpu: 512,
+            memoryMiB: 1024,
+            tmpfsSizeMiB: 256,
+            nofileLimit: 65536,
+            stopTimeoutSeconds: 120, // More time for graceful shutdown in prod
+        },
+        asg: {
+            minCapacity: 2,
+            maxCapacity: 4,
+            desiredCapacity: 2,
+        },
+        dynamodb: {
+            // On-demand billing
+        },
+        serviceScaling: {
+            minCapacity: 2,
+            maxCapacity: 10,
+            cpuTargetUtilizationPercent: 70,
+            memoryTargetUtilizationPercent: 80,
+        },
+    },
+};
+
+// =============================================================================
+// ALLOCATION HELPER FUNCTIONS
+// =============================================================================
+
+/**
+ * Get NextJS allocations for an environment
+ */
+export function getNextJsAllocations(env: Environment): NextJsAllocations {
+    return NEXTJS_ALLOCATIONS[env];
+}
+
+/**
+ * Get Lambda allocation for an environment
+ */
+export function getLambdaAllocation(env: Environment): LambdaAllocation {
+    return NEXTJS_ALLOCATIONS[env].lambda;
+}
+
+/**
+ * Get ECS allocation for an environment
+ */
+export function getEcsAllocation(env: Environment): EcsAllocation {
+    return NEXTJS_ALLOCATIONS[env].ecs;
+}
+
+/**
+ * Get ECS task allocation for an environment
+ */
+export function getEcsTaskAllocation(env: Environment): EcsTaskAllocation {
+    return NEXTJS_ALLOCATIONS[env].ecsTask;
+}
+
+// =============================================================================
+// CONFIGURATION TYPE DEFINITIONS
 // =============================================================================
 
 /**
@@ -583,7 +855,7 @@ function buildNextJsConfigs(): Record<Environment, NextJsConfigs> {
 let _cachedConfigs: Record<Environment, NextJsConfigs> | undefined;
 
 // =============================================================================
-// HELPER FUNCTIONS
+// CONFIGURATION HELPER FUNCTIONS
 // =============================================================================
 
 /**
@@ -602,4 +874,92 @@ export function getNextJsConfigs(env: Environment): NextJsConfigs {
  */
 export function getCloudFrontLogPrefix(envName: string): string {
     return `cloudfront-${envName}`;
+}
+
+// =============================================================================
+// KUBERNETES DEPLOYMENT CONFIGURATION
+// =============================================================================
+
+/**
+ * EC2 capacity type for cost optimization
+ */
+export type CapacityType = 'on-demand' | 'spot';
+
+/**
+ * K8s deployment configuration for the Next.js application node.
+ *
+ * The application node runs as a kubeadm worker that joins the existing
+ * kubeadm cluster via the join token and CA hash.
+ */
+export interface NextJsK8sConfig {
+    /** EC2 instance type for the application node */
+    readonly instanceType: ec2.InstanceType;
+    /** Capacity type (on-demand or spot) */
+    readonly capacityType: CapacityType;
+    /** Kubernetes node label for workload placement (observability, not exclusive) */
+    readonly nodeLabel: string;
+    /**
+     * SSM parameter prefix of the kubeadm control plane cluster.
+     * Used to discover the server URL and join token.
+     * @example '/k8s/development'
+     */
+    readonly controlPlaneSsmPrefix: string;
+    /** Whether to enable detailed CloudWatch monitoring */
+    readonly detailedMonitoring: boolean;
+    /** Whether to use CloudFormation signals for ASG */
+    readonly useSignals: boolean;
+    /** Timeout for CloudFormation signals in minutes */
+    readonly signalsTimeoutMinutes: number;
+    /** EBS root volume size in GB */
+    readonly rootVolumeSizeGb: number;
+    /** Whether this is a production environment */
+    readonly isProduction: boolean;
+}
+
+/**
+ * Next.js K8s configurations by environment
+ */
+export const NEXTJS_K8S_CONFIGS: Record<Environment, NextJsK8sConfig> = {
+    [Environment.DEVELOPMENT]: {
+        instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+        capacityType: 'on-demand',
+        nodeLabel: 'workload=frontend',
+        controlPlaneSsmPrefix: '/k8s/development',
+        detailedMonitoring: false,
+        useSignals: true,
+        signalsTimeoutMinutes: 15,
+        rootVolumeSizeGb: 30, // Must be >= Golden AMI snapshot size (30GB)
+        isProduction: false,
+    },
+
+    [Environment.STAGING]: {
+        instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+        capacityType: 'on-demand',
+        nodeLabel: 'workload=frontend',
+        controlPlaneSsmPrefix: '/k8s/staging',
+        detailedMonitoring: true,
+        useSignals: true,
+        signalsTimeoutMinutes: 15,
+        rootVolumeSizeGb: 30, // Must be >= Golden AMI snapshot size (30GB)
+        isProduction: false,
+    },
+
+    [Environment.PRODUCTION]: {
+        instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+        capacityType: 'on-demand', // Switch to reserved via AWS console/CLI after purchase
+        nodeLabel: 'workload=frontend',
+        controlPlaneSsmPrefix: '/k8s/production',
+        detailedMonitoring: true,
+        useSignals: true,
+        signalsTimeoutMinutes: 15,
+        rootVolumeSizeGb: 30, // Must be >= Golden AMI snapshot size (30GB)
+        isProduction: true,
+    },
+};
+
+/**
+ * Get Next.js K8s configuration for an environment
+ */
+export function getNextJsK8sConfig(env: Environment): NextJsK8sConfig {
+    return NEXTJS_K8S_CONFIGS[env];
 }
