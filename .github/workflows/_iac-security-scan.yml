@@ -77,12 +77,23 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Download CDK Synthesis Artifact
+        id: download-cdk
+        continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: cdk-synthesis
           path: ${{ inputs.cdk-output-path }}
 
+      - name: Skip Scan if Artifact Unavailable
+        if: steps.download-cdk.outcome == 'failure'
+        run: |
+          echo "::warning::CDK synthesis artifact not available (storage quota may be exhausted). Skipping security scan."
+          echo "## ⚠️ Security Scan Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "CDK synthesis artifact was not available. This typically happens when artifact storage quota is exhausted." >> $GITHUB_STEP_SUMMARY
+          exit 0
+
       - name: Verify CDK Output Exists
+        if: steps.download-cdk.outcome == 'success'
         run: |
           echo "Checking CDK output directory..."
           if [ ! -d "${{ inputs.cdk-output-path }}" ]; then
@@ -101,6 +112,7 @@ jobs:
           fi
 
       - name: Check for Custom Config
+        if: steps.download-cdk.outcome == 'success'
         id: config-check
         run: |
           if [ -f ".checkov/config.yaml" ]; then
@@ -112,6 +124,7 @@ jobs:
           fi
 
       - name: Run Checkov Security Scan
+        if: steps.download-cdk.outcome == 'success'
         id: checkov
         continue-on-error: ${{ inputs.enforce-blocking == false }}
         run: |
