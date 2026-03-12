@@ -256,7 +256,7 @@ jobs:
         run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
 
       - name: Upload Synthesized Templates
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
           path: infra/cdk.out/
@@ -265,7 +265,7 @@ jobs:
 
       - name: Upload for Security Scan
         if: inputs.enable-security-scan
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: cdk-synthesis
           path: infra/cdk.out/
@@ -345,7 +345,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Download Synthesized Templates
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
           path: cdk.out/
