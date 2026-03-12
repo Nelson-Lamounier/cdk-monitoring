@@ -2,6 +2,7 @@
 dist/
 *.js
 !jest.config.js
+!jest.integration.config.js
 *.d.ts
 !lib/**/*.d.ts
 

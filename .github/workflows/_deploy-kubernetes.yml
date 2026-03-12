@@ -120,6 +120,8 @@ env:
   NODE_VERSION: "22"
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
   DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+  # Force Node 24 for actions that haven't released Node 24-native versions yet
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ===========================================================================
@@ -154,7 +156,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Record Commit Information
         id: commit-info
@@ -185,7 +187,7 @@ jobs:
         run: just build
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -300,7 +302,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -312,7 +314,7 @@ jobs:
         working-directory: infra
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -336,7 +338,7 @@ jobs:
 
     steps:
       - name: Checkout Config
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           sparse-checkout: .cfnlintrc
           sparse-checkout-cone-mode: false
@@ -413,10 +415,11 @@ jobs:
   # ===========================================================================
   goldenami-deploy-observer:
     name: Golden AMI Deploy Observer
-    needs: [setup, deploy-base]
+    needs: [setup, deploy-base, verify-base-stack]
     if: >-
       always()
       && needs.deploy-base.result == 'success'
+      && needs.verify-base-stack.result == 'success'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
@@ -426,10 +429,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
@@ -470,6 +473,50 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Verify Base Stack — Integration Tests Gate
+  #
+  # Runs integration tests that call real AWS APIs to validate the base
+  # stack deployment. Reads SSM parameters published by the stack and
+  # confirms VPC, SGs, KMS, EBS, EIP, S3, and Route 53 resources exist
+  # and are correctly configured. Gates all downstream stacks.
+  # ===========================================================================
+  verify-base-stack:
+    name: Verify Base Stack
+    needs: [setup, deploy-base]
+    if: always() && needs.deploy-base.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: infra
+
+      - name: Run Base Stack Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes $CDK_ENV --verbose
+
+  # ===========================================================================
   # Deploy Golden AMI Stack (Image Builder Pipeline)
   #
   # Creates the CfnImage resource that builds the Golden AMI inline.
@@ -478,10 +525,11 @@ jobs:
   # ===========================================================================
   deploy-goldenami:
     name: Deploy Golden AMI
-    needs: [setup, deploy-base]
+    needs: [setup, deploy-base, verify-base-stack]
     if: >-
       always()
       && needs.deploy-base.result == 'success'
+      && needs.verify-base-stack.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.goldenami-stack }}
@@ -503,10 +551,11 @@ jobs:
   # ===========================================================================
   deploy-controlplane:
     name: Deploy Control Plane
-    needs: [setup, deploy-base, deploy-goldenami]
+    needs: [setup, deploy-base, verify-base-stack, deploy-goldenami]
     if: >-
       always()
       && needs.deploy-base.result == 'success'
+      && needs.verify-base-stack.result == 'success'
       && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
     uses: ./.github/workflows/_deploy-stack.yml
     with:
@@ -641,7 +690,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -653,7 +702,7 @@ jobs:
         working-directory: ./
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -702,7 +751,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -714,7 +763,7 @@ jobs:
         working-directory: infra
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -772,7 +821,7 @@ jobs:
 
       - name: Checkout
         if: steps.prereqs.outputs.skip != 'true'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Environment and Dependencies
         if: steps.prereqs.outputs.skip != 'true'
@@ -787,7 +836,7 @@ jobs:
 
       - name: Configure AWS Credentials
         if: steps.prereqs.outputs.skip != 'true'
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
