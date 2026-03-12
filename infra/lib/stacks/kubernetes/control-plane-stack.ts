@@ -37,11 +37,8 @@ import { NagSuppressions } from 'cdk-nag';
 
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -51,6 +48,7 @@ import { Construct } from 'constructs';
 
 import {
     AutoScalingGroupConstruct,
+    EipFailoverConstruct,
     LaunchTemplateConstruct,
     SsmStateManagerConstruct,
     UserDataBuilder,
@@ -230,24 +228,20 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
         // Creates associations that auto-configure k8s after boot:
         // Calico CNI → kubeconfig → manifest deployment.
         // Runs on schedule for drift remediation.
-        // Gated by ssmConfig.enableStateManager flag.
         // =====================================================================
-        let stateManager: SsmStateManagerConstruct | undefined;
-        if (configs.ssm.enableStateManager) {
-            stateManager = new SsmStateManagerConstruct(this, 'StateManager', {
-                namePrefix,
-                ssmConfig: configs.ssm,
-                clusterConfig: configs.cluster,
-                instanceRole: launchTemplateConstruct.instanceRole,
-                targetTag: {
-                    key: MONITORING_APP_TAG.key,
-                    value: MONITORING_APP_TAG.value,
-                },
-                s3BucketName: scriptsBucket.bucketName,
-                ssmPrefix: props.ssmPrefix,
-                region: this.region,
-            });
-        }
+        const stateManager = new SsmStateManagerConstruct(this, 'StateManager', {
+            namePrefix,
+            ssmConfig: configs.ssm,
+            clusterConfig: configs.cluster,
+            instanceRole: launchTemplateConstruct.instanceRole,
+            targetTag: {
+                key: MONITORING_APP_TAG.key,
+                value: MONITORING_APP_TAG.value,
+            },
+            s3BucketName: scriptsBucket.bucketName,
+            ssmPrefix: props.ssmPrefix,
+            region: this.region,
+        });
 
         // =====================================================================
         // User Data — infrastructure readiness stub
@@ -421,157 +415,17 @@ echo "SSM Automation will be triggered by the CI pipeline"
         });
 
         // =====================================================================
-        // EIP Failover Lambda — Hybrid-HA Guardian
+        // EIP Failover — Hybrid-HA Guardian
         //
-        // Automatically re-associates the cluster EIP when a node is
-        // launched or terminated by an ASG.
-        //
-        // Event handling:
-        //   LAUNCH:    If EIP is unassociated or current holder is not running,
-        //              associate EIP to the newly launched instance.
-        //   TERMINATE: If EIP was on the terminated instance, find another
-        //              healthy instance with the cluster tag and move it.
-        //
-        // Discovers healthy instances by EC2 tag (works across all ASGs).
+        // Automatically re-associates the cluster EIP when an ASG instance
+        // is launched or terminated. See EipFailoverConstruct for details.
         // =====================================================================
-        const eipFailoverFn = new lambda.Function(this, 'EipFailoverFn', {
-            functionName: `${namePrefix}-eip-failover`,
-            runtime: lambda.Runtime.PYTHON_3_13,
-            handler: 'index.handler',
-            code: lambda.Code.fromInline(`
-import json, logging, os, boto3
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-ec2 = boto3.client("ec2")
-
-EIP_ALLOCATION_ID = os.environ["EIP_ALLOCATION_ID"]
-TAG_KEY = os.environ["CLUSTER_TAG_KEY"]
-TAG_VALUE = os.environ["CLUSTER_TAG_VALUE"]
-
-
-def is_running(instance_id):
-    """Check if an instance is in 'running' state."""
-    try:
-        resp = ec2.describe_instances(InstanceIds=[instance_id])
-        state = resp["Reservations"][0]["Instances"][0]["State"]["Name"]
-        return state == "running"
-    except Exception:
-        return False
-
-
-def find_healthy_candidates(exclude_id=""):
-    """Find running instances with the cluster tag."""
-    resp = ec2.describe_instances(Filters=[
-        {"Name": f"tag:{TAG_KEY}", "Values": [TAG_VALUE]},
-        {"Name": "instance-state-name", "Values": ["running"]},
-    ])
-    return [
-        i["InstanceId"]
-        for r in resp["Reservations"]
-        for i in r["Instances"]
-        if i["InstanceId"] != exclude_id
-    ]
-
-
-def associate_eip(target_id, eip_info):
-    """Disassociate (if needed) and associate EIP to target instance."""
-    if eip_info.get("AssociationId"):
-        ec2.disassociate_address(AssociationId=eip_info["AssociationId"])
-        logger.info("Disassociated EIP from previous holder")
-    ec2.associate_address(
-        AllocationId=EIP_ALLOCATION_ID,
-        InstanceId=target_id,
-        AllowReassociation=True,
-    )
-    logger.info("EIP associated to %s", target_id)
-
-
-def handler(event, context):
-    detail_type = event.get("detail-type", "")
-    instance_id = event.get("detail", {}).get("EC2InstanceId", "")
-    logger.info("Event: %s | Instance: %s", detail_type, instance_id)
-
-    eip = ec2.describe_addresses(AllocationIds=[EIP_ALLOCATION_ID])["Addresses"][0]
-    current_holder = eip.get("InstanceId", "")
-
-    # ── LAUNCH EVENT ─────────────────────────────────────────────────
-    if "Launch" in detail_type:
-        if not current_holder:
-            logger.info("EIP unassociated — assigning to new instance %s", instance_id)
-            associate_eip(instance_id, eip)
-            return {"statusCode": 200}
-
-        if not is_running(current_holder):
-            logger.info("EIP holder %s is not running — moving to %s", current_holder, instance_id)
-            associate_eip(instance_id, eip)
-            return {"statusCode": 200}
-
-        logger.info("EIP on %s (running). No action needed.", current_holder)
-        return {"statusCode": 200}
-
-    # ── TERMINATE EVENT ──────────────────────────────────────────────
-    if current_holder and current_holder != instance_id:
-        if is_running(current_holder):
-            logger.info("EIP on %s (running, not terminated). No action.", current_holder)
-            return {"statusCode": 200}
-
-    # EIP was on the terminated instance or holder is unhealthy — failover
-    candidates = find_healthy_candidates(exclude_id=instance_id)
-    if not candidates:
-        logger.error("No healthy instances for EIP failover")
-        return {"statusCode": 503}
-
-    associate_eip(candidates[0], eip)
-    logger.info("EIP failed over to %s", candidates[0])
-    return {"statusCode": 200}
-`),
-            timeout: cdk.Duration.seconds(30),
-            memorySize: 128,
-            environment: {
-                EIP_ALLOCATION_ID: eipAllocationId,
-                CLUSTER_TAG_KEY: MONITORING_APP_TAG.key,
-                CLUSTER_TAG_VALUE: MONITORING_APP_TAG.value,
-            },
-            description: 'Re-associates the K8s cluster EIP on ASG instance launch or terminate (Hybrid-HA)',
+        new EipFailoverConstruct(this, 'EipFailover', {
+            eipAllocationId,
+            clusterTagKey: MONITORING_APP_TAG.key,
+            clusterTagValue: MONITORING_APP_TAG.value,
+            namePrefix,
         });
-
-        // Grant the Lambda permissions to manage EIP and discover instances
-        eipFailoverFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'EipFailoverPermissions',
-            effect: iam.Effect.ALLOW,
-            actions: [
-                'ec2:DescribeAddresses',
-                'ec2:AssociateAddress',
-                'ec2:DisassociateAddress',
-                'ec2:DescribeInstances',
-            ],
-            resources: ['*'],
-        }));
-
-        // EventBridge rule: trigger on ASG instance termination OR launch
-        // Belt-and-suspenders: termination handles failover, launch handles
-        // the race condition where minInstancesInService=0 causes the old
-        // instance to terminate before the replacement is running.
-        new events.Rule(this, 'EipFailoverRule', {
-            ruleName: `${namePrefix}-eip-failover`,
-            description: 'Trigger EIP failover on ASG instance terminate or launch',
-            eventPattern: {
-                source: ['aws.autoscaling'],
-                detailType: [
-                    'EC2 Instance Terminate Successful',
-                    'EC2 Instance Launch Successful',
-                ],
-            },
-            targets: [new targets.LambdaFunction(eipFailoverFn)],
-        });
-
-        // Python 3.13 is the latest GA Lambda runtime. CDK defines PYTHON_3_14
-        // as a placeholder (not yet released), causing cdk-nag to flag 3.13.
-        NagSuppressions.addResourceSuppressions(eipFailoverFn, [{
-            id: 'AwsSolutions-L1',
-            reason: 'Python 3.13 is the latest GA Lambda runtime. PYTHON_3_14 is a CDK placeholder for an unreleased version.',
-        }], true);
 
         // =====================================================================
         // Stack Outputs
@@ -617,17 +471,15 @@ def handler(event, context):
 
         // Golden AMI outputs are now in GoldenAmiStack
 
-        if (stateManager) {
-            new cdk.CfnOutput(this, 'SsmDocumentName', {
-                value: stateManager.document.ref,
-                description: 'SSM Document name for post-boot Kubernetes configuration',
-            });
+        new cdk.CfnOutput(this, 'SsmDocumentName', {
+            value: stateManager.document.ref,
+            description: 'SSM Document name for post-boot Kubernetes configuration',
+        });
 
-            new cdk.CfnOutput(this, 'SsmAssociationName', {
-                value: stateManager.association.ref,
-                description: 'SSM State Manager association name',
-            });
-        }
+        new cdk.CfnOutput(this, 'SsmAssociationName', {
+            value: stateManager.association.ref,
+            description: 'SSM State Manager association name',
+        });
     }
 }
 

@@ -145,6 +145,12 @@ export interface K8sImageConfig {
         readonly crictl: string;
         /** Calico CNI version (with 'v' prefix, e.g. 'v3.29.3') */
         readonly calico: string;
+        /**
+         * ECR credential provider version (with 'v' prefix, e.g. 'v1.31.0').
+         * Pinned to v1.31.0 — the last version with published standalone binaries.
+         * The credential provider plugin API is stable and version-independent.
+         */
+        readonly ecrCredentialProvider: string;
     };
 }
 
@@ -394,6 +400,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
                 cniPlugins: '1.6.1',
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
+                ecrCredentialProvider: 'v1.31.0',
             },
         },
         ssm: {
@@ -465,6 +472,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
                 cniPlugins: '1.6.1',
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
+                ecrCredentialProvider: 'v1.31.0',
             },
         },
         ssm: {
@@ -534,6 +542,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
                 cniPlugins: '1.6.1',
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
+                ecrCredentialProvider: 'v1.31.0',
             },
         },
         ssm: {

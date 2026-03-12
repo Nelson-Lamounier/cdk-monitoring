@@ -52,7 +52,7 @@ import {
     UserDataBuilder,
 } from '../../common/index';
 import { Environment } from '../../config/environments';
-import { NextJsK8sConfig } from '../../config/nextjs/kubernetes-configurations';
+import { NextJsK8sConfig } from '../../config/nextjs';
 
 // =============================================================================
 // PROPS

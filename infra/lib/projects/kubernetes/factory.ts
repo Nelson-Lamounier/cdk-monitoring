@@ -33,9 +33,7 @@ import {
     getEnvironmentConfig,
 } from '../../config/environments';
 import { getK8sConfigs } from '../../config/kubernetes';
-import { getNextJsConfigs } from '../../config/nextjs/configurations';
-import { getNextJsK8sConfig } from '../../config/nextjs/kubernetes-configurations';
-import { nextjsResourceNames } from '../../config/nextjs/resource-names';
+import { getNextJsConfigs, getNextJsK8sConfig, nextjsResourceNames } from '../../config/nextjs';
 import { Project, getProjectConfig } from '../../config/projects';
 import { nextjsSsmPaths } from '../../config/ssm-paths';
 import {

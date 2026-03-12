@@ -8,10 +8,22 @@
  * Domain: Data Layer (rarely changes)
  *
  * Resources:
- * 1. DynamoDB Personal Portfolio Table - Single-table design for articles and email subscriptions
- * 2. S3 Assets Bucket - Storage for images and media
- * 3. S3 Access Logs Bucket - Logs for assets bucket
- * 4. SSM Parameters - Cross-stack references and secrets
+ * 1. DynamoDB Personal Portfolio Table — Single-table design for articles and email subscriptions
+ * 2. S3 Assets Bucket — Storage for images and media (served via CloudFront OAC)
+ * 3. S3 Access Logs Bucket — Server access logs for the assets bucket
+ * 4. SSM Parameters — Cross-stack references (table name, bucket name, region, KMS key ARN)
+ * 5. CloudFormation Outputs — 8 exports for downstream stacks (Base, Edge, AppIam)
+ *
+ * Configuration:
+ * - Resource names imported from `../../config/nextjs` (DYNAMO_TABLE_STEM, nextjsResourceNames)
+ * - SSM paths imported from `../../config` (nextjsSsmPaths)
+ * - Environment-specific behaviour from `../../config/nextjs` (getNextJsConfigs)
+ *
+ * CI Integration:
+ * - Unit tests: `tests/unit/stacks/kubernetes/data-stack.test.ts` (35 assertions)
+ * - Integration tests: `tests/integration/kubernetes/data-stack.integration.test.ts`
+ *   Post-deployment verification via `verify-data-stack` job in `_deploy-kubernetes.yml`.
+ *   Gates the Base stack deploy — if data resources aren't healthy, the pipeline halts.
  *
  * NOTE: ECR has been migrated to SharedVpcStack. Applications discover
  *       ECR via SSM: /shared/ecr/{env}/repository-*
@@ -33,7 +45,6 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as s3 from "aws-cdk-lib/aws-s3";
-import * as ssm from "aws-cdk-lib/aws-ssm";
 
 import { Construct } from "constructs";
 
@@ -42,6 +53,7 @@ import {
   DynamoDbTableConstruct,
   S3BucketConstruct,
 } from "../../common/storage";
+import { SsmParameterStoreConstruct } from "../../common/ssm";
 import {
   Environment,
   isProductionEnvironment,
@@ -53,11 +65,11 @@ import {
   PORTFOLIO_GSI2_NAME,
   nextjsSsmPaths,
 } from "../../config";
-import { getNextJsConfigs } from "../../config/nextjs/configurations";
+import { getNextJsConfigs } from "../../config/nextjs";
 import {
   nextjsResourceNames,
   DYNAMO_TABLE_STEM,
-} from "../../config/nextjs/resource-names";
+} from "../../config/nextjs";
 
 // =============================================================================
 // STACK PROPS
@@ -79,9 +91,11 @@ export interface KubernetesDataStackProps extends cdk.StackProps {
 // =============================================================================
 
 /**
- * KubernetesDataStack - Consolidated data layer for K8s-hosted application
+ * KubernetesDataStack — Consolidated data layer for K8s-hosted application
  *
- * This stack consolidates all data/storage resources into a single deployment unit:
+ * Creates all data/storage resources in a single deployment unit.
+ * SSM parameters publish resource identifiers for zero-coupling
+ * cross-stack discovery (no CloudFormation exports for runtime use).
  *
  * Personal Portfolio DynamoDB Table (Single-table design):
  * - Primary Key: pk (String)
@@ -101,8 +115,17 @@ export interface KubernetesDataStackProps extends cdk.StackProps {
  * S3 Assets Bucket:
  * - Stores article images, diagrams, and media files
  * - Versioning enabled for content recovery
- * - Block public access (serve via CloudFront only)
+ * - Block public access (serve via CloudFront OAC only)
  * - Lifecycle policies for cost optimisation
+ *
+ * SSM Parameters (published via SsmParameterStoreConstruct for-loop):
+ * - dynamodb-table-name — full table name for runtime lookups
+ * - assets-bucket-name — bucket name for CloudFront origin
+ * - aws-region — deployment region for SDK clients
+ * - dynamodb-kms-key-arn — KMS key ARN (production only)
+ *
+ * Stack Outputs (emitted via `_emitOutputs` data-driven helper):
+ * - 8 CfnOutputs with export names for cross-stack references
  *
  * ═══════════════════════════════════════════════════════════════════
  * ⚠️ DAY-0 DATA SAFETY — MIGRATION RISK
@@ -360,26 +383,22 @@ export class KubernetesDataStack extends cdk.Stack {
     // =================================================================
     // SSM PARAMETERS FOR CROSS-STACK REFERENCES
     //
-    // Native StringParameter — no backing Lambda required.
+    // Uses SsmParameterStoreConstruct (L3) to batch-create parameters
+    // from a flat record. Construct IDs and descriptions are
+    // auto-generated from the SSM path.
+    //
     // Consumer stacks discover these via nextjsSsmPaths().
     // =================================================================
 
-    new ssm.StringParameter(this, "SsmPortfolioTableName", {
-      parameterName: paths.dynamodbTableName,
-      stringValue: this.portfolioTable.tableName,
-      description: "DynamoDB personal portfolio table name for K8s application",
-    });
-
-    new ssm.StringParameter(this, "SsmAssetsBucketName", {
-      parameterName: paths.assetsBucketName,
-      stringValue: this.assetsBucket.bucketName,
-      description: "S3 assets bucket name for K8s application",
-    });
-
-    new ssm.StringParameter(this, "SsmAwsRegion", {
-      parameterName: paths.awsRegion,
-      stringValue: cdk.Stack.of(this).region,
-      description: "AWS region for K8s application",
+    new SsmParameterStoreConstruct(this, "SsmParams", {
+      parameters: {
+        [paths.dynamodbTableName]: this.portfolioTable.tableName,
+        [paths.assetsBucketName]: this.assetsBucket.bucketName,
+        [paths.awsRegion]: cdk.Stack.of(this).region,
+        ...(dynamoEncryptionKey
+          ? { [paths.dynamodbKmsKeyArn]: dynamoEncryptionKey.keyArn }
+          : {}),
+      },
     });
 
     // =================================================================
@@ -398,15 +417,6 @@ export class KubernetesDataStack extends cdk.Stack {
     //   /k8s/{env}/monitoring/allow-ipv4
     //   /k8s/{env}/monitoring/allow-ipv6
     // =================================================================
-
-    if (dynamoEncryptionKey) {
-      new ssm.StringParameter(this, "SsmDynamoDbKmsKeyArn", {
-        parameterName: paths.dynamodbKmsKeyArn,
-        stringValue: dynamoEncryptionKey.keyArn,
-        description:
-          "KMS key ARN for DynamoDB encryption (cross-stack discovery)",
-      });
-    }
 
     // =================================================================
     // CDK NAG SUPPRESSIONS & TAGS
@@ -446,54 +456,57 @@ export class KubernetesDataStack extends cdk.Stack {
 
     const exportPrefix = `${targetEnvironment}-${projectName}`;
 
-    new cdk.CfnOutput(this, "PortfolioTableName", {
-      value: this.portfolioTable.tableName,
-      description:
-        "DynamoDB table name for personal portfolio (articles, email subscriptions)",
-      exportName: `${exportPrefix}-portfolio-table-name`,
-    });
-
-    new cdk.CfnOutput(this, "PortfolioTableArn", {
-      value: this.portfolioTable.tableArn,
-      description: "DynamoDB table ARN for IAM policies",
-      exportName: `${exportPrefix}-portfolio-table-arn`,
-    });
-
-    new cdk.CfnOutput(this, "PortfolioTableGsi1Name", {
-      value: PORTFOLIO_GSI1_NAME,
-      description:
-        "GSI1 name for querying by status/date (articles) or listing entities (email subscriptions)",
-      exportName: `${exportPrefix}-portfolio-gsi1-name`,
-    });
-
-    new cdk.CfnOutput(this, "PortfolioTableGsi2Name", {
-      value: PORTFOLIO_GSI2_NAME,
-      description: "GSI2 name for querying articles by tag",
-      exportName: `${exportPrefix}-portfolio-gsi2-name`,
-    });
-
-    new cdk.CfnOutput(this, "AssetsBucketName", {
-      value: this.assetsBucket.bucketName,
-      description: "S3 bucket name for article images and media",
-      exportName: `${exportPrefix}-assets-bucket-name`,
-    });
-
-    new cdk.CfnOutput(this, "AssetsBucketArn", {
-      value: this.assetsBucket.bucketArn,
-      description: "S3 bucket ARN for IAM policies",
-      exportName: `${exportPrefix}-assets-bucket-arn`,
-    });
-
-    new cdk.CfnOutput(this, "AssetsBucketRegionalDomainName", {
-      value: this.assetsBucket.bucketRegionalDomainName,
-      description: "S3 bucket regional domain name for CloudFront origin",
-      exportName: `${exportPrefix}-assets-bucket-domain`,
-    });
-
-    new cdk.CfnOutput(this, "SsmParameterPrefix", {
-      value: this.ssmPrefix,
-      description: "SSM parameter path prefix for this environment",
-    });
+    this._emitOutputs([
+      {
+        id: "PortfolioTableName",
+        value: this.portfolioTable.tableName,
+        description:
+          "DynamoDB table name for personal portfolio (articles, email subscriptions)",
+        exportName: `${exportPrefix}-portfolio-table-name`,
+      },
+      {
+        id: "PortfolioTableArn",
+        value: this.portfolioTable.tableArn,
+        description: "DynamoDB table ARN for IAM policies",
+        exportName: `${exportPrefix}-portfolio-table-arn`,
+      },
+      {
+        id: "PortfolioTableGsi1Name",
+        value: PORTFOLIO_GSI1_NAME,
+        description:
+          "GSI1 name for querying by status/date (articles) or listing entities (email subscriptions)",
+        exportName: `${exportPrefix}-portfolio-gsi1-name`,
+      },
+      {
+        id: "PortfolioTableGsi2Name",
+        value: PORTFOLIO_GSI2_NAME,
+        description: "GSI2 name for querying articles by tag",
+        exportName: `${exportPrefix}-portfolio-gsi2-name`,
+      },
+      {
+        id: "AssetsBucketName",
+        value: this.assetsBucket.bucketName,
+        description: "S3 bucket name for article images and media",
+        exportName: `${exportPrefix}-assets-bucket-name`,
+      },
+      {
+        id: "AssetsBucketArn",
+        value: this.assetsBucket.bucketArn,
+        description: "S3 bucket ARN for IAM policies",
+        exportName: `${exportPrefix}-assets-bucket-arn`,
+      },
+      {
+        id: "AssetsBucketRegionalDomainName",
+        value: this.assetsBucket.bucketRegionalDomainName,
+        description: "S3 bucket regional domain name for CloudFront origin",
+        exportName: `${exportPrefix}-assets-bucket-domain`,
+      },
+      {
+        id: "SsmParameterPrefix",
+        value: this.ssmPrefix,
+        description: "SSM parameter path prefix for this environment",
+      },
+    ]);
   }
 
   // =========================================================================
@@ -525,5 +538,31 @@ export class KubernetesDataStack extends cdk.Stack {
    */
   public grantAssetsBucketRead(grantee: iam.IGrantable): iam.Grant {
     return this.assetsBucket.grantRead(grantee);
+  }
+
+  // =========================================================================
+  // PRIVATE HELPERS
+  // =========================================================================
+
+  /**
+   * Emit CloudFormation stack outputs from a data-driven array.
+   * Each entry creates one `CfnOutput` with value, description,
+   * and an optional cross-stack exportName.
+   */
+  private _emitOutputs(
+    outputs: {
+      id: string;
+      value: string;
+      description: string;
+      exportName?: string;
+    }[],
+  ): void {
+    for (const output of outputs) {
+      new cdk.CfnOutput(this, output.id, {
+        value: output.value,
+        description: output.description,
+        ...(output.exportName ? { exportName: output.exportName } : {}),
+      });
+    }
   }
 }
