@@ -347,12 +347,22 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Download Synthesized Templates
+        id: download-templates
+        continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
           path: cdk.out/
 
+      - name: Skip Validation if Artifact Unavailable
+        if: steps.download-templates.outcome == 'failure'
+        run: |
+          echo "::warning::CDK synthesis artifact not available (storage quota may be exhausted). Skipping template validation."
+          echo "## ⚠️ Template Validation Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "CDK synthesis artifact was not available. Deployments will proceed without cfn-lint validation." >> $GITHUB_STEP_SUMMARY
+
       - name: Validate CloudFormation Templates
+        if: steps.download-templates.outcome == 'success'
         shell: python3 {0}
         run: |
           import sys, glob
