@@ -333,15 +333,7 @@ jobs:
       - name: Run Stack Tests
         run: just test-stacks
 
-      - name: Upload Coverage
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: coverage-stacks
-          path: infra/coverage/
-          retention-days: 7
-          if-no-files-found: error
+
 
   # ============================================================================
   # NOTE: Snapshot Tests
@@ -396,14 +388,7 @@ jobs:
           ALLOW_IPV4: "203.0.113.0/32"
           INFRA_VERSION: ${{ github.sha }}
 
-      - name: Upload CDK Synthesis
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: cdk-synthesis
-          path: infra/cdk.out/
-          retention-days: 7
-          if-no-files-found: error
+
 
   # ============================================================================
   # NOTE: IaC Security Scanning Strategy

@@ -6,9 +6,9 @@
 # and pushes it to ECR using scripts/push-to-ecr.ts.
 #
 # Two-job architecture:
-#   1. Build — checks out frontend-portfolio, builds Docker image, uploads
-#      the tar as a GitHub Actions artifact (no AWS credentials needed)
-#   2. Push — downloads the artifact, runs push-to-ecr.ts to authenticate
+#   1. Build — checks out frontend-portfolio, builds Docker image, caches
+#      the tar via actions/cache (no AWS credentials needed)
+#   2. Push — restores the cached image, runs push-to-ecr.ts to authenticate
 #      with ECR and push the image
 #
 # Prerequisites:
@@ -110,14 +110,11 @@ jobs:
             NEXT_PUBLIC_API_URL=${{ inputs.api-url }}
           outputs: type=docker,dest=/tmp/docker-image.tar
 
-      - name: Upload Docker Image Artifact
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - name: Cache Docker Image
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          name: docker-image-${{ inputs.environment }}
           path: /tmp/docker-image.tar
-          retention-days: 1
-          if-no-files-found: error
+          key: docker-image-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Build Summary
         run: |
@@ -165,17 +162,18 @@ jobs:
           audience: sts.amazonaws.com
 
       # ----------------------------------------------------------------
-      # Download and load Docker image
+      # Restore and load Docker image from cache
       # ----------------------------------------------------------------
-      - name: Download Docker Image Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - name: Restore Docker Image from Cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          name: docker-image-${{ inputs.environment }}
-          path: /tmp
+          path: /tmp/docker-image.tar
+          key: docker-image-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
 
       - name: Load Docker Image
         run: |
-          echo "Loading Docker image from artifact..."
+          echo "Loading Docker image from cache..."
           docker load -i /tmp/docker-image.tar
           echo "[PASS] Image loaded"
 

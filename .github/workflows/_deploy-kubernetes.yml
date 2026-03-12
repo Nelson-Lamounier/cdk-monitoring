@@ -255,24 +255,11 @@ jobs:
           ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
         run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
 
-      - name: Upload Synthesized Templates
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - name: Cache Synthesized Templates
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
           path: infra/cdk.out/
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Upload for Security Scan
-        if: inputs.enable-security-scan
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: cdk-synthesis
-          path: infra/cdk.out/
-          retention-days: 7
-          if-no-files-found: error
+          key: cdk-synth-k8s-${{ inputs.cdk-environment }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # ===========================================================================
   # IaC Security Scan (Conditional)
@@ -286,6 +273,7 @@ jobs:
       environment: ${{ inputs.environment }}
       enforce-blocking: ${{ inputs.security-scan-blocking }}
       cdk-output-path: "cdk.out"
+      cache-key: cdk-synth-k8s-${{ inputs.cdk-environment }}-${{ github.run_id }}-${{ github.run_attempt }}
       skip-checks: ""
       soft-fail-on: ${{ inputs.security-scan-blocking && '' || 'LOW' }}
     secrets: inherit
@@ -346,23 +334,15 @@ jobs:
           sparse-checkout: .cfnlintrc
           sparse-checkout-cone-mode: false
 
-      - name: Download Synthesized Templates
-        id: download-templates
-        continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - name: Restore Synthesized Templates
+        id: restore-templates
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
           path: cdk.out/
-
-      - name: Skip Validation if Artifact Unavailable
-        if: steps.download-templates.outcome == 'failure'
-        run: |
-          echo "::warning::CDK synthesis artifact not available (storage quota may be exhausted). Skipping template validation."
-          echo "## ⚠️ Template Validation Skipped" >> $GITHUB_STEP_SUMMARY
-          echo "CDK synthesis artifact was not available. Deployments will proceed without cfn-lint validation." >> $GITHUB_STEP_SUMMARY
+          key: cdk-synth-k8s-${{ inputs.cdk-environment }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Validate CloudFormation Templates
-        if: steps.download-templates.outcome == 'success'
+        if: steps.restore-templates.outputs.cache-hit == 'true'
         shell: python3 {0}
         run: |
           import sys, glob

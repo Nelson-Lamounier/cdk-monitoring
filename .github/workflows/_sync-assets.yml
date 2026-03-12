@@ -2,13 +2,13 @@
 # Reusable Workflow: Sync Static Assets
 # =============================================================================
 #
-# Extracts Next.js static assets from a Docker image artifact built in a
-# previous job, syncs them to S3, and invalidates the CloudFront cache
-# using scripts/sync-static-to-s3.ts.
+# Extracts Next.js static assets from a Docker image cached by the
+# build-push-image workflow, syncs them to S3, and invalidates the
+# CloudFront cache using scripts/sync-static-to-s3.ts.
 #
 # Prerequisites:
-#   - A prior job must upload a Docker image artifact named
-#     "docker-image-<environment>" containing a docker-image.tar file
+#   - A prior job must cache a Docker image tar via actions/cache
+#     with key "docker-image-<environment>-<run_id>-<run_attempt>"
 #   - AWS OIDC role with S3, CloudFront, SSM, STS permissions
 # =============================================================================
 
@@ -60,13 +60,14 @@ jobs:
           audience: sts.amazonaws.com
 
       # ------------------------------------------------------------------
-      # 3. Download & extract static assets from Docker image artifact
+      # 3. Restore Docker image from cache and extract static assets
       # ------------------------------------------------------------------
-      - name: Download Docker Image Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - name: Restore Docker Image from Cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          name: docker-image-${{ inputs.environment }}
-          path: /tmp
+          path: /tmp/docker-image.tar
+          key: docker-image-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
 
       - name: Extract Static Assets from Docker Image
         run: |

@@ -227,12 +227,5 @@ jobs:
           outputs-directory: ${{ inputs.outputs-directory }}
           additional-args: ${{ inputs.additional-args }}
 
-      - name: Upload Stack Outputs
-        if: always() && inputs.outputs-directory != ''
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ${{ inputs.stack-name }}-outputs
-          path: ${{ github.workspace }}/${{ inputs.outputs-directory }}
-          retention-days: 30
-          if-no-files-found: warn
+
+

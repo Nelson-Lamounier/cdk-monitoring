@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: "cloudformation"
+      cache-key:
+        description: "Cache key to restore CDK synthesis output from actions/cache"
+        required: false
+        type: string
+        default: ""
       soft-fail-on:
         description: "Severity levels to soft-fail on (LOW,MEDIUM,HIGH,CRITICAL)"
         required: false
@@ -76,24 +81,15 @@ jobs:
           sparse-checkout: .checkov
           sparse-checkout-cone-mode: false
 
-      - name: Download CDK Synthesis Artifact
-        id: download-cdk
-        continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - name: Restore CDK Synthesis from Cache
+        id: restore-cdk
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          name: cdk-synthesis
           path: ${{ inputs.cdk-output-path }}
-
-      - name: Skip Scan if Artifact Unavailable
-        if: steps.download-cdk.outcome == 'failure'
-        run: |
-          echo "::warning::CDK synthesis artifact not available (storage quota may be exhausted). Skipping security scan."
-          echo "## ⚠️ Security Scan Skipped" >> $GITHUB_STEP_SUMMARY
-          echo "CDK synthesis artifact was not available. This typically happens when artifact storage quota is exhausted." >> $GITHUB_STEP_SUMMARY
-          exit 0
+          key: ${{ inputs.cache-key }}
 
       - name: Verify CDK Output Exists
-        if: steps.download-cdk.outcome == 'success'
+        if: steps.restore-cdk.outputs.cache-hit == 'true'
         run: |
           echo "Checking CDK output directory..."
           if [ ! -d "${{ inputs.cdk-output-path }}" ]; then
@@ -112,7 +108,7 @@ jobs:
           fi
 
       - name: Check for Custom Config
-        if: steps.download-cdk.outcome == 'success'
+        if: steps.restore-cdk.outputs.cache-hit == 'true'
         id: config-check
         run: |
           if [ -f ".checkov/config.yaml" ]; then
@@ -124,7 +120,7 @@ jobs:
           fi
 
       - name: Run Checkov Security Scan
-        if: steps.download-cdk.outcome == 'success'
+        if: steps.restore-cdk.outputs.cache-hit == 'true'
         id: checkov
         continue-on-error: ${{ inputs.enforce-blocking == false }}
         run: |
@@ -239,15 +235,8 @@ jobs:
             fi
           fi
 
-      - name: Upload Security Report
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: security-scan-${{ inputs.environment }}
-          path: security-reports/
-          retention-days: 30
-          if-no-files-found: warn
+
+
 
       - name: Upload SARIF to GitHub Security
         if: always() && hashFiles('security-reports/results_sarif.sarif') != ''
