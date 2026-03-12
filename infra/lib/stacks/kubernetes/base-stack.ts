@@ -304,6 +304,15 @@ export class KubernetesBaseStack extends cdk.Stack {
 
         // =====================================================================
         // EBS Volume (persistent storage for Kubernetes data)
+        //
+        // Lives in the base stack (not compute) for lifecycle safety:
+        //   1. Survives compute replacements — ASG instance cycling, AMI
+        //      updates, and instance type changes don't destroy etcd state,
+        //      PVCs, or monitoring data. New instances re-attach via user-data.
+        //   2. Protects against accidental deletion — cdk destroy on compute
+        //      won't orphan cluster data. RETAIN removal policy in base stack.
+        //   3. AZ binding — EBS is AZ-locked; creating it here locks the
+        //      cluster to {region}a early, and compute ASG respects that.
         // =====================================================================
         this.ebsVolume = new ec2.Volume(this, 'K8sDataVolume', {
             availabilityZone: `${this.region}a`,
@@ -423,8 +432,12 @@ export class KubernetesBaseStack extends cdk.Stack {
         // =====================================================================
         // S3 Bucket for K8s Scripts & Manifests
         //
-        // Created in BaseStack so that the CI sync job can seed boot scripts
-        // BEFORE the Compute stack launches EC2 instances (Day-1 safety).
+        // Lives in the base stack (not compute) for three reasons:
+        //   1. Day-1 safety — CI sync uploads bootstrap scripts BEFORE the
+        //      compute stack launches EC2 instances. Avoids chicken-and-egg.
+        //   2. CI independence — script updates don't trigger ASG changes.
+        //   3. Shared resource — both control plane and worker nodes read
+        //      from this bucket at boot time.
         // =====================================================================
         const scriptsBucketConstruct = new S3BucketConstruct(this, 'K8sScriptsBucket', {
             environment: targetEnvironment,
