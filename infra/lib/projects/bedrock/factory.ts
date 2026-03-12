@@ -3,8 +3,8 @@
  * Bedrock Project Factory
  *
  * Creates the Amazon Bedrock Agent infrastructure using a 4-stack architecture:
- * - DataStack: S3 bucket for Knowledge Base documents
- * - AgentStack: Bedrock Agent, Knowledge Base, Guardrail, Action Group
+ * - DataStack: S3 bucket for content pipeline documents
+ * - AgentStack: Bedrock Agent, Guardrail, Action Group
  * - ApiStack: API Gateway + Lambda for agent invocation
  * - ContentStack: MD-to-Blog pipeline (S3 event → Lambda → DynamoDB)
  *
@@ -52,8 +52,8 @@ export interface BedrockFactoryContext extends ProjectFactoryContext {
 
 /**
  * Bedrock project factory.
- * Creates Amazon Bedrock Agent infrastructure with Knowledge Bases,
- * Guardrails, Action Groups, API Gateway frontend, and MD-to-Blog pipeline.
+ * Creates Amazon Bedrock Agent infrastructure with Guardrails,
+ * Action Groups, API Gateway frontend, and MD-to-Blog pipeline.
  */
 export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryContext> {
     readonly project = Project.BEDROCK;
@@ -84,7 +84,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         const foundationModel = context.foundationModel ?? allocs.agent.foundationModel;
 
         // =================================================================
-        // Stack 1: Data (S3 bucket for Knowledge Base)
+        // Stack 1: Data (S3 bucket for content pipeline)
         //
         // Stateful resources with independent lifecycle.
         // Data persists across agent redeployments.
@@ -101,9 +101,9 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         );
 
         // =================================================================
-        // Stack 2: Agent (Bedrock Agent + KB + Guardrail + Action Group)
+        // Stack 2: Agent (Bedrock Agent + Guardrail + Action Group)
         //
-        // Core AI resources. References the Data stack's S3 bucket.
+        // Core AI resources.
         // =================================================================
         const agentStack = new BedrockAgentStack(
             scope,
@@ -114,7 +114,6 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 agentInstruction,
                 agentDescription: configs.agentDescription,
                 idleSessionTtlInSeconds: allocs.agent.idleSessionTtlInSeconds,
-                dataBucketName: `${namePrefix}-kb-data`,
                 enableContentFilters: configs.guardrail.enableContentFilters,
                 blockedInputMessaging: configs.guardrail.blockedInputMessaging,
                 blockedOutputsMessaging: configs.guardrail.blockedOutputMessaging,

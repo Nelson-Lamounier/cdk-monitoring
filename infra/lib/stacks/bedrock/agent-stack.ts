@@ -3,10 +3,9 @@
  * Bedrock Agent Stack
  *
  * Core AI stack for the Bedrock Agent project.
- * Creates the Bedrock Agent, Knowledge Base (vector store with S3),
- * Guardrail, Action Group Lambda, and Agent Alias.
+ * Creates the Bedrock Agent, Guardrail, Action Group Lambda, and Agent Alias.
  *
- * Uses @cdklabs/generative-ai-cdk-constructs for L2 Bedrock constructs. Test
+ * Uses @cdklabs/generative-ai-cdk-constructs for L2 Bedrock constructs.
  */
 
 import {
@@ -16,7 +15,7 @@ import { NagSuppressions } from 'cdk-nag';
 
 import * as cdkBedrock from 'aws-cdk-lib/aws-bedrock';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as s3 from 'aws-cdk-lib/aws-s3';
+
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -36,8 +35,6 @@ export interface BedrockAgentStackProps extends cdk.StackProps {
     readonly agentDescription: string;
     /** Idle session timeout in seconds */
     readonly idleSessionTtlInSeconds: number;
-    /** S3 bucket name for Knowledge Base data source (from DataStack via SSM/factory) */
-    readonly dataBucketName: string;
     /** Whether to enable content filters on the guardrail */
     readonly enableContentFilters: boolean;
     /** Blocked input messaging for guardrail */
@@ -65,8 +62,7 @@ export class BedrockAgentStack extends cdk.Stack {
     /** The Agent Alias for stable invocations */
     public readonly agentAlias: bedrock.AgentAlias;
 
-    /** The Knowledge Base */
-    public readonly knowledgeBase: bedrock.VectorKnowledgeBase;
+
 
     /** The Guardrail */
     public readonly guardrail: bedrock.Guardrail;
@@ -84,9 +80,6 @@ export class BedrockAgentStack extends cdk.Stack {
         super(scope, id, props);
 
         const { namePrefix } = props;
-
-        // Reconstruct data bucket from name (avoids cross-stack export)
-        const dataBucket = s3.Bucket.fromBucketName(this, 'DataBucket', props.dataBucketName);
 
         // =================================================================
         // Guardrail — Content Filtering & Topic Denial
@@ -132,20 +125,7 @@ export class BedrockAgentStack extends cdk.Stack {
             });
         }
 
-        // =================================================================
-        // Knowledge Base — Vector store with S3 data source
-        // =================================================================
-        this.knowledgeBase = new bedrock.VectorKnowledgeBase(this, 'KnowledgeBase', {
-            embeddingsModel: bedrock.BedrockFoundationModel.TITAN_EMBED_TEXT_V2_1024,
-            description: `Knowledge base for ${namePrefix} agent`,
-        });
 
-        // Add S3 data source to Knowledge Base
-        new bedrock.S3DataSource(this, 'KBDataSource', {
-            bucket: dataBucket,
-            knowledgeBase: this.knowledgeBase,
-            dataSourceName: `${namePrefix}-s3-source`,
-        });
 
         // =================================================================
         // Action Group Lambda — Custom action handler
@@ -224,8 +204,7 @@ export class BedrockAgentStack extends cdk.Stack {
             idleSessionTTL: cdk.Duration.seconds(props.idleSessionTtlInSeconds),
         });
 
-        // Wire Knowledge Base, Guardrail, and Action Group via methods
-        this.agent.addKnowledgeBase(this.knowledgeBase);
+        // Wire Guardrail and Action Group via methods
         this.agent.addGuardrail(this.guardrail);
 
         this.agent.addActionGroup(new bedrock.AgentActionGroup({
@@ -302,12 +281,6 @@ export class BedrockAgentStack extends cdk.Stack {
             tier: ssm.ParameterTier.STANDARD,
         });
 
-        new ssm.StringParameter(this, 'KnowledgeBaseIdParam', {
-            parameterName: `/${namePrefix}/knowledge-base-id`,
-            stringValue: this.knowledgeBase.knowledgeBaseId,
-            description: `Knowledge Base ID for ${namePrefix}`,
-            tier: ssm.ParameterTier.STANDARD,
-        });
 
         // =================================================================
         // Stack Outputs
@@ -327,10 +300,7 @@ export class BedrockAgentStack extends cdk.Stack {
             description: 'Bedrock Agent Alias ID',
         });
 
-        new cdk.CfnOutput(this, 'KnowledgeBaseId', {
-            value: this.knowledgeBase.knowledgeBaseId,
-            description: 'Knowledge Base ID',
-        });
+
 
         new cdk.CfnOutput(this, 'GuardrailId', {
             value: this.guardrail.guardrailId,
