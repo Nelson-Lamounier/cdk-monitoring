@@ -45,13 +45,13 @@ jobs:
       # Checkout cdk-monitoring (owns migration scripts)
       # ------------------------------------------------------------------
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       # ------------------------------------------------------------------
       # Checkout frontend-portfolio (MDX article source files)
       # ------------------------------------------------------------------
       - name: Checkout Frontend Articles
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: Nelson-Lamounier/frontend-portfolio
           token: ${{ secrets.CROSS_REPO_PAT }}
@@ -67,7 +67,7 @@ jobs:
       # AWS Credentials
       # ------------------------------------------------------------------
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
