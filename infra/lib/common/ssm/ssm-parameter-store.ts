@@ -70,6 +70,12 @@ export interface SsmParameterStoreConstructProps {
  * - **Dynamic**: adding a parameter = adding one line to the record
  * - **Reusable**: any stack can use this construct
  *
+ * ⚠️ **Logical ID stability**: Only use this construct in **new** stacks
+ * that have never been deployed with inline `ssm.StringParameter()` calls.
+ * Migrating an existing stack to this construct **changes CloudFormation
+ * logical IDs**, causing "already exists" deployment failures. For existing
+ * stacks, use inline `ssm.StringParameter()` with stable construct IDs.
+ *
  * The construct exposes the created parameters via `parameterMap` for
  * cases where downstream code needs a reference (e.g., grant read access).
  */
