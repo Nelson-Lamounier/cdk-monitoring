@@ -1,32 +1,45 @@
 /**
  * @format
- * Golden AMI Pipeline Construct
+ * Golden AMI Pipeline Construct — Generic Image Builder Blueprint
  *
- * Creates an EC2 Image Builder pipeline that pre-bakes Docker, AWS CLI,
- * kubeadm toolchain, and Calico manifests into a Golden AMI. This reduces
- * instance boot time from ~10-15 minutes to ~2 minutes by moving
- * software installation from user-data to AMI build time.
+ * Reusable construct for creating EC2 Image Builder pipelines. This is a
+ * domain-agnostic blueprint — it knows nothing about Kubernetes, Docker,
+ * or any specific software stack. All domain-specific logic belongs in the
+ * consuming stack.
  *
  * Architecture:
- * 1. Component: Shell commands to install Docker, AWS CLI, kubeadm, kubelet, kubectl, containerd, Calico
- * 2. Recipe: Combines components with parent Amazon Linux 2023 AMI
- * 3. Infrastructure Config: Defines instance type, subnet, security group
- * 4. Pipeline: Orchestrates the build (on-demand trigger)
- * 5. SSM Parameter: Stores the latest AMI ID for LaunchTemplate lookup
+ * 1. Component: Created from a pre-built YAML document (injected via props)
+ * 2. Recipe: Combines the component with a parent AMI
+ * 3. Infrastructure Config: Instance type, subnet, security group
+ * 4. Distribution Config: AMI tagging & naming
+ * 5. CfnImage: CloudFormation-managed AMI build
+ * 6. SSM Parameter: Stores the latest AMI ID for Launch Template lookup
  *
- * Design Decision: On-demand builds (not scheduled) — triggered when
- * base software versions need updating. The SSM parameter path serves
- * as the stable reference point for the LaunchTemplate.
+ * Design Philosophy:
+ * - Construct is a blueprint, not a configuration handler
+ * - Stack builds the component YAML → passes it here
+ * - Stack provides IAM policies, AMI tags, and SSM paths
+ * - This construct handles Image Builder resource wiring ONLY
+ *
+ * Blueprint Pattern Flow:
+ * 1. Stack builds component document (domain-specific install steps)
+ * 2. Stack creates GoldenAmiImageConstruct (with pre-built YAML) → image
+ * 3. Stack publishes AMI ID to SSM for downstream consumers
  *
  * @example
  * ```typescript
  * const goldenAmi = new GoldenAmiImageConstruct(this, 'GoldenAmi', {
  *     namePrefix: 'k8s-development',
- *     imageConfig: configs.image,
- *     clusterConfig: configs.cluster,
+ *     componentDocument: buildGoldenAmiComponent({ imageConfig, clusterConfig }),
+ *     componentDescription: 'Installs Docker, kubeadm, Calico',
+ *     parentImageSsmPath: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64',
  *     vpc,
  *     subnetId: vpc.publicSubnets[0].subnetId,
  *     securityGroupId: sg.securityGroupId,
+ *     scriptsBucket,
+ *     amiSsmPath: '/k8s/development/golden-ami/latest',
+ *     amiTags: { Purpose: 'GoldenAMI' },
+ *     amiDescription: 'Golden AMI for k8s-development',
  * });
  * ```
  */
@@ -42,8 +55,6 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { KubernetesClusterConfig, K8sImageConfig } from '../../../config/kubernetes/configurations';
-
 // =============================================================================
 // PROPS
 // =============================================================================
@@ -51,24 +62,102 @@ import { KubernetesClusterConfig, K8sImageConfig } from '../../../config/kuberne
 export interface GoldenAmiImageProps {
     /** Environment-aware name prefix (e.g., 'k8s-development') */
     readonly namePrefix: string;
-    /** Image configuration from K8sConfigs */
-    readonly imageConfig: K8sImageConfig;
-    /** Cluster configuration for Kubernetes version */
-    readonly clusterConfig: KubernetesClusterConfig;
+
+    /**
+     * Pre-built Image Builder component YAML document.
+     * The stack builds this using a domain-specific utility function
+     * and injects it here. The construct does not generate any install steps.
+     */
+    readonly componentDocument: string;
+
+    /** Human-readable description for the Image Builder component */
+    readonly componentDescription: string;
+
+    /** Parent image SSM path (e.g., Amazon Linux 2023 latest) */
+    readonly parentImageSsmPath: string;
+
     /** VPC for the Image Builder infrastructure */
     readonly vpc: ec2.IVpc;
+
     /** Subnet ID for Image Builder instances */
     readonly subnetId: string;
+
     /** Security group ID for Image Builder instances */
     readonly securityGroupId: string;
+
     /** S3 bucket for build logs and bootstrap scripts */
     readonly scriptsBucket: s3.IBucket;
+
+    /** SSM parameter path to store the output AMI ID */
+    readonly amiSsmPath: string;
+
+    /**
+     * IAM managed policies to attach to the Image Builder instance role.
+     * @default [AmazonSSMManagedInstanceCore, EC2InstanceProfileForImageBuilder]
+     */
+    readonly managedPolicies?: iam.IManagedPolicy[];
+
+    /**
+     * Instance types for Image Builder build instances.
+     * @default ['t3.medium']
+     */
+    readonly instanceTypes?: string[];
+
+    /**
+     * Root EBS volume size in GB for the AMI recipe.
+     * Must be >= the parent AMI snapshot size.
+     * @default 30
+     */
+    readonly rootVolumeSizeGb?: number;
+
+    /**
+     * Whether to encrypt the root EBS volume in the AMI recipe.
+     * @default true
+     */
+    readonly rootVolumeEncrypted?: boolean;
+
+    /**
+     * Tags applied to the output AMI via the distribution configuration.
+     * @default {}
+     */
+    readonly amiTags?: Record<string, string>;
+
+    /**
+     * Description for the output AMI in the distribution configuration.
+     * @default `Golden AMI for {namePrefix}`
+     */
+    readonly amiDescription?: string;
+
+    /**
+     * Timeout in minutes for Image Builder image tests.
+     * @default 60
+     */
+    readonly imageTestTimeoutMinutes?: number;
+
+    /**
+     * S3 key prefix for build logs within the scripts bucket.
+     * @default 'image-builder-logs'
+     */
+    readonly s3LogPrefix?: string;
 }
 
 // =============================================================================
 // CONSTRUCT
 // =============================================================================
 
+/**
+ * Generic EC2 Image Builder Pipeline Construct.
+ *
+ * Creates the full Image Builder pipeline from a pre-built component document.
+ * The construct is reusable across any project — all domain-specific logic
+ * (install steps, K8s config, etc.) is the stack's responsibility.
+ *
+ * Security Features:
+ * - Encrypted EBS volumes by default
+ * - Instances terminate on build failure
+ * - Build logs shipped to S3
+ * - IAM follows least-privilege principle
+ */
 export class GoldenAmiImageConstruct extends Construct {
 
     /** The Image Builder image (CloudFormation-built) */
@@ -87,13 +176,30 @@ export class GoldenAmiImageConstruct extends Construct {
 
         const {
             namePrefix,
-            imageConfig,
-            clusterConfig,
+            componentDocument,
+            componentDescription,
+            parentImageSsmPath,
             vpc: _vpc,
             subnetId,
             securityGroupId,
             scriptsBucket,
+            amiSsmPath,
         } = props;
+
+        // Resolve prop defaults
+        const instanceTypes = props.instanceTypes ?? ['t3.medium'];
+        const rootVolumeSizeGb = props.rootVolumeSizeGb ?? 30;
+        const rootVolumeEncrypted = props.rootVolumeEncrypted ?? true;
+        const amiTags = props.amiTags ?? {};
+        const amiDescription = props.amiDescription ?? `Golden AMI for ${namePrefix}`;
+        const imageTestTimeoutMinutes = props.imageTestTimeoutMinutes ?? 60;
+        const s3LogPrefix = props.s3LogPrefix ?? 'image-builder-logs';
+
+        // Default managed policies if none provided
+        const managedPolicies = props.managedPolicies ?? [
+            iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
+            iam.ManagedPolicy.fromAwsManagedPolicyName('EC2InstanceProfileForImageBuilder'),
+        ];
 
         // -----------------------------------------------------------------
         // 1. IAM Role for Image Builder instances
@@ -101,14 +207,7 @@ export class GoldenAmiImageConstruct extends Construct {
         this.instanceRole = new iam.Role(this, 'InstanceRole', {
             roleName: `${namePrefix}-image-builder-role`,
             assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
-            managedPolicies: [
-                iam.ManagedPolicy.fromAwsManagedPolicyName(
-                    'AmazonSSMManagedInstanceCore',
-                ),
-                iam.ManagedPolicy.fromAwsManagedPolicyName(
-                    'EC2InstanceProfileForImageBuilder',
-                ),
-            ],
+            managedPolicies,
             description: 'IAM role for EC2 Image Builder instances (Golden AMI)',
         });
 
@@ -118,25 +217,21 @@ export class GoldenAmiImageConstruct extends Construct {
         });
 
         // -----------------------------------------------------------------
-        // 2. Image Builder Component — installs Docker, AWS CLI, kubeadm toolchain, Calico
+        // 2. Image Builder Component
         //
         // Image Builder components are IMMUTABLE — same name + version
         // cannot be updated. We derive the version from a content hash
         // so it auto-bumps whenever install steps or software versions change.
         // -----------------------------------------------------------------
-        const componentDoc = this._buildComponentDocument(imageConfig, clusterConfig);
-
-        // Deterministic semver from SHA-256 of component content.
-        // First 3 bytes → x.y.z (0-255 each). Same content = same version.
-        const contentHash = crypto.createHash('sha256').update(componentDoc).digest();
+        const contentHash = crypto.createHash('sha256').update(componentDocument).digest();
         const componentVersion = `${contentHash[0]}.${contentHash[1]}.${contentHash[2]}`;
 
         const installComponent = new imagebuilder.CfnComponent(this, 'InstallComponent', {
             name: `${namePrefix}-golden-ami-install`,
             platform: 'Linux',
             version: componentVersion,
-            description: 'Installs Docker, AWS CLI, kubeadm toolchain, and Calico CNI manifests',
-            data: componentDoc,
+            description: componentDescription,
+            data: componentDocument,
         });
 
         // -----------------------------------------------------------------
@@ -145,7 +240,7 @@ export class GoldenAmiImageConstruct extends Construct {
         const recipe = new imagebuilder.CfnImageRecipe(this, 'Recipe', {
             name: `${namePrefix}-golden-ami-recipe`,
             version: componentVersion,
-            parentImage: `ssm:${imageConfig.parentImageSsmPath}`,
+            parentImage: `ssm:${parentImageSsmPath}`,
             components: [
                 {
                     componentArn: installComponent.attrArn,
@@ -155,10 +250,10 @@ export class GoldenAmiImageConstruct extends Construct {
                 {
                     deviceName: '/dev/xvda',
                     ebs: {
-                        volumeSize: 30,
+                        volumeSize: rootVolumeSizeGb,
                         volumeType: 'gp3',
                         deleteOnTermination: true,
-                        encrypted: true,
+                        encrypted: rootVolumeEncrypted,
                     },
                 },
             ],
@@ -173,14 +268,14 @@ export class GoldenAmiImageConstruct extends Construct {
             {
                 name: `${namePrefix}-golden-ami-infra`,
                 instanceProfileName: this.instanceProfile.instanceProfileName!,
-                instanceTypes: ['t3.medium'],
+                instanceTypes,
                 subnetId,
                 securityGroupIds: [securityGroupId],
                 terminateInstanceOnFailure: true,
                 logging: {
                     s3Logs: {
                         s3BucketName: scriptsBucket.bucketName,
-                        s3KeyPrefix: 'image-builder-logs',
+                        s3KeyPrefix: s3LogPrefix,
                     },
                 },
             },
@@ -188,7 +283,7 @@ export class GoldenAmiImageConstruct extends Construct {
         infraConfig.addDependency(this.instanceProfile);
 
         // Grant Image Builder instances permission to write build logs to S3
-        scriptsBucket.grantWrite(this.instanceRole, 'image-builder-logs/*');
+        scriptsBucket.grantWrite(this.instanceRole, `${s3LogPrefix}/*`);
 
         // -----------------------------------------------------------------
         // 5. Distribution Configuration — AMI tagging & naming
@@ -207,12 +302,8 @@ export class GoldenAmiImageConstruct extends Construct {
                         region: cdk.Stack.of(this).region,
                         amiDistributionConfiguration: {
                             Name: `${namePrefix}-golden-ami-{{ imagebuilder:buildDate }}`,
-                            Description: `Golden AMI for ${namePrefix} (kubeadm ${clusterConfig.kubernetesVersion})`,
-                            AmiTags: {
-                                'Purpose': 'GoldenAMI',
-                                'KubernetesVersion': clusterConfig.kubernetesVersion,
-                                'Component': 'ImageBuilder',
-                            },
+                            Description: amiDescription,
+                            AmiTags: amiTags,
                         },
                     },
                 ],
@@ -237,7 +328,7 @@ export class GoldenAmiImageConstruct extends Construct {
             distributionConfigurationArn: distribution.attrArn,
             imageTestsConfiguration: {
                 imageTestsEnabled: true,
-                timeoutMinutes: 60,
+                timeoutMinutes: imageTestTimeoutMinutes,
             },
         });
 
@@ -257,351 +348,11 @@ export class GoldenAmiImageConstruct extends Construct {
         // No more stale SSM references to deregistered AMIs.
         // -----------------------------------------------------------------
         this.amiSsmParameter = new ssm.StringParameter(this, 'AmiIdParam', {
-            parameterName: imageConfig.amiSsmPath,
+            parameterName: amiSsmPath,
             stringValue: this.imageId,
             description: `Golden AMI ID for ${namePrefix} (managed by CloudFormation)`,
         });
 
         // Tags: all 6 tags applied by TaggingAspect at stack level
-    }
-
-    // =====================================================================
-    // PRIVATE METHODS
-    // =====================================================================
-
-    /**
-     * Builds the EC2 Image Builder component YAML document.
-     *
-     * This installs containerd, kubeadm, kubelet, kubectl, and pre-downloads
-     * Calico CNI manifests. Kubernetes components are installed but NOT started.
-     * Cluster initialization happens at runtime via user-data (kubeadm init/join).
-     */
-    private _buildComponentDocument(
-        imageConfig: K8sImageConfig,
-        clusterConfig: KubernetesClusterConfig,
-    ): string {
-        // Extract major.minor for Kubernetes apt repo (e.g., '1.35')
-        const k8sMinorVersion = clusterConfig.kubernetesVersion.split('.').slice(0, 2).join('.');
-        return `
-name: GoldenAmiInstall
-description: Install containerd, kubeadm, kubelet, kubectl, and Calico manifests
-schemaVersion: 1.0
-
-phases:
-  - name: build
-    steps:
-      - name: DetectArchitecture
-        action: ExecuteBash
-        inputs:
-          commands:
-            - |
-              # Detect CPU architecture for multi-arch support (x86_64 / aarch64 Graviton)
-              UNAME_ARCH=$(uname -m)
-              case $UNAME_ARCH in
-                x86_64)  ARCH=amd64; COMPOSE_ARCH=x86_64; CLI_ARCH=x86_64 ;;
-                aarch64) ARCH=arm64; COMPOSE_ARCH=aarch64; CLI_ARCH=aarch64 ;;
-                *) echo "ERROR: Unsupported architecture: $UNAME_ARCH"; exit 1 ;;
-              esac
-              # Persist for subsequent build steps (idempotent: strip old values first)
-              sed -i '/^ARCH=/d; /^COMPOSE_ARCH=/d; /^CLI_ARCH=/d' /etc/environment
-              echo "ARCH=$ARCH" >> /etc/environment
-              echo "COMPOSE_ARCH=$COMPOSE_ARCH" >> /etc/environment
-              echo "CLI_ARCH=$CLI_ARCH" >> /etc/environment
-              echo "Detected architecture: $UNAME_ARCH → ARCH=$ARCH, COMPOSE_ARCH=$COMPOSE_ARCH, CLI_ARCH=$CLI_ARCH"
-
-      - name: UpdateSystem
-        action: ExecuteBash
-        inputs:
-          commands:
-            - source /etc/environment
-            - dnf update -y
-            - dnf install -y jq unzip tar iproute-tc conntrack-tools socat
-
-      - name: InstallDocker
-        action: ExecuteBash
-        inputs:
-          commands:
-            - source /etc/environment
-            - dnf install -y docker
-            - systemctl enable docker
-            - usermod -aG docker ec2-user
-            - mkdir -p /usr/local/lib/docker/cli-plugins
-            - curl -fsSL "https://github.com/docker/compose/releases/download/${imageConfig.bakedVersions.dockerCompose}/docker-compose-linux-$COMPOSE_ARCH" -o /usr/local/lib/docker/cli-plugins/docker-compose
-            - chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-
-      - name: InstallAwsCli
-        action: ExecuteBash
-        inputs:
-          commands:
-            - source /etc/environment
-            - curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$CLI_ARCH.zip" -o /tmp/awscli.zip
-            - unzip -qo /tmp/awscli.zip -d /tmp
-            - /tmp/aws/install --update
-            - rm -rf /tmp/awscli.zip /tmp/aws
-            - aws --version
-
-      - name: InstallCloudWatchAgent
-        action: ExecuteBash
-        inputs:
-          commands:
-            - |
-              source /etc/environment
-              # Install CloudWatch Agent (streams boot logs to CloudWatch in real-time)
-              dnf install -y amazon-cloudwatch-agent
-
-              # Bake agent config — the boot script replaces __LOG_GROUP_NAME__ and
-              # __AWS_REGION__ at runtime before starting the agent
-              mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
-              cat > /opt/aws/amazon-cloudwatch-agent/etc/boot-logs.json <<'CWAGENT_EOF'
-              {
-                "agent": {
-                  "run_as_user": "root",
-                  "logfile": "/opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log"
-                },
-                "logs": {
-                  "logs_collected": {
-                    "files": {
-                      "collect_list": [
-                        {
-                          "file_path": "/var/log/user-data.log",
-                          "log_group_name": "__LOG_GROUP_NAME__",
-                          "log_stream_name": "{instance_id}/user-data",
-                          "timestamp_format": "%Y-%m-%d %H:%M:%S",
-                          "retention_in_days": 30
-                        },
-                        {
-                          "file_path": "/var/log/cloud-init-output.log",
-                          "log_group_name": "__LOG_GROUP_NAME__",
-                          "log_stream_name": "{instance_id}/cloud-init-output",
-                          "timestamp_format": "%Y-%m-%d %H:%M:%S",
-                          "retention_in_days": 30
-                        },
-                        {
-                          "file_path": "/var/log/messages",
-                          "log_group_name": "__LOG_GROUP_NAME__",
-                          "log_stream_name": "{instance_id}/syslog",
-                          "timestamp_format": "%b %d %H:%M:%S",
-                          "retention_in_days": 30
-                        }
-                      ]
-                    }
-                  }
-                }
-              }
-              CWAGENT_EOF
-              echo "CloudWatch Agent installed and config baked"
-
-      - name: KernelModulesAndSysctl
-        action: ExecuteBash
-        inputs:
-          commands:
-            - |
-              # Load required kernel modules for Kubernetes networking
-              cat > /etc/modules-load.d/k8s.conf <<EOF
-              overlay
-              br_netfilter
-              EOF
-              modprobe overlay
-              modprobe br_netfilter
-
-              # Set required sysctl parameters (persist across reboots)
-              cat > /etc/sysctl.d/k8s.conf <<EOF
-              net.bridge.bridge-nf-call-iptables  = 1
-              net.bridge.bridge-nf-call-ip6tables = 1
-              net.ipv4.ip_forward                 = 1
-              EOF
-              sysctl --system
-
-              echo "Kernel modules and sysctl configured for Kubernetes"
-
-      - name: InstallContainerd
-        action: ExecuteBash
-        inputs:
-          commands:
-            - |
-              source /etc/environment  # ARCH set by DetectArchitecture step
-
-              # Install containerd as the container runtime
-              CONTAINERD_VERSION="${imageConfig.bakedVersions.containerd}"
-              curl -fsSL "https://github.com/containerd/containerd/releases/download/v\${CONTAINERD_VERSION}/containerd-\${CONTAINERD_VERSION}-linux-\${ARCH}.tar.gz" \
-                -o /tmp/containerd.tar.gz
-              tar -C /usr/local -xzf /tmp/containerd.tar.gz
-              rm /tmp/containerd.tar.gz
-
-              # Install containerd systemd service
-              mkdir -p /usr/local/lib/systemd/system
-              curl -fsSL "https://raw.githubusercontent.com/containerd/containerd/main/containerd.service" \
-                -o /usr/local/lib/systemd/system/containerd.service
-
-              # Configure containerd with SystemdCgroup
-              mkdir -p /etc/containerd
-              containerd config default > /etc/containerd/config.toml
-              sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
-
-              systemctl daemon-reload
-              systemctl enable containerd
-
-              # Install runc
-              RUNC_VERSION="${imageConfig.bakedVersions.runc}"
-              curl -fsSL "https://github.com/opencontainers/runc/releases/download/v\${RUNC_VERSION}/runc.\${ARCH}" \
-                -o /usr/local/sbin/runc
-              chmod +x /usr/local/sbin/runc
-
-              # Install CNI plugins
-              CNI_VERSION="${imageConfig.bakedVersions.cniPlugins}"
-              mkdir -p /opt/cni/bin
-              curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v\${CNI_VERSION}/cni-plugins-linux-\${ARCH}-v\${CNI_VERSION}.tgz" \
-                -o /tmp/cni-plugins.tgz
-              tar -C /opt/cni/bin -xzf /tmp/cni-plugins.tgz
-              rm /tmp/cni-plugins.tgz
-
-              # Install crictl
-              CRICTL_VERSION="${imageConfig.bakedVersions.crictl}"
-              curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/v\${CRICTL_VERSION}/crictl-v\${CRICTL_VERSION}-linux-\${ARCH}.tar.gz" \
-                -o /tmp/crictl.tar.gz
-              tar -C /usr/local/bin -xzf /tmp/crictl.tar.gz
-              rm /tmp/crictl.tar.gz
-              crictl config --set runtime-endpoint=unix:///run/containerd/containerd.sock
-
-              echo "containerd, runc, CNI plugins, and crictl installed (arch: \${ARCH})"
-
-      - name: InstallKubeadmKubeletKubectl
-        action: ExecuteBash
-        inputs:
-          commands:
-            - |
-              # Install kubeadm, kubelet, kubectl via Kubernetes yum repo
-              cat > /etc/yum.repos.d/kubernetes.repo <<EOF
-              [kubernetes]
-              name=Kubernetes
-              baseurl=https://pkgs.k8s.io/core:/stable:/v${k8sMinorVersion}/rpm/
-              enabled=1
-              gpgcheck=1
-              gpgkey=https://pkgs.k8s.io/core:/stable:/v${k8sMinorVersion}/rpm/repodata/repomd.xml.key
-              EOF
-
-              dnf install -y kubelet-${clusterConfig.kubernetesVersion} kubeadm-${clusterConfig.kubernetesVersion} kubectl-${clusterConfig.kubernetesVersion} --disableexcludes=kubernetes
-              systemctl enable kubelet
-
-              echo "kubeadm $(kubeadm version -o short) installed"
-              echo "kubelet  — enabled (will start after kubeadm init/join)"
-              echo "kubectl $(kubectl version --client -o yaml | grep gitVersion)"
-
-      - name: InstallEcrCredentialProvider
-        action: ExecuteBash
-        inputs:
-          commands:
-            - |
-              source /etc/environment
-              # Install ecr-credential-provider for kubelet ECR authentication.
-              # This allows kubelet to pull container images from private ECR repos
-              # without pre-configured docker credentials or cron-based token refresh.
-              #
-              # Pin to v1.31.0 — the last version with published standalone binaries.
-              # The maintainers stopped publishing raw binaries after v1.31.0
-              # (only container images for newer versions).
-              # The credential provider plugin API (credentialprovider.kubelet.k8s.io/v1)
-              # is stable and version-independent, so v1.31.0 works on any cluster.
-              ECR_PROVIDER_VERSION="v1.31.0"
-
-              curl -fsSL \
-                "https://storage.googleapis.com/k8s-staging-provider-aws/releases/\${ECR_PROVIDER_VERSION}/linux/$ARCH/ecr-credential-provider-linux-$ARCH" \
-                -o /usr/local/bin/ecr-credential-provider
-              chmod +x /usr/local/bin/ecr-credential-provider
-              echo "ecr-credential-provider \${ECR_PROVIDER_VERSION} installed"
-
-              # Create kubelet credential provider config
-              mkdir -p /etc/kubernetes
-              cat > /etc/kubernetes/image-credential-provider-config.yaml <<CREDEOF
-              apiVersion: kubelet.config.k8s.io/v1
-              kind: CredentialProviderConfig
-              providers:
-                - name: ecr-credential-provider
-                  matchImages:
-                    - "*.dkr.ecr.*.amazonaws.com"
-                  defaultCacheDuration: "12h"
-                  apiVersion: credentialprovider.kubelet.k8s.io/v1
-              CREDEOF
-              echo "Kubelet credential provider config created"
-
-      - name: PreloadCalicoCNI
-        action: ExecuteBash
-        inputs:
-          commands:
-            - |
-              # Pre-download Calico manifests to /opt/calico (avoids GitHub fetch at boot)
-              mkdir -p /opt/calico
-              CALICO_VERSION="${imageConfig.bakedVersions.calico}"
-              curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/\${CALICO_VERSION}/manifests/tigera-operator.yaml" -o /opt/calico/tigera-operator.yaml
-              curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/\${CALICO_VERSION}/manifests/calico.yaml" -o /opt/calico/calico.yaml
-              echo "\${CALICO_VERSION}" > /opt/calico/version.txt
-              echo "Calico \${CALICO_VERSION} manifests cached (operator + standalone)"
-
-      - name: InstallCfnBootstrap
-        action: ExecuteBash
-        inputs:
-          commands:
-            - |
-              # Install aws-cfn-bootstrap for CloudFormation signaling (cfn-signal)
-              # Previously installed at runtime by bootstrap scripts
-              dnf install -y aws-cfn-bootstrap
-              test -f /opt/aws/bin/cfn-signal
-              echo "aws-cfn-bootstrap installed (cfn-signal available)"
-
-      - name: InstallHelm
-        action: ExecuteBash
-        inputs:
-          commands:
-            - |
-              # Install Helm for Traefik ingress controller deployment
-              # Previously downloaded at runtime by bootstrap scripts via get-helm-3 script
-              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-              helm version --short
-              echo "Helm installed"
-
-      - name: InstallPythonDependencies
-        action: ExecuteBash
-        inputs:
-          commands:
-            - |
-              # Install pip and Python packages required by deploy.py and bootstrap_argocd.py
-              dnf install -y python3-pip
-              pip3 install boto3 pyyaml
-              python3 -c "import boto3; print('boto3', boto3.__version__)"
-              echo "Python dependencies installed"
-
-      - name: CreateDataDirectory
-        action: ExecuteBash
-        inputs:
-          commands:
-            - mkdir -p /data/kubernetes /data/k8s-bootstrap /data/app-deploy
-
-  - name: validate
-    steps:
-      - name: VerifyInstallations
-        action: ExecuteBash
-        inputs:
-          commands:
-            - docker --version
-            - aws --version
-            - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a status || echo "CloudWatch Agent installed (not running — starts at boot)"
-            - test -f /opt/aws/amazon-cloudwatch-agent/etc/boot-logs.json
-            - containerd --version
-            - runc --version
-            - crictl --version
-            - kubeadm version -o short
-            - kubelet --version
-            - kubectl version --client -o yaml | grep gitVersion
-            - test -f /opt/calico/calico.yaml
-            - test -f /etc/containerd/config.toml
-            - test -f /etc/sysctl.d/k8s.conf
-            - test -f /opt/aws/bin/cfn-signal
-            - helm version --short
-            - python3 -c "import boto3; print('boto3', boto3.__version__)"
-            - python3 -c "import yaml; print('pyyaml available')"
-            - test -f /usr/local/bin/ecr-credential-provider
-            - test -f /etc/kubernetes/image-credential-provider-config.yaml
-            - echo "All kubeadm components verified"
-`;
     }
 }

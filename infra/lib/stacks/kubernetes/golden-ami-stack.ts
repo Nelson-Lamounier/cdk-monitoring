@@ -6,6 +6,15 @@
  * kubeadm toolchain, ecr-credential-provider, and Calico manifests into a
  * Golden AMI.
  *
+ * This stack handles all K8s-specific domain logic:
+ * - Builds the component YAML document via `buildGoldenAmiComponent()`
+ * - Provides K8s-specific IAM managed policies
+ * - Configures K8s-specific AMI tags and description
+ * - Resolves base infrastructure from SSM (VPC, SG, S3)
+ *
+ * The underlying `GoldenAmiImageConstruct` is a generic, reusable Image Builder
+ * blueprint that knows nothing about Kubernetes.
+ *
  * Decoupled from the ControlPlane stack to eliminate the Day-1 dependency cycle:
  *   1. deploy-base       → creates VPC, SG, scripts bucket
  *   2. deploy-goldenami  → creates Image Builder pipeline (this stack)
@@ -15,15 +24,17 @@
  * Usage:
  * ```typescript
  * const goldenAmiStack = new GoldenAmiStack(scope, 'GoldenAmi-dev', {
- *     baseStack,
+ *     vpcId: sharedVpcId,
  *     configs,
  *     namePrefix: 'k8s-development',
+ *     ssmPrefix: '/k8s/development',
  *     env,
  * });
  * ```
  */
 
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
@@ -33,6 +44,7 @@ import { Construct } from 'constructs';
 import {
     GoldenAmiImageConstruct,
 } from '../../common/compute/constructs/golden-ami-image';
+import { buildGoldenAmiComponent } from '../../common/compute/utils/build-golden-ami-component';
 import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
 
@@ -64,9 +76,10 @@ export interface GoldenAmiStackProps extends cdk.StackProps {
 /**
  * Golden AMI Stack — EC2 Image Builder Pipeline.
  *
+ * Orchestrates the generic `GoldenAmiImageConstruct` with K8s-specific
+ * domain logic: component YAML generation, IAM policies, and AMI tags.
  * Creates the Image Builder pipeline as a standalone resource so it can
- * be deployed before the Compute stacks. This ensures the AMI is baked
- * before any ASG launches EC2 instances.
+ * be deployed before the Compute stacks.
  */
 export class GoldenAmiStack extends cdk.Stack {
     /** The underlying image builder construct (for cross-stack references if needed) */
@@ -79,24 +92,62 @@ export class GoldenAmiStack extends cdk.Stack {
 
         const { configs, namePrefix } = props;
 
-        // Resolve base infrastructure via SSM (no cross-stack exports)
+        // -----------------------------------------------------------------
+        // 1. Resolve base infrastructure via SSM (no cross-stack exports)
+        // -----------------------------------------------------------------
         const vpc = ec2.Vpc.fromLookup(this, 'Vpc', { vpcId: props.vpcId });
         const scriptsBucketName = ssm.StringParameter.valueForStringParameter(
             this, `${props.ssmPrefix}/scripts-bucket`,
         );
         const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
+        const securityGroupId = ssm.StringParameter.valueForStringParameter(
+            this, `${props.ssmPrefix}/security-group-id`,
+        );
 
-        this.imageBuilder = new GoldenAmiImageConstruct(this, 'GoldenAmi', {
-            namePrefix,
+        // -----------------------------------------------------------------
+        // 2. Build K8s-specific component YAML document
+        //
+        // The utility function generates the full Image Builder component
+        // YAML with all Kubernetes install steps. Software versions come
+        // from the centralized K8sImageConfig.
+        // -----------------------------------------------------------------
+        const componentDocument = buildGoldenAmiComponent({
             imageConfig: configs.image,
             clusterConfig: configs.cluster,
+        });
+
+        // -----------------------------------------------------------------
+        // 3. Create generic Image Builder pipeline
+        //
+        // The construct is a reusable blueprint — all K8s-specific values
+        // are injected here as props.
+        // -----------------------------------------------------------------
+        this.imageBuilder = new GoldenAmiImageConstruct(this, 'GoldenAmi', {
+            namePrefix,
+            componentDocument,
+            componentDescription: 'Installs Docker, AWS CLI, kubeadm toolchain, and Calico CNI manifests',
+            parentImageSsmPath: configs.image.parentImageSsmPath,
             vpc,
             subnetId: vpc.publicSubnets[0].subnetId,
-            securityGroupId: ssm.StringParameter.valueForStringParameter(
-                this, `${props.ssmPrefix}/security-group-id`,
-            ),
+            securityGroupId,
             scriptsBucket,
+            amiSsmPath: configs.image.amiSsmPath,
+
+            // K8s-specific IAM policies for Image Builder instances
+            managedPolicies: [
+                iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
+                iam.ManagedPolicy.fromAwsManagedPolicyName('EC2InstanceProfileForImageBuilder'),
+            ],
+
+            // K8s-specific AMI distribution tags
+            amiTags: {
+                'Purpose': 'GoldenAMI',
+                'KubernetesVersion': configs.cluster.kubernetesVersion,
+                'Component': 'ImageBuilder',
+            },
+            amiDescription: `Golden AMI for ${namePrefix} (kubeadm ${configs.cluster.kubernetesVersion})`,
         });
+
         this.imageId = this.imageBuilder.imageId;
     }
 }

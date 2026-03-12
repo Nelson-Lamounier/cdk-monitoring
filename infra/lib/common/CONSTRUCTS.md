@@ -20,9 +20,11 @@
 | `EcsServiceConstruct`        | `ecs/ecs-service.ts`         | ECS service with deployment config, auto-scaling, Cloud Map      |
 | `EcsTaskDefinitionConstruct` | `ecs/ecs-task-definition.ts` | Task definition with health checks, security hardening, logging  |
 | `AutoScalingGroupConstruct`  | `auto-scaling-group.ts`      | ASG with rolling updates, signals, lifecycle hooks               |
+| `EipFailoverConstruct`       | `eip-failover.ts`            | EIP failover Lambda + EventBridge for Hybrid-HA                  |
 | `LaunchTemplateConstruct`    | `launch-template.ts`         | Launch template with IMDSv2, GP3 EBS, IAM role                   |
 | `Ec2InstanceConstruct`       | `ec2-instance.ts`            | Standalone EC2 with SSM access, CloudWatch logs                  |
 | `LambdaFunctionConstruct`    | `lambda-function.ts`         | NodejsFunction with TypeScript bundling, DLQ, tracing            |
+
 
 ### Networking (`networking/`)
 
