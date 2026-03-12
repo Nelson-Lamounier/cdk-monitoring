@@ -301,7 +301,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Configure AWS Credentials
@@ -431,7 +431,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Run Data Stack Integration Tests
@@ -479,7 +479,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Stream Image Builder Logs
@@ -542,7 +542,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Run Base Stack Integration Tests
@@ -638,7 +638,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Run Control Plane Integration Tests
@@ -701,7 +701,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Run App Worker Integration Tests
@@ -764,7 +764,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Run Monitoring Worker Integration Tests
@@ -872,7 +872,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: ./
 
       - name: Configure AWS Credentials
@@ -933,7 +933,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Configure AWS Credentials
@@ -1005,7 +1005,7 @@ jobs:
 
       - name: Install Dependencies
         if: steps.prereqs.outputs.skip != 'true'
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Configure AWS Credentials
