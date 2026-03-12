@@ -1,0 +1,436 @@
+/**
+ * @format
+ * Kubernetes Compute Stack Unit Tests
+ *
+ * Tests for the KubernetesControlPlaneStack (Runtime Layer):
+ * - Launch Template + Auto Scaling Group
+ * - S3 Buckets (scripts + access logs via S3BucketConstruct)
+ * - S3 Bucket Deployment (k8s manifests sync)
+ * - SSM Run Command Documents (monitoring + application manifest deployment)
+ * - Golden AMI Pipeline (conditional — gated by imageConfig.enableImageBuilder)
+ * - SSM State Manager (conditional — gated by ssmConfig.enableStateManager)
+ * - User Data (slim bootstrap stub)
+ * - IAM Grants (monitoring + application tiers)
+ * - Stack Outputs
+ *
+ * Resources tested in base-stack.test.ts (not here):
+ * - VPC Lookup, Security Group, KMS Key, EBS Volume, Elastic IP, SSM Parameters
+ *
+ * NOTE: This file scaffolds the test structure. Individual test cases
+ * will be implemented in upcoming iterations using `it.todo()`.
+ */
+
+/* eslint-disable @typescript-eslint/no-unused-vars */
+// Imports ready for test implementation — re-enable lint when filling in it.todo() stubs
+import * as path from 'path';
+
+import { Template, Match } from 'aws-cdk-lib/assertions';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as cdk from 'aws-cdk-lib/core';
+
+import { Construct } from 'constructs';
+
+import { Environment } from '../../../../lib/config';
+import { getK8sConfigs } from '../../../../lib/config/kubernetes';
+import { KubernetesBaseStack } from '../../../../lib/stacks/kubernetes/base-stack';
+import {
+    KubernetesControlPlaneStack,
+    KubernetesControlPlaneStackProps,
+} from '../../../../lib/stacks/kubernetes/control-plane-stack';
+import {
+    TEST_ENV_EU,
+    createTestApp,
+    enforceNoInlineS3Buckets,
+} from '../../../fixtures';
+
+// =============================================================================
+// Test Fixtures
+// =============================================================================
+
+const TEST_CONFIGS = getK8sConfigs(Environment.DEVELOPMENT);
+
+/** AWS CloudFormation maximum user data size in bytes */
+const CF_USER_DATA_MAX_BYTES = 16_384;
+
+/**
+ * Extract the concatenated UserData string from a synthesized template.
+ *
+ * CloudFormation UserData is rendered as `Fn::Base64( Fn::Join('', [...]) )`.
+ * This helper flattens the join array, keeping string literals and replacing
+ * CloudFormation intrinsics (Ref, Fn::GetAtt, etc.) with short placeholders
+ * so we can inspect the shell content and estimate byte size.
+ */
+function extractUserDataParts(template: Template): string[] {
+    const launchTemplates = template.findResources('AWS::EC2::LaunchTemplate');
+    const ltResource = Object.values(launchTemplates)[0] as {
+        Properties?: {
+            LaunchTemplateData?: {
+                UserData?: { 'Fn::Base64'?: { 'Fn::Join'?: [string, unknown[]] } };
+            };
+        };
+    };
+
+    const joinArgs = ltResource?.Properties?.LaunchTemplateData?.UserData?.['Fn::Base64']?.['Fn::Join'];
+    if (!joinArgs || !Array.isArray(joinArgs[1])) {
+        throw new Error('Could not find UserData Fn::Join in LaunchTemplate');
+    }
+
+    return joinArgs[1].map((part: unknown) => {
+        if (typeof part === 'string') return part;
+        // Replace CFN intrinsics with a short placeholder to preserve length estimation
+        return '<CFN_TOKEN>';
+    });
+}
+
+/**
+ * Helper to create KubernetesControlPlaneStack with sensible defaults.
+ *
+ * Override any prop via the `overrides` parameter.
+ *
+ * Creates a KubernetesBaseStack first (for VPC, SG, KMS, EBS, EIP),
+ * then passes it as a prop to KubernetesControlPlaneStack.
+ */
+function createComputeStack(
+    overrides?: Partial<KubernetesControlPlaneStackProps>,
+): { stack: KubernetesControlPlaneStack; template: Template; app: cdk.App } {
+    const app = createTestApp();
+
+    const baseStack = new KubernetesBaseStack(app, 'TestK8sBaseStack', {
+        env: TEST_ENV_EU,
+        targetEnvironment: Environment.DEVELOPMENT,
+        configs: TEST_CONFIGS,
+        namePrefix: 'k8s-dev',
+        ssmPrefix: '/k8s/development',
+        vpcName: 'shared-vpc-development',
+    });
+
+    const stack = new KubernetesControlPlaneStack(app, 'TestK8sComputeStack', {
+        vpcId: baseStack.vpc.vpcId,
+
+        env: TEST_ENV_EU,
+        targetEnvironment: Environment.DEVELOPMENT,
+        configs: TEST_CONFIGS,
+        namePrefix: 'k8s-dev',
+        ssmPrefix: '/k8s/development',
+        ...overrides,
+    });
+
+    const template = Template.fromStack(stack);
+    return { stack, template, app };
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+describe('KubernetesControlPlaneStack', () => {
+
+    // =========================================================================
+    // Launch Template + Auto Scaling Group
+    //
+    // NOTE: Security Group, KMS Key, EBS Volume tests are in base-stack.test.ts
+    // =========================================================================
+    describe('Launch Template', () => {
+        it.todo('should create a launch template');
+
+        it.todo('should configure the instance type from config');
+
+        it.todo('should enable detailed monitoring when configured');
+    });
+
+    describe('Auto Scaling Group', () => {
+        it.todo('should create an ASG');
+
+        it.todo('should enforce maxCapacity=1 (single-node EBS constraint)');
+
+        it.todo('should configure rolling update with minInstancesInService=0');
+
+        it.todo('should use cfn-signal when configured');
+
+        it.todo('should ensure PauseTime matches signals timeout');
+
+        it.todo('should NOT create standalone EC2 instances');
+    });
+
+    // =========================================================================
+    // User Data — slim bootstrap stub (16 KB limit enforcement)
+    //
+    // Heavy logic was externalized to Python steps orchestrator (uploaded to S3).
+    // Inline user data only: exports CDK token env vars, downloads the boot
+    // script from S3, and executes it. AWS CLI is baked into the Golden AMI.
+    // This reduced user data from ~18 KB → ~1.2 KB (93% reduction).
+    // =========================================================================
+    describe('User Data', () => {
+        const { template } = createComputeStack();
+        const userDataParts = extractUserDataParts(template);
+        const userDataContent = userDataParts.join('');
+
+        // Helpers — predicate logic lives outside it() to avoid jest/no-conditional-in-test
+        const stringParts = userDataParts.filter((p): p is string => typeof p === 'string');
+        const containsPattern = (pattern: string): boolean =>
+            stringParts.some((p) => p.includes(pattern));
+
+        it('should stay under the CloudFormation 16 KB user data limit', () => {
+            const sizeBytes = Buffer.byteLength(userDataContent, 'utf-8');
+
+            expect(sizeBytes).toBeLessThan(CF_USER_DATA_MAX_BYTES);
+        });
+
+        it('should NOT install AWS CLI inline (baked into Golden AMI)', () => {
+            // AWS CLI is pre-installed in the Golden AMI and stock AL2023.
+            // UserData must not contain the awscli download to stay slim.
+            expect(containsPattern('awscli')).toBe(false);
+        });
+
+        describe('CDK token env var exports', () => {
+            // These env vars carry CDK-resolved values into the boot script
+            const requiredExports = [
+                'VOLUME_ID',
+                'MOUNT_POINT',
+                'STACK_NAME',
+                'ASG_LOGICAL_ID',
+                'AWS_REGION',
+                'K8S_VERSION',
+                'DATA_DIR',
+                'POD_CIDR',
+                'SERVICE_CIDR',
+                'SSM_PREFIX',
+                'S3_BUCKET',
+                'CALICO_VERSION',
+                'LOG_GROUP_NAME',
+                'EIP_ALLOC_ID',
+            ];
+
+            it.each(requiredExports)('should export %s', (envVar) => {
+                expect(containsPattern(`export ${envVar}=`)).toBe(true);
+            });
+        });
+
+        it('should publish instance ID to SSM for pipeline SSM trigger', () => {
+            expect(containsPattern('ssm put-parameter')).toBe(true);
+            expect(containsPattern('bootstrap/control-plane-instance-id')).toBe(true);
+        });
+
+        it('should send cfn-signal immediately for infrastructure readiness', () => {
+            expect(containsPattern('cfn-signal --success true')).toBe(true);
+        });
+
+        // Ensure the externalization is maintained: no heavy bootstrap
+        // commands should appear in user data.
+        const heavyPatterns = [
+            'kubeadm init',
+            'kubeadm join',
+            'docker pull',
+            'containerd config',
+            'kubectl apply',
+            'calicoctl',
+            'dnf install',
+            'dnf update',
+        ];
+
+        it.each(heavyPatterns)(
+            'should NOT contain heavy inline command: %s',
+            (pattern) => {
+                expect(containsPattern(pattern)).toBe(false);
+            },
+        );
+    });
+
+    // =========================================================================
+    // S3 Buckets
+    // =========================================================================
+    describe('S3 Buckets', () => {
+        it.todo('should create an S3 access logs bucket');
+
+        it.todo('should create an S3 scripts bucket with access logging enabled');
+
+        it.todo('should configure access logs bucket with 90-day lifecycle expiration');
+
+        it.todo('should configure scripts bucket with environment-aware versioning');
+    });
+
+    // =========================================================================
+    // S3 Content Sync
+    //
+    // NOTE: BucketDeployment was removed — content sync (k8s-bootstrap/,
+    // app-deploy/) is now handled by CI via `aws s3 sync`.
+    // The compute stack only creates the empty S3 bucket.
+    // =========================================================================
+    describe('S3 Content Sync (CI-driven)', () => {
+        const { template } = createComputeStack();
+
+        it('should NOT create any BucketDeployment custom resources', () => {
+            const resources = template.findResources('Custom::CDKBucketDeployment');
+            expect(Object.keys(resources)).toHaveLength(0);
+        });
+    });
+
+    // =========================================================================
+    // S3 Construct Enforcement
+    // =========================================================================
+    describe('S3 Construct Enforcement', () => {
+        enforceNoInlineS3Buckets({
+            sourceDir: path.resolve(__dirname, '../../../../lib/stacks/kubernetes'),
+        });
+    });
+
+    // =========================================================================
+    // SSM Run Command Documents
+    // =========================================================================
+    describe('SSM Run Command Documents', () => {
+        it.todo('should create a manifest deploy SSM document');
+
+        it.todo('should create an app manifest deploy SSM document');
+
+        it.todo('should configure default S3 bucket parameter in manifest deploy document');
+
+        it.todo('should configure default SSM prefix parameter in manifest deploy document');
+
+        it.todo('should accept ManifestsDir parameter for path-agnostic deployment');
+
+        it.todo('should accept DeployScript parameter for path-agnostic deployment');
+    });
+
+    // =========================================================================
+    // Golden AMI Pipeline — MOVED to GoldenAmiStack
+    //
+    // The Image Builder pipeline construct was moved to a dedicated
+    // GoldenAmiStack (golden-ami-stack.ts) to eliminate the Day-1
+    // chicken-and-egg. These tests now verify that the ControlPlane
+    // stack does NOT create any Image Builder resources.
+    //
+    // NOTE: The SSM parameter (dataType 'aws:ec2:image') has been moved to
+    // the Data stack to avoid a Day-0 circular dependency. See data-stack.test.ts.
+    // =========================================================================
+    describe('Golden AMI Pipeline (moved to GoldenAmiStack)', () => {
+        // Default TEST_CONFIGS has enableImageBuilder: true
+        const { template } = createComputeStack();
+
+        it('should NOT create an Image Builder pipeline in the ControlPlane stack', () => {
+            template.resourceCountIs('AWS::ImageBuilder::ImagePipeline', 0);
+        });
+
+        it('should NOT create an Image Builder recipe in the ControlPlane stack', () => {
+            template.resourceCountIs('AWS::ImageBuilder::ImageRecipe', 0);
+        });
+
+        it('should NOT create an Image Builder infrastructure configuration in the ControlPlane stack', () => {
+            template.resourceCountIs('AWS::ImageBuilder::InfrastructureConfiguration', 0);
+        });
+
+        it('should NOT create an Image Builder distribution in the ControlPlane stack', () => {
+            template.resourceCountIs('AWS::ImageBuilder::DistributionConfiguration', 0);
+        });
+
+        // -----------------------------------------------------------------
+        // REGRESSION GUARD — SSM parameter moved to Data stack
+        //
+        // The Compute stack must NOT create the Golden AMI SSM parameter.
+        // It's seeded by the Data stack (deployed first) to avoid Day-0
+        // ValidationError when CloudFormation resolves {{resolve:ssm:...}}.
+        // -----------------------------------------------------------------
+        describe('Golden AMI SSM Parameter (moved to Data stack)', () => {
+            it('should NOT create the Golden AMI SSM parameter in the Compute stack', () => {
+                type SsmResource = { Properties?: { DataType?: string; Value?: unknown } };
+                const ssmParameters = template.findResources('AWS::SSM::Parameter');
+                const goldenAmiParam = Object.entries(ssmParameters).find(([, resource]) => {
+                    const props = (resource as SsmResource).Properties;
+                    return props?.DataType === 'aws:ec2:image';
+                });
+
+                expect(goldenAmiParam).toBeUndefined();
+            });
+        });
+
+        // -----------------------------------------------------------------
+        // Conditional: disabled (should still produce 0 Image Builder resources)
+        // -----------------------------------------------------------------
+        describe('when enableImageBuilder is false', () => {
+            const disabledConfigs = {
+                ...TEST_CONFIGS,
+                image: { ...TEST_CONFIGS.image, enableImageBuilder: false },
+            };
+            const { template: disabledTemplate } = createComputeStack({
+                configs: disabledConfigs,
+            });
+
+            it('should NOT create an Image Builder pipeline', () => {
+                disabledTemplate.resourceCountIs('AWS::ImageBuilder::ImagePipeline', 0);
+            });
+
+            it('should NOT create an Image Builder recipe', () => {
+                disabledTemplate.resourceCountIs('AWS::ImageBuilder::ImageRecipe', 0);
+            });
+        });
+    });
+
+    // =========================================================================
+    // SSM State Manager (conditional)
+    // =========================================================================
+    describe('SSM State Manager', () => {
+        it.todo('should create SSM association when enableStateManager is true');
+
+        it.todo('should NOT create SSM association when enableStateManager is false');
+    });
+
+    // =========================================================================
+    // IAM Configuration
+    // =========================================================================
+    describe('IAM Configuration', () => {
+        it.todo('should create an IAM instance role');
+
+        it.todo('should create an IAM instance profile');
+
+        it.todo('should grant S3 read access for manifest download');
+
+        it.todo('should grant monitoring IAM permissions (SSM, CloudWatch, EBS)');
+
+        // NOTE: Application IAM grants are now tested in app-iam-stack.test.ts
+    });
+
+    // =========================================================================
+    // Stack Properties
+    // =========================================================================
+    describe('Stack Properties', () => {
+        it.todo('should expose autoScalingGroup');
+
+        it.todo('should expose instanceRole');
+    });
+
+    // =========================================================================
+    // Stack Outputs
+    // =========================================================================
+    describe('Stack Outputs', () => {
+        it.todo('should export InstanceRoleArn');
+
+        it.todo('should export AutoScalingGroupName');
+
+        it.todo('should export SsmConnectCommand');
+
+        it.todo('should export GrafanaPortForward');
+
+        it.todo('should export KubectlPortForward');
+
+        it.todo('should export ManifestDeployDocumentName');
+
+        it.todo('should export ScriptsBucketName');
+    });
+
+    // =========================================================================
+    // SSM Parameters (CI discovery)
+    // =========================================================================
+    describe('SSM Parameters', () => {
+        it.todo('should create SSM parameter for scripts bucket name');
+
+        it.todo('should create SSM parameter for instance role ARN');
+    });
+
+    // =========================================================================
+    // Tags
+    // =========================================================================
+    describe('Tags', () => {
+        it.todo('should tag resources with Stack=KubernetesCompute');
+
+        it.todo('should tag resources with Layer=Compute');
+    });
+});

@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AsgInstanceRefreshForGoldenAmiBuild",
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:StartInstanceRefresh",
+        "autoscaling:DescribeAutoScalingGroups"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

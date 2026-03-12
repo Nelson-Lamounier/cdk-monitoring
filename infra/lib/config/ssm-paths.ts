@@ -277,6 +277,42 @@ export function monitoringSsmPaths(environment: Environment): MonitoringSsmPaths
 
 
 // =============================================================================
+// ADMIN SSM PATHS (account-level operational settings)
+// =============================================================================
+
+/**
+ * SSM parameter paths for admin-level operational settings.
+ *
+ * These are account-level parameters (not project-scoped) that control
+ * operational access like admin IP allowlists.
+ */
+export interface AdminSsmPaths {
+    /** Comma-separated admin IP CIDRs (both IPv4 and IPv6 supported) */
+    readonly allowedIps: string;
+}
+
+/**
+ * Get admin SSM parameter paths.
+ *
+ * Admin IPs are stored as a single comma-separated parameter.
+ * IPv4 and IPv6 can be mixed — the consumer auto-detects by checking
+ * for `:` (IPv6) vs `.` (IPv4).
+ *
+ * Seed with:
+ * ```bash
+ * aws ssm put-parameter \
+ *   --name "/admin/allowed-ips" \
+ *   --value "203.0.113.42/32,2001:db8::/128" \
+ *   --type String
+ * ```
+ */
+export function adminSsmPaths(): AdminSsmPaths {
+    return {
+        allowedIps: '/admin/allowed-ips',
+    };
+}
+
+// =============================================================================
 // K8S (kubeadm) SSM PATHS
 // =============================================================================
 
@@ -287,16 +323,52 @@ export function k8sSsmPrefix(environment: Environment): string {
 
 /**
  * SSM parameter paths for the kubeadm Kubernetes cluster.
+ *
+ * Complete set of paths published by KubernetesBaseStack.
+ * Consumer stacks use these for cross-stack discovery without
+ * CloudFormation exports.
  */
 export interface K8sSsmPaths {
     /** The prefix itself: /k8s/{environment} */
     readonly prefix: string;
+
+    // --- Networking ---
+    /** Shared VPC ID */
+    readonly vpcId: string;
+    /** Elastic IP address (CloudFront origin) */
+    readonly elasticIp: string;
+    /** EIP allocation ID (for automatic association during bootstrap) */
+    readonly elasticIpAllocationId: string;
+
+    // --- Security Groups ---
+    /** Cluster base security group ID (intra-cluster communication) */
+    readonly securityGroupId: string;
+    /** Control plane security group ID (API server access) */
+    readonly controlPlaneSgId: string;
+    /** Ingress security group ID (Traefik HTTP/HTTPS) */
+    readonly ingressSgId: string;
+    /** Monitoring security group ID (Prometheus/Loki/Tempo) */
+    readonly monitoringSgId: string;
+
+    // --- Storage ---
+    /** Persistent EBS data volume ID */
+    readonly ebsVolumeId: string;
+    /** S3 bucket name for k8s scripts and manifests */
+    readonly scriptsBucket: string;
+
+    // --- DNS ---
+    /** Route 53 private hosted zone ID */
+    readonly hostedZoneId: string;
+    /** Stable DNS name for the K8s API server */
+    readonly apiDnsName: string;
+
+    // --- Encryption ---
+    /** KMS key ARN for CloudWatch log group encryption */
+    readonly kmsKeyArn: string;
+
+    // --- Compute (published by ControlPlane stack at runtime) ---
     /** Kubernetes node EC2 instance ID */
     readonly instanceId: string;
-    /** Elastic IP address for stable CloudFront origin */
-    readonly elasticIp: string;
-    /** Security group ID for the Kubernetes cluster */
-    readonly securityGroupId: string;
 
     /** Wildcard path for IAM: /k8s/{environment}/* */
     readonly wildcard: string;
@@ -310,9 +382,33 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
 
     return {
         prefix,
-        instanceId: `${prefix}/instance-id`,
+
+        // Networking
+        vpcId: `${prefix}/vpc-id`,
         elasticIp: `${prefix}/elastic-ip`,
+        elasticIpAllocationId: `${prefix}/elastic-ip-allocation-id`,
+
+        // Security Groups
         securityGroupId: `${prefix}/security-group-id`,
+        controlPlaneSgId: `${prefix}/control-plane-sg-id`,
+        ingressSgId: `${prefix}/ingress-sg-id`,
+        monitoringSgId: `${prefix}/monitoring-sg-id`,
+
+        // Storage
+        ebsVolumeId: `${prefix}/ebs-volume-id`,
+        scriptsBucket: `${prefix}/scripts-bucket`,
+
+        // DNS
+        hostedZoneId: `${prefix}/hosted-zone-id`,
+        apiDnsName: `${prefix}/api-dns-name`,
+
+        // Encryption
+        kmsKeyArn: `${prefix}/kms-key-arn`,
+
+        // Compute (published by ControlPlane stack)
+        instanceId: `${prefix}/instance-id`,
+
+        // IAM
         wildcard: `${prefix}/*`,
     };
 }
@@ -338,8 +434,6 @@ export interface BedrockSsmPaths {
     readonly agentArn: string;
     /** Bedrock Agent Alias ID */
     readonly agentAliasId: string;
-    /** Knowledge Base ID */
-    readonly knowledgeBaseId: string;
     /** API Gateway URL */
     readonly apiUrl: string;
     /** S3 data bucket name (for Knowledge Base documents) */
@@ -359,7 +453,6 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
         agentId: `${prefix}/agent-id`,
         agentArn: `${prefix}/agent-arn`,
         agentAliasId: `${prefix}/agent-alias-id`,
-        knowledgeBaseId: `${prefix}/knowledge-base-id`,
         apiUrl: `${prefix}/api-url`,
         dataBucketName: `${prefix}/data-bucket-name`,
         wildcard: `${prefix}/*`,

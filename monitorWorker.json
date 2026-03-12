@@ -1,0 +1,70 @@
+[
+    {
+        "GroupName": "k8s-development-k8s-cluster",
+        "GroupId": "sg-03685810192a97ef3",
+        "InboundRules": [
+            {
+                "Protocol": "tcp",
+                "FromPort": 80,
+                "ToPort": 80,
+                "IPRanges": [
+                    "0.0.0.0/0"
+                ]
+            },
+            {
+                "Protocol": "tcp",
+                "FromPort": 30417,
+                "ToPort": 30417,
+                "IPRanges": [
+                    "10.0.0.0/16"
+                ]
+            },
+            {
+                "Protocol": "tcp",
+                "FromPort": 6443,
+                "ToPort": 6443,
+                "IPRanges": [
+                    "10.0.0.0/16"
+                ]
+            },
+            {
+                "Protocol": "-1",
+                "FromPort": null,
+                "ToPort": null,
+                "IPRanges": []
+            },
+            {
+                "Protocol": "tcp",
+                "FromPort": 30100,
+                "ToPort": 30100,
+                "IPRanges": [
+                    "10.0.0.0/16"
+                ]
+            },
+            {
+                "Protocol": "tcp",
+                "FromPort": 9090,
+                "ToPort": 9090,
+                "IPRanges": [
+                    "10.0.0.0/16"
+                ]
+            },
+            {
+                "Protocol": "tcp",
+                "FromPort": 443,
+                "ToPort": 443,
+                "IPRanges": [
+                    "0.0.0.0/0"
+                ]
+            },
+            {
+                "Protocol": "tcp",
+                "FromPort": 9100,
+                "ToPort": 9100,
+                "IPRanges": [
+                    "10.0.0.0/16"
+                ]
+            }
+        ]
+    }
+]

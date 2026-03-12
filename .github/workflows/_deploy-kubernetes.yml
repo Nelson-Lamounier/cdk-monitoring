@@ -34,20 +34,21 @@
 #
 # ─── Stack Deployment Order ────────────────────────────────────────
 #   1.  Data             (DynamoDB + S3 + SSM Parameters)
+#   1b. ✅ Verify Data    (Integration test — DynamoDB, S3, SSM, CFn outputs)
 #   2.  Base             (VPC networking + SG + KMS + EBS + EIP + S3 Scripts)
-#   2b. Golden AMI       (Bake containerd + kubeadm into AMI)
+#   2b. ✅ Verify Base    (Integration test — VPC, SGs, KMS, EBS, EIP, Route53)
+#   2c. Golden AMI       (Bake containerd + kubeadm into AMI)
 #   3.  Compute          (Control Plane EC2 + ASG)
 #   3b. AppWorker        (Application worker node)
 #   3c. MonitoringWorker (Monitoring worker node)
 #   4.  AppIam           (Application-tier IAM grants)
-#   5.  Api              (API Gateway + Lambda)
-#   6.  Edge             (CloudFront + ACM + WAF in us-east-1)
+#   5.  Edge             (CloudFront + ACM + WAF in us-east-1)
 #
 # ─── Post-Deploy (manifests managed by ArgoCD GitOps) ──────────────
-#   7.  ArgoCD Health Gate          (wait for GitOps sync)
-#   8.  Verify & Smoke Tests
-#   9.  Deployment Failure Alert    (halt + preserve + alert)
-#  10.  Summary
+#   6.  ArgoCD Health Gate          (wait for GitOps sync)
+#   7.  Verify & Smoke Tests
+#   8.  Deployment Failure Alert    (halt + preserve + alert)
+#   9.  Summary
 #
 # ─── Concurrency ───────────────────────────────────────────────────
 #   This is a workflow_call (reusable) workflow — concurrency MUST be set
@@ -120,6 +121,8 @@ env:
   NODE_VERSION: "22"
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
   DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+  # Force Node 24 for actions that haven't released Node 24-native versions yet
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ===========================================================================
@@ -154,7 +157,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Record Commit Information
         id: commit-info
@@ -185,7 +188,7 @@ jobs:
         run: just build
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -300,7 +303,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -312,7 +315,7 @@ jobs:
         working-directory: infra
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -336,7 +339,7 @@ jobs:
 
     steps:
       - name: Checkout Config
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           sparse-checkout: .cfnlintrc
           sparse-checkout-cone-mode: false
@@ -404,6 +407,50 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Verify Data Stack — Integration Tests Gate
+  #
+  # Runs integration tests that call real AWS APIs to validate the data
+  # stack deployment. Reads SSM parameters published by the stack and
+  # confirms DynamoDB, S3, and CloudFormation outputs are correctly
+  # configured. Gates the base stack deployment.
+  # ===========================================================================
+  verify-data-stack:
+    name: Verify Data Stack
+    needs: [setup, deploy-data]
+    if: always() && needs.deploy-data.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: infra
+
+      - name: Run Data Stack Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes $CDK_ENV --testPathPattern="data-stack" --verbose
+
+  # ===========================================================================
   # Golden AMI Deploy Observer — Real-time build log streaming (parallel)
   #
   # Runs alongside deploy-goldenami. CloudFormation's CfnImage triggers
@@ -413,10 +460,11 @@ jobs:
   # ===========================================================================
   goldenami-deploy-observer:
     name: Golden AMI Deploy Observer
-    needs: [setup, deploy-base]
+    needs: [setup, deploy-base, verify-base-stack]
     if: >-
       always()
       && needs.deploy-base.result == 'success'
+      && needs.verify-base-stack.result == 'success'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
@@ -426,10 +474,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
@@ -456,8 +504,8 @@ jobs:
   # ===========================================================================
   deploy-base:
     name: Deploy Base
-    needs: [setup, deploy-data]
-    if: always() && needs.deploy-data.result == 'success'
+    needs: [setup, deploy-data, verify-data-stack]
+    if: always() && needs.deploy-data.result == 'success' && needs.verify-data-stack.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.base-stack }}
@@ -470,6 +518,50 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Verify Base Stack — Integration Tests Gate
+  #
+  # Runs integration tests that call real AWS APIs to validate the base
+  # stack deployment. Reads SSM parameters published by the stack and
+  # confirms VPC, SGs, KMS, EBS, EIP, S3, and Route 53 resources exist
+  # and are correctly configured. Gates all downstream stacks.
+  # ===========================================================================
+  verify-base-stack:
+    name: Verify Base Stack
+    needs: [setup, deploy-base]
+    if: always() && needs.deploy-base.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: infra
+
+      - name: Run Base Stack Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes $CDK_ENV --verbose
+
+  # ===========================================================================
   # Deploy Golden AMI Stack (Image Builder Pipeline)
   #
   # Creates the CfnImage resource that builds the Golden AMI inline.
@@ -478,10 +570,11 @@ jobs:
   # ===========================================================================
   deploy-goldenami:
     name: Deploy Golden AMI
-    needs: [setup, deploy-base]
+    needs: [setup, deploy-base, verify-base-stack]
     if: >-
       always()
       && needs.deploy-base.result == 'success'
+      && needs.verify-base-stack.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.goldenami-stack }}
@@ -503,10 +596,11 @@ jobs:
   # ===========================================================================
   deploy-controlplane:
     name: Deploy Control Plane
-    needs: [setup, deploy-base, deploy-goldenami]
+    needs: [setup, deploy-base, verify-base-stack, deploy-goldenami]
     if: >-
       always()
       && needs.deploy-base.result == 'success'
+      && needs.verify-base-stack.result == 'success'
       && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
     uses: ./.github/workflows/_deploy-stack.yml
     with:
@@ -520,12 +614,56 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Verify Control Plane Stack — Integration Tests Gate
+  #
+  # Runs integration tests that call real AWS APIs to validate the control
+  # plane deployment. Verifies EIP association to the running instance,
+  # security group attachment (cluster base, control plane, ingress), port
+  # rules on each SG, and CloudFormation outputs. Gates worker deployments.
+  # ===========================================================================
+  verify-controlplane-stack:
+    name: Verify Control Plane
+    needs: [setup, deploy-controlplane]
+    if: always() && needs.deploy-controlplane.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: infra
+
+      - name: Run Control Plane Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes $CDK_ENV --testPathPattern="control-plane-stack" --verbose
+
+  # ===========================================================================
   # Deploy App Worker Stack (3b/8) — Application Worker Node
   # ===========================================================================
   deploy-app-worker:
     name: Deploy App Worker
-    needs: [setup, deploy-controlplane]
-    if: always() && needs.deploy-controlplane.result == 'success'
+    needs: [setup, deploy-controlplane, verify-controlplane-stack]
+    if: always() && needs.deploy-controlplane.result == 'success' && needs.verify-controlplane-stack.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.worker-stack }}
@@ -538,12 +676,57 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Verify App Worker Stack — Integration Tests Gate
+  #
+  # Runs integration tests that call real AWS APIs to validate the app worker
+  # deployment. Verifies security group attachment (cluster base SG only),
+  # Source/Dest check disabled (Calico), cluster-base SG port rules (K8s API,
+  # kubelet, etcd, VXLAN, BGP, NodePort, CoreDNS, Typha), and CloudFormation
+  # outputs. Gates the AppIam deployment.
+  # ===========================================================================
+  verify-app-worker-stack:
+    name: Verify App Worker
+    needs: [setup, deploy-app-worker]
+    if: always() && needs.deploy-app-worker.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: infra
+
+      - name: Run App Worker Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes $CDK_ENV --testPathPattern="app-worker-stack" --verbose
+
+  # ===========================================================================
   # Deploy Monitoring Worker Stack (3c/8) — Monitoring Worker Node
   # ===========================================================================
   deploy-monitoring-worker:
     name: Deploy Monitoring Worker
-    needs: [setup, deploy-controlplane]
-    if: always() && needs.deploy-controlplane.result == 'success'
+    needs: [setup, deploy-controlplane, verify-controlplane-stack]
+    if: always() && needs.deploy-controlplane.result == 'success' && needs.verify-controlplane-stack.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.monitoring-worker-stack }}
@@ -556,12 +739,62 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Verify Monitoring Worker Stack — Integration Tests Gate
+  #
+  # Runs integration tests that call real AWS APIs to validate the monitoring
+  # worker deployment. Verifies security group attachment (cluster base,
+  # ingress, monitoring), monitoring SG port rules (Prometheus, Node Exporter,
+  # Loki, Tempo), SNS alerts topic, and CloudFormation outputs.
+  # Gates the AppIam deployment.
+  # ===========================================================================
+  verify-monitoring-worker-stack:
+    name: Verify Monitoring Worker
+    needs: [setup, deploy-monitoring-worker]
+    if: always() && needs.deploy-monitoring-worker.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: infra
+
+      - name: Run Monitoring Worker Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes $CDK_ENV --testPathPattern="monitoring-worker-stack" --verbose
+
+  # ===========================================================================
   # Deploy AppIam Stack (4/8) — Application-tier IAM grants
   # ===========================================================================
   deploy-appiam:
     name: Deploy App IAM
-    needs: [setup, deploy-app-worker, deploy-monitoring-worker]
-    if: always() && needs.deploy-app-worker.result == 'success' && needs.deploy-monitoring-worker.result == 'success'
+    needs: [setup, deploy-app-worker, deploy-monitoring-worker, verify-app-worker-stack, verify-monitoring-worker-stack]
+    if: >-
+      always()
+      && needs.deploy-app-worker.result == 'success'
+      && needs.deploy-monitoring-worker.result == 'success'
+      && needs.verify-app-worker-stack.result == 'success'
+      && needs.verify-monitoring-worker-stack.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.appiam-stack }}
@@ -641,7 +874,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -653,7 +886,7 @@ jobs:
         working-directory: ./
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -681,6 +914,50 @@ jobs:
             --ssm-prefix "/k8s/${{ inputs.cdk-environment }}"
 
   # ===========================================================================
+  # CloudWatch Log Group Audit
+  # ===========================================================================
+  log-group-audit:
+    name: CloudWatch Log Audit
+    needs:
+      - setup
+      - deploy-data
+      - deploy-controlplane
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    if: |
+      always()
+      && needs.setup.result == 'success'
+      && needs.deploy-data.result == 'success'
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: infra
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Audit Log Groups
+        continue-on-error: true
+        run: just ci-log-audit --region ${{ env.AWS_REGION }}
+
+  # ===========================================================================
   # Deployment Summary (TypeScript)
   # ===========================================================================
   summary:
@@ -696,6 +973,7 @@ jobs:
       - deploy-monitoring-worker
       - deploy-edge
       - deployment-failure-alert
+      - log-group-audit
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -727,7 +1005,7 @@ jobs:
 
       - name: Checkout
         if: steps.prereqs.outputs.skip != 'true'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Environment and Dependencies
         if: steps.prereqs.outputs.skip != 'true'
@@ -742,7 +1020,7 @@ jobs:
 
       - name: Configure AWS Credentials
         if: steps.prereqs.outputs.skip != 'true'
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}

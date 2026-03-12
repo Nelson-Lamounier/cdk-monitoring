@@ -2,7 +2,7 @@
 # Docs: https://github.com/aws-cloudformation/cfn-lint
 
 templates:
-  - cdk.out/**/*.template.json
+  - infra/cdk.out/**/*.template.json
 
 # =============================================================================
 # Ignored Rules

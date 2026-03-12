@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+"""
+@format
+Common utilities for K8s bootstrap step scripts.
+
+Provides structured logging, subprocess execution, SSM helpers, and
+idempotency guards used by all step scripts.
+
+Usage from a step script:
+    from common import StepRunner, run_cmd, ssm_get, ssm_put, log
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Union
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+STATUS_FILE = Path("/tmp/bootstrap-status.json")
+SSM_PREFIX = os.environ.get("SSM_PREFIX", "/k8s/development")
+AWS_REGION = os.environ.get("AWS_REGION", "eu-west-1")
+
+
+# =============================================================================
+# Structured Logging
+# =============================================================================
+
+def log(level: str, message: str, **kwargs) -> None:
+    """Emit a structured log line to stdout."""
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "message": message,
+        **kwargs,
+    }
+    print(json.dumps(entry), flush=True)
+
+
+def log_info(message: str, **kwargs) -> None:
+    log("INFO", message, **kwargs)
+
+
+def log_warn(message: str, **kwargs) -> None:
+    log("WARN", message, **kwargs)
+
+
+def log_error(message: str, **kwargs) -> None:
+    log("ERROR", message, **kwargs)
+
+
+# =============================================================================
+# Command Execution
+# =============================================================================
+
+@dataclass
+class CmdResult:
+    """Result of a subprocess execution."""
+    returncode: int
+    stdout: str
+    stderr: str
+    command: str
+    duration_seconds: float
+
+
+def run_cmd(
+    cmd: Union[List[str], str],
+    *,
+    shell: bool = False,
+    check: bool = True,
+    timeout: int = 300,
+    env: Optional[dict] = None,
+    capture: bool = True,
+) -> CmdResult:
+    """
+    Execute a command with structured logging and timing.
+
+    Args:
+        cmd: Command as list of args or string (if shell=True).
+        shell: Run through shell interpreter.
+        check: Raise on non-zero exit code.
+        timeout: Seconds before killing the process.
+        env: Additional environment variables (merged with os.environ).
+        capture: Capture stdout/stderr (False to stream live).
+
+    Returns:
+        CmdResult with exit code, output, and timing.
+
+    Raises:
+        subprocess.CalledProcessError: If check=True and command fails.
+    """
+    cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+    log_info(f"Running: {cmd_str}")
+
+    merged_env = {**os.environ, **(env or {})}
+    start = time.monotonic()
+
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=shell,
+            capture_output=capture,
+            text=True,
+            timeout=timeout,
+            env=merged_env,
+        )
+    except subprocess.TimeoutExpired as e:
+        duration = time.monotonic() - start
+        log_error(f"Command timed out after {timeout}s", command=cmd_str)
+        raise
+
+    duration = time.monotonic() - start
+
+    cmd_result = CmdResult(
+        returncode=result.returncode,
+        stdout=result.stdout if capture else "",
+        stderr=result.stderr if capture else "",
+        command=cmd_str,
+        duration_seconds=round(duration, 2),
+    )
+
+    if result.returncode != 0:
+        log_error(
+            f"Command failed (exit {result.returncode})",
+            command=cmd_str,
+            duration=cmd_result.duration_seconds,
+            stderr=cmd_result.stderr[:500] if capture else "",
+        )
+        if check:
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd,
+                output=result.stdout, stderr=result.stderr,
+            )
+    else:
+        log_info(
+            f"Command succeeded",
+            command=cmd_str,
+            duration=cmd_result.duration_seconds,
+        )
+
+    return cmd_result
+
+
+# =============================================================================
+# SSM Parameter Store Helpers
+# =============================================================================
+
+def ssm_get(name: str, *, decrypt: bool = False) -> Optional[str]:
+    """
+    Get an SSM parameter value. Returns None if not found.
+
+    Args:
+        name: Full parameter name (e.g. /k8s/development/join-token).
+        decrypt: Use --with-decryption for SecureString parameters.
+    """
+    cmd = [
+        "aws", "ssm", "get-parameter",
+        "--name", name,
+        "--query", "Parameter.Value",
+        "--output", "text",
+        "--region", AWS_REGION,
+    ]
+    if decrypt:
+        cmd.append("--with-decryption")
+
+    try:
+        result = run_cmd(cmd, check=False)
+        if result.returncode == 0 and result.stdout.strip() not in ("None", ""):
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def ssm_put(name: str, value: str, *, param_type: str = "String") -> None:
+    """
+    Write an SSM parameter (creates or overwrites).
+
+    Args:
+        name: Full parameter name.
+        value: Parameter value.
+        param_type: SSM parameter type (String, SecureString, StringList).
+    """
+    run_cmd([
+        "aws", "ssm", "put-parameter",
+        "--name", name,
+        "--value", value,
+        "--type", param_type,
+        "--overwrite",
+        "--region", AWS_REGION,
+    ])
+
+
+# =============================================================================
+# Idempotency Guards
+# =============================================================================
+
+def is_already_done(marker_file: str) -> bool:
+    """Check if a step has already completed (marker file exists)."""
+    return Path(marker_file).exists()
+
+
+def mark_done(marker_file: str) -> None:
+    """Create a marker file indicating step completion."""
+    Path(marker_file).touch()
+
+
+# =============================================================================
+# Step Status Reporting
+# =============================================================================
+
+@dataclass
+class StepStatus:
+    """Status of a single bootstrap step."""
+    step_name: str
+    status: str  # "running", "success", "failed", "skipped"
+    started_at: str = ""
+    completed_at: str = ""
+    duration_seconds: float = 0.0
+    error: str = ""
+    details: dict = field(default_factory=dict)
+
+
+def write_status(statuses: list[StepStatus]) -> None:
+    """Write step statuses to the status file (JSON)."""
+    data = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "steps": [asdict(s) for s in statuses],
+    }
+    STATUS_FILE.write_text(json.dumps(data, indent=2))
+
+
+# =============================================================================
+# Step Runner
+# =============================================================================
+
+class StepRunner:
+    """
+    Context manager for running a bootstrap step with timing and status reporting.
+
+    Usage:
+        with StepRunner("validate-ami") as step:
+            # ... step logic ...
+            step.details["binaries_found"] = ["kubeadm", "kubelet"]
+
+        # On success: step.status = "success"
+        # On exception: step.status = "failed", step.error = str(exception)
+    """
+
+    def __init__(self, step_name: str, *, skip_if: Optional[str] = None):
+        """
+        Args:
+            step_name: Human-readable step name for logging.
+            skip_if: Path to marker file — if it exists, step is skipped.
+        """
+        self.step_name = step_name
+        self.skip_if = skip_if
+        self._status = StepStatus(step_name=step_name, status="running")
+        self._start_time = 0.0
+        self.details: dict = {}
+
+    def __enter__(self):
+        # Check idempotency guard
+        if self.skip_if and is_already_done(self.skip_if):
+            log_info(f"Step '{self.step_name}' already completed — skipping",
+                     marker=self.skip_if)
+            self._status.status = "skipped"
+            return self
+
+        log_info(f"=== Starting step: {self.step_name} ===")
+        self._status.started_at = datetime.now(timezone.utc).isoformat()
+        self._start_time = time.monotonic()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._status.status == "skipped":
+            return False  # Don't suppress exceptions (none expected)
+
+        duration = time.monotonic() - self._start_time
+        self._status.duration_seconds = round(duration, 2)
+        self._status.completed_at = datetime.now(timezone.utc).isoformat()
+        self._status.details = self.details
+
+        if exc_type is not None:
+            self._status.status = "failed"
+            self._status.error = str(exc_val)
+            log_error(
+                f"Step '{self.step_name}' FAILED in {duration:.1f}s",
+                error=str(exc_val),
+            )
+            return False  # Propagate exception
+
+        self._status.status = "success"
+        log_info(f"Step '{self.step_name}' completed in {duration:.1f}s")
+
+        # Mark done if idempotency marker is configured
+        if self.skip_if:
+            mark_done(self.skip_if)
+
+        return False
+
+    @property
+    def skipped(self) -> bool:
+        return self._status.status == "skipped"
+
+    @property
+    def status(self) -> StepStatus:
+        return self._status
+
+
+# =============================================================================
+# ECR Credential Provider
+# =============================================================================
+
+ECR_PROVIDER_BIN = "/usr/local/bin/ecr-credential-provider"
+ECR_PROVIDER_CONFIG = "/etc/kubernetes/image-credential-provider-config.yaml"
+# Pin to v1.31.0 — the last version with published raw binaries on GCS.
+# The cloud-provider-aws maintainers stopped publishing standalone binaries
+# after v1.31.0 (only container images for newer versions).
+# The credential provider plugin API (credentialprovider.kubelet.k8s.io/v1)
+# is stable and version-independent, so v1.31.0 works on v1.35.x clusters.
+ECR_PROVIDER_VERSION = "v1.31.0"
+
+# Official release URL for the ecr-credential-provider binary
+# Hosted on Google Cloud Storage under the k8s-artifacts-prod bucket.
+# NOTE: The old k8s-staging-provider-aws bucket was retired.
+_ECR_PROVIDER_RELEASE_URL = (
+    "https://storage.googleapis.com/k8s-artifacts-prod/binaries/cloud-provider-aws"
+    f"/{ECR_PROVIDER_VERSION}/linux/{{arch}}/ecr-credential-provider-linux-{{arch}}"
+)
+
+_ECR_PROVIDER_CONFIG_CONTENT = """\
+apiVersion: kubelet.config.k8s.io/v1
+kind: CredentialProviderConfig
+providers:
+  - name: ecr-credential-provider
+    matchImages:
+      - "*.dkr.ecr.*.amazonaws.com"
+    defaultCacheDuration: "12h"
+    apiVersion: credentialprovider.kubelet.k8s.io/v1
+"""
+
+
+def _install_ecr_provider_from_image() -> bool:
+    """
+    Download the ecr-credential-provider binary from the official Kubernetes
+    cloud-provider-aws release artifacts.
+
+    NOTE: Previous versions tried to extract the binary from the
+    cloud-controller-manager container image, but that image does NOT
+    contain ecr-credential-provider — it's a separate binary published
+    as a standalone release artifact.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        # Detect architecture
+        result = run_cmd(["uname", "-m"], check=False)
+        uname_out = result.stdout.strip() if result and result.stdout else "x86_64"
+        arch = "arm64" if uname_out == "aarch64" else "amd64"
+
+        download_url = _ECR_PROVIDER_RELEASE_URL.format(arch=arch)
+        log_info(f"Downloading ecr-credential-provider {ECR_PROVIDER_VERSION} ({arch})...")
+        log_info(f"  URL: {download_url}")
+
+        # Download the binary directly
+        run_cmd(
+            ["curl", "-fsSL", "-o", ECR_PROVIDER_BIN, download_url],
+            timeout=60,
+        )
+
+        if Path(ECR_PROVIDER_BIN).exists():
+            run_cmd(["chmod", "+x", ECR_PROVIDER_BIN])
+            log_info(f"ECR credential provider installed: {ECR_PROVIDER_BIN}")
+            return True
+
+    except Exception as e:
+        log_warn(f"Binary download failed: {e}")
+
+    return False
+
+
+def _install_ecr_provider_via_go() -> bool:
+    """
+    Build ecr-credential-provider from source using go install.
+    Fallback if container image extraction fails.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        # Check if Go is available
+        result = run_cmd(["go", "version"], check=False)
+        if result.returncode != 0:
+            log_warn("Go not available — cannot build from source")
+            return False
+
+        log_info(f"Building ecr-credential-provider {ECR_PROVIDER_VERSION} from source...")
+        run_cmd(
+            ["go", "install",
+             f"k8s.io/cloud-provider-aws/cmd/ecr-credential-provider@{ECR_PROVIDER_VERSION}"],
+            timeout=120,
+            env={"GOBIN": "/usr/local/bin"},
+        )
+
+        if Path(ECR_PROVIDER_BIN).exists():
+            run_cmd(["chmod", "+x", ECR_PROVIDER_BIN])
+            return True
+
+    except Exception as e:
+        log_warn(f"Go build failed: {e}")
+
+    return False
+
+
+def ensure_ecr_credential_provider() -> None:
+    """
+    Ensure the ECR credential provider binary and config are installed.
+
+    Idempotent: skips if binary already exists and is executable.
+    Uses multiple strategies:
+    1. Skip if already installed (pre-baked in Golden AMI or previous run)
+    2. Extract from official container image via containerd (ctr)
+    3. Build from source via go install (fallback)
+    """
+    # Install binary if missing
+    bin_path = Path(ECR_PROVIDER_BIN)
+    if bin_path.exists() and os.access(str(bin_path), os.X_OK):
+        log_info(f"ECR credential provider already installed at {ECR_PROVIDER_BIN}")
+    else:
+        log_info(f"Installing ECR credential provider {ECR_PROVIDER_VERSION}...")
+
+        installed = _install_ecr_provider_from_image()
+
+        if not installed:
+            log_warn("Container image extraction failed, trying go install...")
+            installed = _install_ecr_provider_via_go()
+
+        if not installed:
+            raise RuntimeError(
+                f"Failed to install ecr-credential-provider {ECR_PROVIDER_VERSION}. "
+                f"Tried: container image extraction, go install. "
+                f"Ensure the Golden AMI includes the binary at {ECR_PROVIDER_BIN}, "
+                f"or that containerd/go is available on the node."
+            )
+
+        log_info(f"ECR credential provider {ECR_PROVIDER_VERSION} installed successfully")
+
+    # Create config if missing
+    config_path = Path(ECR_PROVIDER_CONFIG)
+    if config_path.exists():
+        log_info(f"ECR credential provider config already exists at {ECR_PROVIDER_CONFIG}")
+    else:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(_ECR_PROVIDER_CONFIG_CONTENT)
+        log_info(f"ECR credential provider config created at {ECR_PROVIDER_CONFIG}")
+

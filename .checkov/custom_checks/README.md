@@ -1,6 +1,6 @@
 # Custom Checkov Checks
 
-30 custom security checks for the cdk-monitoring project, grouped by domain into 11 files. Auto-loaded via `.checkov/config.yaml`:
+29 custom security checks for the cdk-monitoring project, grouped by domain into 11 files. Auto-loaded via `.checkov/config.yaml`:
 
 ```yaml
 external-checks-dir:
@@ -50,7 +50,6 @@ external-checks-dir:
 | ID               | Description                                 |
 | :--------------- | :------------------------------------------ |
 | CKV_CUSTOM_EBS_1 | EBS encrypted with customer-managed KMS key |
-| CKV_CUSTOM_EBS_2 | Monitoring volumes ≥ 50 GB                  |
 | CKV_CUSTOM_EBS_3 | Automated snapshot/backup strategy          |
 
 ### KMS — `kms_rules.py`

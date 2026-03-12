@@ -67,6 +67,15 @@ runs:
       env:
         AWS_REGION: ${{ inputs.aws-region }}
 
+    - name: Rescue Orphaned Resources
+      shell: bash
+      continue-on-error: false
+      run: |
+        just ci-cfn-rescue "${{ inputs.stack-name }}" "${{ inputs.project }}" \
+          "${{ inputs.environment }}" --region "${{ inputs.aws-region }}"
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+
     - name: Deploy Stack
       id: deploy
       shell: bash

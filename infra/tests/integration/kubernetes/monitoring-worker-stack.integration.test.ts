@@ -1,0 +1,406 @@
+/**
+ * @format
+ * Kubernetes Monitoring Worker Stack — Post-Deployment Integration Test
+ *
+ * Runs AFTER the KubernetesMonitoringWorkerStack is deployed via CI (_deploy-kubernetes.yml).
+ * Calls real AWS APIs to verify that the monitoring worker node is running with the
+ * correct security group attachment, expected SG port rules, SNS alerting topic,
+ * and CloudFormation outputs.
+ *
+ * SSM-Anchored Strategy:
+ *   1. Read all SSM parameters published by the base + monitoring worker stacks
+ *   2. Use those values to verify the actual AWS resources
+ *   This guarantees we're testing the SAME resources the stack created.
+ *
+ * Security Groups Verified:
+ *   - Cluster Base SG  (intra-cluster communication)
+ *   - Ingress SG       (Traefik HTTP/HTTPS)
+ *   - Monitoring SG    (Prometheus, Node Exporter, Loki, Tempo)
+ *
+ * Environment Variables:
+ *   CDK_ENV      — Target environment (default: development)
+ *   AWS_REGION   — AWS region (default: eu-west-1)
+ *
+ * @example CI invocation:
+ *   just ci-integration-test kubernetes development --testPathPattern="monitoring-worker-stack"
+ */
+
+import {
+    AutoScalingClient,
+    DescribeAutoScalingGroupsCommand,
+} from '@aws-sdk/client-auto-scaling';
+import {
+    CloudFormationClient,
+    DescribeStacksCommand,
+} from '@aws-sdk/client-cloudformation';
+import {
+    EC2Client,
+    DescribeInstancesCommand,
+    DescribeSecurityGroupsCommand,
+} from '@aws-sdk/client-ec2';
+import {
+    SNSClient,
+    GetTopicAttributesCommand,
+} from '@aws-sdk/client-sns';
+import {
+    SSMClient,
+    GetParametersByPathCommand,
+    GetParameterCommand,
+} from '@aws-sdk/client-ssm';
+
+import { Environment } from '../../../lib/config';
+import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+const CDK_ENV = (process.env.CDK_ENV ?? 'development') as Environment;
+const REGION = process.env.AWS_REGION ?? 'eu-west-1';
+// Config reference (used for future assertions on instance type / volume size)
+const SSM_PATHS = k8sSsmPaths(CDK_ENV);
+const PREFIX = k8sSsmPrefix(CDK_ENV);
+const NAME_PREFIX = `k8s-${CDK_ENV}`;
+
+// Stack naming convention used by the factory
+const MONITORING_WORKER_STACK_NAME = `K8s-MonWorker-${CDK_ENV}`;
+
+// AWS SDK clients (shared across tests)
+const ssm = new SSMClient({ region: REGION });
+const ec2 = new EC2Client({ region: REGION });
+const autoscaling = new AutoScalingClient({ region: REGION });
+const cfn = new CloudFormationClient({ region: REGION });
+const sns = new SNSClient({ region: REGION });
+
+// =============================================================================
+// SSM Parameter Cache
+// =============================================================================
+
+/**
+ * Load all SSM parameters under the k8s prefix in one paginated call.
+ * Returns a Map<path, value> for fast lookup.
+ */
+async function loadSsmParameters(): Promise<Map<string, string>> {
+    const params = new Map<string, string>();
+    let nextToken: string | undefined;
+
+    do {
+        const response = await ssm.send(
+            new GetParametersByPathCommand({
+                Path: PREFIX,
+                Recursive: true,
+                WithDecryption: true,
+                NextToken: nextToken,
+            }),
+        );
+
+        for (const param of response.Parameters ?? []) {
+            if (param.Name && param.Value) {
+                params.set(param.Name, param.Value);
+            }
+        }
+        nextToken = response.NextToken;
+    } while (nextToken);
+
+    return params;
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+/**
+ * Find the running EC2 instance launched by the monitoring worker ASG.
+ * Uses the Name tag `k8s-<env>-mon-worker` set by AutoScalingGroupConstruct.
+ */
+async function findMonitoringWorkerInstance(): Promise<{
+    instanceId: string;
+    securityGroupIds: string[];
+}> {
+    const { Reservations } = await ec2.send(
+        new DescribeInstancesCommand({
+            Filters: [
+                { Name: 'tag:Name', Values: [`${NAME_PREFIX}-mon-worker`] },
+                { Name: 'instance-state-name', Values: ['running'] },
+            ],
+        }),
+    );
+
+    const instances = (Reservations ?? []).flatMap(
+        (r) => r.Instances ?? [],
+    );
+
+    if (instances.length === 0) {
+        throw new Error(
+            `No running monitoring-worker instance found (tag:Name = ${NAME_PREFIX}-mon-worker)`,
+        );
+    }
+
+    const instance = instances[0];
+    const sgIds = (instance.SecurityGroups ?? [])
+        .map((sg) => sg.GroupId)
+        .filter((id): id is string => !!id);
+
+    return {
+        instanceId: instance.InstanceId!,
+        securityGroupIds: sgIds,
+    };
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+describe('KubernetesMonitoringWorkerStack — Post-Deploy Verification', () => {
+    let ssmParams: Map<string, string>;
+    let monWorker: { instanceId: string; securityGroupIds: string[] };
+
+    // Load SSM parameters and find instance ONCE before all tests
+    beforeAll(async () => {
+        ssmParams = await loadSsmParameters();
+        monWorker = await findMonitoringWorkerInstance();
+    }, 30_000);
+
+    // =========================================================================
+    // EC2 Instance
+    // =========================================================================
+    describe('EC2 Instance', () => {
+        it('should have a running monitoring-worker instance', () => {
+            expect(monWorker.instanceId).toBeDefined();
+            expect(monWorker.instanceId.startsWith('i-')).toBe(true);
+        });
+
+        it('should have an ASG with min=0, max=1, desired=1', async () => {
+            const { AutoScalingGroups } = await autoscaling.send(
+                new DescribeAutoScalingGroupsCommand({
+                    Filters: [
+                        {
+                            Name: 'tag:Name',
+                            Values: [`${NAME_PREFIX}-mon-worker`],
+                        },
+                    ],
+                }),
+            );
+
+            expect(AutoScalingGroups).toBeDefined();
+            expect(AutoScalingGroups!.length).toBeGreaterThanOrEqual(1);
+
+            const asg = AutoScalingGroups![0];
+            expect(asg.MinSize).toBe(0);
+            expect(asg.MaxSize).toBe(1);
+            expect(asg.DesiredCapacity).toBe(1);
+        });
+    });
+
+    // =========================================================================
+    // Security Group Attachment
+    //
+    // The monitoring worker should have 3 SGs attached:
+    //   1. Cluster Base SG — intra-cluster communication
+    //   2. Ingress SG     — Traefik HTTP/HTTPS
+    //   3. Monitoring SG  — Prometheus, Loki, Tempo, Node Exporter
+    // =========================================================================
+    describe('Security Group Attachment', () => {
+        const sgKeys = [
+            { key: 'securityGroupId', label: 'Cluster Base' },
+            { key: 'ingressSgId', label: 'Ingress' },
+            { key: 'monitoringSgId', label: 'Monitoring' },
+        ] as const;
+
+        it.each(sgKeys)(
+            'should have $label SG attached to the monitoring-worker instance',
+            ({ key }) => {
+                const sgId = ssmParams.get(SSM_PATHS[key])!;
+                expect(sgId).toBeDefined();
+                expect(monWorker.securityGroupIds).toContain(sgId);
+            },
+        );
+    });
+
+    // =========================================================================
+    // Monitoring SG — Port Rules
+    //
+    // Validates the monitoring-specific ports from the config-driven rule set.
+    // These ports are critical for cross-stack observability:
+    //   - Prometheus scraping (9090)
+    //   - Node Exporter metrics (9100)
+    //   - Loki push API (30100)
+    //   - Tempo OTLP gRPC (30417)
+    // =========================================================================
+    describe('Monitoring SG — Port Rules', () => {
+        let ingressRules: Array<{
+            FromPort?: number;
+            ToPort?: number;
+            IpProtocol?: string;
+            IpRanges?: Array<{ CidrIp?: string }>;
+        }>;
+
+        beforeAll(async () => {
+            const sgId = ssmParams.get(SSM_PATHS.monitoringSgId)!;
+
+            const { SecurityGroups } = await ec2.send(
+                new DescribeSecurityGroupsCommand({ GroupIds: [sgId] }),
+            );
+
+            ingressRules = SecurityGroups![0].IpPermissions ?? [];
+        });
+
+        it('should allow Prometheus port 9090/tcp', () => {
+            const rule = ingressRules.find(
+                (r) => r.FromPort === 9090 && r.ToPort === 9090 && r.IpProtocol === 'tcp',
+            );
+            expect(rule).toBeDefined();
+        });
+
+        it('should allow Node Exporter port 9100/tcp', () => {
+            const rule = ingressRules.find(
+                (r) => r.FromPort === 9100 && r.ToPort === 9100 && r.IpProtocol === 'tcp',
+            );
+            expect(rule).toBeDefined();
+        });
+
+        it('should allow Loki push API port 30100/tcp', () => {
+            const rule = ingressRules.find(
+                (r) => r.FromPort === 30100 && r.ToPort === 30100 && r.IpProtocol === 'tcp',
+            );
+            expect(rule).toBeDefined();
+        });
+
+        it('should allow Tempo OTLP gRPC port 30417/tcp', () => {
+            const rule = ingressRules.find(
+                (r) => r.FromPort === 30417 && r.ToPort === 30417 && r.IpProtocol === 'tcp',
+            );
+            expect(rule).toBeDefined();
+        });
+    });
+
+    // =========================================================================
+    // Cluster Base SG — Port Rules (spot-checks)
+    //
+    // Validates key intra-cluster ports from the config-driven rule set.
+    // Not exhaustive — spot-checks critical Kubernetes ports.
+    // =========================================================================
+    describe('Cluster Base SG — Port Rules', () => {
+        let ingressRules: Array<{
+            FromPort?: number;
+            ToPort?: number;
+            IpProtocol?: string;
+        }>;
+
+        beforeAll(async () => {
+            const sgId = ssmParams.get(SSM_PATHS.securityGroupId)!;
+
+            const { SecurityGroups } = await ec2.send(
+                new DescribeSecurityGroupsCommand({ GroupIds: [sgId] }),
+            );
+
+            ingressRules = SecurityGroups![0].IpPermissions ?? [];
+        });
+
+        it('should allow K8s API port 6443/tcp', () => {
+            const rule = ingressRules.find(
+                (r) => r.FromPort === 6443 && r.ToPort === 6443 && r.IpProtocol === 'tcp',
+            );
+            expect(rule).toBeDefined();
+        });
+
+        it('should allow kubelet API port 10250/tcp', () => {
+            const rule = ingressRules.find(
+                (r) => r.FromPort === 10250 && r.ToPort === 10250 && r.IpProtocol === 'tcp',
+            );
+            expect(rule).toBeDefined();
+        });
+
+        it('should allow VXLAN overlay port 4789/udp', () => {
+            const rule = ingressRules.find(
+                (r) => r.FromPort === 4789 && r.ToPort === 4789 && r.IpProtocol === 'udp',
+            );
+            expect(rule).toBeDefined();
+        });
+
+        it('should allow CoreDNS port 53/udp', () => {
+            const rule = ingressRules.find(
+                (r) => r.FromPort === 53 && r.ToPort === 53 && r.IpProtocol === 'udp',
+            );
+            expect(rule).toBeDefined();
+        });
+    });
+
+    // =========================================================================
+    // SNS Topic — Monitoring Alerts
+    //
+    // Grafana's unified alerting publishes to this SNS topic.
+    // The topic ARN is discoverable via SSM for ArgoCD bootstrap patching.
+    // =========================================================================
+    describe('SNS Monitoring Alerts Topic', () => {
+        let alertsTopicArn: string;
+
+        beforeAll(async () => {
+            // The monitoring worker stack publishes this SSM parameter
+            const ssmPath = `${PREFIX}/monitoring/alerts-topic-arn`;
+            const { Parameter } = await ssm.send(
+                new GetParameterCommand({ Name: ssmPath }),
+            );
+            alertsTopicArn = Parameter?.Value ?? '';
+        });
+
+        it('should have the alerts topic ARN published to SSM', () => {
+            expect(alertsTopicArn).toBeDefined();
+            expect(alertsTopicArn.length).toBeGreaterThan(0);
+            expect(alertsTopicArn).toMatch(/^arn:aws:sns:/);
+        });
+
+        it('should have the SNS topic with KMS encryption enabled', async () => {
+            const { Attributes } = await sns.send(
+                new GetTopicAttributesCommand({ TopicArn: alertsTopicArn }),
+            );
+
+            expect(Attributes).toBeDefined();
+            // KMS master key ID is set when encryption is enabled
+            expect(Attributes!['KmsMasterKeyId']).toBeDefined();
+            expect(Attributes!['KmsMasterKeyId']!.length).toBeGreaterThan(0);
+        });
+    });
+
+    // =========================================================================
+    // CloudFormation Outputs
+    // =========================================================================
+    describe('CloudFormation Outputs', () => {
+        it('should have all expected outputs on the stack', async () => {
+            const { Stacks } = await cfn.send(
+                new DescribeStacksCommand({ StackName: MONITORING_WORKER_STACK_NAME }),
+            );
+
+            expect(Stacks).toHaveLength(1);
+            const outputs = Stacks![0].Outputs ?? [];
+            const outputKeys = outputs.map((o) => o.OutputKey);
+
+            expect(outputKeys).toContain('MonitoringWorkerAsgName');
+            expect(outputKeys).toContain('MonitoringWorkerInstanceRoleArn');
+            expect(outputKeys).toContain('MonitoringAlertsTopicArn');
+        });
+    });
+
+    // =========================================================================
+    // Downstream Readiness Gate
+    // =========================================================================
+    describe('Downstream Readiness', () => {
+        it('should have all SSM parameters required by downstream stacks discoverable', () => {
+            // AppIam and Edge stacks need: VPC, SGs, KMS, Scripts Bucket
+            const requiredPaths = [
+                SSM_PATHS.vpcId,
+                SSM_PATHS.securityGroupId,
+                SSM_PATHS.ingressSgId,
+                SSM_PATHS.monitoringSgId,
+                SSM_PATHS.kmsKeyArn,
+                SSM_PATHS.scriptsBucket,
+            ];
+
+            for (const path of requiredPaths) {
+                const value = ssmParams.get(path);
+                expect(value).toBeDefined();
+                expect(value!.trim().length).toBeGreaterThan(0);
+            }
+        });
+    });
+});

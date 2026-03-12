@@ -2,6 +2,7 @@
 dist/
 *.js
 !jest.config.js
+!jest.integration.config.js
 *.d.ts
 !lib/**/*.d.ts
 
@@ -12,6 +13,7 @@ node_modules/
 .cdk.staging
 cdk.out/
 cdk-outputs/
+cdk.context.json
 
 # Yarn 4+
 .yarn/*
@@ -37,18 +39,21 @@ Thumbs.db
 # Environment
 .env
 .env.local
+.env.bootstrap
 
+# Logs
+*.log
+
+# Generated docs & reports
 docs/
-*.txt
+security-reports/
 
+# AI tooling
 .gemini/
 .agent/
 
-portfolio-articles.md
+# Python
+__pycache__/
 
-.env.bootstrap
-
-
-resume-data.ts
-resume-data-esc.ts
-
+# Scratch / one-off files
+*.txt

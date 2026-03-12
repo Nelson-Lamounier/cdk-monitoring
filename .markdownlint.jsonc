@@ -1,0 +1,6 @@
+{
+  // Markdownlint configuration for cdk-monitoring
+  // The .markdownlintignore file handles file-level exclusions (e.g., justfile).
+  // This config ensures consistent rule settings across editors.
+  "default": true
+}

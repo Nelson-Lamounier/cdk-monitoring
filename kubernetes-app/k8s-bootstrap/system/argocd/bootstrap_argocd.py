@@ -1,0 +1,916 @@
+#!/usr/bin/env python3
+"""bootstrap_argocd.py — Bootstrap ArgoCD on Kubernetes.
+
+Installs ArgoCD and configures it to watch the private GitHub repo.
+Run once during first boot (via user-data → Python orchestrator) after kubeadm
+cluster is ready.
+
+Converted from bootstrap-argocd.sh (294-line Bash) to Python for:
+  - Typed config (dataclass) instead of unvalidated env vars
+  - boto3 for SSM / Secrets Manager (proper error handling)
+  - kubernetes client for secret upsert (idempotent, base64-safe)
+  - --dry-run mode for local development
+
+Steps:
+  1.  Create argocd namespace
+  2.  Resolve SSH deploy key from SSM
+  3.  Create repo credentials secret
+  4.  Install ArgoCD (kubectl apply)
+  4b. Create default AppProject (required in ArgoCD v3.x)
+  4c. Configure ArgoCD server (rootpath + insecure for Traefik)
+  5.  Apply App-of-Apps root application
+  6.  Wait for ArgoCD server readiness
+  7.  Apply ArgoCD ingress (needs Traefik CRDs from ArgoCD sync)
+  8.  Install ArgoCD CLI
+  9.  Create CI bot account
+  10. Generate API token → Secrets Manager
+  11. Summary
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+@dataclass
+class Config:
+    ssm_prefix: str = field(default_factory=lambda: os.environ.get("SSM_PREFIX", "/k8s/development"))
+    aws_region: str = field(default_factory=lambda: os.environ.get("AWS_REGION", "eu-west-1"))
+    kubeconfig: str = field(default_factory=lambda: os.environ.get("KUBECONFIG", "/etc/kubernetes/admin.conf"))
+    argocd_dir: str = field(default_factory=lambda: os.environ.get(
+        "ARGOCD_DIR", "/data/k8s-bootstrap/system/argocd"
+    ))
+    argocd_cli_version: str = field(default_factory=lambda: os.environ.get("ARGOCD_CLI_VERSION", "v2.14.11"))
+    argo_timeout: int = field(default_factory=lambda: int(os.environ.get("ARGO_TIMEOUT", "120")))
+    dry_run: bool = False
+
+    @property
+    def env(self) -> str:
+        """Extract environment from SSM prefix: /k8s/development → development."""
+        return self.ssm_prefix.rstrip("/").split("/")[-1]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def run(cmd: list[str], *, cfg: Config, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+    """Run a subprocess with KUBECONFIG set.
+
+    HOME is set as a fallback for SSM Automation sessions where $HOME
+    is undefined — the ArgoCD CLI crashes with "$HOME is not defined"
+    without it (affects token generation in Step 10).
+    """
+    env = {**os.environ, "KUBECONFIG": cfg.kubeconfig, "HOME": os.environ.get("HOME", "/root")}
+    if cfg.dry_run:
+        log(f"  [DRY-RUN] {' '.join(cmd)}")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    return subprocess.run(cmd, env=env, check=check, capture_output=capture, text=True)
+
+
+def get_ssm_client(cfg: Config):
+    import boto3
+    return boto3.client("ssm", region_name=cfg.aws_region)
+
+
+def get_secrets_client(cfg: Config):
+    import boto3
+    return boto3.client("secretsmanager", region_name=cfg.aws_region)
+
+
+# ---------------------------------------------------------------------------
+# Step 1: Create argocd namespace
+# ---------------------------------------------------------------------------
+def create_namespace(cfg: Config) -> None:
+    log("=== Step 1: Creating argocd namespace ===")
+    namespace_yaml = Path(cfg.argocd_dir) / "namespace.yaml"
+    run(["kubectl", "apply", "-f", str(namespace_yaml)], cfg=cfg)
+    log("✓ argocd namespace ready\n")
+
+
+# ---------------------------------------------------------------------------
+# Step 2: Resolve SSH Deploy Key from SSM
+# ---------------------------------------------------------------------------
+def resolve_deploy_key(cfg: Config) -> str:
+    log("=== Step 2: Resolving SSH Deploy Key from SSM ===")
+
+    # Allow env override for testing
+    deploy_key = os.environ.get("DEPLOY_KEY", "")
+    if deploy_key:
+        log("  ✓ Using environment override\n")
+        return deploy_key
+
+    ssm_path = f"{cfg.ssm_prefix}/deploy-key"
+    log(f"  → Resolving from SSM: {ssm_path}")
+
+    if cfg.dry_run:
+        log("  [DRY-RUN] Would resolve deploy key from SSM\n")
+        return ""
+
+    try:
+        ssm = get_ssm_client(cfg)
+        resp = ssm.get_parameter(Name=ssm_path, WithDecryption=True)
+        log("  ✓ SSH Deploy Key resolved from SSM\n")
+        return resp["Parameter"]["Value"]
+    except Exception as e:
+        log(f"  ⚠ Deploy Key not found in SSM — {e}")
+        log(f"  ⚠ Store Deploy Key at: {ssm_path}\n")
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Create repo credentials secret (SSH Deploy Key)
+# ---------------------------------------------------------------------------
+def create_repo_secret(cfg: Config, deploy_key: str) -> None:
+    log("=== Step 3: Creating repo credentials (SSH Deploy Key) ===")
+
+    if not deploy_key:
+        log("  ⚠ Skipping — no Deploy Key available\n")
+        return
+
+    if cfg.dry_run:
+        log("  [DRY-RUN] Would create repo-cdk-monitoring secret in argocd namespace\n")
+        return
+
+    try:
+        from kubernetes import client, config as k8s_config
+
+        k8s_config.load_kube_config(config_file=cfg.kubeconfig)
+        v1 = client.CoreV1Api()
+
+        secret_data = {
+            "type": base64.b64encode(b"git").decode(),
+            "url": base64.b64encode(b"git@github.com:Nelson-Lamounier/cdk-monitoring.git").decode(),
+            "sshPrivateKey": base64.b64encode(deploy_key.encode()).decode(),
+        }
+
+        secret = client.V1Secret(
+            metadata=client.V1ObjectMeta(
+                name="repo-cdk-monitoring",
+                namespace="argocd",
+                labels={"argocd.argoproj.io/secret-type": "repository"},
+            ),
+            data=secret_data,
+            type="Opaque",
+        )
+
+        try:
+            v1.create_namespaced_secret("argocd", secret)
+            log("  ✓ SSH Deploy Key repo credentials created")
+        except client.exceptions.ApiException as e:
+            if e.status == 409:
+                v1.replace_namespaced_secret("repo-cdk-monitoring", "argocd", secret)
+                log("  ✓ SSH Deploy Key repo credentials updated")
+            else:
+                raise
+    except Exception as e:
+        log(f"  ⚠ Failed to create repo secret: {e}")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 4: Install ArgoCD (non-HA)
+# ---------------------------------------------------------------------------
+def install_argocd(cfg: Config) -> None:
+    log("=== Step 4: Installing ArgoCD ===")
+    install_yaml = Path(cfg.argocd_dir) / "install.yaml"
+    # --server-side: ArgoCD CRDs (applicationsets.argoproj.io) exceed the 262KB
+    # annotation limit imposed by client-side kubectl apply. Server-side apply
+    # avoids the last-applied-configuration annotation entirely.
+    # --force-conflicts: Required on re-apply to take ownership of fields that
+    # were previously managed by client-side apply.
+    run(
+        ["kubectl", "apply", "-n", "argocd", "-f", str(install_yaml),
+         "--server-side", "--force-conflicts"],
+        cfg=cfg,
+    )
+    log("✓ ArgoCD core installed\n")
+
+
+# ---------------------------------------------------------------------------
+# Step 4b: Create default AppProject (ArgoCD v3.x dropped auto-creation)
+# ---------------------------------------------------------------------------
+def create_default_project(cfg: Config) -> None:
+    log("=== Step 4b: Creating default AppProject ===")
+    project_yaml = Path(cfg.argocd_dir) / "default-project.yaml"
+    if project_yaml.exists():
+        run(["kubectl", "apply", "-f", str(project_yaml)], cfg=cfg)
+        log("✓ default AppProject created\n")
+    else:
+        log(f"  ⚠ default-project.yaml not found at {project_yaml}")
+        log("  → Creating inline default AppProject...")
+        run(
+            ["kubectl", "apply", "-f", "-"],
+            cfg=cfg,
+        ) if cfg.dry_run else subprocess.run(
+            ["kubectl", "apply", "-f", "-"],
+            input=(
+                'apiVersion: argoproj.io/v1alpha1\n'
+                'kind: AppProject\n'
+                'metadata:\n'
+                '  name: default\n'
+                '  namespace: argocd\n'
+                'spec:\n'
+                '  description: Default project for all applications\n'
+                '  sourceRepos:\n'
+                '    - "*"\n'
+                '  destinations:\n'
+                '    - namespace: "*"\n'
+                '      server: https://kubernetes.default.svc\n'
+                '  clusterResourceWhitelist:\n'
+                '    - group: "*"\n'
+                '      kind: "*"\n'
+            ),
+            env={**os.environ, "KUBECONFIG": cfg.kubeconfig},
+            text=True, check=True,
+        )
+        log("✓ default AppProject created (inline)\n")
+
+
+# ---------------------------------------------------------------------------
+# Step 4c: Configure ArgoCD Server (rootpath + insecure)
+# ---------------------------------------------------------------------------
+def configure_argocd_server(cfg: Config) -> None:
+    """Patch argocd-cmd-params-cm so ArgoCD works behind Traefik at /argocd.
+
+    The vendored install.yaml ships an empty argocd-cmd-params-cm.
+    Two keys are required for the Traefik IngressRoute to work:
+      - server.rootpath=/argocd   — ArgoCD serves UI assets at /argocd/*
+      - server.insecure=true      — disable TLS on argocd-server (Traefik terminates TLS)
+
+    After patching the ConfigMap, the argocd-server deployment is restarted
+    so its pods pick up the new configuration.
+    """
+    log("=== Step 4c: Configuring ArgoCD Server (rootpath + insecure) ===")
+
+    if cfg.dry_run:
+        log("  [DRY-RUN] Would patch argocd-cmd-params-cm and restart argocd-server\n")
+        return
+
+    patch = json.dumps({"data": {
+        "server.rootpath": "/argocd",
+        "server.insecure": "true",
+    }})
+
+    result = run(
+        ["kubectl", "patch", "configmap", "argocd-cmd-params-cm",
+         "-n", "argocd", "--type", "merge", "-p", patch],
+        cfg=cfg, check=False,
+    )
+
+    if result.returncode == 0:
+        log("  ✓ argocd-cmd-params-cm patched (rootpath=/argocd, insecure=true)")
+    else:
+        log("  ⚠ Failed to patch argocd-cmd-params-cm")
+
+    # Restart argocd-server so pods pick up the new ConfigMap values
+    result = run(
+        ["kubectl", "rollout", "restart", "deployment/argocd-server",
+         "-n", "argocd"],
+        cfg=cfg, check=False,
+    )
+
+    if result.returncode == 0:
+        log("  ✓ argocd-server deployment restarted")
+    else:
+        log("  ⚠ Failed to restart argocd-server")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 4d: Configure custom resource health checks in argocd-cm
+# ---------------------------------------------------------------------------
+def configure_health_checks(cfg: Config) -> None:
+    """Patch argocd-cm with custom Lua health checks.
+
+    ArgoCD's default Deployment health check considers a Deployment "Healthy"
+    when at least one replica is available. This is too lenient — the monitoring
+    Application (wave 3) could be marked Healthy while Tempo is still rolling out.
+
+    Custom health checks ensure:
+      - Deployments: ALL replicas must be available AND the rollout must be
+        complete (NewReplicaSetAvailable).
+      - ConfigMaps: Always Healthy (prevents ArgoCD from blocking sync-waves
+        on ConfigMap-only changes like Tempo/Grafana config updates).
+    """
+    log("=== Step 4d: Configuring custom resource health checks ===")
+
+    if cfg.dry_run:
+        log("  [DRY-RUN] Would patch argocd-cm with custom health checks\n")
+        return
+
+    # Lua health check: Deployment is Healthy only when ALL replicas are available
+    # and the rollout is complete (Progressing condition = NewReplicaSetAvailable)
+    deployment_health_lua = """\
+hs = {}
+if obj.status ~= nil then
+  if obj.status.availableReplicas ~= nil and obj.spec.replicas ~= nil then
+    if obj.status.availableReplicas == obj.spec.replicas then
+      -- All replicas available, check rollout completion
+      if obj.status.conditions ~= nil then
+        for _, condition in ipairs(obj.status.conditions) do
+          if condition.type == "Progressing" and condition.reason == "NewReplicaSetAvailable" then
+            hs.status = "Healthy"
+            hs.message = "All replicas available and rollout complete"
+            return hs
+          end
+        end
+      end
+      hs.status = "Progressing"
+      hs.message = "Waiting for rollout to complete"
+      return hs
+    end
+  end
+  hs.status = "Progressing"
+  hs.message = "Waiting for all replicas to be available"
+  return hs
+end
+hs.status = "Progressing"
+hs.message = "Waiting for status"
+return hs"""
+
+    # ConfigMap: always Healthy (no runtime state to check)
+    configmap_health_lua = """\
+hs = {}
+hs.status = "Healthy"
+hs.message = ""
+return hs"""
+
+    # Argo Rollouts Rollout: map phase/status to ArgoCD health
+    rollout_health_lua = """\
+hs = {}
+if obj.status ~= nil then
+  if obj.status.phase == "Healthy" then
+    hs.status = "Healthy"
+    hs.message = "Rollout is fully promoted"
+    return hs
+  end
+  if obj.status.phase == "Paused" then
+    hs.status = "Suspended"
+    hs.message = obj.status.message or "Rollout is paused"
+    return hs
+  end
+  if obj.status.phase == "Degraded" or obj.status.phase == "Abort" then
+    hs.status = "Degraded"
+    hs.message = obj.status.message or "Rollout failed"
+    return hs
+  end
+  hs.status = "Progressing"
+  hs.message = obj.status.message or "Rollout in progress"
+  return hs
+end
+hs.status = "Progressing"
+hs.message = "Waiting for rollout status"
+return hs"""
+
+    patch = json.dumps({"data": {
+        "resource.customizations.health.apps_Deployment": deployment_health_lua,
+        "resource.customizations.health._ConfigMap": configmap_health_lua,
+        "resource.customizations.health.argoproj.io_Rollout": rollout_health_lua,
+    }})
+
+    result = run(
+        ["kubectl", "patch", "configmap", "argocd-cm", "-n", "argocd",
+         "--type", "merge", "-p", patch],
+        cfg=cfg, check=False,
+    )
+
+    if result.returncode == 0:
+        log("  ✓ Custom health checks added to argocd-cm:")
+        log("    - apps/Deployment: requires ALL replicas available + rollout complete")
+        log("    - ConfigMap: always Healthy (prevents sync-wave blocking)")
+        log("    - argoproj.io/Rollout: maps phase to ArgoCD health status")
+    else:
+        log("  ⚠ Failed to patch argocd-cm with health checks")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 5: Apply App-of-Apps root applications (platform + workloads)
+# ---------------------------------------------------------------------------
+def apply_root_app(cfg: Config) -> None:
+    """Apply the two App-of-Apps root applications.
+
+    The monolithic root-app.yaml was split into two root apps:
+      - platform-root-app.yaml → discovers platform/argocd-apps/ (waves 0–4)
+      - workloads-root-app.yaml → discovers workloads/argocd-apps/ (wave 5+)
+
+    Platform root must be healthy before workloads root triggers business app syncs.
+    """
+    log("=== Step 5: Applying App-of-Apps roots (platform + workloads) ===")
+    argocd_path = Path(cfg.argocd_dir)
+
+    for root_name in ("platform-root-app.yaml", "workloads-root-app.yaml"):
+        root_app = argocd_path / root_name
+        if root_app.exists():
+            log(f"  → Applying {root_name}")
+            run(["kubectl", "apply", "-f", str(root_app)], cfg=cfg)
+        else:
+            log(f"  ⚠ {root_name} not found at {root_app}")
+
+    log("✓ App-of-Apps roots applied\n")
+
+
+# ---------------------------------------------------------------------------
+# Step 5b: Inject Helm parameters into monitoring ArgoCD Application
+# ---------------------------------------------------------------------------
+def inject_monitoring_helm_params(cfg: Config) -> None:
+    """Inject SNS topic ARN and admin IP allowlist into the monitoring Application's Helm parameters.
+
+    Reads the SNS topic ARN from SSM and the admin IPs from SSM,
+    then patches the ArgoCD Application with all Helm parameter overrides
+    in a single merge patch (ArgoCD replaces the entire parameters array).
+    """
+    log("=== Step 5b: Injecting Monitoring Helm Parameters ===")
+
+    parameters: list[dict[str, str]] = []
+
+    # --- SNS Topic ARN ---
+    ssm_path = f"{cfg.ssm_prefix}/monitoring/alerts-topic-arn"
+    log(f"  → Reading SNS ARN from SSM: {ssm_path}")
+
+    if not cfg.dry_run:
+        try:
+            ssm = get_ssm_client(cfg)
+            resp = ssm.get_parameter(Name=ssm_path)
+            topic_arn = resp["Parameter"]["Value"]
+            log(f"  ✓ SNS Topic ARN: {topic_arn}")
+            parameters.append({
+                "name": "grafana.alerting.snsTopicArn",
+                "value": topic_arn,
+            })
+        except Exception as e:
+            log(f"  ⚠ SNS topic ARN not found in SSM — {e}")
+
+    # --- Admin IP Allowlist ---
+    ip_ssm_paths = [
+        (f"{cfg.ssm_prefix}/monitoring/allow-ipv4", "adminAccess.allowedIps[0]"),
+        (f"{cfg.ssm_prefix}/monitoring/allow-ipv6", "adminAccess.allowedIps[1]"),
+    ]
+
+    for ip_ssm_path, param_name in ip_ssm_paths:
+        log(f"  → Reading IP from SSM: {ip_ssm_path}")
+        if not cfg.dry_run:
+            try:
+                ssm = get_ssm_client(cfg)
+                resp = ssm.get_parameter(Name=ip_ssm_path)
+                ip_value = resp["Parameter"]["Value"]
+                log(f"  ✓ {param_name}: {ip_value}")
+                parameters.append({"name": param_name, "value": ip_value})
+            except Exception as e:
+                log(f"  ⚠ IP not found in SSM ({ip_ssm_path}) — {e}")
+
+    if cfg.dry_run:
+        log("  [DRY-RUN] Would patch monitoring Application with Helm parameters\n")
+        return
+
+    if not parameters:
+        log("  ⚠ No parameters to inject — skipping patch\n")
+        return
+
+    # Patch the monitoring ArgoCD Application with all Helm parameter overrides
+    patch = json.dumps({
+        "spec": {
+            "source": {
+                "helm": {
+                    "parameters": parameters
+                }
+            }
+        }
+    })
+
+    result = run(
+        ["kubectl", "patch", "application", "monitoring", "-n", "argocd",
+         "--type", "merge", "-p", patch],
+        cfg=cfg, check=False,
+    )
+
+    if result.returncode == 0:
+        log(f"  ✓ Monitoring Application patched with {len(parameters)} Helm parameters")
+    else:
+        log("  ⚠ Failed to patch monitoring Application")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 7: Apply ArgoCD ingress (after ArgoCD is ready and syncing Traefik)
+# ---------------------------------------------------------------------------
+def apply_ingress(cfg: Config) -> None:
+    log("=== Step 7: Applying ArgoCD ingress ===")
+    argocd_path = Path(cfg.argocd_dir)
+
+    ingress_yaml = argocd_path / "ingress.yaml"
+    if not ingress_yaml.exists():
+        log("  ⚠ ingress.yaml not found — skipping\n")
+        return
+
+    # Traefik CRDs (IngressRoute, Middleware) are installed by ArgoCD via the
+    # root app. ArgoCD is now running (Step 6 passed), but it may still be
+    # syncing Traefik. Retry with generous backoff.
+    log("  → Waiting for Traefik CRDs before applying ingress...")
+    max_retries = 10
+    for attempt in range(1, max_retries + 1):
+        result = run(
+            ["kubectl", "apply", "-f", str(ingress_yaml)],
+            cfg=cfg, check=False,
+        )
+        if result.returncode == 0:
+            log("  ✓ Ingress applied")
+            break
+        if attempt < max_retries:
+            log(f"  Attempt {attempt}/{max_retries} — Traefik CRDs not ready, waiting 30s...")
+            time.sleep(30)
+        else:
+            log("  ⚠ Ingress not applied — Traefik CRDs not available after 5 min.")
+            log("    ArgoCD will install Traefik shortly. Apply manually:")
+            log(f"    kubectl apply -f {ingress_yaml}")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 7b: Create ArgoCD IP Allowlist Middleware from SSM
+# ---------------------------------------------------------------------------
+def create_argocd_ip_allowlist(cfg: Config) -> None:
+    """Create the admin-ip-allowlist Middleware in the argocd namespace.
+
+    Reads admin IPs from SSM (same parameters as the monitoring chart)
+    and creates the Traefik IPAllowList middleware dynamically, keeping
+    secrets out of version control.
+    """
+    log("=== Step 7b: Creating ArgoCD IP Allowlist Middleware ===")
+
+    ip_ssm_paths = [
+        f"{cfg.ssm_prefix}/monitoring/allow-ipv4",
+        f"{cfg.ssm_prefix}/monitoring/allow-ipv6",
+    ]
+
+    if cfg.dry_run:
+        log("  [DRY-RUN] Would read IPs from SSM and create middleware\n")
+        return
+
+    # Collect IPs from SSM
+    source_ranges: list[str] = []
+    for ip_ssm_path in ip_ssm_paths:
+        try:
+            ssm = get_ssm_client(cfg)
+            resp = ssm.get_parameter(Name=ip_ssm_path)
+            ip_value = resp["Parameter"]["Value"]
+            source_ranges.append(ip_value)
+            log(f"  ✓ {ip_ssm_path}: {ip_value}")
+        except Exception as e:
+            log(f"  ⚠ IP not found in SSM ({ip_ssm_path}) — {e}")
+
+    if not source_ranges:
+        log("  ⚠ No IPs found — skipping middleware creation")
+        log("    ArgoCD ingress will reject all traffic until middleware exists\n")
+        return
+
+    # Build the Middleware manifest
+    source_range_yaml = "\n".join(f'      - "{ip}"' for ip in source_ranges)
+    manifest = f"""apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: admin-ip-allowlist
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+spec:
+  ipAllowList:
+    sourceRange:
+{source_range_yaml}
+"""
+
+    result = subprocess.run(
+        ["kubectl", "apply", "-f", "-"],
+        input=manifest, text=True, capture_output=True,
+    )
+
+    if result.returncode == 0:
+        log(f"  ✓ ArgoCD IP allowlist middleware created with {len(source_ranges)} IP(s)")
+    else:
+        log(f"  ⚠ Failed to create middleware: {result.stderr.strip()}")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 6: Wait for ArgoCD server readiness (must pass before Step 7 ingress)
+# ---------------------------------------------------------------------------
+def _has_worker_nodes(cfg: Config) -> bool:
+    """Check if any worker nodes (without control-plane taint) exist."""
+    result = run(
+        ["kubectl", "get", "nodes",
+         "-l", "!node-role.kubernetes.io/control-plane",
+         "-o", "name"],
+        cfg=cfg, check=False, capture=True,
+    )
+    nodes = [n for n in result.stdout.strip().split("\n") if n] if result.returncode == 0 else []
+    return len(nodes) > 0
+
+
+def wait_for_argocd(cfg: Config) -> None:
+    log("=== Step 6: Waiting for ArgoCD server ===")
+
+    if cfg.dry_run:
+        log("  [DRY-RUN] Would wait for argocd-server, repo-server, application-controller\n")
+        return
+
+    # On Day-0, only the control plane node exists (with NoSchedule taint).
+    # ArgoCD pods can't be scheduled until workers join — skip the wait.
+    if not _has_worker_nodes(cfg):
+        log("  ℹ No worker nodes available yet — ArgoCD pods will remain Pending")
+        log("  ℹ Pods will start automatically once workers join the cluster")
+        log("  → Skipping readiness wait (control plane has NoSchedule taint)\n")
+        return
+
+    targets = [
+        ("deployment", "argocd-server"),
+        ("deployment", "argocd-repo-server"),
+        ("statefulset", "argocd-application-controller"),
+    ]
+
+    for kind, name in targets:
+        log(f"  → Waiting for {name}...")
+        result = run(
+            ["kubectl", "rollout", "status", f"{kind}/{name}",
+             "-n", "argocd", f"--timeout={cfg.argo_timeout}s"],
+            cfg=cfg, check=False,
+        )
+        if result.returncode != 0:
+            log(f"  ⚠ {name} not ready within {cfg.argo_timeout}s")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 8: Install ArgoCD CLI
+# ---------------------------------------------------------------------------
+def install_argocd_cli(cfg: Config) -> bool:
+    log("=== Step 8: Installing ArgoCD CLI ===")
+
+    if cfg.dry_run:
+        log(f"  [DRY-RUN] Would install ArgoCD CLI {cfg.argocd_cli_version}\n")
+        return True
+
+    import platform
+    arch_map = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+    cli_arch = arch_map.get(platform.machine(), "amd64")
+
+    url = (
+        f"https://github.com/argoproj/argo-cd/releases/download/"
+        f"{cfg.argocd_cli_version}/argocd-linux-{cli_arch}"
+    )
+    log(f"  → Downloading ArgoCD CLI {cfg.argocd_cli_version} ({cli_arch})...")
+
+    result = run(
+        ["bash", "-c", f'curl -sSL -o /usr/local/bin/argocd "{url}" && chmod +x /usr/local/bin/argocd'],
+        cfg=cfg, check=False,
+    )
+
+    if result.returncode == 0:
+        version_result = run(
+            ["argocd", "version", "--client", "--short"],
+            cfg=cfg, check=False, capture=True,
+        )
+        version = version_result.stdout.strip() if version_result.returncode == 0 else cfg.argocd_cli_version
+        log(f"  ✓ ArgoCD CLI installed: {version}\n")
+        return True
+    else:
+        log("  ⚠ ArgoCD CLI install failed — skipping CI bot token generation\n")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Step 9: Create CI bot account
+# ---------------------------------------------------------------------------
+def create_ci_bot(cfg: Config) -> None:
+    log("=== Step 9: Creating CI bot account ===")
+
+    if cfg.dry_run:
+        log("  [DRY-RUN] Would patch argocd-cm and argocd-rbac-cm\n")
+        return
+
+    # Register ci-bot account
+    cm_patch = json.dumps({"data": {"accounts.ci-bot": "apiKey"}})
+    result = run(
+        ["kubectl", "patch", "configmap", "argocd-cm", "-n", "argocd",
+         "--type", "merge", "-p", cm_patch],
+        cfg=cfg, check=False,
+    )
+    if result.returncode == 0:
+        log("  ✓ ci-bot account registered in argocd-cm")
+    else:
+        log("  ⚠ Failed to patch argocd-cm")
+
+    # Grant ci-bot read-only RBAC
+    rbac_csv = (
+        "p, role:ci-readonly, applications, get, */*, allow\n"
+        "p, role:ci-readonly, applications, list, */*, allow\n"
+        "g, ci-bot, role:ci-readonly"
+    )
+    rbac_patch = json.dumps({"data": {"policy.csv": rbac_csv}})
+    result = run(
+        ["kubectl", "patch", "configmap", "argocd-rbac-cm", "-n", "argocd",
+         "--type", "merge", "-p", rbac_patch],
+        cfg=cfg, check=False,
+    )
+    if result.returncode == 0:
+        log("  ✓ ci-bot RBAC policy applied (read-only)")
+    else:
+        log("  ⚠ Failed to patch argocd-rbac-cm")
+
+    # Wait for ConfigMap pickup
+    time.sleep(5)
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 10: Generate API token → Secrets Manager
+# ---------------------------------------------------------------------------
+def generate_ci_token(cfg: Config) -> None:
+    log("=== Step 10: Generating CI bot token ===")
+
+    secret_name = f"k8s/{cfg.env}/argocd-ci-token"
+
+    if cfg.dry_run:
+        log(f"  [DRY-RUN] Would generate token and store at: {secret_name}\n")
+        return
+
+    log("  → Generating API token for ci-bot...")
+
+    # ArgoCD CLI in --core mode uses the kubectl context's current namespace.
+    # Set it to argocd so the CLI can find argocd-cm.
+    run(
+        ["kubectl", "config", "set-context", "--current", "--namespace=argocd"],
+        cfg=cfg, check=False,
+    )
+
+    result = run(
+        ["argocd", "account", "generate-token", "--account", "ci-bot", "--core", "--grpc-web"],
+        cfg=cfg, check=False, capture=True,
+    )
+
+    ci_token = result.stdout.strip() if result.returncode == 0 else ""
+
+    if not ci_token:
+        log("  ⚠ Token generation failed — CI pipeline will skip ArgoCD verification\n")
+        return
+
+    log("  ✓ API token generated")
+    log(f"  → Pushing token to Secrets Manager: {secret_name}")
+
+    try:
+        sm = get_secrets_client(cfg)
+        try:
+            sm.create_secret(
+                Name=secret_name,
+                Description="ArgoCD CI bot API token for pipeline verification",
+                SecretString=ci_token,
+            )
+            log("  ✓ Secret created in Secrets Manager")
+        except sm.exceptions.ResourceExistsException:
+            sm.update_secret(SecretId=secret_name, SecretString=ci_token)
+            log("  ✓ Secret updated in Secrets Manager")
+    except Exception as e:
+        log(f"  ⚠ Failed to store token in Secrets Manager: {e}")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 11: Summary
+# ---------------------------------------------------------------------------
+def print_summary(cfg: Config) -> None:
+    log("=== ArgoCD Bootstrap Summary ===\n")
+
+    if cfg.dry_run:
+        log("  [DRY-RUN] Would show pods and applications\n")
+        return
+
+    run(["kubectl", "get", "pods", "-n", "argocd", "-o", "wide"], cfg=cfg, check=False)
+    log("")
+    run(["kubectl", "get", "applications", "-n", "argocd"], cfg=cfg, check=False)
+    log("")
+
+    # Retrieve initial admin password
+    result = run(
+        ["kubectl", "-n", "argocd", "get", "secret", "argocd-initial-admin-secret",
+         "-o", "jsonpath={.data.password}"],
+        cfg=cfg, check=False, capture=True,
+    )
+
+    if result.returncode == 0 and result.stdout.strip():
+        try:
+            password = base64.b64decode(result.stdout.strip()).decode()
+            log("=== ArgoCD Admin Access ===")
+            log(f"  URL:      https://<eip>/argocd")
+            log(f"  User:     admin")
+            log(f"  Password: {password}")
+            log("")
+            log("  (Change the password after first login)")
+        except Exception:
+            pass
+
+    log(f"\n✓ ArgoCD bootstrap complete ({datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')})")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Bootstrap ArgoCD on Kubernetes")
+    parser.add_argument("--dry-run", action="store_true", help="Print actions without executing")
+    args = parser.parse_args()
+
+    cfg = Config(dry_run=args.dry_run)
+
+    log("=== ArgoCD Bootstrap ===")
+    log(f"SSM prefix: {cfg.ssm_prefix}")
+    log(f"Region:     {cfg.aws_region}")
+    log(f"ArgoCD dir: {cfg.argocd_dir}")
+    log(f"Triggered:  {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    log("")
+
+    if cfg.dry_run:
+        log("=== DRY RUN — no changes will be made ===")
+        log(f"  kubeconfig:       {cfg.kubeconfig}")
+        log(f"  argocd_dir:       {cfg.argocd_dir} (exists: {Path(cfg.argocd_dir).exists()})")
+        log(f"  cli_version:      {cfg.argocd_cli_version}")
+        log(f"  argo_timeout:     {cfg.argo_timeout}s")
+        log(f"  environment:      {cfg.env}")
+        log("")
+
+    # Step 1: Namespace
+    create_namespace(cfg)
+
+    # Step 2: Resolve deploy key
+    deploy_key = resolve_deploy_key(cfg)
+
+    # Step 3: Repo secret
+    create_repo_secret(cfg, deploy_key)
+
+    # Step 4: Install ArgoCD
+    install_argocd(cfg)
+
+    # Step 4b: Default AppProject (ArgoCD v3.x no longer auto-creates it)
+    create_default_project(cfg)
+
+    # Step 4c: Configure ArgoCD server for Traefik sub-path routing
+    configure_argocd_server(cfg)
+
+    # Step 4d: Custom health checks (stricter Deployment readiness, ConfigMap always-healthy)
+    configure_health_checks(cfg)
+
+    # Step 5: App-of-Apps root (triggers Traefik install via ArgoCD)
+    apply_root_app(cfg)
+
+    # Step 5b: Inject SNS topic ARN + admin IP allowlist into monitoring Application
+    inject_monitoring_helm_params(cfg)
+
+    # Step 6: Wait for ArgoCD readiness (must be running before Traefik syncs)
+    wait_for_argocd(cfg)
+
+    # Step 7: Ingress (now that ArgoCD is running and syncing Traefik)
+    apply_ingress(cfg)
+
+    # Step 7b: Create ArgoCD IP allowlist middleware from SSM
+    create_argocd_ip_allowlist(cfg)
+
+    # Step 8: CLI
+    cli_installed = install_argocd_cli(cfg)
+
+    if cli_installed:
+        # Step 9: CI bot account
+        create_ci_bot(cfg)
+
+        # Step 10: API token
+        generate_ci_token(cfg)
+    else:
+        log("=== Step 9-10: Skipping — ArgoCD CLI not available ===\n")
+
+    # Step 11: Summary
+    print_summary(cfg)
+
+
+if __name__ == "__main__":
+    main()
