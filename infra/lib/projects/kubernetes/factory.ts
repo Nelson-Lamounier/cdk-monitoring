@@ -198,20 +198,13 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stacks.push(dataStack);
         stackMap.data = dataStack;
 
-        // Hard validation — ALLOW_IPV4 is required for SG ingress rules
-        if (!nextjsConfig.allowedIpv4) {
-            throw new Error(
-                'ALLOW_IPV4 environment variable is required. ' +
-                'Set it in GitHub Environment secrets (Settings → Environments → ' +
-                `${environment}) to your admin IPv4 CIDR (e.g., "203.0.113.42/32").`,
-            );
-        }
-
         // =================================================================
         // Stack 2: BASE STACK (VPC, SG, KMS, EBS, EIP — "The Base")
         //
         // Long-lived infrastructure that rarely changes. Decoupled from
         // the runtime compute stack to avoid unnecessary deployments.
+        // Admin IPs for ingress SG are sourced from SSM (/admin/allowed-ips)
+        // at synth time — no env vars needed.
         // =================================================================
         const baseStack = new KubernetesBaseStack(
             scope,
@@ -223,8 +216,6 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 configs,
                 namePrefix,
                 ssmPrefix,
-                allowedIpv4: nextjsConfig.allowedIpv4,
-                allowedIpv6: nextjsConfig.allowedIpv6,
             },
         );
         stacks.push(baseStack);

@@ -54,11 +54,8 @@ import {
     SsmStateManagerConstruct,
     UserDataBuilder,
 } from '../../common/index';
-import {
-    MONITORING_APP_TAG,
-} from '../../config/defaults';
 import { Environment } from '../../config/environments';
-import { K8sConfigs } from '../../config/kubernetes';
+import { K8sConfigs, MONITORING_APP_TAG } from '../../config/kubernetes';
 
 // =============================================================================
 // PROPS
@@ -424,8 +421,15 @@ echo "SSM Automation will be triggered by the CI pipeline"
         // =====================================================================
         // EIP Failover Lambda — Hybrid-HA Guardian
         //
-        // Automatically re-associates the cluster EIP when a node terminates.
-        // Triggered by EventBridge on ASG "EC2 Instance Terminate Successful".
+        // Automatically re-associates the cluster EIP when a node is
+        // launched or terminated by an ASG.
+        //
+        // Event handling:
+        //   LAUNCH:    If EIP is unassociated or current holder is not running,
+        //              associate EIP to the newly launched instance.
+        //   TERMINATE: If EIP was on the terminated instance, find another
+        //              healthy instance with the cluster tag and move it.
+        //
         // Discovers healthy instances by EC2 tag (works across all ASGs).
         // =====================================================================
         const eipFailoverFn = new lambda.Function(this, 'EipFailoverFn', {
@@ -443,37 +447,81 @@ EIP_ALLOCATION_ID = os.environ["EIP_ALLOCATION_ID"]
 TAG_KEY = os.environ["CLUSTER_TAG_KEY"]
 TAG_VALUE = os.environ["CLUSTER_TAG_VALUE"]
 
-def handler(event, context):
-    terminated = event.get("detail", {}).get("EC2InstanceId", "")
-    logger.info("Terminated instance: %s", terminated)
 
-    eip = ec2.describe_addresses(AllocationIds=[EIP_ALLOCATION_ID])["Addresses"][0]
-    current = eip.get("InstanceId", "")
+def is_running(instance_id):
+    """Check if an instance is in 'running' state."""
+    try:
+        resp = ec2.describe_instances(InstanceIds=[instance_id])
+        state = resp["Reservations"][0]["Instances"][0]["State"]["Name"]
+        return state == "running"
+    except Exception:
+        return False
 
-    if current and current != terminated:
-        logger.info("EIP on %s (healthy). No action.", current)
-        return {"statusCode": 200}
 
-    instances = ec2.describe_instances(Filters=[
+def find_healthy_candidates(exclude_id=""):
+    """Find running instances with the cluster tag."""
+    resp = ec2.describe_instances(Filters=[
         {"Name": f"tag:{TAG_KEY}", "Values": [TAG_VALUE]},
         {"Name": "instance-state-name", "Values": ["running"]},
     ])
-    candidates = [
+    return [
         i["InstanceId"]
-        for r in instances["Reservations"]
+        for r in resp["Reservations"]
         for i in r["Instances"]
-        if i["InstanceId"] != terminated
+        if i["InstanceId"] != exclude_id
     ]
 
+
+def associate_eip(target_id, eip_info):
+    """Disassociate (if needed) and associate EIP to target instance."""
+    if eip_info.get("AssociationId"):
+        ec2.disassociate_address(AssociationId=eip_info["AssociationId"])
+        logger.info("Disassociated EIP from previous holder")
+    ec2.associate_address(
+        AllocationId=EIP_ALLOCATION_ID,
+        InstanceId=target_id,
+        AllowReassociation=True,
+    )
+    logger.info("EIP associated to %s", target_id)
+
+
+def handler(event, context):
+    detail_type = event.get("detail-type", "")
+    instance_id = event.get("detail", {}).get("EC2InstanceId", "")
+    logger.info("Event: %s | Instance: %s", detail_type, instance_id)
+
+    eip = ec2.describe_addresses(AllocationIds=[EIP_ALLOCATION_ID])["Addresses"][0]
+    current_holder = eip.get("InstanceId", "")
+
+    # ── LAUNCH EVENT ─────────────────────────────────────────────────
+    if "Launch" in detail_type:
+        if not current_holder:
+            logger.info("EIP unassociated — assigning to new instance %s", instance_id)
+            associate_eip(instance_id, eip)
+            return {"statusCode": 200}
+
+        if not is_running(current_holder):
+            logger.info("EIP holder %s is not running — moving to %s", current_holder, instance_id)
+            associate_eip(instance_id, eip)
+            return {"statusCode": 200}
+
+        logger.info("EIP on %s (running). No action needed.", current_holder)
+        return {"statusCode": 200}
+
+    # ── TERMINATE EVENT ──────────────────────────────────────────────
+    if current_holder and current_holder != instance_id:
+        if is_running(current_holder):
+            logger.info("EIP on %s (running, not terminated). No action.", current_holder)
+            return {"statusCode": 200}
+
+    # EIP was on the terminated instance or holder is unhealthy — failover
+    candidates = find_healthy_candidates(exclude_id=instance_id)
     if not candidates:
         logger.error("No healthy instances for EIP failover")
         return {"statusCode": 503}
 
-    if eip.get("AssociationId"):
-        ec2.disassociate_address(AssociationId=eip["AssociationId"])
-
-    ec2.associate_address(AllocationId=EIP_ALLOCATION_ID, InstanceId=candidates[0], AllowReassociation=True)
-    logger.info("EIP moved to %s", candidates[0])
+    associate_eip(candidates[0], eip)
+    logger.info("EIP failed over to %s", candidates[0])
     return {"statusCode": 200}
 `),
             timeout: cdk.Duration.seconds(30),
@@ -483,7 +531,7 @@ def handler(event, context):
                 CLUSTER_TAG_KEY: MONITORING_APP_TAG.key,
                 CLUSTER_TAG_VALUE: MONITORING_APP_TAG.value,
             },
-            description: 'Re-associates the K8s cluster EIP when a node terminates (Hybrid-HA)',
+            description: 'Re-associates the K8s cluster EIP on ASG instance launch or terminate (Hybrid-HA)',
         });
 
         // Grant the Lambda permissions to manage EIP and discover instances

@@ -37,18 +37,6 @@ export const SSH_PORT = 22;
 /** Grafana default port */
 export const GRAFANA_PORT = 3000;
 
-/** Prometheus default port */
-export const PROMETHEUS_PORT = 9090;
-
-/** Node Exporter default port */
-export const NODE_EXPORTER_PORT = 9100;
-
-/** Loki push API NodePort (k8s → host, cross-stack access from ECS) */
-export const LOKI_NODEPORT = 30100;
-
-/** Tempo OTLP gRPC NodePort (k8s → host, cross-stack access from ECS) */
-export const TEMPO_NODEPORT = 30417;
-
 // =============================================================================
 // Configuration Objects - Grouped defaults using the constants above
 // =============================================================================
@@ -83,62 +71,8 @@ export const EBS_DEFAULTS = {
     throughput: GP3_BASELINE_THROUGHPUT,
 } as const;
 
-/**
- * Monitoring ports
- */
-export const MONITORING_PORTS = {
-    grafana: GRAFANA_PORT,
-    prometheus: PROMETHEUS_PORT,
-    nodeExporter: NODE_EXPORTER_PORT,
-    ssh: SSH_PORT,
-} as const;
 
-// =============================================================================
-// Kubernetes Constants
-// =============================================================================
 
-/** Kubernetes API server port (standard for kubeadm) */
-export const K8S_API_PORT = 6443;
-
-/** Kubernetes version for kubeadm installation */
-export const KUBERNETES_VERSION = '1.35.1';
-
-/** Traefik HTTP port (deployed via manifests) */
-export const TRAEFIK_HTTP_PORT = 80;
-
-/** Traefik HTTPS port (deployed via manifests) */
-export const TRAEFIK_HTTPS_PORT = 443;
-
-/**
- * Tag used by DLM, EBS volumes, and EC2 instances for consistent identification.
- * DLM snapshot policies target volumes with this tag — all three locations
- * must stay in sync or backups silently stop.
- */
-export const MONITORING_APP_TAG = {
-    key: 'Application',
-    value: 'Prometheus-Grafana',
-} as const;
-
-/**
- * Docker image versions
- */
-export const DOCKER_VERSIONS = {
-    prometheus: 'v3.9.1',
-    grafana: '12.3.0',
-    nodeExporter: 'v1.8.2',
-    dockerCompose: 'v2.24.0',
-    promtail: '3.0.0',
-    alloy: 'v1.5.1',
-} as const;
-
-/**
- * Log retention defaults by environment
- */
-export const LOG_RETENTION = {
-    dev: logs.RetentionDays.ONE_WEEK,
-    staging: logs.RetentionDays.ONE_MONTH,
-    prod: logs.RetentionDays.THREE_MONTHS,
-} as const;
 
 
 

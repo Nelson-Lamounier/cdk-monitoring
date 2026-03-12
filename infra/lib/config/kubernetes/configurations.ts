@@ -17,10 +17,36 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
-import {
-    KUBERNETES_VERSION,
-} from '../defaults';
 import { Environment } from '../environments';
+
+// =============================================================================
+// KUBERNETES CONSTANTS
+//
+// K8s-specific port numbers, versions, and tags.
+// Moved from config/defaults.ts — these belong with the K8s config.
+// =============================================================================
+
+/** Kubernetes API server port (standard for kubeadm) */
+export const K8S_API_PORT = 6443;
+
+/** Kubernetes version for kubeadm installation */
+export const KUBERNETES_VERSION = '1.35.1';
+
+/** Traefik HTTP port (deployed via manifests) */
+export const TRAEFIK_HTTP_PORT = 80;
+
+/** Traefik HTTPS port (deployed via manifests) */
+export const TRAEFIK_HTTPS_PORT = 443;
+
+/**
+ * Tag used by DLM, EBS volumes, and EC2 instances for consistent identification.
+ * DLM snapshot policies target volumes with this tag — all three locations
+ * must stay in sync or backups silently stop.
+ */
+export const MONITORING_APP_TAG = {
+    key: 'Application',
+    value: 'Prometheus-Grafana',
+} as const;
 
 // =============================================================================
 // ENVIRONMENT VARIABLE HELPER
@@ -161,6 +187,59 @@ export interface MonitoringWorkerConfig {
     readonly rootVolumeSizeGb: number;
 }
 
+// =============================================================================
+// SECURITY GROUP CONFIGURATION (Data-Driven Port Rules)
+// =============================================================================
+
+/**
+ * A single port rule for a Kubernetes Security Group.
+ *
+ * Each rule maps to one `addIngressRule()` call. The `source` discriminator
+ * determines the peer type at construct time:
+ * - `'self'`    → self-referencing (intra-cluster communication)
+ * - `'vpcCidr'` → `ec2.Peer.ipv4(vpc.vpcCidrBlock)`
+ * - `'podCidr'` → `ec2.Peer.ipv4(podNetworkCidr)`
+ */
+export interface K8sPortRule {
+    /** Start port (or single port when endPort is omitted) */
+    readonly port: number;
+    /** End port for a range — creates `tcpRange(port, endPort)` */
+    readonly endPort?: number;
+    /** Transport protocol */
+    readonly protocol: 'tcp' | 'udp';
+    /** Source type for the ingress peer */
+    readonly source: 'self' | 'vpcCidr' | 'podCidr' | 'anyIpv4';
+    /** Human-readable description for the SG rule */
+    readonly description: string;
+}
+
+/**
+ * Security group role configuration — rules and outbound behavior.
+ */
+export interface K8sSecurityGroupRoleConfig {
+    /** Whether to allow all outbound traffic */
+    readonly allowAllOutbound: boolean;
+    /** Port rules for this security group */
+    readonly rules: K8sPortRule[];
+}
+
+/**
+ * Complete security group configuration for the Kubernetes cluster.
+ *
+ * All 4 SGs are config-driven. CloudFront prefix list and admin IP
+ * rules are added post-loop in base-stack since they need runtime values.
+ */
+export interface K8sSecurityGroupConfig {
+    /** Cluster base SG — intra-cluster communication (all nodes) */
+    readonly clusterBase: K8sSecurityGroupRoleConfig;
+    /** Control plane SG — K8s API server access */
+    readonly controlPlane: K8sSecurityGroupRoleConfig;
+    /** Ingress SG — Traefik HTTP/HTTPS (static rules only; CloudFront + admin IPs added at runtime) */
+    readonly ingress: K8sSecurityGroupRoleConfig;
+    /** Monitoring SG — Prometheus, Node Exporter, Loki, Tempo */
+    readonly monitoring: K8sSecurityGroupRoleConfig;
+}
+
 export interface K8sEdgeConfig {
     // Synth-time context — DNS/Edge (env var > hardcoded default)
     /** Domain name for monitoring CloudFront distribution */
@@ -191,6 +270,7 @@ export interface K8sConfigs {
     readonly compute: K8sComputeConfig;
     readonly storage: K8sStorageConfig;
     readonly networking: K8sNetworkingConfig;
+    readonly securityGroups: K8sSecurityGroupConfig;
     readonly image: K8sImageConfig;
     readonly ssm: K8sSsmConfig;
     readonly edge: K8sEdgeConfig;
@@ -200,6 +280,72 @@ export interface K8sConfigs {
     readonly removalPolicy: cdk.RemovalPolicy;
     readonly createKmsKeys: boolean;
 }
+
+// =============================================================================
+// DEFAULT SECURITY GROUP RULES
+//
+// All K8s-specific ports extracted from base-stack.ts inline rules.
+// Shared by all environments — override per-environment if needed.
+// =============================================================================
+
+/**
+ * Default security group configuration for Kubernetes clusters.
+ *
+ * These rules cover the kubeadm control plane, worker nodes, and monitoring
+ * stack. The Ingress SG is NOT included here because its rules depend on
+ * runtime values (CloudFront prefix list, admin IP from env vars).
+ */
+const DEFAULT_K8S_SECURITY_GROUPS: K8sSecurityGroupConfig = {
+    clusterBase: {
+        allowAllOutbound: true,
+        rules: [
+            // ----- Self-referencing (intra-cluster) -----
+            { port: 2379, endPort: 2380, protocol: 'tcp', source: 'self', description: 'etcd client and peer (intra-cluster)' },
+            { port: 6443, protocol: 'tcp', source: 'self', description: 'K8s API server (intra-cluster)' },
+            { port: 10250, protocol: 'tcp', source: 'self', description: 'kubelet API (intra-cluster)' },
+            { port: 10257, protocol: 'tcp', source: 'self', description: 'kube-controller-manager (intra-cluster)' },
+            { port: 10259, protocol: 'tcp', source: 'self', description: 'kube-scheduler (intra-cluster)' },
+            { port: 4789, protocol: 'udp', source: 'self', description: 'VXLAN overlay networking (intra-cluster)' },
+            { port: 179, protocol: 'tcp', source: 'self', description: 'Calico BGP peering (intra-cluster)' },
+            { port: 30000, endPort: 32767, protocol: 'tcp', source: 'self', description: 'NodePort services (intra-cluster)' },
+            { port: 53, protocol: 'tcp', source: 'self', description: 'CoreDNS TCP (intra-cluster)' },
+            { port: 53, protocol: 'udp', source: 'self', description: 'CoreDNS UDP (intra-cluster)' },
+            { port: 5473, protocol: 'tcp', source: 'self', description: 'Calico Typha (intra-cluster)' },
+            { port: 9100, protocol: 'tcp', source: 'self', description: 'Traefik metrics (intra-cluster)' },
+            { port: 9101, protocol: 'tcp', source: 'self', description: 'Node Exporter metrics (intra-cluster)' },
+            // ----- Pod CIDR → node (kube-proxy DNAT preserves pod source IP) -----
+            { port: 6443, protocol: 'tcp', source: 'podCidr', description: 'K8s API server (from pods)' },
+            { port: 10250, protocol: 'tcp', source: 'podCidr', description: 'kubelet API (from pods)' },
+            { port: 53, protocol: 'udp', source: 'podCidr', description: 'CoreDNS UDP (from pods)' },
+            { port: 53, protocol: 'tcp', source: 'podCidr', description: 'CoreDNS TCP (from pods)' },
+            { port: 9100, protocol: 'tcp', source: 'podCidr', description: 'Traefik metrics (from pods)' },
+            { port: 9101, protocol: 'tcp', source: 'podCidr', description: 'Node Exporter metrics (from pods)' },
+        ],
+    },
+    controlPlane: {
+        allowAllOutbound: false,
+        rules: [
+            { port: 6443, protocol: 'tcp', source: 'vpcCidr', description: 'K8s API from VPC (SSM port-forwarding)' },
+        ],
+    },
+    monitoring: {
+        allowAllOutbound: false,
+        rules: [
+            { port: 9090, protocol: 'tcp', source: 'vpcCidr', description: 'Prometheus metrics from VPC' },
+            { port: 9100, protocol: 'tcp', source: 'vpcCidr', description: 'Node Exporter metrics from VPC' },
+            { port: 9100, protocol: 'tcp', source: 'podCidr', description: 'Node Exporter metrics from pods (Prometheus scraping)' },
+            { port: 30100, protocol: 'tcp', source: 'vpcCidr', description: 'Loki push API from VPC (cross-stack log shipping)' },
+            { port: 30417, protocol: 'tcp', source: 'vpcCidr', description: 'Tempo OTLP gRPC from VPC (cross-stack trace shipping)' },
+        ],
+    },
+    ingress: {
+        allowAllOutbound: false,
+        rules: [
+            // Static rules only — CloudFront prefix list + admin IPs added at runtime
+            { port: TRAEFIK_HTTP_PORT, protocol: 'tcp', source: 'anyIpv4', description: 'HTTP from anywhere (LetsEncrypt HTTP-01 + CloudFront origin)' },
+        ],
+    },
+};
 
 // =============================================================================
 // CONFIGURATIONS BY ENVIRONMENT
@@ -232,6 +378,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             useElasticIp: true,
             ssmOnlyAccess: true,
         },
+        securityGroups: DEFAULT_K8S_SECURITY_GROUPS,
         image: {
             amiSsmPath: '/k8s/development/golden-ami/latest',
             enableImageBuilder: true,
@@ -302,6 +449,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             useElasticIp: true,
             ssmOnlyAccess: true,
         },
+        securityGroups: DEFAULT_K8S_SECURITY_GROUPS,
         image: {
             amiSsmPath: '/k8s/staging/golden-ami/latest',
             enableImageBuilder: true,
@@ -370,6 +518,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             useElasticIp: true,
             ssmOnlyAccess: true,
         },
+        securityGroups: DEFAULT_K8S_SECURITY_GROUPS,
         image: {
             amiSsmPath: '/k8s/production/golden-ami/latest',
             enableImageBuilder: true,

@@ -45,18 +45,15 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
+import { SecurityGroupConstruct, SsmParameterStoreConstruct } from '../../common';
 import { S3BucketConstruct } from '../../common/storage';
+import { Environment } from '../../config/environments';
 import {
-    K8S_API_PORT,
+    K8sConfigs,
     TRAEFIK_HTTP_PORT,
     TRAEFIK_HTTPS_PORT,
-    PROMETHEUS_PORT,
-    NODE_EXPORTER_PORT,
-    LOKI_NODEPORT,
-    TEMPO_NODEPORT,
-} from '../../config/defaults';
-import { Environment } from '../../config/environments';
-import { K8sConfigs } from '../../config/kubernetes';
+} from '../../config/kubernetes';
+import { adminSsmPaths, k8sSsmPaths } from '../../config/ssm-paths';
 
 // =============================================================================
 // PROPS
@@ -86,23 +83,6 @@ export interface KubernetesBaseStackProps extends cdk.StackProps {
      * @default 'shared-vpc-{environment}'
      */
     readonly vpcName?: string;
-
-    /**
-     * Admin IPv4 CIDR for direct access to Traefik (ops services).
-     * Sourced from ALLOW_IPV4 env var. Added to the ingress SG
-     * alongside the CloudFront managed prefix list.
-     *
-     * Required — deployment fails if ALLOW_IPV4 is not set.
-     * @example '203.0.113.42/32'
-     */
-    readonly allowedIpv4: string;
-
-    /**
-     * Admin IPv6 CIDR for direct access to Traefik (ops services).
-     * Sourced from ALLOW_IPV6 env var.
-     * @example '2a02:8084::/128'
-     */
-    readonly allowedIpv6?: string;
 }
 
 // =============================================================================
@@ -174,162 +154,46 @@ export class KubernetesBaseStack extends cdk.Stack {
         this.vpc = ec2.Vpc.fromLookup(this, 'SharedVpc', { vpcName });
 
         // =====================================================================
-        // Security Group 1/4: Cluster Base (all nodes)
+        // Security Groups (config-driven via SecurityGroupConstruct)
         //
-        // Explicit intra-cluster port rules — replaces the previous protocol
-        // "-1" (all traffic) self-referencing rule for least-privilege.
+        // 3 SGs use the config layer's K8sSecurityGroupConfig, converted to
+        // generic SecurityGroupRules via fromK8sRules(). The 4th (Ingress SG)
+        // is created directly because its rules depend on runtime values.
         // =====================================================================
-        this.securityGroup = new ec2.SecurityGroup(this, 'K8sSecurityGroup', {
-            vpc: this.vpc,
-            description: `Shared Kubernetes cluster security group (${targetEnvironment})`,
-            securityGroupName: `${namePrefix}-k8s-cluster`,
-            allowAllOutbound: true,
-        });
+        const sgConfig = configs.securityGroups;
+        const podCidr = configs.cluster.podNetworkCidr;
 
-        // etcd client + peer communication (control plane)
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcpRange(2379, 2380),
-            'etcd client and peer (intra-cluster)',
-        );
-        // K8s API server (intra-cluster — kubelet → API)
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcp(K8S_API_PORT),
-            'K8s API server (intra-cluster)',
-        );
-        // kubelet API
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcp(10250),
-            'kubelet API (intra-cluster)',
-        );
-        // kube-controller-manager
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcp(10257),
-            'kube-controller-manager (intra-cluster)',
-        );
-        // kube-scheduler
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcp(10259),
-            'kube-scheduler (intra-cluster)',
-        );
-        // VXLAN overlay networking
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.udp(4789),
-            'VXLAN overlay networking (intra-cluster)',
-        );
-        // Calico BGP peering
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcp(179),
-            'Calico BGP peering (intra-cluster)',
-        );
-        // NodePort services (K8s default range)
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcpRange(30000, 32767),
-            'NodePort services (intra-cluster)',
-        );
-        // CoreDNS (TCP + UDP)
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcp(53),
-            'CoreDNS TCP (intra-cluster)',
-        );
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.udp(53),
-            'CoreDNS UDP (intra-cluster)',
-        );
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcp(5473),
-            'Calico Typha (intra-cluster)',
-        );
-        // Traefik metrics (Prometheus scraping across nodes)
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcp(9100),
-            'Traefik metrics (intra-cluster)',
-        );
-        // Node Exporter metrics (port 9101 — offset from Traefik's 9100)
-        this.securityGroup.addIngressRule(
-            this.securityGroup,
-            ec2.Port.tcp(9101),
-            'Node Exporter metrics (intra-cluster)',
-        );
+        // Config-driven SG definitions: key → { sgName suffix, description, config }
+        const sgDefinitions = [
+            { key: 'clusterBase',   id: 'ClusterBaseSg',   name: 'k8s-cluster',       desc: 'Shared Kubernetes cluster',       config: sgConfig.clusterBase },
+            { key: 'controlPlane',  id: 'ControlPlaneSg',  name: 'k8s-control-plane', desc: 'K8s control plane - API server',   config: sgConfig.controlPlane },
+            { key: 'ingress',       id: 'IngressSg',       name: 'k8s-ingress',       desc: 'K8s ingress - Traefik HTTP/HTTPS', config: sgConfig.ingress },
+            { key: 'monitoring',    id: 'MonitoringSg',    name: 'k8s-monitoring',    desc: 'K8s monitoring - Prometheus/Loki', config: sgConfig.monitoring },
+        ] as const;
 
-        // Pod CIDR → critical services (kube-proxy DNATs ClusterIP to node IP;
-        // source IP stays in pod CIDR, which self-ref SG rules do NOT match)
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
-            ec2.Port.tcp(K8S_API_PORT),
-            'K8s API server (from pods)',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
-            ec2.Port.tcp(10250),
-            'kubelet API (from pods)',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
-            ec2.Port.udp(53),
-            'CoreDNS UDP (from pods)',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
-            ec2.Port.tcp(53),
-            'CoreDNS TCP (from pods)',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
-            ec2.Port.tcp(9100),
-            'Traefik metrics (from pods)',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
-            ec2.Port.tcp(9101),
-            'Node Exporter metrics (from pods)',
-        );
+        const sgMap = new Map<string, ec2.SecurityGroup>();
 
-        // =====================================================================
-        // Security Group 2/4: Control Plane (control plane node only)
-        // =====================================================================
-        this.controlPlaneSg = new ec2.SecurityGroup(this, 'K8sControlPlaneSg', {
-            vpc: this.vpc,
-            description: `K8s control plane SG - API server access (${targetEnvironment})`,
-            securityGroupName: `${namePrefix}-k8s-control-plane`,
-            allowAllOutbound: false, // Outbound handled by base SG
-        });
+        for (const sg of sgDefinitions) {
+            const construct = new SecurityGroupConstruct(this, sg.id, {
+                vpc: this.vpc,
+                securityGroupName: `${namePrefix}-${sg.name}`,
+                description: `${sg.desc} (${targetEnvironment})`,
+                allowAllOutbound: sg.config.allowAllOutbound,
+                rules: SecurityGroupConstruct.fromK8sRules(sg.config.rules, this.vpc, podCidr),
+            });
+            sgMap.set(sg.key, construct.securityGroup);
+        }
 
-        // K8s API: Only from VPC CIDR (for SSM port-forwarding access)
-        this.controlPlaneSg.addIngressRule(
-            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-            ec2.Port.tcp(K8S_API_PORT),
-            'K8s API from VPC (SSM port-forwarding)',
-        );
+        this.securityGroup = sgMap.get('clusterBase')!;
+        this.controlPlaneSg = sgMap.get('controlPlane')!;
+        this.ingressSg = sgMap.get('ingress')!;
+        this.monitoringSg = sgMap.get('monitoring')!;
 
-        // =====================================================================
-        // Security Group 3/4: Ingress (monitoring worker only — Traefik)
-        //
-        // Defense in depth: SG allows CloudFront IPs (for public site) +
-        // admin IPs (for ops services). Traefik IPAllowList middleware
-        // provides the second layer of admin access control.
-        // =====================================================================
-        this.ingressSg = new ec2.SecurityGroup(this, 'K8sIngressSg', {
-            vpc: this.vpc,
-            description: `K8s ingress SG - Traefik HTTP/HTTPS (${targetEnvironment})`,
-            securityGroupName: `${namePrefix}-k8s-ingress`,
-            allowAllOutbound: false, // Outbound handled by base SG
-        });
+        // -----------------------------------------------------------------
+        // Ingress SG: runtime-dependent rules (not expressible in config)
+        // -----------------------------------------------------------------
 
-        // CloudFront origin-facing IPs (managed by AWS, auto-updated)
-        // Required because CloudFront connects to the EIP origin using
-        // AWS-owned IPs that change without notice.
+        // CloudFront origin-facing IPs (managed prefix list lookup)
         const cfPrefixListLookup = new cr.AwsCustomResource(
             this,
             'CloudFrontPrefixListLookup',
@@ -358,10 +222,6 @@ export class KubernetesBaseStack extends cdk.Stack {
             'PrefixLists.0.PrefixListId',
         );
 
-        // Suppress CDK Nag: the AwsCustomResource creates a shared singleton
-        // Lambda at the stack root (AWS679f53fac002430cb0da5b7982bd2287).
-        // Its runtime is managed by CDK internals — we cannot control it.
-        // The function only runs once at deploy time to look up the prefix list ID.
         NagSuppressions.addResourceSuppressionsByPath(this,
             `/${this.stackName}/AWS679f53fac002430cb0da5b7982bd2287/Resource`,
             [{
@@ -374,76 +234,34 @@ export class KubernetesBaseStack extends cdk.Stack {
             reason: 'ec2:DescribeManagedPrefixLists requires wildcard resource — read-only API call',
         }], true);
 
-        // CloudFront → Traefik (HTTP origin pull only)
-        // CloudFront terminates TLS at the edge and connects to the origin
-        // over HTTP (port 80). Only port 80 uses the CF prefix list to stay
-        // within the SG rule limit (~60 CF CIDRs count individually).
         this.ingressSg.addIngressRule(
             ec2.Peer.prefixList(cfPrefixListId),
             ec2.Port.tcp(TRAEFIK_HTTP_PORT),
             'HTTP from CloudFront origin-facing IPs',
         );
 
-        // HTTP from anywhere — required for Let's Encrypt HTTP-01 challenge.
-        // ACME validation servers connect on port 80 from public IPs that
-        // are NOT in the CloudFront prefix list. Admin service access control
-        // is enforced at the Traefik middleware layer (IPAllowList), not SG.
-        this.ingressSg.addIngressRule(
-            ec2.Peer.anyIpv4(),
-            ec2.Port.tcp(TRAEFIK_HTTP_PORT),
-            'HTTP from anywhere (LetsEncrypt HTTP-01 + CloudFront origin)',
-        );
+        // Admin IPs → Traefik HTTPS (sourced from SSM at synth time)
+        const adminPaths = adminSsmPaths();
+        const adminIpsRaw = ssm.StringParameter.valueFromLookup(this, adminPaths.allowedIps);
 
-        // Admin IP → Traefik HTTPS (direct ops access: Grafana, ArgoCD, Prometheus)
-        // IPv4 is required — deployment fails without ALLOW_IPV4.
-        this.ingressSg.addIngressRule(
-            ec2.Peer.ipv4(props.allowedIpv4),
-            ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
-            'HTTPS from admin IPv4 (ops services)',
-        );
-        if (props.allowedIpv6) {
-            this.ingressSg.addIngressRule(
-                ec2.Peer.ipv6(props.allowedIpv6),
-                ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
-                'HTTPS from admin IPv6 (ops services)',
-            );
+        const isResolved = !cdk.Token.isUnresolved(adminIpsRaw)
+            && !adminIpsRaw.startsWith('dummy-value-for-');
+
+        if (isResolved) {
+            const adminIps = adminIpsRaw.split(',').map((ip) => ip.trim()).filter(Boolean);
+
+            for (const ip of adminIps) {
+                const isIpv6 = ip.includes(':');
+                const peer = isIpv6 ? ec2.Peer.ipv6(ip) : ec2.Peer.ipv4(ip);
+                const label = isIpv6 ? 'IPv6' : 'IPv4';
+
+                this.ingressSg.addIngressRule(
+                    peer,
+                    ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
+                    `HTTPS from admin ${label} (${ip})`,
+                );
+            }
         }
-
-        // =====================================================================
-        // Security Group 4/4: Monitoring (monitoring worker only)
-        // =====================================================================
-        this.monitoringSg = new ec2.SecurityGroup(this, 'K8sMonitoringSg', {
-            vpc: this.vpc,
-            description: `K8s monitoring SG - Prometheus/Loki/Tempo (${targetEnvironment})`,
-            securityGroupName: `${namePrefix}-k8s-monitoring`,
-            allowAllOutbound: false, // Outbound handled by base SG
-        });
-
-        this.monitoringSg.addIngressRule(
-            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-            ec2.Port.tcp(PROMETHEUS_PORT),
-            'Prometheus metrics from VPC',
-        );
-        this.monitoringSg.addIngressRule(
-            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-            ec2.Port.tcp(NODE_EXPORTER_PORT),
-            'Node Exporter metrics from VPC',
-        );
-        this.monitoringSg.addIngressRule(
-            ec2.Peer.ipv4(configs.cluster.podNetworkCidr),
-            ec2.Port.tcp(NODE_EXPORTER_PORT),
-            'Node Exporter metrics from pods (Prometheus scraping)',
-        );
-        this.monitoringSg.addIngressRule(
-            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-            ec2.Port.tcp(LOKI_NODEPORT),
-            'Loki push API from VPC (cross-stack log shipping)',
-        );
-        this.monitoringSg.addIngressRule(
-            ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-            ec2.Port.tcp(TEMPO_NODEPORT),
-            'Tempo OTLP gRPC from VPC (cross-stack trace shipping)',
-        );
 
         // =====================================================================
         // KMS Key for CloudWatch Log Group Encryption
@@ -611,138 +429,61 @@ export class KubernetesBaseStack extends cdk.Stack {
         this.scriptsBucket = scriptsBucketConstruct.bucket;
 
         // =====================================================================
-        // SSM Parameters (for cross-project discovery)
+        // SSM Parameters (centralized paths from ssm-paths.ts)
         // =====================================================================
-        new ssm.StringParameter(this, 'SecurityGroupIdParam', {
-            parameterName: `${props.ssmPrefix}/security-group-id`,
-            stringValue: this.securityGroup.securityGroupId,
-            description: 'Kubernetes cluster security group ID',
-            tier: ssm.ParameterTier.STANDARD,
-        });
+        const ssmPaths = k8sSsmPaths(targetEnvironment);
 
-        new ssm.StringParameter(this, 'ElasticIpParam', {
-            parameterName: `${props.ssmPrefix}/elastic-ip`,
-            stringValue: this.elasticIp.ref,
-            description: 'Kubernetes cluster Elastic IP address (used by Edge stack as CloudFront origin)',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'ElasticIpAllocationIdParam', {
-            parameterName: `${props.ssmPrefix}/elastic-ip-allocation-id`,
-            stringValue: this.elasticIp.attrAllocationId,
-            description: 'EIP allocation ID for automatic association during instance bootstrap',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'ScriptsBucketParam', {
-            parameterName: `${props.ssmPrefix}/scripts-bucket`,
-            stringValue: this.scriptsBucket.bucketName,
-            description: 'S3 bucket for k8s scripts and manifests (used by CI for aws s3 sync)',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'EbsVolumeIdParam', {
-            parameterName: `${props.ssmPrefix}/ebs-volume-id`,
-            stringValue: this.ebsVolume.volumeId,
-            description: 'Persistent EBS data volume ID for K8s node attachment',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'HostedZoneIdParam', {
-            parameterName: `${props.ssmPrefix}/hosted-zone-id`,
-            stringValue: this.hostedZone.hostedZoneId,
-            description: 'Route 53 private hosted zone ID for k8s API DNS discovery',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'ApiDnsNameParam', {
-            parameterName: `${props.ssmPrefix}/api-dns-name`,
-            stringValue: K8S_API_DNS_NAME,
-            description: 'DNS name for Kubernetes API server (stable endpoint)',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'VpcIdParam', {
-            parameterName: `${props.ssmPrefix}/vpc-id`,
-            stringValue: this.vpc.vpcId,
-            description: 'Shared VPC ID for cross-stack discovery',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'ControlPlaneSgIdParam', {
-            parameterName: `${props.ssmPrefix}/control-plane-sg-id`,
-            stringValue: this.controlPlaneSg.securityGroupId,
-            description: 'Control plane security group ID',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'IngressSgIdParam', {
-            parameterName: `${props.ssmPrefix}/ingress-sg-id`,
-            stringValue: this.ingressSg.securityGroupId,
-            description: 'Ingress (Traefik) security group ID',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'MonitoringSgIdParam', {
-            parameterName: `${props.ssmPrefix}/monitoring-sg-id`,
-            stringValue: this.monitoringSg.securityGroupId,
-            description: 'Monitoring security group ID',
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'KmsKeyArnParam', {
-            parameterName: `${props.ssmPrefix}/kms-key-arn`,
-            stringValue: this.logGroupKmsKey.keyArn,
-            description: 'KMS key ARN for CloudWatch log group encryption',
-            tier: ssm.ParameterTier.STANDARD,
+        new SsmParameterStoreConstruct(this, 'SsmParams', {
+            parameters: {
+                [ssmPaths.vpcId]: this.vpc.vpcId,
+                [ssmPaths.elasticIp]: this.elasticIp.ref,
+                [ssmPaths.elasticIpAllocationId]: this.elasticIp.attrAllocationId,
+                [ssmPaths.securityGroupId]: this.securityGroup.securityGroupId,
+                [ssmPaths.controlPlaneSgId]: this.controlPlaneSg.securityGroupId,
+                [ssmPaths.ingressSgId]: this.ingressSg.securityGroupId,
+                [ssmPaths.monitoringSgId]: this.monitoringSg.securityGroupId,
+                [ssmPaths.ebsVolumeId]: this.ebsVolume.volumeId,
+                [ssmPaths.scriptsBucket]: this.scriptsBucket.bucketName,
+                [ssmPaths.hostedZoneId]: this.hostedZone.hostedZoneId,
+                [ssmPaths.apiDnsName]: K8S_API_DNS_NAME,
+                [ssmPaths.kmsKeyArn]: this.logGroupKmsKey.keyArn,
+            },
         });
 
         // =====================================================================
         // Stack Outputs
         // =====================================================================
-        new cdk.CfnOutput(this, 'VpcId', {
-            value: this.vpc.vpcId,
-            description: 'Shared VPC ID',
-        });
+        const outputs: { id: string; value: string; description: string }[] = [
+            { id: 'VpcId',                value: this.vpc.vpcId,                      description: 'Shared VPC ID' },
+            { id: 'SecurityGroupId',      value: this.securityGroup.securityGroupId,   description: 'Kubernetes cluster security group ID' },
+            { id: 'ElasticIpAddress',     value: this.elasticIp.ref,                   description: 'Kubernetes cluster Elastic IP address' },
+            { id: 'ElasticIpAllocationId', value: this.elasticIp.attrAllocationId,     description: 'Kubernetes cluster Elastic IP allocation ID' },
+            { id: 'EbsVolumeId',          value: this.ebsVolume.volumeId,              description: 'Kubernetes data EBS volume ID' },
+            { id: 'HostedZoneId',         value: this.hostedZone.hostedZoneId,         description: 'Route 53 private hosted zone ID (k8s.internal)' },
+            { id: 'ApiDnsName',           value: K8S_API_DNS_NAME,                     description: 'Stable DNS name for the Kubernetes API server' },
+            { id: 'LogGroupKmsKeyArn',    value: this.logGroupKmsKey.keyArn,            description: 'KMS key ARN for CloudWatch log group encryption' },
+            { id: 'ScriptsBucketName',    value: this.scriptsBucket.bucketName,         description: 'S3 bucket for k8s scripts and manifests' },
+        ];
 
-        new cdk.CfnOutput(this, 'SecurityGroupId', {
-            value: this.securityGroup.securityGroupId,
-            description: 'Kubernetes cluster security group ID',
-        });
+        this._emitOutputs(outputs);
+    }
 
-        new cdk.CfnOutput(this, 'ElasticIpAddress', {
-            value: this.elasticIp.ref,
-            description: 'Kubernetes cluster Elastic IP address',
-        });
+    // =========================================================================
+    // PRIVATE HELPERS
+    // =========================================================================
 
-        new cdk.CfnOutput(this, 'ElasticIpAllocationId', {
-            value: this.elasticIp.attrAllocationId,
-            description: 'Kubernetes cluster Elastic IP allocation ID',
-        });
-
-        new cdk.CfnOutput(this, 'EbsVolumeId', {
-            value: this.ebsVolume.volumeId,
-            description: 'Kubernetes data EBS volume ID',
-        });
-
-        new cdk.CfnOutput(this, 'HostedZoneId', {
-            value: this.hostedZone.hostedZoneId,
-            description: 'Route 53 private hosted zone ID (k8s.internal)',
-        });
-
-        new cdk.CfnOutput(this, 'ApiDnsName', {
-            value: K8S_API_DNS_NAME,
-            description: 'Stable DNS name for the Kubernetes API server',
-        });
-
-        new cdk.CfnOutput(this, 'LogGroupKmsKeyArn', {
-            value: this.logGroupKmsKey.keyArn,
-            description: 'KMS key ARN for CloudWatch log group encryption',
-        });
-
-        new cdk.CfnOutput(this, 'ScriptsBucketName', {
-            value: this.scriptsBucket.bucketName,
-            description: 'S3 bucket for k8s scripts and manifests',
-        });
+    /**
+     * Emit CloudFormation stack outputs from a data-driven array.
+     * Each entry creates one `CfnOutput` with value and description.
+     */
+    private _emitOutputs(
+        outputs: { id: string; value: string; description: string }[],
+    ): void {
+        for (const output of outputs) {
+            new cdk.CfnOutput(this, output.id, {
+                value: output.value,
+                description: output.description,
+            });
+        }
     }
 }
