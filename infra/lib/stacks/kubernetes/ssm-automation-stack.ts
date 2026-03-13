@@ -505,18 +505,14 @@ def handler(event, context):
     s3_bucket = ssm_client.get_parameter(Name=bucket_param_path)["Parameter"]["Value"]
     region = os.environ.get("AWS_REGION", "eu-west-1")
 
-    # Start SSM Automation (tag-based targeting)
-    # Uses Targets to resolve the instance by its k8s:bootstrap-role tag.
-    # TargetParameterName tells SSM which document parameter receives the
-    # resolved instance ID, populating Targets + ResolvedTargets in metadata.
+    # Start SSM Automation (direct instance targeting)
+    # Pass the instance ID directly from the EventBridge event instead of
+    # using Targets with tag-based resolution, which requires tag:GetResources
+    # permission and also finds terminated instances that retain their tags.
     result = ssm_client.start_automation_execution(
         DocumentName=doc_name,
-        Targets=[{
-            "Key": "tag:k8s:bootstrap-role",
-            "Values": [role],
-        }],
-        TargetParameterName="InstanceId",
         Parameters={
+            "InstanceId": [instance_id],
             "SsmPrefix": [ssm_prefix],
             "S3Bucket": [s3_bucket],
             "Region": [region],
