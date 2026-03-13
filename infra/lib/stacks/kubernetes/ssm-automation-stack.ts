@@ -35,6 +35,7 @@ import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 import { NagSuppressions } from 'cdk-nag';
@@ -66,6 +67,13 @@ export interface K8sSsmAutomationStackProps extends cdk.StackProps {
      * Imported via SSM parameter — no cross-stack reference.
      */
     readonly scriptsBucketName: string;
+
+    /**
+     * Email address for alarm notifications.
+     * When provided, subscribes to the bootstrap failure alarm topic.
+     * Sourced from NOTIFICATION_EMAIL env var via the factory.
+     */
+    readonly notificationEmail?: string;
 }
 
 // =============================================================================
@@ -596,6 +604,12 @@ def handler(event, context):
             topicName: `${prefix}-bootstrap-alarm`,
             displayName: `${prefix} Auto-Bootstrap Failure Alarm`,
         });
+
+        if (props.notificationEmail) {
+            bootstrapAlarmTopic.addSubscription(
+                new sns_subscriptions.EmailSubscription(props.notificationEmail),
+            );
+        }
 
         const bootstrapAlarm = new cloudwatch.Alarm(this, 'AutoBootstrapErrorAlarm', {
             alarmName: `${prefix}-auto-bootstrap-errors`,

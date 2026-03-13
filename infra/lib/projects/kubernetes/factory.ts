@@ -271,6 +271,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 namePrefix,
                 ssmPrefix,
                 scriptsBucketName: `${namePrefix}-k8s-scripts-${env.account}`,
+                notificationEmail: emailConfig.notificationEmail,
             },
         );
         ssmAutomationStack.addDependency(baseStack);
