@@ -41,6 +41,8 @@ import {
 import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
+import { stackId, STACK_REGISTRY } from '../../../lib/utilities/naming';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
 // Configuration
@@ -53,8 +55,9 @@ const SSM_PATHS = k8sSsmPaths(CDK_ENV);
 const PREFIX = k8sSsmPrefix(CDK_ENV);
 const NAME_PREFIX = 'k8s';
 
-// Stack naming convention used by the factory
-const CONTROLPLANE_STACK_NAME = `K8s-ControlPlane-${CDK_ENV}`;
+/** Stack name derived from the same utility the factory uses */
+const KUBERNETES_NAMESPACE = getProjectConfig(Project.KUBERNETES).namespace;
+const CONTROLPLANE_STACK_NAME = stackId(KUBERNETES_NAMESPACE, STACK_REGISTRY.kubernetes.controlPlane, CDK_ENV);
 
 // AWS SDK clients (shared across tests)
 const ssm = new SSMClient({ region: REGION });
@@ -102,39 +105,55 @@ async function loadSsmParameters(): Promise<Map<string, string>> {
 /**
  * Find the running EC2 instance launched by the control plane ASG.
  * Uses the Name tag `k8s-control-plane` set by AutoScalingGroupConstruct.
+ *
+ * Retries up to 5 times with 15s backoff because the ASG instance may
+ * still be transitioning to 'running' when this test starts right after
+ * the CloudFormation deploy completes.
  */
 async function findControlPlaneInstance(): Promise<{
     instanceId: string;
     securityGroupIds: string[];
 }> {
-    const { Reservations } = await ec2.send(
-        new DescribeInstancesCommand({
-            Filters: [
-                { Name: 'tag:Name', Values: [`${NAME_PREFIX}-control-plane`] },
-                { Name: 'instance-state-name', Values: ['running'] },
-            ],
-        }),
-    );
+    const maxAttempts = 5;
+    const backoffMs = 15_000;
 
-    const instances = (Reservations ?? []).flatMap(
-        (r) => r.Instances ?? [],
-    );
-
-    if (instances.length === 0) {
-        throw new Error(
-            'No running control-plane instance found (tag:Name = k8s-control-plane)',
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const { Reservations } = await ec2.send(
+            new DescribeInstancesCommand({
+                Filters: [
+                    { Name: 'tag:Name', Values: [`${NAME_PREFIX}-control-plane`] },
+                    { Name: 'instance-state-name', Values: ['running'] },
+                ],
+            }),
         );
+
+        const instances = (Reservations ?? []).flatMap(
+            (r) => r.Instances ?? [],
+        );
+
+        if (instances.length > 0) {
+            const instance = instances[0];
+            const sgIds = (instance.SecurityGroups ?? [])
+                .map((sg) => sg.GroupId)
+                .filter((id): id is string => !!id);
+
+            return {
+                instanceId: instance.InstanceId!,
+                securityGroupIds: sgIds,
+            };
+        }
+
+        if (attempt < maxAttempts) {
+            console.log(
+                `[Retry ${attempt}/${maxAttempts}] No running control-plane instance yet — retrying in ${backoffMs / 1000}s`,
+            );
+            await new Promise((r) => setTimeout(r, backoffMs));
+        }
     }
 
-    const instance = instances[0];
-    const sgIds = (instance.SecurityGroups ?? [])
-        .map((sg) => sg.GroupId)
-        .filter((id): id is string => !!id);
-
-    return {
-        instanceId: instance.InstanceId!,
-        securityGroupIds: sgIds,
-    };
+    throw new Error(
+        `No running control-plane instance found after ${maxAttempts} attempts (tag:Name = ${NAME_PREFIX}-control-plane)`,
+    );
 }
 
 // =============================================================================
@@ -146,10 +165,11 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     let controlPlane: { instanceId: string; securityGroupIds: string[] };
 
     // Load SSM parameters and find instance ONCE before all tests
+    // Extended timeout to accommodate instance launch retries (up to ~75s)
     beforeAll(async () => {
         ssmParams = await loadSsmParameters();
         controlPlane = await findControlPlaneInstance();
-    }, 30_000);
+    }, 120_000);
 
     // =========================================================================
     // EC2 Instance
