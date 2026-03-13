@@ -2,6 +2,11 @@
 /**
  * Golden AMI Deploy Observer
  *
+ * @deprecated Replaced by golden-ami-stack.integration.test.ts (Jest integration test).
+ * The Jest test provides the same AMI + package verification with consistent
+ * test output across all stack verification jobs. This script is preserved
+ * for reference but is no longer invoked by the CI pipeline.
+ *
  * Monitors Image Builder builds triggered by CloudFormation during the
  * GoldenAmi stack deployment. Streams S3 and CloudWatch build logs into
  * GitHub Actions output for real-time visibility.

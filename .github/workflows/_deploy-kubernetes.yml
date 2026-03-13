@@ -443,24 +443,22 @@ jobs:
         run: just ci-integration-test kubernetes/data-stack $CDK_ENV --verbose
 
   # ===========================================================================
-  # Golden AMI Deploy Observer — Real-time build log streaming (parallel)
+  # Verify Golden AMI (post-deploy) — AMI metadata + package verification
   #
-  # Runs alongside deploy-goldenami. CloudFormation's CfnImage triggers
-  # Image Builder inline (~15-25 min). This observer polls the build status
-  # every 60s and streams S3 + CloudWatch logs into GitHub Actions output.
-  # Observational only — does not block the pipeline.
+  # Runs after deploy-goldenami completes. Verifies the AMI exists, has
+  # correct tags, and all expected packages are present in build logs.
+  # Replaces the previous golden-ami-observer.ts streaming script.
   # ===========================================================================
-  goldenami-deploy-observer:
-    name: Golden AMI Deploy Observer
-    needs: [setup, deploy-base, verify-base-stack]
+  verify-goldenami:
+    name: Verify Golden AMI
+    needs: [setup, deploy-goldenami]
     if: >-
       always()
-      && needs.deploy-base.result == 'success'
-      && needs.verify-base-stack.result == 'success'
+      && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 40
+    timeout-minutes: 10
     environment: ${{ inputs.environment }}
     continue-on-error: true
 
@@ -484,12 +482,11 @@ jobs:
         run: yarn install --immutable
         working-directory: infra
 
-      - name: Stream Image Builder Logs
+      - name: Run Golden AMI Integration Tests
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          SSM_PREFIX: /k8s/${{ inputs.cdk-environment }}
-        run: just ci-golden-ami-observer "${{ needs.setup.outputs.goldenami-stack }}" --region "$AWS_REGION" --ssm-prefix "$SSM_PREFIX"
+        run: just ci-integration-test kubernetes/golden-ami-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy Base Stack (2/6) — VPC networking + SG + KMS + EBS + EIP
