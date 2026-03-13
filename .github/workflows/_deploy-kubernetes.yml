@@ -281,6 +281,9 @@ jobs:
   # ===========================================================================
   # Drift Detection (staging/production — informational)
   # ===========================================================================
+  # Disabled — CloudFormation provides native drift detection.
+  # To re-enable: set `if:` back to `needs.setup.result == 'success'`
+  # and add `drift-detection` back to deploy-data.needs + condition.
   drift-detection:
     name: Drift Detection
     needs: [setup]
@@ -289,7 +292,7 @@ jobs:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
-    if: needs.setup.result == 'success'
+    if: false
 
     steps:
       - name: Checkout
@@ -378,13 +381,12 @@ jobs:
   # ===========================================================================
   deploy-data:
     name: Deploy Data
-    needs: [setup, validate-templates, security-scan, drift-detection]
+    needs: [setup, validate-templates, security-scan]
     if: >-
       always()
       && needs.setup.result == 'success'
       && needs.validate-templates.result == 'success'
       && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
-      && (needs.drift-detection.result == 'success' || needs.drift-detection.result == 'skipped')
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.data-stack }}
