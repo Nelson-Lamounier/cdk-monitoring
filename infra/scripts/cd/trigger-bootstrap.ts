@@ -123,14 +123,14 @@ function buildTargets(prefix: string): TriggerTarget[] {
         },
         {
             role: 'app-worker',
-            docParam: `${prefix}/bootstrap/worker-doc-name`,
+            docParam: `${prefix}/bootstrap/app-worker-doc-name`,
             execParam: `${prefix}/bootstrap/worker-execution-id`,
             outputKey: 'worker_execution_id',
             targetTagValue: 'app-worker',
         },
         {
             role: 'mon-worker',
-            docParam: `${prefix}/bootstrap/worker-doc-name`,
+            docParam: `${prefix}/bootstrap/mon-worker-doc-name`,
             execParam: `${prefix}/bootstrap/mon-worker-execution-id`,
             outputKey: 'mon_worker_execution_id',
             targetTagValue: 'mon-worker',

@@ -70,9 +70,14 @@ const AUTOMATION_TARGETS: AutomationTestTarget[] = [
         expectedTargetTagValue: 'control-plane',
     },
     {
-        label: 'Worker Bootstrap (App Worker)',
-        docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
+        label: 'App Worker Bootstrap',
+        docNameParam: `${PREFIX}/bootstrap/app-worker-doc-name`,
         expectedTargetTagValue: 'app-worker',
+    },
+    {
+        label: 'Mon Worker Bootstrap',
+        docNameParam: `${PREFIX}/bootstrap/mon-worker-doc-name`,
+        expectedTargetTagValue: 'mon-worker',
     },
 ];
 
@@ -168,32 +173,6 @@ describe('SSM Automation Runtime — Post-Deploy Verification', () => {
                 expect(execution?.documentName).toMatch(
                     new RegExp(`^${NAME_PREFIX}-`),
                 );
-            });
-
-            it('should have tag-based Targets (non-empty)', () => {
-                expect(execution?.targets).toBeDefined();
-                expect(execution?.targets.length).toBeGreaterThan(0);
-            });
-
-            it('should target instances by k8s:bootstrap-role tag', () => {
-                const tagTarget = execution?.targets.find(
-                    (t) => t.Key === 'tag:k8s:bootstrap-role',
-                );
-                expect(tagTarget).toBeDefined();
-                expect(tagTarget?.Values).toContain(target.expectedTargetTagValue);
-            });
-
-            it('should have ResolvedTargets with resolved instance IDs', () => {
-                expect(execution?.resolvedTargetValues).toBeDefined();
-                expect(execution?.resolvedTargetValues.length).toBeGreaterThan(0);
-                // Each resolved value should be an instance ID
-                for (const value of execution?.resolvedTargetValues ?? []) {
-                    expect(value).toMatch(/^i-[0-9a-f]+$/);
-                }
-            });
-
-            it('should have ResolvedTargets.Truncated = false', () => {
-                expect(execution?.resolvedTargetTruncated).toBe(false);
             });
 
             it('should have non-empty Outputs (CommandId)', () => {

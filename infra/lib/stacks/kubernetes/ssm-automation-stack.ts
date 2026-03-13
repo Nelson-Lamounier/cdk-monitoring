@@ -134,8 +134,11 @@ export class K8sSsmAutomationStack extends cdk.Stack {
     /** Control plane SSM Automation document name */
     public readonly controlPlaneDocName: string;
 
-    /** Worker node SSM Automation document name */
-    public readonly workerDocName: string;
+    /** App worker SSM Automation document name */
+    public readonly appWorkerDocName: string;
+
+    /** Monitoring worker SSM Automation document name */
+    public readonly monWorkerDocName: string;
 
     /** Next.js secrets SSM Automation document name */
     public readonly nextjsSecretsDocName: string;
@@ -275,13 +278,13 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         // SSM Automation Document — Worker Node Bootstrap
         // =====================================================================
 
-        const workerDocName = `${prefix}-bootstrap-worker`;
+        const appWorkerDocName = `${prefix}-bootstrap-app-worker`;
 
-        const _workerDocument = new ssm.CfnDocument(this, 'WorkerAutomation', {
+        const _appWorkerDocument = new ssm.CfnDocument(this, 'AppWorkerAutomation', {
             documentType: 'Automation',
-            name: workerDocName,
+            name: appWorkerDocName,
             content: this.buildAutomationContent({
-                description: 'Orchestrates Kubernetes worker node bootstrap (consolidated)',
+                description: 'Orchestrates Kubernetes app-worker node bootstrap (consolidated)',
                 steps: WORKER_STEPS,
                 ssmPrefix: props.ssmPrefix,
                 s3Bucket: props.scriptsBucketName,
@@ -291,7 +294,29 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             updateMethod: 'NewVersion',
         });
 
-        this.workerDocName = workerDocName;
+        this.appWorkerDocName = appWorkerDocName;
+
+        // =====================================================================
+        // SSM Automation Document — Monitoring Worker Node Bootstrap
+        // =====================================================================
+
+        const monWorkerDocName = `${prefix}-bootstrap-mon-worker`;
+
+        const _monWorkerDocument = new ssm.CfnDocument(this, 'MonWorkerAutomation', {
+            documentType: 'Automation',
+            name: monWorkerDocName,
+            content: this.buildAutomationContent({
+                description: 'Orchestrates Kubernetes mon-worker node bootstrap (consolidated)',
+                steps: WORKER_STEPS,
+                ssmPrefix: props.ssmPrefix,
+                s3Bucket: props.scriptsBucketName,
+                automationRoleArn: automationRole.roleArn,
+            }),
+            documentFormat: 'JSON',
+            updateMethod: 'NewVersion',
+        });
+
+        this.monWorkerDocName = monWorkerDocName;
 
         // =====================================================================
         // SSM Automation Document — Next.js Secrets Deployment
@@ -360,10 +385,16 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             description: 'SSM Automation document name for control plane bootstrap',
         });
 
-        new ssm.StringParameter(this, 'WorkerDocNameParam', {
-            parameterName: `${props.ssmPrefix}/bootstrap/worker-doc-name`,
-            stringValue: workerDocName,
-            description: 'SSM Automation document name for worker node bootstrap',
+        new ssm.StringParameter(this, 'AppWorkerDocNameParam', {
+            parameterName: `${props.ssmPrefix}/bootstrap/app-worker-doc-name`,
+            stringValue: appWorkerDocName,
+            description: 'SSM Automation document name for app-worker node bootstrap',
+        });
+
+        new ssm.StringParameter(this, 'MonWorkerDocNameParam', {
+            parameterName: `${props.ssmPrefix}/bootstrap/mon-worker-doc-name`,
+            stringValue: monWorkerDocName,
+            description: 'SSM Automation document name for mon-worker node bootstrap',
         });
 
         new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
@@ -416,11 +447,11 @@ ROLE_MAP = {
         "instance_param": "bootstrap/control-plane-instance-id",
     },
     "app-worker": {
-        "doc_param": "bootstrap/worker-doc-name",
+        "doc_param": "bootstrap/app-worker-doc-name",
         "instance_param": "bootstrap/app-worker-instance-id",
     },
     "mon-worker": {
-        "doc_param": "bootstrap/worker-doc-name",
+        "doc_param": "bootstrap/mon-worker-doc-name",
         "instance_param": "bootstrap/mon-worker-instance-id",
     },
 }

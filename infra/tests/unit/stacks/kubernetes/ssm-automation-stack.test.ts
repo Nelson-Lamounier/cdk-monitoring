@@ -61,7 +61,7 @@ describe('K8sSsmAutomationStack', () => {
         const { template } = createSsmAutomationStack();
 
         it('should create 4 SSM Automation documents', () => {
-            template.resourceCountIs('AWS::SSM::Document', 4);
+            template.resourceCountIs('AWS::SSM::Document', 5);
         });
 
         it('should create a control plane automation document', () => {
@@ -73,10 +73,19 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should create a worker automation document', () => {
+        it('should create an app-worker automation document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 DocumentType: 'Automation',
-                Name: 'k8s-dev-bootstrap-worker',
+                Name: 'k8s-dev-bootstrap-app-worker',
+                DocumentFormat: 'JSON',
+                UpdateMethod: 'NewVersion',
+            });
+        });
+
+        it('should create a mon-worker automation document', () => {
+            template.hasResourceProperties('AWS::SSM::Document', {
+                DocumentType: 'Automation',
+                Name: 'k8s-dev-bootstrap-mon-worker',
                 DocumentFormat: 'JSON',
                 UpdateMethod: 'NewVersion',
             });
@@ -93,9 +102,9 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should have 1 consolidated step in the worker document', () => {
+        it('should have 1 consolidated step in the app-worker document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
-                Name: 'k8s-dev-bootstrap-worker',
+                Name: 'k8s-dev-bootstrap-app-worker',
                 Content: Match.objectLike({
                     mainSteps: Match.arrayWith([
                         Match.objectLike({ name: 'bootstrapWorker' }),
@@ -259,10 +268,17 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should create SSM parameter for worker document name', () => {
+        it('should create SSM parameter for app-worker document name', () => {
             template.hasResourceProperties('AWS::SSM::Parameter', {
-                Name: '/k8s/development/bootstrap/worker-doc-name',
-                Value: 'k8s-dev-bootstrap-worker',
+                Name: '/k8s/development/bootstrap/app-worker-doc-name',
+                Value: 'k8s-dev-bootstrap-app-worker',
+            });
+        });
+
+        it('should create SSM parameter for mon-worker document name', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/k8s/development/bootstrap/mon-worker-doc-name',
+                Value: 'k8s-dev-bootstrap-mon-worker',
             });
         });
 
@@ -297,8 +313,12 @@ describe('K8sSsmAutomationStack', () => {
             expect(stack.controlPlaneDocName).toBe('k8s-dev-bootstrap-control-plane');
         });
 
-        it('should expose workerDocName', () => {
-            expect(stack.workerDocName).toBe('k8s-dev-bootstrap-worker');
+        it('should expose appWorkerDocName', () => {
+            expect(stack.appWorkerDocName).toBe('k8s-dev-bootstrap-app-worker');
+        });
+
+        it('should expose monWorkerDocName', () => {
+            expect(stack.monWorkerDocName).toBe('k8s-dev-bootstrap-mon-worker');
         });
 
         it('should expose automationRoleArn', () => {
