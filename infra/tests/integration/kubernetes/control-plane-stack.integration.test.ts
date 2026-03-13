@@ -41,7 +41,7 @@ import {
 import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
-import { stackId, STACK_REGISTRY } from '../../../lib/utilities/naming';
+import { stackId, STACK_REGISTRY, flatName } from '../../../lib/utilities/naming';
 import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
@@ -53,7 +53,8 @@ const REGION = process.env.AWS_REGION ?? 'eu-west-1';
 const CONFIGS = getK8sConfigs(CDK_ENV);
 const SSM_PATHS = k8sSsmPaths(CDK_ENV);
 const PREFIX = k8sSsmPrefix(CDK_ENV);
-const NAME_PREFIX = 'k8s';
+/** Resource name prefix — matches factory: flatName('k8s', '', CDK_ENV) → e.g. 'k8s-dev' */
+const NAME_PREFIX = flatName('k8s', '', CDK_ENV);
 
 /** Stack name derived from the same utility the factory uses */
 const KUBERNETES_NAMESPACE = getProjectConfig(Project.KUBERNETES).namespace;
