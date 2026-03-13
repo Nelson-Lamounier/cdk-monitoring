@@ -28,6 +28,7 @@ import {
     DescribeInstancesCommand,
     DescribeAddressesCommand,
     DescribeSecurityGroupsCommand,
+    DescribeImagesCommand,
 } from '@aws-sdk/client-ec2';
 import {
     AutoScalingClient,
@@ -113,6 +114,7 @@ async function loadSsmParameters(): Promise<Map<string, string>> {
  */
 async function findControlPlaneInstance(): Promise<{
     instanceId: string;
+    imageId: string;
     securityGroupIds: string[];
 }> {
     const maxAttempts = 5;
@@ -140,6 +142,7 @@ async function findControlPlaneInstance(): Promise<{
 
             return {
                 instanceId: instance.InstanceId!,
+                imageId: instance.ImageId!,
                 securityGroupIds: sgIds,
             };
         }
@@ -163,7 +166,7 @@ async function findControlPlaneInstance(): Promise<{
 
 describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     let ssmParams: Map<string, string>;
-    let controlPlane: { instanceId: string; securityGroupIds: string[] };
+    let controlPlane: { instanceId: string; imageId: string; securityGroupIds: string[] };
 
     // Load SSM parameters and find instance ONCE before all tests
     // Extended timeout to accommodate instance launch retries (up to ~75s)
@@ -201,6 +204,46 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
             expect(asg.DesiredCapacity).toBe(1);
             expect(asg.MinSize).toBe(1);
             expect(asg.MaxSize).toBe(1);
+        });
+    });
+
+    // =========================================================================
+    // Golden AMI Verification
+    //
+    // Ensures the instance was launched with the latest Golden AMI stored in
+    // SSM at /k8s/<env>/golden-ami/latest.  Also validates AMI tags.
+    // =========================================================================
+    describe('Golden AMI', () => {
+        it('should use the latest Golden AMI from SSM', () => {
+            const expectedAmi = ssmParams.get(CONFIGS.image.amiSsmPath);
+            expect(expectedAmi).toBeDefined();
+            expect(controlPlane.imageId).toBe(expectedAmi);
+        });
+
+        it('AMI should have Purpose=GoldenAMI tag', async () => {
+            const { Images } = await ec2.send(
+                new DescribeImagesCommand({
+                    ImageIds: [controlPlane.imageId],
+                }),
+            );
+
+            expect(Images).toHaveLength(1);
+
+            const tags = Images![0].Tags ?? [];
+            const purposeTag = tags.find((t) => t.Key === 'Purpose');
+            expect(purposeTag).toBeDefined();
+            expect(purposeTag!.Value).toBe('GoldenAMI');
+        });
+
+        it('AMI should be in available state', async () => {
+            const { Images } = await ec2.send(
+                new DescribeImagesCommand({
+                    ImageIds: [controlPlane.imageId],
+                }),
+            );
+
+            expect(Images).toHaveLength(1);
+            expect(Images![0].State).toBe('available');
         });
     });
 
