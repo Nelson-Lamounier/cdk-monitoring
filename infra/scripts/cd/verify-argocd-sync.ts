@@ -29,6 +29,10 @@
  */
 
 import {
+  DescribeInstancesCommand,
+  EC2Client,
+} from '@aws-sdk/client-ec2';
+import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
@@ -154,6 +158,11 @@ const secretsManager = new SecretsManagerClient({
   credentials: awsConfig.credentials,
 });
 
+const ec2 = new EC2Client({
+  region: awsConfig.region,
+  credentials: awsConfig.credentials,
+});
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -255,23 +264,49 @@ interface AppStatus {
 // =============================================================================
 
 /**
- * Resolve the control plane instance ID from SSM Parameter Store.
+ * Resolve a running instance ID by its k8s:bootstrap-role tag.
+ *
+ * Uses EC2 DescribeInstances filtered by tag + running state.
+ * This replaces the previous SSM parameter-based lookup, which
+ * was prone to stale IDs when instances were replaced by the ASG.
+ */
+async function resolveInstanceByTag(tagValue: string): Promise<string | undefined> {
+  try {
+    const result = await ec2.send(
+      new DescribeInstancesCommand({
+        Filters: [
+          { Name: 'tag:k8s:bootstrap-role', Values: [tagValue] },
+          { Name: 'instance-state-name', Values: ['running'] },
+        ],
+      }),
+    );
+
+    const instances = result.Reservations?.flatMap((r) => r.Instances ?? []) ?? [];
+    if (instances.length === 0) return undefined;
+    return instances[0].InstanceId;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn(`EC2 describe-instances failed for tag k8s:bootstrap-role=${tagValue}: ${message}`);
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the control plane instance ID via EC2 tags.
  * Used to route ArgoCD API calls via SSM send-command (localhost).
  */
 async function resolveControlPlaneInstance(): Promise<string | undefined> {
   logger.step(1, 3, 'Resolve Control Plane Instance');
 
-  const instanceId = await getParam(
-    `${ssmPrefix}/bootstrap/control-plane-instance-id`,
-  );
+  const instanceId = await resolveInstanceByTag('control-plane');
   if (!instanceId) {
     emitAnnotation(
       'warning',
-      'Could not resolve control-plane instance ID -- ArgoCD verification skipped',
+      'No running control-plane instance found -- ArgoCD verification skipped',
       'ArgoCD Endpoint',
     );
     logger.warn(
-      'Could not resolve control-plane instance ID from SSM -- skipping verification',
+      'No running instance with tag k8s:bootstrap-role=control-plane -- skipping verification',
     );
     return undefined;
   }
