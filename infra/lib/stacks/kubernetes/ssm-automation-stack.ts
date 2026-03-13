@@ -28,10 +28,13 @@
  * ```
  */
 
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 import { NagSuppressions } from 'cdk-nag';
@@ -580,6 +583,38 @@ def handler(event, context):
             },
             targets: [new targets.LambdaFunction(autoBootstrapFn)],
         });
+
+        // =====================================================================
+        // CloudWatch Alarm — Auto-Bootstrap Lambda Failures
+        //
+        // Fires when the Lambda encounters any error (permissions, API failures,
+        // unhandled exceptions). Sends notification to SNS topic so failures
+        // are surfaced immediately rather than silently swallowed.
+        // =====================================================================
+
+        const bootstrapAlarmTopic = new sns.Topic(this, 'BootstrapAlarmTopic', {
+            topicName: `${prefix}-bootstrap-alarm`,
+            displayName: `${prefix} Auto-Bootstrap Failure Alarm`,
+        });
+
+        const bootstrapAlarm = new cloudwatch.Alarm(this, 'AutoBootstrapErrorAlarm', {
+            alarmName: `${prefix}-auto-bootstrap-errors`,
+            alarmDescription:
+                'Auto-bootstrap Lambda failed — new EC2 instance may not be bootstrapped. ' +
+                'Check CloudWatch Logs for /aws/lambda/' + autoBootstrapFn.functionName,
+            metric: autoBootstrapFn.metricErrors({
+                period: cdk.Duration.minutes(5),
+                statistic: 'Sum',
+            }),
+            threshold: 1,
+            evaluationPeriods: 1,
+            comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        });
+
+        bootstrapAlarm.addAlarmAction(
+            new cloudwatchActions.SnsAction(bootstrapAlarmTopic),
+        );
 
         // cdk-nag: Python 3.13 is the latest GA runtime
         NagSuppressions.addResourceSuppressions(autoBootstrapFn, [{
