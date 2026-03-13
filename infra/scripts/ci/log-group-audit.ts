@@ -200,13 +200,12 @@ async function main(): Promise<void> {
     const empty = results.filter((r) => !r.hasStreams);
     const active = results.filter((r) => r.hasStreams);
 
-    // Write GitHub Step Summary
+    // Write GitHub Step Summary + always print to stdout for pipeline log visibility
     const md = buildSummaryMarkdown(results);
     writeSummary(md);
+    console.log(md);
 
-    if (!process.env.GITHUB_STEP_SUMMARY) {
-        console.log(md);
-    } else {
+    if (process.env.GITHUB_STEP_SUMMARY) {
         logger.success('Wrote log audit summary to $GITHUB_STEP_SUMMARY');
     }
 

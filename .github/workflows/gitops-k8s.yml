@@ -27,23 +27,23 @@
 name: "GitOps: K8s Applications (Dev)"
 
 on:
-  push:
-    branches:
-      - develop
-      - feature/k3s-kubernetes-migration
-    paths:
-      # Helm charts (ArgoCD watches these paths in Git)
-      - "kubernetes-app/platform/charts/**"
-      - "kubernetes-app/workloads/charts/**"
-      # ArgoCD Application manifests
-      - "kubernetes-app/platform/argocd-apps/**"
-      - "kubernetes-app/workloads/argocd-apps/**"
-      # Traefik values (ArgoCD multi-source references this from Git)
-      - "kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml"
-      # cert-manager config (ClusterIssuer, Certificate CRs)
-      - "kubernetes-app/k8s-bootstrap/system/cert-manager/**"
-      # Pipeline definition
-      - ".github/workflows/gitops-k8s.yml"
+  # push:
+  #   branches:
+  #     - develop
+  #     - feature/k3s-kubernetes-migration
+  #   # paths:
+  #   #   # Helm charts (ArgoCD watches these paths in Git)
+  #   #   - "kubernetes-app/platform/charts/**"
+  #   #   - "kubernetes-app/workloads/charts/**"
+  #   #   # ArgoCD Application manifests
+  #   #   - "kubernetes-app/platform/argocd-apps/**"
+  #   #   - "kubernetes-app/workloads/argocd-apps/**"
+  #   #   # Traefik values (ArgoCD multi-source references this from Git)
+  #   #   - "kubernetes-app/k8s-bootstrap/system/traefik/traefik-values.yaml"
+  #   #   # cert-manager config (ClusterIssuer, Certificate CRs)
+  #   #   - "kubernetes-app/k8s-bootstrap/system/cert-manager/**"
+  #   #   # Pipeline definition
+  #   #   - ".github/workflows/gitops-k8s.yml"
   workflow_call:
     secrets:
       AWS_OIDC_ROLE:
@@ -67,36 +67,18 @@ env:
 
 jobs:
   # ===========================================================================
-  # 0. Build Steampipe Image — Rebuild custom image when Dockerfile changes
+  # 0. Build Steampipe Image — Rebuild custom image
   #
   # The official Steampipe images (v0.22.0) have a bug that prevents plugin
   # installs from the OCI registry (403 error). We build a custom image
   # with Steampipe v2.4.0 + AWS plugin pre-installed and push to ECR.
   # ArgoCD then pulls from ECR on every deploy (including after EC2 recycle).
+  #
+  # TODO: Re-enable dorny/paths-filter gating once Day-1 deployment is complete
+  #       to skip rebuilds when steampipe/ directory hasn't changed.
   # ===========================================================================
-  check-steampipe-changes:
-    name: Check Steampipe Changes
-    runs-on: ubuntu-latest
-    outputs:
-      steampipe-changed: ${{ steps.filter.outputs.steampipe }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Check for Steampipe Dockerfile changes
-        id: filter
-        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
-        with:
-          filters: |
-            steampipe:
-              - 'kubernetes-app/platform/charts/monitoring/steampipe/**'
-
   build-steampipe-image:
     name: Build Steampipe Image
-    needs: check-steampipe-changes
-    if: |
-      needs.check-steampipe-changes.outputs.steampipe-changed == 'true' ||
-      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: development

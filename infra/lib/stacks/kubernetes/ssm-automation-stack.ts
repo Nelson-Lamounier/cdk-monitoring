@@ -7,8 +7,8 @@
  * stack so that bootstrap scripts can be updated without re-deploying EC2.
  *
  * Resources Created:
- *   - SSM Automation Document: Control plane bootstrap (9 steps)
- *   - SSM Automation Document: Worker node bootstrap (3 steps)
+ *   - SSM Automation Document: Control plane bootstrap (1 consolidated step)
+ *   - SSM Automation Document: Worker node bootstrap (1 consolidated step)
  *   - SSM Parameter: Document name for discovery by EC2 user data
  *   - IAM Role: Automation execution role with RunCommand permissions
  *
@@ -28,10 +28,14 @@
  * ```
  */
 
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 import { NagSuppressions } from 'cdk-nag';
@@ -63,6 +67,13 @@ export interface K8sSsmAutomationStackProps extends cdk.StackProps {
      * Imported via SSM parameter — no cross-stack reference.
      */
     readonly scriptsBucketName: string;
+
+    /**
+     * Email address for alarm notifications.
+     * When provided, subscribes to the bootstrap failure alarm topic.
+     * Sourced from NOTIFICATION_EMAIL env var via the factory.
+     */
+    readonly notificationEmail?: string;
 }
 
 // =============================================================================
@@ -78,79 +89,19 @@ interface AutomationStep {
 
 const CONTROL_PLANE_STEPS: AutomationStep[] = [
     {
-        name: 'associateElasticIp',
-        scriptPath: 'boot/steps/01a_associate_eip.py',
-        timeoutSeconds: 60,
-        description: 'Associate the CDK-managed Elastic IP with this instance',
-    },
-    {
-        name: 'validateGoldenAMI',
-        scriptPath: 'boot/steps/01_validate_ami.py',
-        timeoutSeconds: 60,
-        description: 'Verify Golden AMI has required binaries and kernel settings',
-    },
-    {
-        name: 'initKubeadm',
-        scriptPath: 'boot/steps/02_init_kubeadm.py',
-        timeoutSeconds: 300,
-        description: 'Run kubeadm init and publish join credentials to SSM',
-    },
-    {
-        name: 'installCalicoCNI',
-        scriptPath: 'boot/steps/03_install_calico.py',
-        timeoutSeconds: 300,
-        description: 'Install Calico CNI operator and configure IP pools',
-    },
-    {
-        name: 'configureKubectl',
-        scriptPath: 'boot/steps/04_configure_kubectl.py',
-        timeoutSeconds: 60,
-        description: 'Set up kubectl access for root, ec2-user, and ssm-user',
-    },
-    {
-        name: 'syncManifests',
-        scriptPath: 'boot/steps/05_sync_manifests.py',
-        timeoutSeconds: 360,
-        description: 'Download bootstrap manifests from S3 (patient retry for Day-1)',
-    },
-    {
-        name: 'bootstrapArgoCD',
-        scriptPath: 'boot/steps/06_bootstrap_argocd.py',
-        timeoutSeconds: 900,
-        description: 'Install ArgoCD and apply App-of-Apps root application',
-    },
-    {
-        name: 'verifyCluster',
-        scriptPath: 'boot/steps/07_verify_cluster.py',
-        timeoutSeconds: 120,
-        description: 'Lightweight post-boot health checks',
-    },
-    {
-        name: 'installCloudWatchAgent',
-        scriptPath: 'boot/steps/08_install_cloudwatch_agent.py',
-        timeoutSeconds: 120,
-        description: 'Install and configure CloudWatch Agent for log streaming',
+        name: 'bootstrapControlPlane',
+        scriptPath: 'boot/steps/control_plane.py',
+        timeoutSeconds: 1800,
+        description: 'Run consolidated control plane bootstrap (validate AMI, EIP, kubeadm, Calico, kubectl, S3 sync, ArgoCD, verify, CloudWatch)',
     },
 ];
 
 const WORKER_STEPS: AutomationStep[] = [
     {
-        name: 'validateGoldenAMI',
-        scriptPath: 'boot/steps/01_validate_ami.py',
-        timeoutSeconds: 60,
-        description: 'Verify Golden AMI has required binaries and kernel settings',
-    },
-    {
-        name: 'joinCluster',
-        scriptPath: 'boot/steps/join_cluster.py',
-        timeoutSeconds: 600,
-        description: 'Join worker node to kubeadm cluster via SSM discovery',
-    },
-    {
-        name: 'installCloudWatchAgent',
-        scriptPath: 'boot/steps/08_install_cloudwatch_agent.py',
-        timeoutSeconds: 120,
-        description: 'Install and configure CloudWatch Agent for log streaming',
+        name: 'bootstrapWorker',
+        scriptPath: 'boot/steps/worker.py',
+        timeoutSeconds: 900,
+        description: 'Run consolidated worker bootstrap (validate AMI, join cluster, CloudWatch, EIP association)',
     },
 ];
 
@@ -194,8 +145,11 @@ export class K8sSsmAutomationStack extends cdk.Stack {
     /** Control plane SSM Automation document name */
     public readonly controlPlaneDocName: string;
 
-    /** Worker node SSM Automation document name */
-    public readonly workerDocName: string;
+    /** App worker SSM Automation document name */
+    public readonly appWorkerDocName: string;
+
+    /** Monitoring worker SSM Automation document name */
+    public readonly monWorkerDocName: string;
 
     /** Next.js secrets SSM Automation document name */
     public readonly nextjsSecretsDocName: string;
@@ -319,7 +273,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             documentType: 'Automation',
             name: cpDocName,
             content: this.buildAutomationContent({
-                description: 'Orchestrates Kubernetes control plane bootstrap (9 steps)',
+                description: 'Orchestrates Kubernetes control plane bootstrap (consolidated)',
                 steps: CONTROL_PLANE_STEPS,
                 ssmPrefix: props.ssmPrefix,
                 s3Bucket: props.scriptsBucketName,
@@ -335,13 +289,13 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         // SSM Automation Document — Worker Node Bootstrap
         // =====================================================================
 
-        const workerDocName = `${prefix}-bootstrap-worker`;
+        const appWorkerDocName = `${prefix}-bootstrap-app-worker`;
 
-        const _workerDocument = new ssm.CfnDocument(this, 'WorkerAutomation', {
+        const _appWorkerDocument = new ssm.CfnDocument(this, 'AppWorkerAutomation', {
             documentType: 'Automation',
-            name: workerDocName,
+            name: appWorkerDocName,
             content: this.buildAutomationContent({
-                description: 'Orchestrates Kubernetes worker node bootstrap (3 steps)',
+                description: 'Orchestrates Kubernetes app-worker node bootstrap (consolidated)',
                 steps: WORKER_STEPS,
                 ssmPrefix: props.ssmPrefix,
                 s3Bucket: props.scriptsBucketName,
@@ -351,7 +305,29 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             updateMethod: 'NewVersion',
         });
 
-        this.workerDocName = workerDocName;
+        this.appWorkerDocName = appWorkerDocName;
+
+        // =====================================================================
+        // SSM Automation Document — Monitoring Worker Node Bootstrap
+        // =====================================================================
+
+        const monWorkerDocName = `${prefix}-bootstrap-mon-worker`;
+
+        const _monWorkerDocument = new ssm.CfnDocument(this, 'MonWorkerAutomation', {
+            documentType: 'Automation',
+            name: monWorkerDocName,
+            content: this.buildAutomationContent({
+                description: 'Orchestrates Kubernetes mon-worker node bootstrap (consolidated)',
+                steps: WORKER_STEPS,
+                ssmPrefix: props.ssmPrefix,
+                s3Bucket: props.scriptsBucketName,
+                automationRoleArn: automationRole.roleArn,
+            }),
+            documentFormat: 'JSON',
+            updateMethod: 'NewVersion',
+        });
+
+        this.monWorkerDocName = monWorkerDocName;
 
         // =====================================================================
         // SSM Automation Document — Next.js Secrets Deployment
@@ -420,10 +396,16 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             description: 'SSM Automation document name for control plane bootstrap',
         });
 
-        new ssm.StringParameter(this, 'WorkerDocNameParam', {
-            parameterName: `${props.ssmPrefix}/bootstrap/worker-doc-name`,
-            stringValue: workerDocName,
-            description: 'SSM Automation document name for worker node bootstrap',
+        new ssm.StringParameter(this, 'AppWorkerDocNameParam', {
+            parameterName: `${props.ssmPrefix}/bootstrap/app-worker-doc-name`,
+            stringValue: appWorkerDocName,
+            description: 'SSM Automation document name for app-worker node bootstrap',
+        });
+
+        new ssm.StringParameter(this, 'MonWorkerDocNameParam', {
+            parameterName: `${props.ssmPrefix}/bootstrap/mon-worker-doc-name`,
+            stringValue: monWorkerDocName,
+            description: 'SSM Automation document name for mon-worker node bootstrap',
         });
 
         new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
@@ -476,11 +458,11 @@ ROLE_MAP = {
         "instance_param": "bootstrap/control-plane-instance-id",
     },
     "app-worker": {
-        "doc_param": "bootstrap/worker-doc-name",
+        "doc_param": "bootstrap/app-worker-doc-name",
         "instance_param": "bootstrap/app-worker-instance-id",
     },
     "mon-worker": {
-        "doc_param": "bootstrap/worker-doc-name",
+        "doc_param": "bootstrap/mon-worker-doc-name",
         "instance_param": "bootstrap/mon-worker-instance-id",
     },
 }
@@ -534,7 +516,10 @@ def handler(event, context):
     s3_bucket = ssm_client.get_parameter(Name=bucket_param_path)["Parameter"]["Value"]
     region = os.environ.get("AWS_REGION", "eu-west-1")
 
-    # Start SSM Automation
+    # Start SSM Automation (direct instance targeting)
+    # Pass the instance ID directly from the EventBridge event instead of
+    # using Targets with tag-based resolution, which requires tag:GetResources
+    # permission and also finds terminated instances that retain their tags.
     result = ssm_client.start_automation_execution(
         DocumentName=doc_name,
         Parameters={
@@ -606,6 +591,44 @@ def handler(event, context):
             },
             targets: [new targets.LambdaFunction(autoBootstrapFn)],
         });
+
+        // =====================================================================
+        // CloudWatch Alarm — Auto-Bootstrap Lambda Failures
+        //
+        // Fires when the Lambda encounters any error (permissions, API failures,
+        // unhandled exceptions). Sends notification to SNS topic so failures
+        // are surfaced immediately rather than silently swallowed.
+        // =====================================================================
+
+        const bootstrapAlarmTopic = new sns.Topic(this, 'BootstrapAlarmTopic', {
+            topicName: `${prefix}-bootstrap-alarm`,
+            displayName: `${prefix} Auto-Bootstrap Failure Alarm`,
+        });
+
+        if (props.notificationEmail) {
+            bootstrapAlarmTopic.addSubscription(
+                new sns_subscriptions.EmailSubscription(props.notificationEmail),
+            );
+        }
+
+        const bootstrapAlarm = new cloudwatch.Alarm(this, 'AutoBootstrapErrorAlarm', {
+            alarmName: `${prefix}-auto-bootstrap-errors`,
+            alarmDescription:
+                'Auto-bootstrap Lambda failed — new EC2 instance may not be bootstrapped. ' +
+                'Check CloudWatch Logs for /aws/lambda/' + autoBootstrapFn.functionName,
+            metric: autoBootstrapFn.metricErrors({
+                period: cdk.Duration.minutes(5),
+                statistic: 'Sum',
+            }),
+            threshold: 1,
+            evaluationPeriods: 1,
+            comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        });
+
+        bootstrapAlarm.addAlarmAction(
+            new cloudwatchActions.SnsAction(bootstrapAlarmTopic),
+        );
 
         // cdk-nag: Python 3.13 is the latest GA runtime
         NagSuppressions.addResourceSuppressions(autoBootstrapFn, [{
@@ -704,6 +727,8 @@ def handler(event, context):
                     },
                 },
             })),
+            // Surface RunCommand CommandId in execution metadata Outputs
+            outputs: opts.steps.map((step) => `${step.name}.CommandId`),
         };
     }
 
@@ -790,6 +815,8 @@ def handler(event, context):
                     },
                 },
             })),
+            // Surface RunCommand CommandId in execution metadata Outputs
+            outputs: opts.steps.map((step) => `${step.name}.CommandId`),
         };
     }
 }

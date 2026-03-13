@@ -255,22 +255,11 @@ jobs:
           ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
         run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
 
-      - name: Upload Synthesized Templates
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - name: Cache Synthesized Templates
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
-          name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ steps.commit-info.outputs.short_sha }}
           path: infra/cdk.out/
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Upload for Security Scan
-        if: inputs.enable-security-scan
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: cdk-synthesis
-          path: infra/cdk.out/
-          retention-days: 7
-          if-no-files-found: error
+          key: cdk-synth-k8s-${{ inputs.cdk-environment }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # ===========================================================================
   # IaC Security Scan (Conditional)
@@ -283,7 +272,8 @@ jobs:
     with:
       environment: ${{ inputs.environment }}
       enforce-blocking: ${{ inputs.security-scan-blocking }}
-      cdk-output-path: "cdk.out"
+      cdk-output-path: "infra/cdk.out"
+      cache-key: cdk-synth-k8s-${{ inputs.cdk-environment }}-${{ github.run_id }}-${{ github.run_attempt }}
       skip-checks: ""
       soft-fail-on: ${{ inputs.security-scan-blocking && '' || 'LOW' }}
     secrets: inherit
@@ -291,40 +281,44 @@ jobs:
   # ===========================================================================
   # Drift Detection (staging/production — informational)
   # ===========================================================================
-  drift-detection:
-    name: Drift Detection
-    needs: [setup]
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 15
-    environment: ${{ inputs.environment }}
-    if: needs.setup.result == 'success'
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Environment and Dependencies
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        run: yarn install --frozen-lockfile
-        working-directory: infra
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-
-      - name: Run Drift Detection
-        run: just ci-drift kubernetes ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
-        env:
-          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  # Disabled — CloudFormation provides native drift detection.
+  # To re-enable: uncomment the job below and add `drift-detection`
+  # back to summary.needs.
+  #
+  # drift-detection:
+  #   name: Drift Detection
+  #   needs: [setup]
+  #   runs-on: ubuntu-latest
+  #   container:
+  #     image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+  #   timeout-minutes: 15
+  #   environment: ${{ inputs.environment }}
+  #   if: needs.setup.result == 'success'
+  #
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  #
+  #     - name: Setup Environment and Dependencies
+  #       uses: ./.github/actions/setup-node-yarn
+  #       with:
+  #         node-version: ${{ needs.setup.outputs.node-version }}
+  #
+  #     - name: Install Dependencies
+  #       run: yarn install --immutable
+  #       working-directory: infra
+  #
+  #     - name: Configure AWS Credentials
+  #       uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+  #       with:
+  #         role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+  #         aws-region: ${{ env.AWS_REGION }}
+  #         audience: sts.amazonaws.com
+  #
+  #     - name: Run Drift Detection
+  #       run: just ci-drift kubernetes ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+  #       env:
+  #         AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 
   # ===========================================================================
   # Template Validation (cfn-lint)
@@ -344,11 +338,11 @@ jobs:
           sparse-checkout: .cfnlintrc
           sparse-checkout-cone-mode: false
 
-      - name: Download Synthesized Templates
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - name: Restore Synthesized Templates
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
-          name: cdk-out-kubernetes-${{ inputs.cdk-environment }}-${{ needs.setup.outputs.commit-short-sha }}
-          path: cdk.out/
+          path: infra/cdk.out/
+          key: cdk-synth-k8s-${{ inputs.cdk-environment }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Validate CloudFormation Templates
         shell: python3 {0}
@@ -358,7 +352,7 @@ jobs:
           from cfnlint import decode, runner
           from cfnlint.config import ConfigMixIn
 
-          templates = sorted(glob.glob("cdk.out/**/*.template.json", recursive=True))
+          templates = sorted(glob.glob("infra/cdk.out/**/*.template.json", recursive=True))
           print(f"Validating {len(templates)} templates...")
           total_errors = 0
           for tpl in templates:
@@ -388,13 +382,12 @@ jobs:
   # ===========================================================================
   deploy-data:
     name: Deploy Data
-    needs: [setup, validate-templates, security-scan, drift-detection]
+    needs: [setup, validate-templates, security-scan]
     if: >-
       always()
       && needs.setup.result == 'success'
       && needs.validate-templates.result == 'success'
       && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
-      && (needs.drift-detection.result == 'success' || needs.drift-detection.result == 'skipped')
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.data-stack }}
@@ -441,34 +434,32 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Run Data Stack Integration Tests
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes $CDK_ENV --testPathPattern="data-stack" --verbose
+        run: just ci-integration-test kubernetes/data-stack $CDK_ENV --verbose
 
   # ===========================================================================
-  # Golden AMI Deploy Observer — Real-time build log streaming (parallel)
+  # Verify Golden AMI (post-deploy) — AMI metadata + package verification
   #
-  # Runs alongside deploy-goldenami. CloudFormation's CfnImage triggers
-  # Image Builder inline (~15-25 min). This observer polls the build status
-  # every 60s and streams S3 + CloudWatch logs into GitHub Actions output.
-  # Observational only — does not block the pipeline.
+  # Runs after deploy-goldenami completes. Verifies the AMI exists, has
+  # correct tags, and all expected packages are present in build logs.
+  # Replaces the previous golden-ami-observer.ts streaming script.
   # ===========================================================================
-  goldenami-deploy-observer:
-    name: Golden AMI Deploy Observer
-    needs: [setup, deploy-base, verify-base-stack]
+  verify-goldenami:
+    name: Verify Golden AMI
+    needs: [setup, deploy-goldenami]
     if: >-
       always()
-      && needs.deploy-base.result == 'success'
-      && needs.verify-base-stack.result == 'success'
+      && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 40
+    timeout-minutes: 10
     environment: ${{ inputs.environment }}
     continue-on-error: true
 
@@ -489,15 +480,14 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
-      - name: Stream Image Builder Logs
+      - name: Run Golden AMI Integration Tests
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          SSM_PREFIX: /k8s/${{ inputs.cdk-environment }}
-        run: just ci-golden-ami-observer "${{ needs.setup.outputs.goldenami-stack }}" --region "$AWS_REGION" --ssm-prefix "$SSM_PREFIX"
+        run: just ci-integration-test kubernetes/golden-ami-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy Base Stack (2/6) — VPC networking + SG + KMS + EBS + EIP
@@ -552,14 +542,14 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Run Base Stack Integration Tests
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes $CDK_ENV --verbose
+        run: just ci-integration-test kubernetes/base-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy Golden AMI Stack (Image Builder Pipeline)
@@ -648,14 +638,14 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Run Control Plane Integration Tests
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes $CDK_ENV --testPathPattern="control-plane-stack" --verbose
+        run: just ci-integration-test kubernetes/control-plane-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy App Worker Stack (3b/8) — Application Worker Node
@@ -711,14 +701,14 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Run App Worker Integration Tests
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes $CDK_ENV --testPathPattern="app-worker-stack" --verbose
+        run: just ci-integration-test kubernetes/app-worker-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy Monitoring Worker Stack (3c/8) — Monitoring Worker Node
@@ -774,14 +764,14 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Run Monitoring Worker Integration Tests
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes $CDK_ENV --testPathPattern="monitoring-worker-stack" --verbose
+        run: just ci-integration-test kubernetes/monitoring-worker-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy AppIam Stack (4/8) — Application-tier IAM grants
@@ -805,6 +795,50 @@ jobs:
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
     secrets: inherit
+
+  # ===========================================================================
+  # Verify SSM Automation — Integration Tests Gate
+  #
+  # Runs integration tests that call real AWS APIs to validate that SSM
+  # Automation executions (bootstrap + secrets) completed successfully with
+  # correct tag-based targeting. Verifies AutomationExecutionStatus,
+  # Targets, ResolvedTargets, Outputs, and DocumentName for each document.
+  # ===========================================================================
+  verify-ssm-automation:
+    name: Verify SSM Automation
+    needs: [setup, deploy-appiam]
+    if: always() && needs.deploy-appiam.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run SSM Automation Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes/ssm-automation-runtime $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy Edge Stack (5/6) — CloudFront + ACM + WAF (us-east-1)
@@ -882,7 +916,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: ./
 
       - name: Configure AWS Credentials
@@ -914,50 +948,6 @@ jobs:
             --ssm-prefix "/k8s/${{ inputs.cdk-environment }}"
 
   # ===========================================================================
-  # CloudWatch Log Group Audit
-  # ===========================================================================
-  log-group-audit:
-    name: CloudWatch Log Audit
-    needs:
-      - setup
-      - deploy-data
-      - deploy-controlplane
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: ${{ inputs.environment }}
-    if: |
-      always()
-      && needs.setup.result == 'success'
-      && needs.deploy-data.result == 'success'
-    permissions:
-      id-token: write
-      contents: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Environment and Dependencies
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        run: yarn install --frozen-lockfile
-        working-directory: infra
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-
-      - name: Audit Log Groups
-        continue-on-error: true
-        run: just ci-log-audit --region ${{ env.AWS_REGION }}
-
-  # ===========================================================================
   # Deployment Summary (TypeScript)
   # ===========================================================================
   summary:
@@ -965,7 +955,7 @@ jobs:
     needs:
       - setup
       - security-scan
-      - drift-detection
+      # - drift-detection  # disabled — uncomment when re-enabling
       - deploy-data
       - deploy-controlplane
       - deploy-goldenami
@@ -973,7 +963,6 @@ jobs:
       - deploy-monitoring-worker
       - deploy-edge
       - deployment-failure-alert
-      - log-group-audit
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -1015,7 +1004,7 @@ jobs:
 
       - name: Install Dependencies
         if: steps.prereqs.outputs.skip != 'true'
-        run: yarn install --frozen-lockfile
+        run: yarn install --immutable
         working-directory: infra
 
       - name: Configure AWS Credentials
@@ -1025,6 +1014,11 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
+
+      - name: Audit CloudWatch Log Groups
+        if: steps.prereqs.outputs.skip != 'true'
+        continue-on-error: true
+        run: just ci-log-audit --region ${{ env.AWS_REGION }}
 
       - name: Generate Summary
         if: steps.prereqs.outputs.skip != 'true'

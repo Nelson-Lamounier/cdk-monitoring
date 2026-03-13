@@ -4,8 +4,8 @@
  *
  * Runs AFTER the KubernetesAppWorkerStack is deployed via CI (_deploy-kubernetes.yml).
  * Calls real AWS APIs to verify that the app worker instance is running with the
- * correct security group attachment, expected SG port rules, and disabled
- * Source/Destination Check (required for Calico pod networking).
+ * correct EIP association, security group attachment, expected SG port rules,
+ * and disabled Source/Destination Check (required for Calico pod networking).
  *
  * SSM-Anchored Strategy:
  *   1. Read all SSM parameters published by the base stack
@@ -13,9 +13,9 @@
  *   This guarantees we're testing the SAME resources the stack created.
  *
  * Security Group Scope:
- *   The app worker node only attaches the Cluster Base SG. It does NOT
- *   receive the Control Plane, Ingress, or Monitoring SGs — those are
- *   role-specific and attached only to the respective node types.
+ *   The app worker node attaches the Cluster Base SG. The EIP is managed
+ *   by the EipFailover Lambda for CloudFront origin traffic. It does NOT
+ *   receive the Control Plane, Ingress, or Monitoring SGs.
  *
  * Environment Variables:
  *   CDK_ENV      — Target environment (default: development)
@@ -32,6 +32,7 @@ import {
 import {
     EC2Client,
     DescribeInstancesCommand,
+    DescribeAddressesCommand,
     DescribeSecurityGroupsCommand,
 } from '@aws-sdk/client-ec2';
 import {
@@ -45,6 +46,8 @@ import {
 
 import { Environment } from '../../../lib/config';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
+import { stackId, STACK_REGISTRY, flatName } from '../../../lib/utilities/naming';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
 // Configuration
@@ -54,10 +57,13 @@ const CDK_ENV = (process.env.CDK_ENV ?? 'development') as Environment;
 const REGION = process.env.AWS_REGION ?? 'eu-west-1';
 const SSM_PATHS = k8sSsmPaths(CDK_ENV);
 const PREFIX = k8sSsmPrefix(CDK_ENV);
-const NAME_PREFIX = 'k8s';
 
-// Stack naming convention used by the factory
-const APP_WORKER_STACK_NAME = `K8s-AppWorker-${CDK_ENV}`;
+/** Resource name prefix — matches factory: flatName('k8s', '', CDK_ENV) → e.g. 'k8s-dev' */
+const NAME_PREFIX = flatName('k8s', '', CDK_ENV);
+
+/** Stack name derived from the same utility the factory uses */
+const KUBERNETES_NAMESPACE = getProjectConfig(Project.KUBERNETES).namespace;
+const APP_WORKER_STACK_NAME = stackId(KUBERNETES_NAMESPACE, STACK_REGISTRY.kubernetes.appWorker, CDK_ENV);
 
 // AWS SDK clients (shared across tests)
 const ssm = new SSMClient({ region: REGION });
@@ -104,45 +110,58 @@ async function loadSsmParameters(): Promise<Map<string, string>> {
 
 /**
  * Find the running EC2 instance launched by the app worker ASG.
- * Uses the Name tag `k8s-app-worker` set by AutoScalingGroupConstruct.
+ * Uses the Name tag `k8s-dev-app-worker` set by AutoScalingGroupConstruct.
+ *
+ * Retries up to 5 times with 15s backoff because the ASG instance may
+ * still be transitioning to 'running' when this test starts right after
+ * the CloudFormation deploy completes.
  */
 async function findAppWorkerInstance(): Promise<{
     instanceId: string;
     securityGroupIds: string[];
     sourceDestCheck: boolean;
 }> {
-    const { Reservations } = await ec2.send(
-        new DescribeInstancesCommand({
-            Filters: [
-                { Name: 'tag:Name', Values: [`${NAME_PREFIX}-app-worker`] },
-                { Name: 'instance-state-name', Values: ['running'] },
-            ],
-        }),
-    );
+    const maxAttempts = 5;
+    const backoffMs = 15_000;
 
-    const instances = (Reservations ?? []).flatMap(
-        (r) => r.Instances ?? [],
-    );
-
-    if (instances.length === 0) {
-        throw new Error(
-            'No running app-worker instance found (tag:Name = k8s-app-worker)',
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const { Reservations } = await ec2.send(
+            new DescribeInstancesCommand({
+                Filters: [
+                    { Name: 'tag:Name', Values: [`${NAME_PREFIX}-app-worker`] },
+                    { Name: 'instance-state-name', Values: ['running'] },
+                ],
+            }),
         );
+
+        const instances = (Reservations ?? []).flatMap(
+            (r) => r.Instances ?? [],
+        );
+
+        if (instances.length > 0) {
+            const instance = instances[0];
+            const sgIds = (instance.SecurityGroups ?? [])
+                .map((sg) => sg.GroupId)
+                .filter((id): id is string => !!id);
+
+            return {
+                instanceId: instance.InstanceId!,
+                securityGroupIds: sgIds,
+                sourceDestCheck: instance.SourceDestCheck ?? true,
+            };
+        }
+
+        if (attempt < maxAttempts) {
+            console.log(
+                `[Retry ${attempt}/${maxAttempts}] No running app-worker instance yet — retrying in ${backoffMs / 1000}s`,
+            );
+            await new Promise((r) => setTimeout(r, backoffMs));
+        }
     }
 
-    const instance = instances[0];
-    const sgIds = (instance.SecurityGroups ?? [])
-        .map((sg) => sg.GroupId)
-        .filter((id): id is string => !!id);
-
-    // Source/Dest check is on the primary network interface
-    const sourceDestCheck = instance.SourceDestCheck ?? true;
-
-    return {
-        instanceId: instance.InstanceId!,
-        securityGroupIds: sgIds,
-        sourceDestCheck,
-    };
+    throw new Error(
+        `No running app-worker instance found after ${maxAttempts} attempts (tag:Name = ${NAME_PREFIX}-app-worker)`,
+    );
 }
 
 // =============================================================================
@@ -158,10 +177,11 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
     };
 
     // Load SSM parameters and find instance ONCE before all tests
+    // Extended timeout to accommodate instance launch retries (up to ~75s)
     beforeAll(async () => {
         ssmParams = await loadSsmParameters();
         appWorker = await findAppWorkerInstance();
-    }, 30_000);
+    }, 120_000);
 
     // =========================================================================
     // EC2 Instance
@@ -218,6 +238,41 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
             const sgId = ssmParams.get(SSM_PATHS.securityGroupId)!;
             expect(sgId).toBeDefined();
             expect(appWorker.securityGroupIds).toContain(sgId);
+        });
+    });
+
+    // =========================================================================
+    // Elastic IP Association
+    //
+    // The EIP is managed by the EipFailover Lambda and should be associated
+    // to the app-worker instance. CloudFront uses this EIP as its origin.
+    // =========================================================================
+    describe('Elastic IP', () => {
+        it('should have the EIP associated to the app-worker instance', async () => {
+            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
+            expect(allocationId).toBeDefined();
+
+            const { Addresses } = await ec2.send(
+                new DescribeAddressesCommand({
+                    AllocationIds: [allocationId],
+                }),
+            );
+
+            expect(Addresses).toHaveLength(1);
+            expect(Addresses![0].InstanceId).toBe(appWorker.instanceId);
+        });
+
+        it('should have a public IP matching the SSM parameter', async () => {
+            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
+            const expectedIp = ssmParams.get(SSM_PATHS.elasticIp)!;
+
+            const { Addresses } = await ec2.send(
+                new DescribeAddressesCommand({
+                    AllocationIds: [allocationId],
+                }),
+            );
+
+            expect(Addresses![0].PublicIp).toBe(expectedIp);
         });
     });
 
@@ -330,6 +385,8 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
             const requiredPaths = [
                 SSM_PATHS.vpcId,
                 SSM_PATHS.securityGroupId,
+                SSM_PATHS.elasticIp,
+                SSM_PATHS.elasticIpAllocationId,
                 SSM_PATHS.kmsKeyArn,
                 SSM_PATHS.scriptsBucket,
             ];

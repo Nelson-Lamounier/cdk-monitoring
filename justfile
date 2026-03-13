@@ -186,10 +186,7 @@ ci-drift *ARGS:
 ci-log-audit *ARGS:
     npx tsx infra/scripts/ci/log-group-audit.ts {{ARGS}}
 
-# CI golden AMI observer: stream Image Builder build logs during deployment
-[group('ci')]
-ci-golden-ami-observer *ARGS:
-    npx tsx infra/scripts/ci/golden-ami-observer.ts {{ARGS}}
+
 
 # CI diagnose: diagnose a failed CloudFormation stack deployment
 [group('ci')]
@@ -307,13 +304,13 @@ test-file path:
 # Usage: just ci-integration-test kubernetes development
 [group('ci')]
 ci-integration-test project environment *ARGS:
-    cd infra && CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPattern="tests/integration/{{project}}" {{ARGS}}
+    cd infra && CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPatterns="tests/integration/{{project}}" {{ARGS}}
 
 # Run integration tests locally (with AWS profile)
 # Usage: just test-integration kubernetes development
 [group('test')]
 test-integration project environment *ARGS:
-    cd infra && AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPattern="tests/integration/{{project}}" {{ARGS}}
+    cd infra && AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPatterns="tests/integration/{{project}}" {{ARGS}}
 
 # =============================================================================
 # CODE QUALITY

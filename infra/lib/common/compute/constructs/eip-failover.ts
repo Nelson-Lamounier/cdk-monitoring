@@ -78,6 +78,13 @@ export interface EipFailoverConstructProps {
 
     /** Lambda memory size in MB @default 128 */
     readonly memorySize?: number;
+
+    /**
+     * Optional ASG name to scope EventBridge events.
+     * When set, the rule only fires for launch/terminate events
+     * from this specific ASG — prevents cross-ASG EIP hijacking.
+     */
+    readonly asgName?: string;
 }
 
 /**
@@ -165,6 +172,11 @@ export class EipFailoverConstruct extends Construct {
                     'EC2 Instance Terminate Successful',
                     'EC2 Instance Launch Successful',
                 ],
+                ...(props.asgName ? {
+                    detail: {
+                        AutoScalingGroupName: [props.asgName],
+                    },
+                } : {}),
             },
             targets: [new targets.LambdaFunction(this.function)],
         });

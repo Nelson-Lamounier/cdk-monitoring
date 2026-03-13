@@ -48,7 +48,6 @@ import { Construct } from 'constructs';
 
 import {
     AutoScalingGroupConstruct,
-    EipFailoverConstruct,
     LaunchTemplateConstruct,
     SsmStateManagerConstruct,
     UserDataBuilder,
@@ -142,9 +141,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             this, `${props.ssmPrefix}/scripts-bucket`,
         );
         const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
-        const eipAllocationId = ssm.StringParameter.valueForStringParameter(
-            this, `${props.ssmPrefix}/elastic-ip-allocation-id`,
-        );
+
         const hostedZoneId = ssm.StringParameter.valueForStringParameter(
             this, `${props.ssmPrefix}/hosted-zone-id`,
         );
@@ -274,7 +271,7 @@ export SSM_PREFIX="${props.ssmPrefix}"
 export S3_BUCKET="${scriptsBucketName}"
 export CALICO_VERSION="${configs.image.bakedVersions.calico}"
 export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
-export EIP_ALLOC_ID="${eipAllocationId}"
+
 export HOSTED_ZONE_ID="${hostedZoneId}"
 export API_DNS_NAME="${apiDnsName}"
 
@@ -293,7 +290,7 @@ export SSM_PREFIX="${props.ssmPrefix}"
 export S3_BUCKET="${scriptsBucketName}"
 export CALICO_VERSION="${configs.image.bakedVersions.calico}"
 export LOG_GROUP_NAME="${launchTemplateConstruct.logGroup?.logGroupName ?? `/ec2/${namePrefix}/instances`}"
-export EIP_ALLOC_ID="${eipAllocationId}"
+
 export HOSTED_ZONE_ID="${hostedZoneId}"
 export API_DNS_NAME="${apiDnsName}"
 ENVEOF
@@ -414,18 +411,7 @@ echo "SSM Automation will be triggered by the CI pipeline"
             tier: ssm.ParameterTier.STANDARD,
         });
 
-        // =====================================================================
-        // EIP Failover — Hybrid-HA Guardian
-        //
-        // Automatically re-associates the cluster EIP when an ASG instance
-        // is launched or terminated. See EipFailoverConstruct for details.
-        // =====================================================================
-        new EipFailoverConstruct(this, 'EipFailover', {
-            eipAllocationId,
-            clusterTagKey: MONITORING_APP_TAG.key,
-            clusterTagValue: MONITORING_APP_TAG.value,
-            namePrefix,
-        });
+
 
         // =====================================================================
         // Stack Outputs
@@ -547,12 +533,7 @@ function grantMonitoringPermissions(
         ],
     }));
 
-    role.addToPrincipalPolicy(new iam.PolicyStatement({
-        sid: 'EipAssociation',
-        effect: iam.Effect.ALLOW,
-        actions: ['ec2:AssociateAddress', 'ec2:DescribeAddresses'],
-        resources: ['*'],
-    }));
+
 
     const k8sEnv = ssmPrefix.split('/').pop() || 'development';
     role.addToPrincipalPolicy(new iam.PolicyStatement({

@@ -27,6 +27,10 @@
  */
 
 import {
+    DescribeInstancesCommand,
+    EC2Client,
+} from '@aws-sdk/client-ec2';
+import {
     GetAutomationExecutionCommand,
     GetParameterCommand,
     SSMClient,
@@ -90,6 +94,11 @@ const ssm = new SSMClient({
     credentials: awsConfig.credentials,
 });
 
+const ec2 = new EC2Client({
+    region: awsConfig.region,
+    credentials: awsConfig.credentials,
+});
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -109,6 +118,32 @@ async function getParam(name: string): Promise<string | undefined> {
 /** Sleep for a given number of milliseconds. */
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Resolve a running instance ID by its k8s:bootstrap-role tag.
+ * Uses EC2 DescribeInstances filtered by tag + running state to
+ * avoid stale SSM parameter lookups after ASG instance replacements.
+ */
+async function resolveInstanceByTag(tagValue: string): Promise<string | undefined> {
+    try {
+        const result = await ec2.send(
+            new DescribeInstancesCommand({
+                Filters: [
+                    { Name: 'tag:k8s:bootstrap-role', Values: [tagValue] },
+                    { Name: 'instance-state-name', Values: ['running'] },
+                ],
+            }),
+        );
+
+        const instances = result.Reservations?.flatMap((r) => r.Instances ?? []) ?? [];
+        if (instances.length === 0) return undefined;
+        return instances[0].InstanceId;
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(`EC2 describe-instances failed for tag k8s:bootstrap-role=${tagValue}: ${message}`);
+        return undefined;
+    }
 }
 
 // =============================================================================
@@ -134,16 +169,15 @@ async function main(): Promise<void> {
     logger.keyValue('Poll Interval', `${pollIntervalSeconds}s`);
     logger.blank();
 
-    // ── 1. Resolve control-plane instance ID ─────────────────────────────
-    const instanceParam = `${ssmPrefix}/bootstrap/control-plane-instance-id`;
-    const instanceId = await getParam(instanceParam);
+    // ── 1. Resolve control-plane instance ID (live EC2 tag lookup) ────────
+    const instanceId = await resolveInstanceByTag('control-plane');
     if (!instanceId) {
         emitAnnotation(
             'error',
-            `Control plane instance ID not found at ${instanceParam}`,
+            'No running control-plane instance found (tag k8s:bootstrap-role=control-plane)',
             'Next.js Secrets Error',
         );
-        logger.fatal(`Control plane instance ID not found at ${instanceParam}`);
+        logger.fatal('No running instance with tag k8s:bootstrap-role=control-plane');
     }
     logger.keyValue('Instance', instanceId!);
 

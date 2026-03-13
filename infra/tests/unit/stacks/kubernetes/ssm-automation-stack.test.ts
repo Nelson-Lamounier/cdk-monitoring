@@ -61,7 +61,7 @@ describe('K8sSsmAutomationStack', () => {
         const { template } = createSsmAutomationStack();
 
         it('should create 4 SSM Automation documents', () => {
-            template.resourceCountIs('AWS::SSM::Document', 4);
+            template.resourceCountIs('AWS::SSM::Document', 5);
         });
 
         it('should create a control plane automation document', () => {
@@ -73,39 +73,41 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should create a worker automation document', () => {
+        it('should create an app-worker automation document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 DocumentType: 'Automation',
-                Name: 'k8s-dev-bootstrap-worker',
+                Name: 'k8s-dev-bootstrap-app-worker',
                 DocumentFormat: 'JSON',
                 UpdateMethod: 'NewVersion',
             });
         });
 
-        it('should have 7 steps in the control plane document', () => {
+        it('should create a mon-worker automation document', () => {
+            template.hasResourceProperties('AWS::SSM::Document', {
+                DocumentType: 'Automation',
+                Name: 'k8s-dev-bootstrap-mon-worker',
+                DocumentFormat: 'JSON',
+                UpdateMethod: 'NewVersion',
+            });
+        });
+
+        it('should have 1 consolidated step in the control plane document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 Name: 'k8s-dev-bootstrap-control-plane',
                 Content: Match.objectLike({
                     mainSteps: Match.arrayWith([
-                        Match.objectLike({ name: 'validateGoldenAMI' }),
-                        Match.objectLike({ name: 'initKubeadm' }),
-                        Match.objectLike({ name: 'installCalicoCNI' }),
-                        Match.objectLike({ name: 'configureKubectl' }),
-                        Match.objectLike({ name: 'syncManifests' }),
-                        Match.objectLike({ name: 'bootstrapArgoCD' }),
-                        Match.objectLike({ name: 'verifyCluster' }),
+                        Match.objectLike({ name: 'bootstrapControlPlane' }),
                     ]),
                 }),
             });
         });
 
-        it('should have 2 steps in the worker document', () => {
+        it('should have 1 consolidated step in the app-worker document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
-                Name: 'k8s-dev-bootstrap-worker',
+                Name: 'k8s-dev-bootstrap-app-worker',
                 Content: Match.objectLike({
                     mainSteps: Match.arrayWith([
-                        Match.objectLike({ name: 'validateGoldenAMI' }),
-                        Match.objectLike({ name: 'joinCluster' }),
+                        Match.objectLike({ name: 'bootstrapWorker' }),
                     ]),
                 }),
             });
@@ -137,22 +139,14 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should configure timeouts for each step', () => {
+        it('should configure timeouts for consolidated steps', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 Name: 'k8s-dev-bootstrap-control-plane',
                 Content: Match.objectLike({
                     mainSteps: Match.arrayWith([
                         Match.objectLike({
-                            name: 'validateGoldenAMI',
-                            timeoutSeconds: 60,
-                        }),
-                        Match.objectLike({
-                            name: 'initKubeadm',
-                            timeoutSeconds: 300,
-                        }),
-                        Match.objectLike({
-                            name: 'bootstrapArgoCD',
-                            timeoutSeconds: 900,
+                            name: 'bootstrapControlPlane',
+                            timeoutSeconds: 1800,
                         }),
                     ]),
                 }),
@@ -274,10 +268,17 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should create SSM parameter for worker document name', () => {
+        it('should create SSM parameter for app-worker document name', () => {
             template.hasResourceProperties('AWS::SSM::Parameter', {
-                Name: '/k8s/development/bootstrap/worker-doc-name',
-                Value: 'k8s-dev-bootstrap-worker',
+                Name: '/k8s/development/bootstrap/app-worker-doc-name',
+                Value: 'k8s-dev-bootstrap-app-worker',
+            });
+        });
+
+        it('should create SSM parameter for mon-worker document name', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/k8s/development/bootstrap/mon-worker-doc-name',
+                Value: 'k8s-dev-bootstrap-mon-worker',
             });
         });
 
@@ -312,8 +313,12 @@ describe('K8sSsmAutomationStack', () => {
             expect(stack.controlPlaneDocName).toBe('k8s-dev-bootstrap-control-plane');
         });
 
-        it('should expose workerDocName', () => {
-            expect(stack.workerDocName).toBe('k8s-dev-bootstrap-worker');
+        it('should expose appWorkerDocName', () => {
+            expect(stack.appWorkerDocName).toBe('k8s-dev-bootstrap-app-worker');
+        });
+
+        it('should expose monWorkerDocName', () => {
+            expect(stack.monWorkerDocName).toBe('k8s-dev-bootstrap-mon-worker');
         });
 
         it('should expose automationRoleArn', () => {

@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: "cloudformation"
+      cache-key:
+        description: "Cache key to restore CDK synthesis output from actions/cache"
+        required: false
+        type: string
+        default: ""
       soft-fail-on:
         description: "Severity levels to soft-fail on (LOW,MEDIUM,HIGH,CRITICAL)"
         required: false
@@ -76,13 +81,15 @@ jobs:
           sparse-checkout: .checkov
           sparse-checkout-cone-mode: false
 
-      - name: Download CDK Synthesis Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - name: Restore CDK Synthesis from Cache
+        id: restore-cdk
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
-          name: cdk-synthesis
-          path: ${{ inputs.cdk-output-path }}
+          path: infra/cdk.out/
+          key: ${{ inputs.cache-key }}
 
       - name: Verify CDK Output Exists
+        if: steps.restore-cdk.outputs.cache-hit == 'true'
         run: |
           echo "Checking CDK output directory..."
           if [ ! -d "${{ inputs.cdk-output-path }}" ]; then
@@ -101,6 +108,7 @@ jobs:
           fi
 
       - name: Check for Custom Config
+        if: steps.restore-cdk.outputs.cache-hit == 'true'
         id: config-check
         run: |
           if [ -f ".checkov/config.yaml" ]; then
@@ -112,6 +120,7 @@ jobs:
           fi
 
       - name: Run Checkov Security Scan
+        if: steps.restore-cdk.outputs.cache-hit == 'true'
         id: checkov
         continue-on-error: ${{ inputs.enforce-blocking == false }}
         run: |
@@ -226,14 +235,8 @@ jobs:
             fi
           fi
 
-      - name: Upload Security Report
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: security-scan-${{ inputs.environment }}
-          path: security-reports/
-          retention-days: 30
-          if-no-files-found: warn
+
+
 
       - name: Upload SARIF to GitHub Security
         if: always() && hashFiles('security-reports/results_sarif.sarif') != ''

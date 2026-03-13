@@ -4,7 +4,7 @@
  *
  * Runs AFTER the KubernetesControlPlaneStack is deployed via CI (_deploy-kubernetes.yml).
  * Calls real AWS APIs to verify that the control plane instance is running with the
- * correct EIP association, security group attachment, and expected SG port rules.
+ * correct security group attachment and expected SG port rules.
  *
  * SSM-Anchored Strategy:
  *   1. Read all SSM parameters published by the base + control plane stacks
@@ -26,8 +26,8 @@ import {
 import {
     EC2Client,
     DescribeInstancesCommand,
-    DescribeAddressesCommand,
     DescribeSecurityGroupsCommand,
+    DescribeImagesCommand,
 } from '@aws-sdk/client-ec2';
 import {
     AutoScalingClient,
@@ -41,6 +41,8 @@ import {
 import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
+import { stackId, STACK_REGISTRY, flatName } from '../../../lib/utilities/naming';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
 // Configuration
@@ -51,10 +53,12 @@ const REGION = process.env.AWS_REGION ?? 'eu-west-1';
 const CONFIGS = getK8sConfigs(CDK_ENV);
 const SSM_PATHS = k8sSsmPaths(CDK_ENV);
 const PREFIX = k8sSsmPrefix(CDK_ENV);
-const NAME_PREFIX = 'k8s';
+/** Resource name prefix — matches factory: flatName('k8s', '', CDK_ENV) → e.g. 'k8s-dev' */
+const NAME_PREFIX = flatName('k8s', '', CDK_ENV);
 
-// Stack naming convention used by the factory
-const CONTROLPLANE_STACK_NAME = `K8s-ControlPlane-${CDK_ENV}`;
+/** Stack name derived from the same utility the factory uses */
+const KUBERNETES_NAMESPACE = getProjectConfig(Project.KUBERNETES).namespace;
+const CONTROLPLANE_STACK_NAME = stackId(KUBERNETES_NAMESPACE, STACK_REGISTRY.kubernetes.controlPlane, CDK_ENV);
 
 // AWS SDK clients (shared across tests)
 const ssm = new SSMClient({ region: REGION });
@@ -102,39 +106,57 @@ async function loadSsmParameters(): Promise<Map<string, string>> {
 /**
  * Find the running EC2 instance launched by the control plane ASG.
  * Uses the Name tag `k8s-control-plane` set by AutoScalingGroupConstruct.
+ *
+ * Retries up to 5 times with 15s backoff because the ASG instance may
+ * still be transitioning to 'running' when this test starts right after
+ * the CloudFormation deploy completes.
  */
 async function findControlPlaneInstance(): Promise<{
     instanceId: string;
+    imageId: string;
     securityGroupIds: string[];
 }> {
-    const { Reservations } = await ec2.send(
-        new DescribeInstancesCommand({
-            Filters: [
-                { Name: 'tag:Name', Values: [`${NAME_PREFIX}-control-plane`] },
-                { Name: 'instance-state-name', Values: ['running'] },
-            ],
-        }),
-    );
+    const maxAttempts = 5;
+    const backoffMs = 15_000;
 
-    const instances = (Reservations ?? []).flatMap(
-        (r) => r.Instances ?? [],
-    );
-
-    if (instances.length === 0) {
-        throw new Error(
-            'No running control-plane instance found (tag:Name = k8s-control-plane)',
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const { Reservations } = await ec2.send(
+            new DescribeInstancesCommand({
+                Filters: [
+                    { Name: 'tag:Name', Values: [`${NAME_PREFIX}-control-plane`] },
+                    { Name: 'instance-state-name', Values: ['running'] },
+                ],
+            }),
         );
+
+        const instances = (Reservations ?? []).flatMap(
+            (r) => r.Instances ?? [],
+        );
+
+        if (instances.length > 0) {
+            const instance = instances[0];
+            const sgIds = (instance.SecurityGroups ?? [])
+                .map((sg) => sg.GroupId)
+                .filter((id): id is string => !!id);
+
+            return {
+                instanceId: instance.InstanceId!,
+                imageId: instance.ImageId!,
+                securityGroupIds: sgIds,
+            };
+        }
+
+        if (attempt < maxAttempts) {
+            console.log(
+                `[Retry ${attempt}/${maxAttempts}] No running control-plane instance yet — retrying in ${backoffMs / 1000}s`,
+            );
+            await new Promise((r) => setTimeout(r, backoffMs));
+        }
     }
 
-    const instance = instances[0];
-    const sgIds = (instance.SecurityGroups ?? [])
-        .map((sg) => sg.GroupId)
-        .filter((id): id is string => !!id);
-
-    return {
-        instanceId: instance.InstanceId!,
-        securityGroupIds: sgIds,
-    };
+    throw new Error(
+        `No running control-plane instance found after ${maxAttempts} attempts (tag:Name = ${NAME_PREFIX}-control-plane)`,
+    );
 }
 
 // =============================================================================
@@ -143,13 +165,14 @@ async function findControlPlaneInstance(): Promise<{
 
 describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     let ssmParams: Map<string, string>;
-    let controlPlane: { instanceId: string; securityGroupIds: string[] };
+    let controlPlane: { instanceId: string; imageId: string; securityGroupIds: string[] };
 
     // Load SSM parameters and find instance ONCE before all tests
+    // Extended timeout to accommodate instance launch retries (up to ~75s)
     beforeAll(async () => {
         ssmParams = await loadSsmParameters();
         controlPlane = await findControlPlaneInstance();
-    }, 30_000);
+    }, 120_000);
 
     // =========================================================================
     // EC2 Instance
@@ -184,36 +207,45 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     });
 
     // =========================================================================
-    // Elastic IP Association
+    // Golden AMI Verification
+    //
+    // Ensures the instance was launched with the latest Golden AMI stored in
+    // SSM at /k8s/<env>/golden-ami/latest.  Also validates AMI tags.
     // =========================================================================
-    describe('Elastic IP', () => {
-        it('should have the EIP associated to the control-plane instance', async () => {
-            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
-            expect(allocationId).toBeDefined();
-
-            const { Addresses } = await ec2.send(
-                new DescribeAddressesCommand({
-                    AllocationIds: [allocationId],
-                }),
-            );
-
-            expect(Addresses).toHaveLength(1);
-            expect(Addresses![0].InstanceId).toBe(controlPlane.instanceId);
+    describe('Golden AMI', () => {
+        it('should use the latest Golden AMI from SSM', () => {
+            const expectedAmi = ssmParams.get(CONFIGS.image.amiSsmPath);
+            expect(expectedAmi).toBeDefined();
+            expect(controlPlane.imageId).toBe(expectedAmi);
         });
 
-        it('should have a public IP matching the SSM parameter', async () => {
-            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
-            const expectedIp = ssmParams.get(SSM_PATHS.elasticIp)!;
-
-            const { Addresses } = await ec2.send(
-                new DescribeAddressesCommand({
-                    AllocationIds: [allocationId],
+        it('AMI should have Purpose=GoldenAMI tag', async () => {
+            const { Images } = await ec2.send(
+                new DescribeImagesCommand({
+                    ImageIds: [controlPlane.imageId],
                 }),
             );
 
-            expect(Addresses![0].PublicIp).toBe(expectedIp);
+            expect(Images).toHaveLength(1);
+
+            const tags = Images![0].Tags ?? [];
+            const purposeTag = tags.find((t) => t.Key === 'Purpose');
+            expect(purposeTag).toBeDefined();
+            expect(purposeTag!.Value).toBe('GoldenAMI');
+        });
+
+        it('AMI should be in available state', async () => {
+            const { Images } = await ec2.send(
+                new DescribeImagesCommand({
+                    ImageIds: [controlPlane.imageId],
+                }),
+            );
+
+            expect(Images).toHaveLength(1);
+            expect(Images![0].State).toBe('available');
         });
     });
+
 
     // =========================================================================
     // Security Group Attachment
@@ -222,7 +254,6 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
         const sgKeys = [
             { key: 'securityGroupId', label: 'Cluster Base' },
             { key: 'controlPlaneSgId', label: 'Control Plane' },
-            { key: 'ingressSgId', label: 'Ingress' },
         ] as const;
 
         it.each(sgKeys)(
@@ -402,9 +433,6 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
                 SSM_PATHS.vpcId,
                 SSM_PATHS.securityGroupId,
                 SSM_PATHS.controlPlaneSgId,
-                SSM_PATHS.ingressSgId,
-                SSM_PATHS.elasticIp,
-                SSM_PATHS.elasticIpAllocationId,
                 SSM_PATHS.kmsKeyArn,
                 SSM_PATHS.scriptsBucket,
             ];
