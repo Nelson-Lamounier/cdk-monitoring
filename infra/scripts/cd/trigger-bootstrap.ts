@@ -30,6 +30,10 @@
  */
 
 import {
+    DescribeInstancesCommand,
+    EC2Client,
+} from '@aws-sdk/client-ec2';
+import {
     GetAutomationExecutionCommand,
     GetParameterCommand,
     PutParameterCommand,
@@ -80,9 +84,14 @@ const maxWait = parseInt(args['max-wait'] as string, 10) || 600;
 const ssmPrefix = `/k8s/${environment}`;
 
 // =============================================================================
-// AWS Client
+// AWS Clients
 // =============================================================================
 const ssm = new SSMClient({
+    region: awsConfig.region,
+    credentials: awsConfig.credentials,
+});
+
+const ec2 = new EC2Client({
     region: awsConfig.region,
     credentials: awsConfig.credentials,
 });
@@ -93,15 +102,13 @@ const ssm = new SSMClient({
 interface TriggerTarget {
     /** Node role label (e.g. control-plane, app-worker) */
     role: string;
-    /** SSM parameter path for the instance ID */
-    instanceParam: string;
     /** SSM parameter path for the automation document name */
     docParam: string;
     /** SSM parameter path to publish the execution ID */
     execParam: string;
     /** GitHub Actions output key */
     outputKey: string;
-    /** Value of the k8s:bootstrap-role tag used for SSM Automation targeting */
+    /** Value of the k8s:bootstrap-role tag used for EC2 discovery and SSM targeting */
     targetTagValue: string;
 }
 
@@ -109,7 +116,6 @@ function buildTargets(prefix: string): TriggerTarget[] {
     return [
         {
             role: 'control-plane',
-            instanceParam: `${prefix}/bootstrap/control-plane-instance-id`,
             docParam: `${prefix}/bootstrap/control-plane-doc-name`,
             execParam: `${prefix}/bootstrap/execution-id`,
             outputKey: 'cp_execution_id',
@@ -117,7 +123,6 @@ function buildTargets(prefix: string): TriggerTarget[] {
         },
         {
             role: 'app-worker',
-            instanceParam: `${prefix}/bootstrap/app-worker-instance-id`,
             docParam: `${prefix}/bootstrap/worker-doc-name`,
             execParam: `${prefix}/bootstrap/worker-execution-id`,
             outputKey: 'worker_execution_id',
@@ -125,7 +130,6 @@ function buildTargets(prefix: string): TriggerTarget[] {
         },
         {
             role: 'mon-worker',
-            instanceParam: `${prefix}/bootstrap/mon-worker-instance-id`,
             docParam: `${prefix}/bootstrap/worker-doc-name`,
             execParam: `${prefix}/bootstrap/mon-worker-execution-id`,
             outputKey: 'mon_worker_execution_id',
@@ -146,6 +150,36 @@ async function getParam(name: string): Promise<string | undefined> {
         if (value && value !== 'None') return value;
         return undefined;
     } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Resolve a running instance ID by its k8s:bootstrap-role tag.
+ *
+ * Uses EC2 DescribeInstances filtered by tag + running state.
+ * This replaces the previous SSM parameter-based lookup, which
+ * was prone to stale IDs when instances were replaced by the ASG.
+ */
+async function resolveInstanceByTag(tagValue: string): Promise<string | undefined> {
+    try {
+        const result = await ec2.send(
+            new DescribeInstancesCommand({
+                Filters: [
+                    { Name: 'tag:k8s:bootstrap-role', Values: [tagValue] },
+                    { Name: 'instance-state-name', Values: ['running'] },
+                ],
+            }),
+        );
+
+        const instances = result.Reservations?.flatMap((r) => r.Instances ?? []) ?? [];
+        if (instances.length === 0) return undefined;
+
+        // Return the first running instance (there should be exactly one per role)
+        return instances[0].InstanceId;
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(`EC2 describe-instances failed for tag k8s:bootstrap-role=${tagValue}: ${message}`);
         return undefined;
     }
 }
@@ -176,11 +210,11 @@ interface TriggerResult {
 async function triggerNode(target: TriggerTarget): Promise<TriggerResult> {
     logger.task(`${target.role}`);
 
-    // 1. Resolve instance ID
-    const instanceId = await getParam(target.instanceParam);
+    // 1. Resolve instance ID from EC2 tags (live, never stale)
+    const instanceId = await resolveInstanceByTag(target.targetTagValue);
     if (!instanceId) {
-        logger.info(`[SKIP] No instance ID at ${target.instanceParam} — node not deployed`);
-        return { role: target.role, status: 'skipped', reason: 'no instance ID' };
+        logger.info(`[SKIP] No running instance with tag k8s:bootstrap-role=${target.targetTagValue}`);
+        return { role: target.role, status: 'skipped', reason: 'no running instance' };
     }
     logger.keyValue('Instance', instanceId);
 
