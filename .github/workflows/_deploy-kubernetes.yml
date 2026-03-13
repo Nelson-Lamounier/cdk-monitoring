@@ -551,7 +551,7 @@ jobs:
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes $CDK_ENV --verbose
+        run: just ci-integration-test kubernetes/base-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy Golden AMI Stack (Image Builder Pipeline)
