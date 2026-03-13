@@ -28,6 +28,10 @@ import {
     GetLogEventsCommand,
 } from '@aws-sdk/client-cloudwatch-logs';
 import {
+    DescribeImagesCommand,
+    EC2Client,
+} from '@aws-sdk/client-ec2';
+import {
     ImagebuilderClient,
     GetImageCommand,
     ListImagesCommand,
@@ -88,6 +92,7 @@ if (!stackName) {
 // AWS SDK clients
 // ---------------------------------------------------------------------------
 const cfnClient = new CloudFormationClient({ region });
+const ec2Client = new EC2Client({ region });
 const imagebuilderClient = new ImagebuilderClient({ region });
 const s3Client = new S3Client({ region });
 const ssmClient = new SSMClient({ region });
@@ -103,11 +108,43 @@ const ACTIVE_STATES = new Set(['BUILDING', 'TESTING', 'DISTRIBUTING', 'INTEGRATI
 /** Terminal Image Builder build states */
 const TERMINAL_STATES = new Set(['AVAILABLE', 'FAILED', 'CANCELLED']);
 
+/** Expected packages from the Image Builder validate phase */
+const EXPECTED_PACKAGES = [
+    { name: 'Docker', pattern: /docker/i },
+    { name: 'AWS CLI', pattern: /aws-cli/i },
+    { name: 'CloudWatch Agent', pattern: /cloudwatch/i },
+    { name: 'containerd', pattern: /containerd/i },
+    { name: 'runc', pattern: /runc/i },
+    { name: 'crictl', pattern: /crictl/i },
+    { name: 'kubeadm', pattern: /kubeadm/i },
+    { name: 'kubelet', pattern: /kubelet/i },
+    { name: 'kubectl', pattern: /kubectl|gitVersion/i },
+    { name: 'Calico manifests', pattern: /calico\.yaml/i },
+    { name: 'cfn-signal', pattern: /cfn-signal/i },
+    { name: 'Helm', pattern: /helm/i },
+    { name: 'boto3', pattern: /boto3/i },
+    { name: 'ecr-credential-provider', pattern: /ecr-credential-provider/i },
+];
+
+interface PackageResult {
+    name: string;
+    found: boolean;
+}
+
+interface VerificationResult {
+    amiId?: string;
+    amiState?: string;
+    amiTags?: Record<string, string>;
+    packages: PackageResult[];
+    allVerified: boolean;
+}
+
 interface ObserverResult {
     outcome: 'success' | 'failed' | 'skipped' | 'timeout';
     amiId?: string;
     reason?: string;
     pollCount: number;
+    verification?: VerificationResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +322,156 @@ async function streamCloudWatchLogs(pollNum: number): Promise<void> {
     console.log('::endgroup::');
 }
 
+/** Fetch all S3 build log content as a single string */
+async function fetchAllS3Logs(bucket: string, prefix: string): Promise<string> {
+    const parts: string[] = [];
+
+    try {
+        const { Contents } = await s3Client.send(
+            new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }),
+        );
+
+        for (const obj of Contents ?? []) {
+            if (!obj.Key) continue;
+            try {
+                const { Body } = await s3Client.send(
+                    new GetObjectCommand({ Bucket: bucket, Key: obj.Key }),
+                );
+                const text = await Body?.transformToString() ?? '';
+                parts.push(text);
+            } catch {
+                // Skip unreadable log files
+            }
+        }
+    } catch {
+        logger.warn('Failed to fetch S3 logs for package verification');
+    }
+
+    return parts.join('\n');
+}
+
+/** Fetch all CloudWatch log content as a single string */
+async function fetchAllCloudWatchLogs(): Promise<string> {
+    const parts: string[] = [];
+
+    try {
+        const { logGroups } = await logsClient.send(
+            new DescribeLogGroupsCommand({ logGroupNamePrefix: '/aws/imagebuilder/' }),
+        );
+
+        for (const lg of logGroups ?? []) {
+            if (!lg.logGroupName) continue;
+            try {
+                const { logStreams } = await logsClient.send(
+                    new DescribeLogStreamsCommand({
+                        logGroupName: lg.logGroupName,
+                        orderBy: 'LastEventTime',
+                        descending: true,
+                        limit: 1,
+                    }),
+                );
+
+                const streamName = logStreams?.[0]?.logStreamName;
+                if (!streamName) continue;
+
+                const { events } = await logsClient.send(
+                    new GetLogEventsCommand({
+                        logGroupName: lg.logGroupName,
+                        logStreamName: streamName,
+                        limit: 200,
+                    }),
+                );
+
+                for (const event of events ?? []) {
+                    if (event.message) parts.push(event.message);
+                }
+            } catch {
+                // Skip individual log group errors
+            }
+        }
+    } catch {
+        logger.warn('Failed to fetch CloudWatch logs for package verification');
+    }
+
+    return parts.join('\n');
+}
+
+/** Verify the Golden AMI exists and parse logs for package installations */
+async function verifyGoldenAmi(
+    amiId: string | undefined,
+    logBucket?: string,
+    s3LogPrefix?: string,
+): Promise<VerificationResult> {
+    const packages: PackageResult[] = EXPECTED_PACKAGES.map(p => ({ name: p.name, found: false }));
+    let amiState: string | undefined;
+    let amiTags: Record<string, string> = {};
+
+    // ── 1. Verify AMI exists via EC2 ──
+    // First try the build output AMI ID, then fall back to SSM
+    const resolvedAmiId = amiId ?? await resolveAmiFromSsm();
+
+    if (resolvedAmiId) {
+        try {
+            const { Images } = await ec2Client.send(
+                new DescribeImagesCommand({ ImageIds: [resolvedAmiId] }),
+            );
+            const image = Images?.[0];
+            amiState = image?.State;
+            for (const tag of image?.Tags ?? []) {
+                if (tag.Key && tag.Value) amiTags[tag.Key] = tag.Value;
+            }
+            logger.info(`AMI ${resolvedAmiId} state: ${amiState}`);
+        } catch (err) {
+            logger.warn(`Failed to describe AMI ${resolvedAmiId}: ${(err as Error).message}`);
+        }
+    }
+
+    // ── 2. Collect all build logs ──
+    const logParts: string[] = [];
+
+    if (logBucket && s3LogPrefix) {
+        logParts.push(await fetchAllS3Logs(logBucket, s3LogPrefix));
+    }
+    logParts.push(await fetchAllCloudWatchLogs());
+
+    const allLogContent = logParts.join('\n');
+
+    // ── 3. Scan for expected package signatures ──
+    for (let i = 0; i < EXPECTED_PACKAGES.length; i++) {
+        packages[i].found = EXPECTED_PACKAGES[i].pattern.test(allLogContent);
+    }
+
+    const allVerified = packages.every(p => p.found);
+
+    if (allVerified) {
+        logger.success('All expected packages verified in build logs');
+    } else {
+        const missing = packages.filter(p => !p.found).map(p => p.name);
+        logger.warn(`Packages not found in logs: ${missing.join(', ')}`);
+    }
+
+    return {
+        amiId: resolvedAmiId,
+        amiState,
+        amiTags,
+        packages,
+        allVerified,
+    };
+}
+
+/** Resolve the latest AMI ID from SSM */
+async function resolveAmiFromSsm(): Promise<string | undefined> {
+    try {
+        const { Parameter } = await ssmClient.send(
+            new GetParameterCommand({ Name: `${ssmPrefix}/golden-ami/latest` }),
+        );
+        return Parameter?.Value;
+    } catch {
+        logger.warn('Could not resolve AMI ID from SSM');
+        return undefined;
+    }
+}
+
 /** Build step summary markdown */
 function buildSummary(result: ObserverResult): string {
     const lines: string[] = [
@@ -309,6 +496,38 @@ function buildSummary(result: ObserverResult): string {
         case 'timeout':
             lines.push(`⏱️ **Timed out** after ${maxPolls} polls`);
             break;
+    }
+
+    // ── Verification tables (on success) ──
+    if (result.verification) {
+        const v = result.verification;
+
+        // AMI Metadata
+        if (v.amiId) {
+            lines.push('', '### 🖼️ AMI Metadata', '');
+            lines.push('| Property | Value |');
+            lines.push('|----------|-------|');
+            lines.push(`| AMI ID | \`${v.amiId}\` |`);
+            lines.push(`| State | ${v.amiState ?? 'unknown'} |`);
+            if (v.amiTags?.['KubernetesVersion']) {
+                lines.push(`| K8s Version | ${v.amiTags['KubernetesVersion']} |`);
+            }
+            if (v.amiTags?.['Purpose']) {
+                lines.push(`| Purpose | ${v.amiTags['Purpose']} |`);
+            }
+        }
+
+        // Package Verification
+        lines.push('', '### 📦 Package Verification', '');
+        lines.push('| Package | Status |');
+        lines.push('|---------|--------|');
+        for (const pkg of v.packages) {
+            lines.push(`| ${pkg.name} | ${pkg.found ? '✅ Verified' : '⚠️ Not found in logs'} |`);
+        }
+
+        const verified = v.packages.filter(p => p.found).length;
+        lines.push('');
+        lines.push(`**${verified}/${v.packages.length}** packages verified in build logs`);
     }
 
     return lines.join('\n');
@@ -387,7 +606,12 @@ async function pollBuild(buildArn: string): Promise<void> {
         if (status === 'AVAILABLE') {
             logger.blank();
             logger.success(`Golden AMI built successfully: ${amiId}`);
-            const result: ObserverResult = { outcome: 'success', amiId, pollCount: i };
+
+            // ── Post-build verification ──
+            logger.info('Running post-build verification...');
+            const verification = await verifyGoldenAmi(amiId, logBucket, s3LogPrefix);
+
+            const result: ObserverResult = { outcome: 'success', amiId, pollCount: i, verification };
             writeSummary(buildSummary(result));
             return;
         }
