@@ -230,19 +230,17 @@ async function triggerNode(target: TriggerTarget): Promise<TriggerResult> {
     // 3. Resolve S3 bucket for bootstrap scripts
     const s3Bucket = await getParam(`${ssmPrefix}/scripts-bucket`) ?? '';
 
-    // 4. Start SSM Automation execution (tag-based targeting)
-    //    Uses Targets to resolve the instance by its k8s:bootstrap-role tag.
-    //    TargetParameterName tells SSM which document parameter receives the
-    //    resolved instance ID, populating Targets + ResolvedTargets in metadata.
+    // 4. Start SSM Automation execution (direct instance targeting)
+    //    We pass the instance ID directly instead of using Targets, because
+    //    SSM Targets tag resolution finds ALL instances with the tag —
+    //    including terminated ones that retain their tags. Since we already
+    //    resolved the single running instance via resolveInstanceByTag(),
+    //    we pass it directly to avoid spawning child executions on dead instances.
     const startResult = await ssm.send(
         new StartAutomationExecutionCommand({
             DocumentName: docName,
-            Targets: [{
-                Key: 'tag:k8s:bootstrap-role',
-                Values: [target.targetTagValue],
-            }],
-            TargetParameterName: 'InstanceId',
             Parameters: {
+                InstanceId: [instanceId],
                 SsmPrefix: [ssmPrefix],
                 S3Bucket: [s3Bucket],
                 Region: [awsConfig.region],
