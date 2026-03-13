@@ -53,7 +53,7 @@ import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
 import { k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import { stackId, STACK_REGISTRY } from '../../../lib/utilities/naming';
-import { Project } from '../../../lib/config/projects';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
 // Configuration (config-driven — no hardcoded values)
@@ -64,8 +64,11 @@ const REGION = process.env.AWS_REGION ?? 'eu-west-1';
 const CONFIGS = getK8sConfigs(CDK_ENV);
 const SSM_PREFIX = k8sSsmPrefix(CDK_ENV);
 
+/** Namespace from project config (empty for Kubernetes — stacks have no prefix) */
+const KUBERNETES_NAMESPACE = getProjectConfig(Project.KUBERNETES).namespace;
+
 /** Stack name derived from the same utility the factory uses */
-const STACK_NAME = stackId(Project.KUBERNETES, STACK_REGISTRY.kubernetes.goldenAmi, CDK_ENV);
+const STACK_NAME = stackId(KUBERNETES_NAMESPACE, STACK_REGISTRY.kubernetes.goldenAmi, CDK_ENV);
 
 /** SSM path where Image Builder stores the AMI ID */
 const AMI_SSM_PATH = CONFIGS.image.amiSsmPath;
