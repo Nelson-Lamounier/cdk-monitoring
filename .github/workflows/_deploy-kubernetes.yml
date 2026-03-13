@@ -797,6 +797,50 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Verify SSM Automation — Integration Tests Gate
+  #
+  # Runs integration tests that call real AWS APIs to validate that SSM
+  # Automation executions (bootstrap + secrets) completed successfully with
+  # correct tag-based targeting. Verifies AutomationExecutionStatus,
+  # Targets, ResolvedTargets, Outputs, and DocumentName for each document.
+  # ===========================================================================
+  verify-ssm-automation:
+    name: Verify SSM Automation
+    needs: [setup, deploy-appiam]
+    if: always() && needs.deploy-appiam.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run SSM Automation Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes/ssm-automation-runtime $CDK_ENV --verbose
+
+  # ===========================================================================
   # Deploy Edge Stack (5/6) — CloudFront + ACM + WAF (us-east-1)
   # Origin: Elastic IP → Traefik
   # ===========================================================================

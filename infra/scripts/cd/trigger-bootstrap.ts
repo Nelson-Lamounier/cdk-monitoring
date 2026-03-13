@@ -101,6 +101,8 @@ interface TriggerTarget {
     execParam: string;
     /** GitHub Actions output key */
     outputKey: string;
+    /** Value of the k8s:bootstrap-role tag used for SSM Automation targeting */
+    targetTagValue: string;
 }
 
 function buildTargets(prefix: string): TriggerTarget[] {
@@ -111,6 +113,7 @@ function buildTargets(prefix: string): TriggerTarget[] {
             docParam: `${prefix}/bootstrap/control-plane-doc-name`,
             execParam: `${prefix}/bootstrap/execution-id`,
             outputKey: 'cp_execution_id',
+            targetTagValue: 'control-plane',
         },
         {
             role: 'app-worker',
@@ -118,6 +121,7 @@ function buildTargets(prefix: string): TriggerTarget[] {
             docParam: `${prefix}/bootstrap/worker-doc-name`,
             execParam: `${prefix}/bootstrap/worker-execution-id`,
             outputKey: 'worker_execution_id',
+            targetTagValue: 'app-worker',
         },
         {
             role: 'mon-worker',
@@ -125,6 +129,7 @@ function buildTargets(prefix: string): TriggerTarget[] {
             docParam: `${prefix}/bootstrap/worker-doc-name`,
             execParam: `${prefix}/bootstrap/mon-worker-execution-id`,
             outputKey: 'mon_worker_execution_id',
+            targetTagValue: 'mon-worker',
         },
     ];
 }
@@ -191,12 +196,19 @@ async function triggerNode(target: TriggerTarget): Promise<TriggerResult> {
     // 3. Resolve S3 bucket for bootstrap scripts
     const s3Bucket = await getParam(`${ssmPrefix}/scripts-bucket`) ?? '';
 
-    // 4. Start SSM Automation execution
+    // 4. Start SSM Automation execution (tag-based targeting)
+    //    Uses Targets to resolve the instance by its k8s:bootstrap-role tag.
+    //    TargetParameterName tells SSM which document parameter receives the
+    //    resolved instance ID, populating Targets + ResolvedTargets in metadata.
     const startResult = await ssm.send(
         new StartAutomationExecutionCommand({
             DocumentName: docName,
+            Targets: [{
+                Key: 'tag:k8s:bootstrap-role',
+                Values: [target.targetTagValue],
+            }],
+            TargetParameterName: 'InstanceId',
             Parameters: {
-                InstanceId: [instanceId],
                 SsmPrefix: [ssmPrefix],
                 S3Bucket: [s3Bucket],
                 Region: [awsConfig.region],

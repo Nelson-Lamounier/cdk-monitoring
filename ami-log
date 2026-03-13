@@ -1,0 +1,90 @@
+Run just ci-integration-test kubernetes/golden-ami-stack $CDK_ENV --verbose
+cd infra && CDK_ENV=development npx jest --config jest.integration.config.js --testPathPatterns="tests/integration/kubernetes/golden-ami-stack" --verbose
+ts-jest[config] (WARN) 
+    The "ts-jest" config option "isolatedModules" is deprecated and will be removed in v30.0.0. Please use "isolatedModules: true" in /__w/cdk-monitoring/cdk-monitoring/infra/tsconfig.json instead, see https://www.typescriptlang.org/tsconfig/#isolatedModules
+  
+  console.log
+    [Pre-Flight] AMI ID from SSM: ami-0100b8472b016f9db
+
+      at Object.<anonymous> (tests/integration/kubernetes/golden-ami-stack.integration.test.ts:209:17)
+
+  console.log
+    [Pre-Flight] AMI SSM path: /k8s/development/golden-ami/latest
+
+      at Object.<anonymous> (tests/integration/kubernetes/golden-ami-stack.integration.test.ts:210:17)
+
+  console.log
+    [Pre-Flight] Expected stack name: kubernetes-GoldenAmi-development
+
+      at Object.<anonymous> (tests/integration/kubernetes/golden-ami-stack.integration.test.ts:211:17)
+
+  console.log
+    [Pre-Flight] Total log content length: 1383334 chars
+
+      at Object.<anonymous> (tests/integration/kubernetes/golden-ami-stack.integration.test.ts:231:17)
+
+  console.log
+    [Pre-Flight] Stack name: kubernetes-GoldenAmi-development
+
+      at Object.<anonymous> (tests/integration/kubernetes/golden-ami-stack.integration.test.ts:253:21)
+
+FAIL tests/integration/kubernetes/golden-ami-stack.integration.test.ts (6.189 s)
+  GoldenAmiStack — Post-Deploy Verification
+    Pre-Flight
+      ✓ should have CDK_ENV set to a valid environment (2 ms)
+      ✓ should have AWS_REGION set
+      ✓ should have resolved AMI ID from SSM (1 ms)
+      ✓ should resolve the correct stack name from config (2 ms)
+    AMI Metadata
+      ✓ should exist and be in available state (407 ms)
+      ✓ should have the KubernetesVersion tag (123 ms)
+      ✓ should have the Purpose tag set to GoldenAMI (123 ms)
+      ✓ should have a description containing the name prefix and K8s version (124 ms)
+    Package Verification (build logs)
+      ✓ should have Docker verified in build logs (1 ms)
+      ✓ should have AWS CLI verified in build logs (1 ms)
+      ✓ should have CloudWatch Agent verified in build logs (1 ms)
+      ✓ should have containerd verified in build logs
+      ✓ should have runc verified in build logs (1 ms)
+      ✓ should have crictl verified in build logs (1 ms)
+      ✓ should have kubeadm verified in build logs
+      ✓ should have kubelet verified in build logs (1 ms)
+      ✓ should have kubectl verified in build logs (1 ms)
+      ✓ should have Calico manifests verified in build logs
+      ✓ should have cfn-signal verified in build logs (1 ms)
+      ✓ should have Helm verified in build logs (1 ms)
+      ✓ should have boto3 verified in build logs
+      ✓ should have ecr-credential-provider verified in build logs
+    CloudFormation Stack
+      ✕ should have the stack in a successful state (414 ms)
+    Downstream Readiness
+      ✓ should have the AMI ID published to SSM for downstream stacks (87 ms)
+
+  ● GoldenAmiStack — Post-Deploy Verification › CloudFormation Stack › should have the stack in a successful state
+
+    ValidationError: Stack with id kubernetes-GoldenAmi-development does not exist
+
+      321 |     describe('CloudFormation Stack', () => {
+      322 |         it('should have the stack in a successful state', async () => {
+    > 323 |             const { Stacks } = await cfn.send(
+          |                                ^
+      324 |                 new DescribeStacksCommand({ StackName: STACK_NAME }),
+      325 |             );
+      326 |
+
+      at ProtocolLib.getErrorSchemaOrThrowBaseException (../node_modules/@aws-sdk/core/dist-cjs/submodules/protocols/index.js:69:67)
+      at AwsQueryProtocol.handleError (../node_modules/@aws-sdk/core/dist-cjs/submodules/protocols/index.js:1334:65)
+      at AwsQueryProtocol.deserializeResponse (../node_modules/@aws-sdk/core/dist-cjs/submodules/protocols/index.js:1302:24)
+      at ../node_modules/@smithy/core/dist-cjs/submodules/schema/index.js:26:24
+      at ../node_modules/@smithy/core/dist-cjs/index.js:121:20
+      at ../node_modules/@smithy/middleware-retry/dist-cjs/index.js:254:46
+      at ../node_modules/@aws-sdk/middleware-logger/dist-cjs/index.js:5:26
+      at Object.<anonymous> (tests/integration/kubernetes/golden-ami-stack.integration.test.ts:323:32)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 23 passed, 24 total
+Snapshots:   0 total
+Time:        6.441 s
+Ran all test suites matching tests/integration/kubernetes/golden-ami-stack.
+error: Recipe `ci-integration-test` failed on line 307 with exit code 1
+Error: Process completed with exit code 1.

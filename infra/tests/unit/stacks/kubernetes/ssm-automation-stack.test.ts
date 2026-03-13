@@ -82,30 +82,23 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should have 7 steps in the control plane document', () => {
+        it('should have 1 consolidated step in the control plane document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 Name: 'k8s-dev-bootstrap-control-plane',
                 Content: Match.objectLike({
                     mainSteps: Match.arrayWith([
-                        Match.objectLike({ name: 'validateGoldenAMI' }),
-                        Match.objectLike({ name: 'initKubeadm' }),
-                        Match.objectLike({ name: 'installCalicoCNI' }),
-                        Match.objectLike({ name: 'configureKubectl' }),
-                        Match.objectLike({ name: 'syncManifests' }),
-                        Match.objectLike({ name: 'bootstrapArgoCD' }),
-                        Match.objectLike({ name: 'verifyCluster' }),
+                        Match.objectLike({ name: 'bootstrapControlPlane' }),
                     ]),
                 }),
             });
         });
 
-        it('should have 2 steps in the worker document', () => {
+        it('should have 1 consolidated step in the worker document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 Name: 'k8s-dev-bootstrap-worker',
                 Content: Match.objectLike({
                     mainSteps: Match.arrayWith([
-                        Match.objectLike({ name: 'validateGoldenAMI' }),
-                        Match.objectLike({ name: 'joinCluster' }),
+                        Match.objectLike({ name: 'bootstrapWorker' }),
                     ]),
                 }),
             });
@@ -137,22 +130,14 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should configure timeouts for each step', () => {
+        it('should configure timeouts for consolidated steps', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 Name: 'k8s-dev-bootstrap-control-plane',
                 Content: Match.objectLike({
                     mainSteps: Match.arrayWith([
                         Match.objectLike({
-                            name: 'validateGoldenAMI',
-                            timeoutSeconds: 60,
-                        }),
-                        Match.objectLike({
-                            name: 'initKubeadm',
-                            timeoutSeconds: 300,
-                        }),
-                        Match.objectLike({
-                            name: 'bootstrapArgoCD',
-                            timeoutSeconds: 900,
+                            name: 'bootstrapControlPlane',
+                            timeoutSeconds: 1800,
                         }),
                     ]),
                 }),

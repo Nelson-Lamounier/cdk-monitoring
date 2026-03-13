@@ -7,8 +7,8 @@
  * stack so that bootstrap scripts can be updated without re-deploying EC2.
  *
  * Resources Created:
- *   - SSM Automation Document: Control plane bootstrap (9 steps)
- *   - SSM Automation Document: Worker node bootstrap (3 steps)
+ *   - SSM Automation Document: Control plane bootstrap (1 consolidated step)
+ *   - SSM Automation Document: Worker node bootstrap (1 consolidated step)
  *   - SSM Parameter: Document name for discovery by EC2 user data
  *   - IAM Role: Automation execution role with RunCommand permissions
  *
@@ -78,79 +78,19 @@ interface AutomationStep {
 
 const CONTROL_PLANE_STEPS: AutomationStep[] = [
     {
-        name: 'associateElasticIp',
-        scriptPath: 'boot/steps/01a_associate_eip.py',
-        timeoutSeconds: 60,
-        description: 'Associate the CDK-managed Elastic IP with this instance',
-    },
-    {
-        name: 'validateGoldenAMI',
-        scriptPath: 'boot/steps/01_validate_ami.py',
-        timeoutSeconds: 60,
-        description: 'Verify Golden AMI has required binaries and kernel settings',
-    },
-    {
-        name: 'initKubeadm',
-        scriptPath: 'boot/steps/02_init_kubeadm.py',
-        timeoutSeconds: 300,
-        description: 'Run kubeadm init and publish join credentials to SSM',
-    },
-    {
-        name: 'installCalicoCNI',
-        scriptPath: 'boot/steps/03_install_calico.py',
-        timeoutSeconds: 300,
-        description: 'Install Calico CNI operator and configure IP pools',
-    },
-    {
-        name: 'configureKubectl',
-        scriptPath: 'boot/steps/04_configure_kubectl.py',
-        timeoutSeconds: 60,
-        description: 'Set up kubectl access for root, ec2-user, and ssm-user',
-    },
-    {
-        name: 'syncManifests',
-        scriptPath: 'boot/steps/05_sync_manifests.py',
-        timeoutSeconds: 360,
-        description: 'Download bootstrap manifests from S3 (patient retry for Day-1)',
-    },
-    {
-        name: 'bootstrapArgoCD',
-        scriptPath: 'boot/steps/06_bootstrap_argocd.py',
-        timeoutSeconds: 900,
-        description: 'Install ArgoCD and apply App-of-Apps root application',
-    },
-    {
-        name: 'verifyCluster',
-        scriptPath: 'boot/steps/07_verify_cluster.py',
-        timeoutSeconds: 120,
-        description: 'Lightweight post-boot health checks',
-    },
-    {
-        name: 'installCloudWatchAgent',
-        scriptPath: 'boot/steps/08_install_cloudwatch_agent.py',
-        timeoutSeconds: 120,
-        description: 'Install and configure CloudWatch Agent for log streaming',
+        name: 'bootstrapControlPlane',
+        scriptPath: 'boot/steps/control_plane.py',
+        timeoutSeconds: 1800,
+        description: 'Run consolidated control plane bootstrap (validate AMI, EIP, kubeadm, Calico, kubectl, S3 sync, ArgoCD, verify, CloudWatch)',
     },
 ];
 
 const WORKER_STEPS: AutomationStep[] = [
     {
-        name: 'validateGoldenAMI',
-        scriptPath: 'boot/steps/01_validate_ami.py',
-        timeoutSeconds: 60,
-        description: 'Verify Golden AMI has required binaries and kernel settings',
-    },
-    {
-        name: 'joinCluster',
-        scriptPath: 'boot/steps/join_cluster.py',
-        timeoutSeconds: 600,
-        description: 'Join worker node to kubeadm cluster via SSM discovery',
-    },
-    {
-        name: 'installCloudWatchAgent',
-        scriptPath: 'boot/steps/08_install_cloudwatch_agent.py',
-        timeoutSeconds: 120,
-        description: 'Install and configure CloudWatch Agent for log streaming',
+        name: 'bootstrapWorker',
+        scriptPath: 'boot/steps/worker.py',
+        timeoutSeconds: 900,
+        description: 'Run consolidated worker bootstrap (validate AMI, join cluster, CloudWatch)',
     },
 ];
 
@@ -319,7 +259,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             documentType: 'Automation',
             name: cpDocName,
             content: this.buildAutomationContent({
-                description: 'Orchestrates Kubernetes control plane bootstrap (9 steps)',
+                description: 'Orchestrates Kubernetes control plane bootstrap (consolidated)',
                 steps: CONTROL_PLANE_STEPS,
                 ssmPrefix: props.ssmPrefix,
                 s3Bucket: props.scriptsBucketName,
@@ -341,7 +281,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             documentType: 'Automation',
             name: workerDocName,
             content: this.buildAutomationContent({
-                description: 'Orchestrates Kubernetes worker node bootstrap (3 steps)',
+                description: 'Orchestrates Kubernetes worker node bootstrap (consolidated)',
                 steps: WORKER_STEPS,
                 ssmPrefix: props.ssmPrefix,
                 s3Bucket: props.scriptsBucketName,
@@ -534,11 +474,18 @@ def handler(event, context):
     s3_bucket = ssm_client.get_parameter(Name=bucket_param_path)["Parameter"]["Value"]
     region = os.environ.get("AWS_REGION", "eu-west-1")
 
-    # Start SSM Automation
+    # Start SSM Automation (tag-based targeting)
+    # Uses Targets to resolve the instance by its k8s:bootstrap-role tag.
+    # TargetParameterName tells SSM which document parameter receives the
+    # resolved instance ID, populating Targets + ResolvedTargets in metadata.
     result = ssm_client.start_automation_execution(
         DocumentName=doc_name,
+        Targets=[{
+            "Key": "tag:k8s:bootstrap-role",
+            "Values": [role],
+        }],
+        TargetParameterName="InstanceId",
         Parameters={
-            "InstanceId": [instance_id],
             "SsmPrefix": [ssm_prefix],
             "S3Bucket": [s3_bucket],
             "Region": [region],
@@ -704,6 +651,8 @@ def handler(event, context):
                     },
                 },
             })),
+            // Surface RunCommand CommandId in execution metadata Outputs
+            outputs: opts.steps.map((step) => `${step.name}.CommandId`),
         };
     }
 
@@ -790,6 +739,8 @@ def handler(event, context):
                     },
                 },
             })),
+            // Surface RunCommand CommandId in execution metadata Outputs
+            outputs: opts.steps.map((step) => `${step.name}.CommandId`),
         };
     }
 }
