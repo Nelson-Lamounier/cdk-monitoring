@@ -15,20 +15,20 @@
 name: Deploy K8s to Development
 
 on:
-  push:
-    branches:
-      - develop
-    paths:
-      - "infra/lib/stacks/kubernetes/**"
-      - "infra/lib/config/kubernetes/**"
-      - "infra/lib/config/nextjs/**"
-      - "infra/lib/projects/kubernetes/**"
-      - "infra/scripts/cd/**"
-      - "infra/bin/app.ts"
-      - ".github/workflows/deploy-kubernetes*.yml"
-      - ".github/workflows/_deploy-kubernetes.yml"
-      - ".github/workflows/_deploy-stack.yml"
-      - ".github/actions/**"
+  # push:
+  #   branches:
+  #     - develop
+  #   paths:
+  #     - "infra/lib/stacks/kubernetes/**"
+  #     - "infra/lib/config/kubernetes/**"
+  #     - "infra/lib/config/nextjs/**"
+  #     - "infra/lib/projects/kubernetes/**"
+  #     - "infra/scripts/cd/**"
+  #     - "infra/bin/app.ts"
+  #     - ".github/workflows/deploy-kubernetes*.yml"
+  #     - ".github/workflows/_deploy-kubernetes.yml"
+  #     - ".github/workflows/_deploy-stack.yml"
+  #     - ".github/actions/**"
   # Weekly: AMI refresh for OS security patches
   schedule:
     - cron: "0 6 * * 1"
