@@ -317,6 +317,14 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
             expect(PublicAccessBlockConfiguration?.IgnorePublicAcls).toBe(true);
             expect(PublicAccessBlockConfiguration?.RestrictPublicBuckets).toBe(true);
         });
+
+        it('should reject anonymous HTTP access (defense-in-depth)', async () => {
+            const bucketName = ssmParams.get(SSM_PATHS.assetsBucketName)!;
+            const url = `https://${bucketName}.s3.${REGION}.amazonaws.com/`;
+
+            const response = await fetch(url, { method: 'GET' });
+            expect(response.status).toBe(403);
+        });
     });
 
     describe('S3 Access Logs Bucket', () => {
