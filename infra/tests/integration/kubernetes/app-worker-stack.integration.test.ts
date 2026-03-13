@@ -4,8 +4,8 @@
  *
  * Runs AFTER the KubernetesAppWorkerStack is deployed via CI (_deploy-kubernetes.yml).
  * Calls real AWS APIs to verify that the app worker instance is running with the
- * correct security group attachment, expected SG port rules, and disabled
- * Source/Destination Check (required for Calico pod networking).
+ * correct EIP association, security group attachment, expected SG port rules,
+ * and disabled Source/Destination Check (required for Calico pod networking).
  *
  * SSM-Anchored Strategy:
  *   1. Read all SSM parameters published by the base stack
@@ -13,9 +13,9 @@
  *   This guarantees we're testing the SAME resources the stack created.
  *
  * Security Group Scope:
- *   The app worker node only attaches the Cluster Base SG. It does NOT
- *   receive the Control Plane, Ingress, or Monitoring SGs — those are
- *   role-specific and attached only to the respective node types.
+ *   The app worker node attaches the Cluster Base SG. The EIP is managed
+ *   by the EipFailover Lambda for CloudFront origin traffic. It does NOT
+ *   receive the Control Plane, Ingress, or Monitoring SGs.
  *
  * Environment Variables:
  *   CDK_ENV      — Target environment (default: development)
@@ -32,6 +32,7 @@ import {
 import {
     EC2Client,
     DescribeInstancesCommand,
+    DescribeAddressesCommand,
     DescribeSecurityGroupsCommand,
 } from '@aws-sdk/client-ec2';
 import {
@@ -241,6 +242,41 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
     });
 
     // =========================================================================
+    // Elastic IP Association
+    //
+    // The EIP is managed by the EipFailover Lambda and should be associated
+    // to the app-worker instance. CloudFront uses this EIP as its origin.
+    // =========================================================================
+    describe('Elastic IP', () => {
+        it('should have the EIP associated to the app-worker instance', async () => {
+            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
+            expect(allocationId).toBeDefined();
+
+            const { Addresses } = await ec2.send(
+                new DescribeAddressesCommand({
+                    AllocationIds: [allocationId],
+                }),
+            );
+
+            expect(Addresses).toHaveLength(1);
+            expect(Addresses![0].InstanceId).toBe(appWorker.instanceId);
+        });
+
+        it('should have a public IP matching the SSM parameter', async () => {
+            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
+            const expectedIp = ssmParams.get(SSM_PATHS.elasticIp)!;
+
+            const { Addresses } = await ec2.send(
+                new DescribeAddressesCommand({
+                    AllocationIds: [allocationId],
+                }),
+            );
+
+            expect(Addresses![0].PublicIp).toBe(expectedIp);
+        });
+    });
+
+    // =========================================================================
     // Cluster Base SG — Port Rules
     //
     // Validates key intra-cluster ports from the config-driven rule set.
@@ -349,6 +385,8 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
             const requiredPaths = [
                 SSM_PATHS.vpcId,
                 SSM_PATHS.securityGroupId,
+                SSM_PATHS.elasticIp,
+                SSM_PATHS.elasticIpAllocationId,
                 SSM_PATHS.kmsKeyArn,
                 SSM_PATHS.scriptsBucket,
             ];

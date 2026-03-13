@@ -51,6 +51,16 @@ def find_healthy_candidates(exclude_id=""):
     ]
 
 
+def has_cluster_tag(instance_id):
+    """Check if instance has the expected cluster tag (defense-in-depth)."""
+    try:
+        resp = ec2.describe_instances(InstanceIds=[instance_id])
+        tags = resp["Reservations"][0]["Instances"][0].get("Tags", [])
+        return any(t["Key"] == TAG_KEY and t["Value"] == TAG_VALUE for t in tags)
+    except Exception:
+        return False
+
+
 def associate_eip(target_id, eip_info):
     """Disassociate (if needed) and associate EIP to target instance."""
     if eip_info.get("AssociationId"):
@@ -75,6 +85,14 @@ def handler(event, context):
 
     # ── LAUNCH EVENT ─────────────────────────────────────────────────
     if "Launch" in detail_type:
+        # Only associate to instances with the correct cluster tag
+        if not has_cluster_tag(instance_id):
+            logger.info(
+                "Instance %s does not have tag %s=%s — skipping",
+                instance_id, TAG_KEY, TAG_VALUE,
+            )
+            return {"statusCode": 200}
+
         if not current_holder:
             logger.info("EIP unassociated — assigning to new instance %s", instance_id)
             associate_eip(instance_id, eip)
@@ -103,3 +121,4 @@ def handler(event, context):
     associate_eip(candidates[0], eip)
     logger.info("EIP failed over to %s", candidates[0])
     return {"statusCode": 200}
+

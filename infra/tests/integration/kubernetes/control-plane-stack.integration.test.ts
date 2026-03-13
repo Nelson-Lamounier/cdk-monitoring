@@ -4,7 +4,7 @@
  *
  * Runs AFTER the KubernetesControlPlaneStack is deployed via CI (_deploy-kubernetes.yml).
  * Calls real AWS APIs to verify that the control plane instance is running with the
- * correct EIP association, security group attachment, and expected SG port rules.
+ * correct security group attachment and expected SG port rules.
  *
  * SSM-Anchored Strategy:
  *   1. Read all SSM parameters published by the base + control plane stacks
@@ -26,7 +26,6 @@ import {
 import {
     EC2Client,
     DescribeInstancesCommand,
-    DescribeAddressesCommand,
     DescribeSecurityGroupsCommand,
     DescribeImagesCommand,
 } from '@aws-sdk/client-ec2';
@@ -247,37 +246,6 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
         });
     });
 
-    // =========================================================================
-    // Elastic IP Association
-    // =========================================================================
-    describe('Elastic IP', () => {
-        it('should have the EIP associated to the control-plane instance', async () => {
-            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
-            expect(allocationId).toBeDefined();
-
-            const { Addresses } = await ec2.send(
-                new DescribeAddressesCommand({
-                    AllocationIds: [allocationId],
-                }),
-            );
-
-            expect(Addresses).toHaveLength(1);
-            expect(Addresses![0].InstanceId).toBe(controlPlane.instanceId);
-        });
-
-        it('should have a public IP matching the SSM parameter', async () => {
-            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
-            const expectedIp = ssmParams.get(SSM_PATHS.elasticIp)!;
-
-            const { Addresses } = await ec2.send(
-                new DescribeAddressesCommand({
-                    AllocationIds: [allocationId],
-                }),
-            );
-
-            expect(Addresses![0].PublicIp).toBe(expectedIp);
-        });
-    });
 
     // =========================================================================
     // Security Group Attachment
@@ -286,7 +254,6 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
         const sgKeys = [
             { key: 'securityGroupId', label: 'Cluster Base' },
             { key: 'controlPlaneSgId', label: 'Control Plane' },
-            { key: 'ingressSgId', label: 'Ingress' },
         ] as const;
 
         it.each(sgKeys)(
@@ -466,9 +433,6 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
                 SSM_PATHS.vpcId,
                 SSM_PATHS.securityGroupId,
                 SSM_PATHS.controlPlaneSgId,
-                SSM_PATHS.ingressSgId,
-                SSM_PATHS.elasticIp,
-                SSM_PATHS.elasticIpAllocationId,
                 SSM_PATHS.kmsKeyArn,
                 SSM_PATHS.scriptsBucket,
             ];

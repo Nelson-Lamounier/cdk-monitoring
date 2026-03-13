@@ -48,6 +48,7 @@ import { Construct } from 'constructs';
 
 import {
     AutoScalingGroupConstruct,
+    EipFailoverConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
 } from '../../common/index';
@@ -137,6 +138,9 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
             this, `${ssmPrefix}/scripts-bucket`,
         );
         const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
+        const eipAllocationId = ssm.StringParameter.valueForStringParameter(
+            this, `${ssmPrefix}/elastic-ip-allocation-id`,
+        );
 
         // =====================================================================
         // User Data — kubeadm join
@@ -373,6 +377,32 @@ echo "SSM Automation will be triggered by the CI pipeline"
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
         this.instanceRole = launchTemplateConstruct.instanceRole;
         this.logGroup = launchTemplateConstruct.logGroup;
+
+        // =====================================================================
+        // EIP Failover — Self-Healing EIP Association
+        //
+        // Automatically associates the cluster EIP to this app-worker when
+        // the ASG launches a new instance (or the old one is terminated).
+        // Defense-in-depth:
+        //   1. EventBridge rule scoped to THIS ASG only (asgName filter)
+        //   2. Lambda verifies instance has k8s:bootstrap-role=app-worker tag
+        // =====================================================================
+        new EipFailoverConstruct(this, 'EipFailover', {
+            eipAllocationId,
+            clusterTagKey: 'k8s:bootstrap-role',
+            clusterTagValue: 'app-worker',
+            namePrefix: workerPrefix,
+            asgName: asgConstruct.autoScalingGroup.autoScalingGroupName,
+        });
+
+        // Belt-and-suspenders: grant the instance itself EIP association
+        // permission so boot-time scripts can also associate if needed.
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'EipAssociation',
+            effect: iam.Effect.ALLOW,
+            actions: ['ec2:AssociateAddress', 'ec2:DescribeAddresses'],
+            resources: ['*'],
+        }));
 
         // =====================================================================
         // Stack Outputs
