@@ -90,7 +90,7 @@ const WORKER_STEPS: AutomationStep[] = [
         name: 'bootstrapWorker',
         scriptPath: 'boot/steps/worker.py',
         timeoutSeconds: 900,
-        description: 'Run consolidated worker bootstrap (validate AMI, join cluster, CloudWatch)',
+        description: 'Run consolidated worker bootstrap (validate AMI, join cluster, CloudWatch, EIP association)',
     },
 ];
 
