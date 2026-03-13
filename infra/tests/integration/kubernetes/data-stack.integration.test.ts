@@ -48,25 +48,29 @@ import {
     PORTFOLIO_GSI2_NAME,
 } from '../../../lib/config/defaults';
 import {
-    DYNAMO_TABLE_STEM,
     nextjsResourceNames,
 } from '../../../lib/config/nextjs';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
+import { stackId, STACK_REGISTRY } from '../../../lib/utilities/naming';
 
 // =============================================================================
-// Configuration
+// Configuration — all values derived from config (same as factory.ts)
 // =============================================================================
 
 const CDK_ENV = (process.env.CDK_ENV ?? 'development') as Environment;
 const REGION = process.env.AWS_REGION ?? 'eu-west-1';
-const PROJECT_NAME = 'k8s';
+
+// Same namePrefix the factory uses (factory.ts line 135)
+const NEXTJS_NAME_PREFIX = 'nextjs';
 
 // Config-driven values — same references the stack uses
-const SSM_PATHS = nextjsSsmPaths(CDK_ENV, PROJECT_NAME);
-const RESOURCE_NAMES = nextjsResourceNames(PROJECT_NAME, CDK_ENV);
-const EXPECTED_TABLE_NAME = `${PROJECT_NAME}-${DYNAMO_TABLE_STEM}-${CDK_ENV}`;
+const SSM_PATHS = nextjsSsmPaths(CDK_ENV, NEXTJS_NAME_PREFIX);
+const RESOURCE_NAMES = nextjsResourceNames(NEXTJS_NAME_PREFIX, CDK_ENV);
+const EXPECTED_TABLE_NAME = RESOURCE_NAMES.dynamoTableName;
 
-// Stack naming convention used by the factory
-const DATA_STACK_NAME = `K8s-Data-${CDK_ENV}`;
+// Stack name — derived from naming utility (same as factory)
+const KUBERNETES_NAMESPACE = getProjectConfig(Project.KUBERNETES).namespace;
+const DATA_STACK_NAME = stackId(KUBERNETES_NAMESPACE, STACK_REGISTRY.kubernetes.data, CDK_ENV);
 
 // AWS SDK clients (shared across tests)
 const ssm = new SSMClient({ region: REGION });
@@ -117,7 +121,45 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
     // Load SSM parameters ONCE before all tests
     beforeAll(async () => {
         ssmParams = await loadSsmParameters();
+
+        if (ssmParams.size === 0) {
+            console.error(
+                `[FATAL] No SSM parameters found under prefix "${SSM_PATHS.prefix}".\n` +
+                `Ensure the KubernetesDataStack (${DATA_STACK_NAME}) is deployed ` +
+                `and SSM parameters exist. Check IAM permissions for ssm:GetParametersByPath.`,
+            );
+        }
     }, 30_000);
+
+    // =========================================================================
+    // Pre-Flight — verify the test has all required parameters and variables
+    // =========================================================================
+    describe('Pre-Flight', () => {
+        it('should have loaded SSM parameters from the correct prefix', () => {
+            console.log(`[Pre-Flight] SSM prefix: ${SSM_PATHS.prefix}`);
+            console.log(`[Pre-Flight] Parameters loaded: ${ssmParams.size}`);
+            if (ssmParams.size > 0) {
+                console.log(`[Pre-Flight] Keys: ${[...ssmParams.keys()].join(', ')}`);
+            }
+            expect(ssmParams.size).toBeGreaterThan(0);
+        });
+
+        it('should have CDK_ENV set to a valid environment', () => {
+            expect(CDK_ENV).toBeDefined();
+            expect(['development', 'staging', 'production']).toContain(CDK_ENV);
+        });
+
+        it('should have AWS_REGION set', () => {
+            expect(REGION).toBeDefined();
+            expect(REGION.length).toBeGreaterThan(0);
+        });
+
+        it('should resolve the correct stack name from config', () => {
+            console.log(`[Pre-Flight] Expected stack name: ${DATA_STACK_NAME}`);
+            // Kubernetes namespace is '' → stack name is 'Data-{env}'
+            expect(DATA_STACK_NAME).toMatch(/^Data-/);
+        });
+    });
 
     // =========================================================================
     // SSM Parameters
@@ -279,7 +321,7 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
 
     describe('S3 Access Logs Bucket', () => {
         it('should exist and be accessible', async () => {
-            const accessLogsBucketName = `${PROJECT_NAME}-access-logs-${CDK_ENV}`;
+            const accessLogsBucketName = `${NEXTJS_NAME_PREFIX}-access-logs-${CDK_ENV}`;
 
             await expect(
                 s3.send(new HeadBucketCommand({ Bucket: accessLogsBucketName })),
@@ -317,7 +359,7 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
             );
 
             const outputs = Stacks![0].Outputs ?? [];
-            const exportPrefix = `${CDK_ENV}-${PROJECT_NAME}`;
+            const exportPrefix = `${CDK_ENV}-${NEXTJS_NAME_PREFIX}`;
 
             const exportedOutputs = outputs.filter((o) => o.ExportName);
             const exportNames = exportedOutputs.map((o) => o.ExportName);
