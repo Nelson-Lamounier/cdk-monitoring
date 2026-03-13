@@ -282,42 +282,43 @@ jobs:
   # Drift Detection (staging/production — informational)
   # ===========================================================================
   # Disabled — CloudFormation provides native drift detection.
-  # To re-enable: set `if:` back to `needs.setup.result == 'success'`
-  # and add `drift-detection` back to deploy-data.needs + condition.
-  drift-detection:
-    name: Drift Detection
-    needs: [setup]
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 15
-    environment: ${{ inputs.environment }}
-    if: false
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Environment and Dependencies
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        run: yarn install --immutable
-        working-directory: infra
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-
-      - name: Run Drift Detection
-        run: just ci-drift kubernetes ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
-        env:
-          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  # To re-enable: uncomment the job below and add `drift-detection`
+  # back to summary.needs.
+  #
+  # drift-detection:
+  #   name: Drift Detection
+  #   needs: [setup]
+  #   runs-on: ubuntu-latest
+  #   container:
+  #     image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+  #   timeout-minutes: 15
+  #   environment: ${{ inputs.environment }}
+  #   if: needs.setup.result == 'success'
+  #
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  #
+  #     - name: Setup Environment and Dependencies
+  #       uses: ./.github/actions/setup-node-yarn
+  #       with:
+  #         node-version: ${{ needs.setup.outputs.node-version }}
+  #
+  #     - name: Install Dependencies
+  #       run: yarn install --immutable
+  #       working-directory: infra
+  #
+  #     - name: Configure AWS Credentials
+  #       uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+  #       with:
+  #         role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+  #         aws-region: ${{ env.AWS_REGION }}
+  #         audience: sts.amazonaws.com
+  #
+  #     - name: Run Drift Detection
+  #       run: just ci-drift kubernetes ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}
+  #       env:
+  #         AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 
   # ===========================================================================
   # Template Validation (cfn-lint)
@@ -954,7 +955,7 @@ jobs:
     needs:
       - setup
       - security-scan
-      - drift-detection
+      # - drift-detection  # disabled — uncomment when re-enabling
       - deploy-data
       - deploy-controlplane
       - deploy-goldenami
