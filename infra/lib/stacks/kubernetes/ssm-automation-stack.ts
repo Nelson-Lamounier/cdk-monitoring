@@ -603,6 +603,7 @@ def handler(event, context):
         const bootstrapAlarmTopic = new sns.Topic(this, 'BootstrapAlarmTopic', {
             topicName: `${prefix}-bootstrap-alarm`,
             displayName: `${prefix} Auto-Bootstrap Failure Alarm`,
+            enforceSSL: true,  // AwsSolutions-SNS3: Require SSL for publishers
         });
 
         if (props.notificationEmail) {
