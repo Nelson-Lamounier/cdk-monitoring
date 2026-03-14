@@ -27,8 +27,9 @@ on:
         default: true
 
 permissions:
-  id-token: write
-  contents: read
+  id-token: write      # OIDC for aws-actions/configure-aws-credentials
+  contents: read       # actions/checkout
+  attestations: write  # actions/attest-build-provenance (SLSA provenance)
 
 concurrency:
   group: deploy-ssm-bootstrap-development
