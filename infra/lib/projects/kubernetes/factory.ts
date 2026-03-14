@@ -296,6 +296,10 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 configs,
                 namePrefix,
                 ssmPrefix,
+                // cert-manager DNS-01 — pass public hosted zone + cross-account role
+                // so CDK writes them to SSM for bootstrap consumption
+                publicHostedZoneId: edgeConfig.hostedZoneId,
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
             },
         );
         controlPlaneStack.addDependency(baseStack);

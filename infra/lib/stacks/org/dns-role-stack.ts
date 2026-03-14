@@ -149,6 +149,7 @@ export class CrossAccountDnsRoleStack extends cdk.Stack {
                 actions: [
                     'route53:ChangeResourceRecordSets',
                     'route53:ListResourceRecordSets',
+                    'route53:GetChange',
                 ],
                 resources: hostedZoneArns,
             }),

@@ -350,7 +350,7 @@ const DEFAULT_K8S_SECURITY_GROUPS: K8sSecurityGroupConfig = {
         allowAllOutbound: false,
         rules: [
             // Static rules only — CloudFront prefix list + admin IPs added at runtime
-            { port: TRAEFIK_HTTP_PORT, protocol: 'tcp', source: 'anyIpv4', description: 'HTTP from anywhere (LetsEncrypt HTTP-01 + CloudFront origin)' },
+            { port: TRAEFIK_HTTP_PORT, protocol: 'tcp', source: 'anyIpv4', description: 'HTTP from anywhere (CloudFront origin + HTTP→HTTPS redirect)' },
         ],
     },
 };
