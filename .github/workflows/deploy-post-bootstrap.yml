@@ -1,0 +1,42 @@
+# @format
+# @description Deploy Post-Bootstrap Config to Development
+#
+# Standalone pipeline to re-deploy K8s application secrets and verify
+# ArgoCD health WITHOUT re-triggering SSM Automation/Bootstrap.
+#
+# Use this when:
+#   - SSM parameters changed (secret values rotated, new config)
+#   - Helm charts or K8s secrets need redeployment
+#   - ArgoCD health verification after manual cluster changes
+#
+# No bootstrap is triggered — this only deploys secrets and verifies.
+
+name: Deploy Post-Bootstrap Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - development
+        default: development
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-post-bootstrap-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  post-bootstrap:
+    name: Deploy Secrets & Verify
+    uses: ./.github/workflows/_post-bootstrap-config.yml
+    with:
+      environment: ${{ inputs.environment }}
+      cdk-environment: ${{ inputs.environment }}
+    secrets: inherit

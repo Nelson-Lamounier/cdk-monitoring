@@ -2,35 +2,34 @@
 # @description Reusable Kubernetes Infrastructure Deployment Workflow
 #
 # ─── Purpose ───────────────────────────────────────────────────────
-# Deploys the K8s (kubeadm) infrastructure stacks via CDK.
-# This pipeline is infrastructure-only — it provisions AWS resources
+# Deploys ALL K8s (kubeadm) infrastructure stacks via CDK, including
+# the SSM Automation stack. This pipeline provisions AWS resources
 # but does NOT bootstrap Kubernetes or trigger SSM Automation.
 #
 # ─── Two-Pipeline Architecture ─────────────────────────────────────
-# Kubernetes bootstrapping is split across two independent pipelines:
+# Kubernetes deployment is split across two independent pipelines:
 #
 #   Pipeline 1: _deploy-kubernetes.yml (this file)
-#     - Deploys CDK stacks: networking, compute, IAM, API, edge
+#     - Deploys ALL CDK stacks: networking, compute, IAM, API, edge,
+#       AND SSM Automation (documents + IAM role)
 #     - EC2 user data exports env vars, publishes instance IDs to SSM,
 #       and sends cfn-signal to confirm infrastructure readiness
 #     - Does NOT download scripts from S3 or trigger SSM Automation
 #
 #   Pipeline 2: _deploy-ssm-automation.yml
-#     - Deploys the SSM Automation CDK stack (documents + IAM role)
-#     - Syncs bootstrap scripts (Python steps) to S3
-#     - Triggers SSM Automation on existing nodes (control-plane first,
-#       then workers after CP completes)
-#     - Observes bootstrap progress with CloudWatch log streaming
+#     - Bootstrap-only: syncs scripts to S3, triggers SSM Automation,
+#       observes progress, deploys secrets, and verifies ArgoCD
+#     - Does NOT deploy any CDK stacks (that's handled here)
 #
 # ─── Day-1 Deployment ──────────────────────────────────────────────
 # For a fresh cluster, run both pipelines in sequence:
-#   1. deploy-kubernetes.yml  → provisions all infrastructure
-#   2. deploy-ssm-automation.yml → deploys SSM stack + triggers bootstrap
+#   1. deploy-kubernetes.yml  → provisions all infrastructure + SSM docs
+#   2. deploy-ssm-automation.yml → syncs scripts + triggers bootstrap
 #
 # ─── Day-2+ Updates ───────────────────────────────────────────────
 # - Infrastructure changes: push to trigger deploy-kubernetes.yml
 # - Bootstrap script changes: push to trigger deploy-ssm-automation.yml
-#   (deploys SSM docs, syncs scripts, re-triggers bootstrap automatically)
+#   (syncs scripts, re-triggers bootstrap — no CDK deploy needed)
 #
 # ─── Stack Deployment Order ────────────────────────────────────────
 #   1.  Data             (DynamoDB + S3 + SSM Parameters)
@@ -38,6 +37,7 @@
 #   2.  Base             (VPC networking + SG + KMS + EBS + EIP + S3 Scripts)
 #   2b. ✅ Verify Base    (Integration test — VPC, SGs, KMS, EBS, EIP, Route53)
 #   2c. Golden AMI       (Bake containerd + kubeadm into AMI)
+#   2d. SSM Automation   (SSM Automation documents + IAM role) [parallel with 2c]
 #   3.  Compute          (Control Plane EC2 + ASG)
 #   3b. AppWorker        (Application worker node)
 #   3c. MonitoringWorker (Monitoring worker node)
@@ -103,6 +103,14 @@ on:
         required: false
         type: string
         default: ""
+
+    outputs:
+      control-plane-doc-name:
+        description: "SSM Automation document name for control plane bootstrap"
+        value: ${{ jobs.read-ssm-outputs.outputs.control-plane-doc-name }}
+      worker-doc-name:
+        description: "SSM Automation document name for worker bootstrap"
+        value: ${{ jobs.read-ssm-outputs.outputs.worker-doc-name }}
 
     secrets:
       AWS_OIDC_ROLE:
@@ -578,11 +586,84 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Deploy SSM Automation Stack (2d) — SSM Documents + IAM Role
+  #
+  # Runs in parallel with Golden AMI bake. Deploys the SSM Automation
+  # documents and IAM role that the bootstrap-only pipeline uses.
+  # ===========================================================================
+  deploy-ssm:
+    name: Deploy SSM Automation
+    needs: [setup, deploy-base, verify-base-stack]
+    if: >-
+      always()
+      && needs.deploy-base.result == 'success'
+      && needs.verify-base-stack.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.ssmautomation-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Read SSM Stack Outputs — extract SSM document names from CloudFormation
+  # ===========================================================================
+  read-ssm-outputs:
+    name: Read SSM Stack Outputs
+    needs: [setup, deploy-ssm]
+    if: needs.deploy-ssm.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    outputs:
+      control-plane-doc-name: ${{ steps.extract.outputs.control-plane-doc-name }}
+      worker-doc-name: ${{ steps.extract.outputs.worker-doc-name }}
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Extract SSM Document Names
+        id: extract
+        run: |
+          STACK_NAME="${{ needs.setup.outputs.ssmautomation-stack }}"
+          REGION="${{ vars.AWS_REGION || 'eu-west-1' }}"
+
+          echo "Reading outputs from stack: $STACK_NAME"
+          OUTPUTS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs' \
+            --output json \
+            --region "$REGION" 2>/dev/null || echo "[]")
+
+          CP_DOC=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="ControlPlaneDocName") | .OutputValue // empty' 2>/dev/null || echo "")
+          WORKER_DOC=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="WorkerDocName") | .OutputValue // empty' 2>/dev/null || echo "")
+
+          echo "control-plane-doc-name=$CP_DOC" >> $GITHUB_OUTPUT
+          echo "worker-doc-name=$WORKER_DOC" >> $GITHUB_OUTPUT
+
+          echo "### SSM Automation Stack Outputs ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Document | Name |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Control Plane | $CP_DOC |" >> $GITHUB_STEP_SUMMARY
+          echo "| Worker | $WORKER_DOC |" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
   # Deploy Compute Stack — Control Plane EC2 + ASG
   #
   # Waits for Golden AMI bake (or skip) so the Launch Template
   # resolves to the latest baked AMI.
-  # SSM Automation stack is deployed separately via _deploy-ssm-automation.yml.
   # ===========================================================================
   deploy-controlplane:
     name: Deploy Control Plane
@@ -806,8 +887,8 @@ jobs:
   # ===========================================================================
   verify-ssm-automation:
     name: Verify SSM Automation
-    needs: [setup, deploy-appiam]
-    if: always() && needs.deploy-appiam.result == 'success'
+    needs: [setup, deploy-ssm]
+    if: always() && needs.deploy-ssm.result == 'success'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
@@ -888,6 +969,7 @@ jobs:
     needs:
       [
         setup,
+        deploy-ssm,
         deploy-controlplane,
         deploy-app-worker,
         deploy-monitoring-worker,
@@ -899,7 +981,8 @@ jobs:
     if: |
       always()
       && (
-        needs.deploy-controlplane.result == 'failure'
+        needs.deploy-ssm.result == 'failure'
+        || needs.deploy-controlplane.result == 'failure'
         || needs.deploy-app-worker.result == 'failure'
         || needs.deploy-monitoring-worker.result == 'failure'
         || needs.deploy-edge.result == 'failure'
@@ -957,6 +1040,7 @@ jobs:
       - security-scan
       # - drift-detection  # disabled — uncomment when re-enabling
       - deploy-data
+      - deploy-ssm
       - deploy-controlplane
       - deploy-goldenami
       - deploy-app-worker
