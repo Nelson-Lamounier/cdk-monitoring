@@ -6,7 +6,7 @@
 #
 #   Phase 1: Foundation     →  Shared VPC + ECR          (_deploy-stack.yml)
 #   Phase 2: K8s Infra      →  10-stack K8s deployment   (_deploy-kubernetes.yml)
-#   Phase 3: SSM Bootstrap  →  SSM Automation + bootstrap (_deploy-ssm-automation.yml)
+#   Phase 3: SSM Bootstrap  →  Bootstrap + secrets          (_deploy-ssm-automation.yml)
 #   Phase 4: GitOps         →  Validate + ArgoCD sync    (gitops-k8s.yml)
 #   Phase 5: Summary        →  Aggregated results        (inline)
 #
@@ -164,11 +164,11 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Phase 3: SSM Automation — Bootstrap Kubernetes Nodes
+  # Phase 3: SSM Bootstrap — Sync Scripts + Trigger Bootstrap
   #
-  # Deploys SSM Automation documents, syncs bootstrap scripts to S3,
-  # triggers SSM Automation on all nodes (control-plane first, then workers),
-  # and deploys application secrets to the cluster.
+  # Syncs bootstrap scripts to S3, triggers SSM Automation on all nodes
+  # (control-plane first, then workers), and deploys app secrets.
+  # SSM Automation CDK stack was already deployed in Phase 2.
   # ===========================================================================
   deploy-ssm:
     name: "Phase 3: SSM Bootstrap"
@@ -181,7 +181,6 @@ jobs:
     with:
       environment: ${{ inputs.environment }}
       cdk-environment: ${{ needs.gate.outputs.cdk-environment }}
-      require-approval: ${{ needs.gate.outputs.require-approval }}
       trigger-bootstrap: true
     secrets: inherit
 
@@ -221,7 +220,7 @@ jobs:
           echo "| Gate | Confirm & Resolve | \`${{ needs.gate.result }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| 1. Foundation | Shared VPC + ECR | \`${{ needs.deploy-shared.result }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| 2. K8s Infra | 10-Stack Deploy | \`${{ needs.deploy-kubernetes.result }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| 3. SSM Bootstrap | SSM Automation + Bootstrap | \`${{ needs.deploy-ssm.result }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3. SSM Bootstrap | Bootstrap + Secrets | \`${{ needs.deploy-ssm.result }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| 4. GitOps | Validate + ArgoCD Sync | \`${{ needs.deploy-gitops.result }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
