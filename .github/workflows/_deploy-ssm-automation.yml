@@ -103,6 +103,11 @@ on:
         description: "IPv6 CIDR for Traefik admin-ip-allowlist (Grafana/Prometheus/ArgoCD)"
         required: false
 
+permissions:
+  id-token: write        # Required for OIDC → aws-actions/configure-aws-credentials
+  contents: read         # Required for actions/checkout
+  attestations: write    # Required for actions/attest-build-provenance (SLSA provenance)
+
 env:
   NODE_VERSION: "22"
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
@@ -326,6 +331,35 @@ jobs:
 
       - name: Sync Scripts to S3
         run: just ci-sync-scripts --environment ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
+
+      # -----------------------------------------------------------------------
+      # SLSA Build Provenance — Attest bootstrap scripts
+      #
+      # Creates a SHA-256 checksums manifest of all synced scripts,
+      # then generates a Sigstore-signed SLSA provenance attestation.
+      # This proves the scripts uploaded to S3 were built by this
+      # specific GitHub Actions workflow run and haven't been tampered with.
+      #
+      # Verify locally:
+      #   gh attestation verify bootstrap-scripts-checksums.txt -R Nelson-Lamounier/cdk-monitoring
+      # -----------------------------------------------------------------------
+      - name: Generate Checksums Manifest
+        run: |
+          echo "Generating SHA-256 checksums for synced scripts..."
+          find kubernetes-app/k8s-bootstrap \
+               kubernetes-app/workloads/charts/nextjs \
+               kubernetes-app/platform/charts/monitoring \
+            -type f -not -path '*/chart/*' -not -name '__pycache__' \
+            | sort \
+            | xargs sha256sum \
+            > bootstrap-scripts-checksums.txt
+          echo "Checksum manifest ($(wc -l < bootstrap-scripts-checksums.txt) files):"
+          cat bootstrap-scripts-checksums.txt
+
+      - name: Attest Build Provenance
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v2.1.0
+        with:
+          subject-path: bootstrap-scripts-checksums.txt
 
   # ===========================================================================
   # Trigger SSM Bootstrap — Start SSM Automation on existing nodes
