@@ -351,6 +351,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 monitoringWorkerConfig: configs.monitoringWorker,
                 controlPlaneSsmPrefix: ssmPrefix,
                 namePrefix,
+                // cert-manager DNS-01 — pods may run on this worker node
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
             },
         );
         monitoringWorkerStack.addDependency(controlPlaneStack);

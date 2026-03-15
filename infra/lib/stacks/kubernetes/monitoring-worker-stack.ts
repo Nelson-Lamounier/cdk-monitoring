@@ -92,6 +92,13 @@ export interface KubernetesMonitoringWorkerStackProps extends cdk.StackProps {
 
     /** Log retention @default ONE_WEEK */
     readonly logRetention?: logs.RetentionDays;
+
+    /**
+     * Cross-account IAM role ARN for Route 53 access.
+     * cert-manager may run on this node and needs to assume this role
+     * to create DNS-01 TXT records in the root account's hosted zone.
+     */
+    readonly crossAccountDnsRoleArn?: string;
 }
 
 // =============================================================================
@@ -484,6 +491,23 @@ echo "SSM Automation will be triggered by the CI pipeline"
         this.instanceRole = launchTemplateConstruct.instanceRole;
         this.alertsTopic = alertsTopic;
         this.logGroup = launchTemplateConstruct.logGroup;
+
+        // =====================================================================
+        // cert-manager DNS-01 — Cross-account Route 53 access
+        //
+        // cert-manager pods can be scheduled on any node (including this
+        // worker). For DNS-01 challenges, cert-manager uses the instance
+        // profile to assume the cross-account Route53DnsValidation role
+        // in the root account to create TXT records.
+        // =====================================================================
+        if (props.crossAccountDnsRoleArn) {
+            launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+                sid: 'AssumeRoute53DnsRole',
+                effect: iam.Effect.ALLOW,
+                actions: ['sts:AssumeRole'],
+                resources: [props.crossAccountDnsRoleArn],
+            }));
+        }
 
         // =====================================================================
         // NLB Target Registration
