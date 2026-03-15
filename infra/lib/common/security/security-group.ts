@@ -179,11 +179,12 @@ export class SecurityGroupConstruct extends Construct {
         for (const rule of props.rules ?? []) {
             const peer = this._resolvePeer(rule.source);
             const port = SecurityGroupConstruct._resolvePort(rule);
+            const desc = SecurityGroupConstruct._sanitiseDescription(rule.description);
 
             if (rule.direction === 'ingress') {
-                this.securityGroup.addIngressRule(peer, port, rule.description);
+                this.securityGroup.addIngressRule(peer, port, desc);
             } else {
-                this.securityGroup.addEgressRule(peer, port, rule.description);
+                this.securityGroup.addEgressRule(peer, port, desc);
             }
         }
     }
@@ -232,7 +233,7 @@ export class SecurityGroupConstruct extends Construct {
         this.securityGroup.addIngressRule(
             ec2.Peer.ipv4(cidr),
             ec2.Port.tcp(port),
-            description,
+            SecurityGroupConstruct._sanitiseDescription(description),
         );
     }
 
@@ -247,7 +248,7 @@ export class SecurityGroupConstruct extends Construct {
         this.securityGroup.addIngressRule(
             sourceSecurityGroup,
             ec2.Port.tcp(port),
-            description,
+            SecurityGroupConstruct._sanitiseDescription(description),
         );
     }
 
@@ -310,5 +311,16 @@ export class SecurityGroupConstruct extends Construct {
             case 'anyIpv4':
                 return { type: 'anyIpv4' };
         }
+    }
+
+    /**
+     * Sanitise a security group rule description to only contain characters
+     * from the AWS-allowed set and stay under the 256-character limit.
+     *
+     * Allowed: a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*
+     * @see https://docs.aws.amazon.com/ec2/latest/APIReference/API_IpPermission.html
+     */
+    private static _sanitiseDescription(raw: string): string {
+        return raw.replace(/[^a-zA-Z0-9. _\-:/()#,@[\]+=&;{}!$*]/g, '-').slice(0, 255);
     }
 }
