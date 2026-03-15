@@ -249,12 +249,12 @@ export class KubernetesBaseStack extends cdk.Stack {
             `/${this.stackName}/AWS679f53fac002430cb0da5b7982bd2287/Resource`,
             [{
                 id: 'AwsSolutions-L1',
-                reason: 'AwsCustomResource singleton Lambda runtime is managed by CDK — deploy-time only, reads prefix list ID',
+                reason: 'AwsCustomResource singleton Lambda runtime is managed by CDK - deploy-time only, reads prefix list ID',
             }],
         );
         NagSuppressions.addResourceSuppressions(cfPrefixListLookup, [{
             id: 'AwsSolutions-IAM5',
-            reason: 'ec2:DescribeManagedPrefixLists requires wildcard resource — read-only API call',
+            reason: 'ec2:DescribeManagedPrefixLists requires wildcard resource - read-only API call',
         }], true);
 
         this.ingressSg.addIngressRule(
@@ -273,6 +273,16 @@ export class KubernetesBaseStack extends cdk.Stack {
         if (isResolved) {
             const adminIps = adminIpsRaw.split(',').map((ip) => ip.trim()).filter(Boolean);
 
+            /**
+             * Sanitise SG rule description to only contain characters from the
+             * AWS-allowed set and stay under the 256-character limit.
+             *
+             * Allowed: a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*
+             * @see https://docs.aws.amazon.com/ec2/latest/APIReference/API_IpPermission.html
+             */
+            const sanitiseDesc = (raw: string): string =>
+                raw.replace(/[^a-zA-Z0-9. _\-:/()#,@[\]+=&;{}!$*]/g, '-').slice(0, 255);
+
             for (const ip of adminIps) {
                 const isIpv6 = ip.includes(':');
                 const peer = isIpv6 ? ec2.Peer.ipv6(ip) : ec2.Peer.ipv4(ip);
@@ -281,7 +291,7 @@ export class KubernetesBaseStack extends cdk.Stack {
                 this.ingressSg.addIngressRule(
                     peer,
                     ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
-                    `HTTPS from admin ${label} (${ip})`,
+                    sanitiseDesc(`HTTPS from admin ${label} (${ip})`),
                 );
             }
         }
@@ -455,7 +465,7 @@ export class KubernetesBaseStack extends cdk.Stack {
             recordName: K8S_API_DNS_NAME,
             target: route53.RecordTarget.fromIpAddresses('10.0.0.1'),
             ttl: cdk.Duration.seconds(30),
-            comment: 'Kubernetes API server — updated by control plane user-data',
+            comment: 'Kubernetes API server - updated by control plane user-data',
         });
 
         // =====================================================================
@@ -477,7 +487,7 @@ export class KubernetesBaseStack extends cdk.Stack {
 
         NagSuppressions.addResourceSuppressions(accessLogsBucketConstruct.bucket, [{
             id: 'AwsSolutions-S1',
-            reason: 'Access logs bucket cannot log to itself — this is the terminal logging destination',
+            reason: 'Access logs bucket cannot log to itself - this is the terminal logging destination',
         }]);
 
         // =====================================================================

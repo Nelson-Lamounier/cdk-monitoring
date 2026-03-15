@@ -209,7 +209,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             stackId(this.namespace, 'Base', environment),
             {
                 env,
-                description: `Kubernetes base infrastructure (VPC, SG, EBS, EIP) — ${environment}`,
+                description: `Kubernetes base infrastructure (VPC, SG, EBS, EIP) - ${environment}`,
                 targetEnvironment: environment,
                 configs,
                 namePrefix,
@@ -240,7 +240,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 stackId(this.namespace, 'GoldenAmi', environment),
                 {
                     env,
-                    description: `Golden AMI Image Builder pipeline — ${environment}`,
+                    description: `Golden AMI Image Builder pipeline - ${environment}`,
                     targetEnvironment: environment,
                     vpcId: sharedVpcId,
                     configs,
@@ -265,7 +265,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             stackId(this.namespace, 'SsmAutomation', environment),
             {
                 env,
-                description: `SSM Automation documents for K8s bootstrap — ${environment}`,
+                description: `SSM Automation documents for K8s bootstrap - ${environment}`,
                 targetEnvironment: environment,
                 configs,
                 namePrefix,
@@ -291,7 +291,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 vpcId: sharedVpcId,
                 env,
-                description: `Shared kubeadm Kubernetes cluster (monitoring + application) — ${environment}`,
+                description: `Shared kubeadm Kubernetes cluster (monitoring + application) - ${environment}`,
                 targetEnvironment: environment,
                 configs,
                 namePrefix,
@@ -320,7 +320,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 vpcId: sharedVpcId,
                 env,
-                description: `Kubernetes worker node for Next.js application — ${environment}`,
+                description: `Kubernetes worker node for Next.js application - ${environment}`,
                 targetEnvironment: environment,
                 workerConfig,
                 controlPlaneSsmPrefix: ssmPrefix,
@@ -346,7 +346,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 vpcId: sharedVpcId,
                 env,
-                description: `Kubernetes monitoring worker node — ${environment}`,
+                description: `Kubernetes monitoring worker node - ${environment}`,
                 targetEnvironment: environment,
                 monitoringWorkerConfig: configs.monitoringWorker,
                 controlPlaneSsmPrefix: ssmPrefix,
@@ -371,7 +371,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 controlPlaneStack,
                 env,
-                description: `Application-tier IAM grants for Kubernetes cluster — ${environment}`,
+                description: `Application-tier IAM grants for Kubernetes cluster - ${environment}`,
                 targetEnvironment: environment,
                 configs,
                 ssmPrefix,
