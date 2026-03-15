@@ -370,6 +370,7 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
             ToPort?: number;
             IpProtocol?: string;
             IpRanges?: Array<{ CidrIp?: string }>;
+            PrefixListIds?: Array<{ PrefixListId?: string }>;
         }>;
 
         beforeAll(async () => {
@@ -389,15 +390,15 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
             expect(httpRule).toBeDefined();
         });
 
-        it('should allow HTTP from 0.0.0.0/0 (LetsEncrypt + CloudFront)', () => {
+        it('should allow HTTP from CloudFront managed prefix list', () => {
             const httpRule = ingressRules.find(
                 (r) => r.FromPort === 80 && r.ToPort === 80 && r.IpProtocol === 'tcp',
             );
 
-            const anyIpv4 = httpRule?.IpRanges?.find(
-                (range) => range.CidrIp === '0.0.0.0/0',
-            );
-            expect(anyIpv4).toBeDefined();
+            // HTTP is restricted to CloudFront origin-facing IPs via managed prefix list
+            // (not 0.0.0.0/0). The rule should have a PrefixListIds entry.
+            expect(httpRule?.PrefixListIds).toBeDefined();
+            expect(httpRule!.PrefixListIds!.length).toBeGreaterThanOrEqual(1);
         });
     });
 
