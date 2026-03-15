@@ -9,6 +9,7 @@
  * Usage:
  *   npx tsx scripts/deployment/deploy.ts <stack-name> <project> <environment>
  *   npx tsx scripts/deployment/deploy.ts K8s-Compute-development k8s development --require-approval never
+ *   npx tsx scripts/deployment/deploy.ts Org-DnsRole-prod org development --context hostedZoneIds='["Z123"]' --context trustedAccountIds='["111"]'
  *
  * Outputs (via $GITHUB_OUTPUT):
  *   status        - deployment result (success|failure)
@@ -42,6 +43,11 @@ const { positionals, values } = parseArgs({
       type: 'string',
       default: 'never',
     },
+    context: {
+      type: 'string',
+      multiple: true,
+      default: [],
+    },
   },
 });
 
@@ -51,9 +57,18 @@ const requireApproval = (values['require-approval'] ?? 'never') as
   | 'broadening'
   | 'any-change';
 
+// Parse --context key=value pairs into a Record for buildCdkArgs
+const extraContext: Record<string, string> = {};
+for (const entry of values.context ?? []) {
+  const eqIdx = entry.indexOf('=');
+  if (eqIdx > 0) {
+    extraContext[entry.slice(0, eqIdx)] = entry.slice(eqIdx + 1);
+  }
+}
+
 if (!stackName || !project || !environment) {
   console.error(
-    'Usage: deploy.ts <stack-name> <project> <environment> [--require-approval never|broadening|any-change]',
+    'Usage: deploy.ts <stack-name> <project> <environment> [--require-approval never] [--context key=value ...]',
   );
   console.error('');
   console.error('Examples:');
@@ -62,6 +77,9 @@ if (!stackName || !project || !environment) {
   );
   console.error(
     '  deploy.ts Bedrock-Compute-production bedrock production --require-approval broadening',
+  );
+  console.error(
+    '  deploy.ts Org-DnsRole-prod org development --context hostedZoneIds=\'["Z123"]\'',
   );
   process.exit(1);
 }
@@ -111,7 +129,7 @@ async function main(): Promise<void> {
     command: 'deploy',
     stackNames: [stackName],
     exclusively: true,
-    context: { project, environment },
+    context: { project, environment, ...extraContext },
     requireApproval,
     method: 'direct',
     progress: 'events',
