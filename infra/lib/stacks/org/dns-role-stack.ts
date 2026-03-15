@@ -141,7 +141,7 @@ export class CrossAccountDnsRoleStack extends cdk.Stack {
             (zoneId) => `arn:aws:route53:::hostedzone/${zoneId}`,
         );
 
-        // Allow creating/deleting DNS validation records
+        // Allow creating/deleting DNS validation records (scoped to hosted zones)
         this.role.addToPolicy(
             new iam.PolicyStatement({
                 sid: 'Route53DnsValidation',
@@ -149,9 +149,19 @@ export class CrossAccountDnsRoleStack extends cdk.Stack {
                 actions: [
                     'route53:ChangeResourceRecordSets',
                     'route53:ListResourceRecordSets',
-                    'route53:GetChange',
                 ],
                 resources: hostedZoneArns,
+            }),
+        );
+
+        // GetChange uses change/* ARNs, not hostedzone/* ARNs.
+        // cert-manager polls this after creating a TXT record to wait for propagation.
+        this.role.addToPolicy(
+            new iam.PolicyStatement({
+                sid: 'Route53GetChange',
+                effect: iam.Effect.ALLOW,
+                actions: ['route53:GetChange'],
+                resources: ['arn:aws:route53:::change/*'],
             }),
         );
 
