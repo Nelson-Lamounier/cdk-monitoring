@@ -41,6 +41,7 @@ import { NagSuppressions } from 'cdk-nag';
 
 import * as dlm from 'aws-cdk-lib/aws-dlm';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as route53 from 'aws-cdk-lib/aws-route53';
@@ -52,6 +53,7 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 
 import { SecurityGroupConstruct, SsmParameterStoreConstruct } from '../../common';
+import { NetworkLoadBalancerConstruct } from '../../common/networking';
 import { S3BucketConstruct } from '../../common/storage';
 import { Environment } from '../../config/environments';
 import {
@@ -152,6 +154,15 @@ export class KubernetesBaseStack extends cdk.Stack {
 
     /** Elastic IP for stable external access */
     public readonly elasticIp: ec2.CfnEIP;
+
+    /** Network Load Balancer — distributes external traffic to Traefik */
+    public readonly nlbConstruct: NetworkLoadBalancerConstruct;
+
+    /** NLB target group for HTTP (port 80) traffic */
+    public readonly nlbHttpTargetGroup: elbv2.NetworkTargetGroup;
+
+    /** NLB target group for HTTPS (port 443) traffic */
+    public readonly nlbHttpsTargetGroup: elbv2.NetworkTargetGroup;
 
     constructor(scope: Construct, id: string, props: KubernetesBaseStackProps) {
         super(scope, id, props);
@@ -382,6 +393,46 @@ export class KubernetesBaseStack extends cdk.Stack {
         });
 
         // =====================================================================
+        // Network Load Balancer (NLB)
+        //
+        // Replaces the previous EIP-to-instance + Lambda failover model.
+        // The NLB is internet-facing with the cluster EIP attached via
+        // SubnetMapping. Traffic flow:
+        //   CloudFront → NLB:80 → Target Group → Traefik (app-worker/mon-worker)
+        //   Admin      → NLB:443 → Target Group → Traefik (app-worker/mon-worker)
+        //
+        // Benefits over direct EIP:
+        //   - Automatic health-check-based failover (no Lambda needed)
+        //   - Multiple active targets possible
+        //   - Same EIP → no DNS or CloudFront changes
+        //
+        // AZ: Matches EBS volume binding ({region}a) for single-AZ cost
+        // optimisation. NLB is in the same public subnet as the instances.
+        // =====================================================================
+        this.nlbConstruct = new NetworkLoadBalancerConstruct(this, 'Nlb', {
+            vpc: this.vpc,
+            loadBalancerName: `${namePrefix}-nlb`,
+            availabilityZone: `${this.region}a`,
+            eipAllocationId: this.elasticIp.attrAllocationId,
+        });
+
+        // Target groups — downstream ASGs register themselves
+        this.nlbHttpTargetGroup = this.nlbConstruct.createTargetGroup('HttpTg', {
+            targetGroupName: `${namePrefix}-http`,
+            port: TRAEFIK_HTTP_PORT,
+        });
+
+        this.nlbHttpsTargetGroup = this.nlbConstruct.createTargetGroup('HttpsTg', {
+            targetGroupName: `${namePrefix}-https`,
+            port: TRAEFIK_HTTPS_PORT,
+            healthCheckPort: TRAEFIK_HTTP_PORT, // Health check on port 80 (Traefik always listening)
+        });
+
+        // Listeners
+        this.nlbConstruct.addTcpListener('HttpListener', TRAEFIK_HTTP_PORT, this.nlbHttpTargetGroup);
+        this.nlbConstruct.addTcpListener('HttpsListener', TRAEFIK_HTTPS_PORT, this.nlbHttpsTargetGroup);
+
+        // =====================================================================
         // Route 53 Private Hosted Zone (stable API server DNS)
         //
         // Provides a DNS-based control plane endpoint so that workers
@@ -472,6 +523,8 @@ export class KubernetesBaseStack extends cdk.Stack {
                 [ssmPaths.hostedZoneId]: this.hostedZone.hostedZoneId,
                 [ssmPaths.apiDnsName]: K8S_API_DNS_NAME,
                 [ssmPaths.kmsKeyArn]: this.logGroupKmsKey.keyArn,
+                [ssmPaths.nlbHttpTargetGroupArn]: this.nlbHttpTargetGroup.targetGroupArn,
+                [ssmPaths.nlbHttpsTargetGroupArn]: this.nlbHttpsTargetGroup.targetGroupArn,
             },
         });
 

@@ -40,6 +40,7 @@
 
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -156,6 +157,20 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
             this, `${ssmPrefix}/scripts-bucket`,
         );
         const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
+
+        // NLB target groups — ASG registers with both for health-check failover
+        const nlbHttpTargetGroupArn = ssm.StringParameter.valueForStringParameter(
+            this, `${ssmPrefix}/nlb-http-target-group-arn`,
+        );
+        const nlbHttpsTargetGroupArn = ssm.StringParameter.valueForStringParameter(
+            this, `${ssmPrefix}/nlb-https-target-group-arn`,
+        );
+        const nlbHttpTg = elbv2.NetworkTargetGroup.fromTargetGroupAttributes(
+            this, 'NlbHttpTg', { targetGroupArn: nlbHttpTargetGroupArn },
+        );
+        const nlbHttpsTg = elbv2.NetworkTargetGroup.fromTargetGroupAttributes(
+            this, 'NlbHttpsTg', { targetGroupArn: nlbHttpsTargetGroupArn },
+        );
 
         // =====================================================================
         // User Data — kubeadm join
@@ -469,6 +484,15 @@ echo "SSM Automation will be triggered by the CI pipeline"
         this.instanceRole = launchTemplateConstruct.instanceRole;
         this.alertsTopic = alertsTopic;
         this.logGroup = launchTemplateConstruct.logGroup;
+
+        // =====================================================================
+        // NLB Target Registration
+        //
+        // Register this ASG with the NLB target groups so the NLB can route
+        // traffic to Traefik on this node as a failover target.
+        // =====================================================================
+        asgConstruct.autoScalingGroup.attachToNetworkTargetGroup(nlbHttpTg);
+        asgConstruct.autoScalingGroup.attachToNetworkTargetGroup(nlbHttpsTg);
 
         // =====================================================================
         // Stack Outputs

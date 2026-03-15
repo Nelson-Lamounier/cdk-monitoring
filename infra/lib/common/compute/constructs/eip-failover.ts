@@ -1,5 +1,10 @@
 /**
  * @format
+ * @deprecated — Replaced by NLB health-check failover (see base-stack.ts).
+ * The NLB distributes traffic to healthy targets automatically via TCP
+ * health checks. The EIP is now attached to the NLB via SubnetMapping.
+ * This file is kept for reference only.
+ *
  * EIP Failover Construct — Hybrid-HA Guardian
  *
  * Reusable construct that automatically re-associates an Elastic IP

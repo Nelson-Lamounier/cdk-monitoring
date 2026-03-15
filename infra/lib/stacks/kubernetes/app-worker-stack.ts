@@ -37,6 +37,7 @@
 
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -48,7 +49,9 @@ import { Construct } from 'constructs';
 
 import {
     AutoScalingGroupConstruct,
-    EipFailoverConstruct,
+    // @deprecated — EipFailoverConstruct replaced by NLB health-check failover.
+    // Kept for reference. See base-stack.ts NLB section.
+    // EipFailoverConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
 } from '../../common/index';
@@ -149,8 +152,19 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
             this, 'IngressSg',
             ssm.StringParameter.valueForStringParameter(this, `${ssmPrefix}/ingress-sg-id`),
         );
-        const eipAllocationId = ssm.StringParameter.valueForStringParameter(
-            this, `${ssmPrefix}/elastic-ip-allocation-id`,
+
+        // NLB target groups — ASG registers with both for health-check failover
+        const nlbHttpTargetGroupArn = ssm.StringParameter.valueForStringParameter(
+            this, `${ssmPrefix}/nlb-http-target-group-arn`,
+        );
+        const nlbHttpsTargetGroupArn = ssm.StringParameter.valueForStringParameter(
+            this, `${ssmPrefix}/nlb-https-target-group-arn`,
+        );
+        const nlbHttpTg = elbv2.NetworkTargetGroup.fromTargetGroupAttributes(
+            this, 'NlbHttpTg', { targetGroupArn: nlbHttpTargetGroupArn },
+        );
+        const nlbHttpsTg = elbv2.NetworkTargetGroup.fromTargetGroupAttributes(
+            this, 'NlbHttpsTg', { targetGroupArn: nlbHttpsTargetGroupArn },
         );
 
 
@@ -392,18 +406,30 @@ echo "SSM Automation will be triggered by the CI pipeline"
         this.logGroup = launchTemplateConstruct.logGroup;
 
         // =====================================================================
-        // EIP Failover — Self-Healing EIP Association
+        // NLB Target Registration
         //
-        // Automatically re-associates the cluster EIP when any ASG instance
-        // is launched or terminated. Only nodes with the ingress SG
-        // (app-worker, mon-worker) are eligible — the control plane is
-        // isolated from external traffic per K8s best practices.
+        // Register this ASG with the NLB target groups so the NLB routes
+        // traffic to Traefik on this node. Health checks handle failover.
         // =====================================================================
-        new EipFailoverConstruct(this, 'EipFailover', {
-            eipAllocationId,
-            eligibleRoles: ['app-worker', 'mon-worker'],
-            namePrefix: workerPrefix,
-        });
+        asgConstruct.autoScalingGroup.attachToNetworkTargetGroup(nlbHttpTg);
+        asgConstruct.autoScalingGroup.attachToNetworkTargetGroup(nlbHttpsTg);
+
+        // =====================================================================
+        // @deprecated — EIP Failover (replaced by NLB health-check failover)
+        //
+        // Previously, a Lambda + EventBridge rule automatically shuffled the
+        // cluster EIP between eligible nodes on ASG launch/terminate events.
+        // This is no longer needed — the NLB distributes traffic to healthy
+        // targets via TCP health checks. The EIP is now attached to the NLB
+        // directly (see base-stack.ts SubnetMapping).
+        //
+        // Kept for reference:
+        // new EipFailoverConstruct(this, 'EipFailover', {
+        //     eipAllocationId,
+        //     eligibleRoles: ['app-worker', 'mon-worker'],
+        //     namePrefix: workerPrefix,
+        // });
+        // =====================================================================
 
         // =====================================================================
         // cert-manager DNS-01 — Cross-account Route 53 access

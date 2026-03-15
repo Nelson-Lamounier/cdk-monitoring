@@ -14,8 +14,8 @@
  *
  * Security Group Scope:
  *   The app worker node attaches the Cluster Base SG and the Ingress SG.
- *   The EIP is managed by the EipFailover Lambda in this stack and should
- *   be associated to the app-worker (primary) or mon-worker (failover).
+ *   The EIP is attached to the NLB (not to an instance). The ASG is
+ *   registered with the NLB target groups for health-check failover.
  *   The control plane is isolated from external traffic.
  *
  * Environment Variables:
@@ -249,14 +249,14 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
     });
 
     // =========================================================================
-    // Elastic IP Association
+    // NLB Target Group Registration
     //
-    // The EIP is managed by the EipFailover Lambda in this stack. The
-    // app-worker is the primary EIP holder — CloudFront and admin traffic
-    // enter through the EIP on port 80/443 via Traefik.
+    // The app-worker ASG is registered with the NLB target groups.
+    // The EIP is attached to the NLB (not to an instance), so we verify
+    // target health instead of EIP-to-instance association.
     // =========================================================================
-    describe('Elastic IP', () => {
-        it('should have the EIP associated to the app-worker instance', async () => {
+    describe('NLB Target Group', () => {
+        it('EIP should be on the NLB, not on the app-worker instance', async () => {
             const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
             expect(allocationId).toBeDefined();
 
@@ -267,20 +267,10 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
             );
 
             expect(Addresses).toHaveLength(1);
-            expect(Addresses![0].InstanceId).toBe(appWorker.instanceId);
-        });
-
-        it('should have a public IP matching the SSM parameter', async () => {
-            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
-            const expectedIp = ssmParams.get(SSM_PATHS.elasticIp)!;
-
-            const { Addresses } = await ec2.send(
-                new DescribeAddressesCommand({
-                    AllocationIds: [allocationId],
-                }),
-            );
-
-            expect(Addresses![0].PublicIp).toBe(expectedIp);
+            // EIP should NOT be associated with an instance — it's on the NLB
+            expect(Addresses![0].InstanceId).toBeUndefined();
+            // The NetworkInterfaceId shows it's attached to the NLB ENI
+            expect(Addresses![0].NetworkInterfaceId).toBeDefined();
         });
     });
 

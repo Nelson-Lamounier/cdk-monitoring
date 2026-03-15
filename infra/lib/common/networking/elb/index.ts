@@ -4,3 +4,4 @@
  */
 
 export * from './application-load-balancer';
+export * from './network-load-balancer';
