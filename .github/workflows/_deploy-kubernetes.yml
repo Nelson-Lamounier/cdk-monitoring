@@ -812,6 +812,8 @@ jobs:
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
+      # cert-manager DNS-01 — pods may run on the monitoring worker node
+      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
     secrets: inherit
 
   # ===========================================================================
