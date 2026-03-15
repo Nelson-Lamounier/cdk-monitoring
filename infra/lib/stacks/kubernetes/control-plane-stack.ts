@@ -142,10 +142,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             this, 'ControlPlaneSg',
             ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/control-plane-sg-id`),
         );
-        const ingressSg = ec2.SecurityGroup.fromSecurityGroupId(
-            this, 'IngressSg',
-            ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/ingress-sg-id`),
-        );
+
         const logGroupKmsKey = kms.Key.fromKeyArn(
             this, 'LogKmsKey',
             ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/kms-key-arn`),
@@ -157,6 +154,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             this, `${props.ssmPrefix}/scripts-bucket`,
         );
         const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
+
 
         const hostedZoneId = ssm.StringParameter.valueForStringParameter(
             this, `${props.ssmPrefix}/hosted-zone-id`,
@@ -172,7 +170,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
 
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup,
-            additionalSecurityGroups: [controlPlaneSg, ingressSg],
+            additionalSecurityGroups: [controlPlaneSg],
             instanceType: configs.compute.instanceType,
             volumeSizeGb: configs.compute.rootVolumeSizeGb, // Must be >= Golden AMI snapshot size
             detailedMonitoring: configs.compute.detailedMonitoring,
@@ -461,6 +459,7 @@ echo "SSM Automation will be triggered by the CI pipeline"
             description: 'Kubernetes instance role ARN (used by AppIamStack for app-tier grants)',
             tier: ssm.ParameterTier.STANDARD,
         });
+
 
 
 

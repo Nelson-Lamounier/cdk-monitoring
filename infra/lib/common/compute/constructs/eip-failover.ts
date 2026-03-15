@@ -8,30 +8,30 @@
  * Features:
  * - Python 3.13 Lambda triggered by EventBridge
  * - Handles both LAUNCH and TERMINATE ASG lifecycle events
- * - Tag-based instance discovery (works across all ASGs)
+ * - Role-based instance filtering (only eligible roles get the EIP)
  * - Least-privilege IAM (EC2 address + instance describe)
  * - cdk-nag suppression for Python 3.13 runtime
  *
  * Design Philosophy:
  * - Construct is a blueprint, not a configuration handler
- * - Stack passes the EIP allocation ID and cluster tag
+ * - Stack passes the EIP allocation ID and eligible bootstrap roles
  * - Lambda handler lives in `lambda/eip-failover/index.py`
  *
  * Blueprint Pattern Flow:
  * 1. Stack resolves EIP allocation ID from SSM
- * 2. Stack creates EipFailoverConstruct with EIP + tag config
+ * 2. Stack creates EipFailoverConstruct with EIP + eligible roles
  * 3. EventBridge triggers Lambda on ASG instance lifecycle events
+ * 4. Lambda checks `k8s:bootstrap-role` tag to filter candidates
  *
  * Tag strategy:
- * Only `Component: EipFailover` is applied here. Organizational tags
+ * Only `Component: EipFailover` is applied here. Organisational tags
  * (Environment, Project, Owner, ManagedBy) come from TaggingAspect at app level.
  *
  * @example
  * ```typescript
  * const eipFailover = new EipFailoverConstruct(this, 'EipFailover', {
  *     eipAllocationId: 'eipalloc-xxxx',
- *     clusterTagKey: 'kubernetes.io/cluster',
- *     clusterTagValue: 'monitoring-cluster',
+ *     eligibleRoles: ['control-plane', 'mon-worker'],
  *     namePrefix: 'k8s-dev',
  * });
  * ```
@@ -59,11 +59,18 @@ export interface EipFailoverConstructProps {
      */
     readonly eipAllocationId: string;
 
-    /** EC2 tag key used to discover cluster instances */
-    readonly clusterTagKey: string;
-
-    /** EC2 tag value used to discover cluster instances */
-    readonly clusterTagValue: string;
+    /**
+     * Bootstrap roles eligible to hold the EIP.
+     * Only instances with `k8s:bootstrap-role` matching one of these
+     * values will be considered as EIP candidates.
+     *
+     * Nodes without the ingress security group (e.g., app-worker) should
+     * NOT be listed here — the EIP must land on a node that can accept
+     * traffic on ports 80/443.
+     *
+     * @example ['control-plane', 'mon-worker']
+     */
+    readonly eligibleRoles: readonly string[];
 
     /**
      * Name prefix for resources.
@@ -78,33 +85,25 @@ export interface EipFailoverConstructProps {
 
     /** Lambda memory size in MB @default 128 */
     readonly memorySize?: number;
-
-    /**
-     * Optional ASG name to scope EventBridge events.
-     * When set, the rule only fires for launch/terminate events
-     * from this specific ASG — prevents cross-ASG EIP hijacking.
-     */
-    readonly asgName?: string;
 }
 
 /**
  * EIP Failover Construct — Hybrid-HA Guardian.
  *
  * Automatically re-associates the cluster EIP when an ASG instance is
- * launched or terminated. Uses tag-based instance discovery to find
- * healthy failover candidates across all ASGs.
+ * launched or terminated. Uses `k8s:bootstrap-role` tag to filter
+ * eligible candidates — only roles with the ingress SG receive the EIP.
  *
  * Creates:
  * - Lambda Function (Python 3.13, from asset)
- * - EventBridge Rule (ASG launch/terminate events)
+ * - EventBridge Rule (ALL ASG launch/terminate events)
  * - IAM Policy (EC2 address management + instance discovery)
  *
  * @example
  * ```typescript
  * const eipFailover = new EipFailoverConstruct(this, 'EipFailover', {
  *     eipAllocationId,
- *     clusterTagKey: MONITORING_APP_TAG.key,
- *     clusterTagValue: MONITORING_APP_TAG.value,
+ *     eligibleRoles: ['control-plane', 'mon-worker'],
  *     namePrefix: 'k8s-dev',
  * });
  * ```
@@ -121,6 +120,13 @@ export class EipFailoverConstruct extends Construct {
 
         const namePrefix = props.namePrefix ?? 'k8s';
 
+        if (props.eligibleRoles.length === 0) {
+            throw new Error(
+                'EipFailoverConstruct: eligibleRoles must contain at least one role. ' +
+                'Without eligible roles, the Lambda cannot find failover candidates.',
+            );
+        }
+
         // =================================================================
         // LAMBDA FUNCTION
         // =================================================================
@@ -135,8 +141,7 @@ export class EipFailoverConstruct extends Construct {
             memorySize: props.memorySize ?? 128,
             environment: {
                 EIP_ALLOCATION_ID: props.eipAllocationId,
-                CLUSTER_TAG_KEY: props.clusterTagKey,
-                CLUSTER_TAG_VALUE: props.clusterTagValue,
+                ELIGIBLE_ROLES: props.eligibleRoles.join(','),
             },
             description: 'Re-associates the K8s cluster EIP on ASG instance launch or terminate (Hybrid-HA)',
         });
@@ -159,9 +164,10 @@ export class EipFailoverConstruct extends Construct {
         // =================================================================
         // EVENTBRIDGE RULE
         //
-        // Belt-and-suspenders: termination handles failover, launch handles
-        // the race condition where minInstancesInService=0 causes the old
-        // instance to terminate before the replacement is running.
+        // Fires on ALL ASG launch/terminate events (no ASG name filter).
+        // The Lambda itself filters by k8s:bootstrap-role tag to determine
+        // eligibility — this is simpler and more robust than maintaining
+        // multiple ASG name filters in EventBridge.
         // =================================================================
         this.rule = new events.Rule(this, 'Rule', {
             ruleName: `${namePrefix}-eip-failover`,
@@ -172,11 +178,6 @@ export class EipFailoverConstruct extends Construct {
                     'EC2 Instance Terminate Successful',
                     'EC2 Instance Launch Successful',
                 ],
-                ...(props.asgName ? {
-                    detail: {
-                        AutoScalingGroupName: [props.asgName],
-                    },
-                } : {}),
             },
             targets: [new targets.LambdaFunction(this.function)],
         });

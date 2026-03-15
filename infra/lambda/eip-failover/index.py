@@ -6,9 +6,14 @@ instance is launched or terminated.
 
 Event handling:
   LAUNCH:    If EIP is unassociated or current holder is not running,
-             associate EIP to the newly launched instance.
+             associate EIP to the newly launched instance (if eligible).
   TERMINATE: If EIP was on the terminated instance, find another
-             healthy instance with the cluster tag and move it.
+             healthy eligible instance and move it.
+
+Eligibility:
+  Only instances with a matching bootstrap role (e.g., control-plane,
+  mon-worker) are considered for EIP association. This prevents the EIP
+  from landing on app-workers that lack the ingress security group.
 
 Discovers healthy instances by EC2 tag (works across all ASGs).
 """
@@ -23,8 +28,7 @@ logger.setLevel(logging.INFO)
 ec2 = boto3.client("ec2")
 
 EIP_ALLOCATION_ID = os.environ["EIP_ALLOCATION_ID"]
-TAG_KEY = os.environ["CLUSTER_TAG_KEY"]
-TAG_VALUE = os.environ["CLUSTER_TAG_VALUE"]
+ELIGIBLE_ROLES = os.environ["ELIGIBLE_ROLES"].split(",")
 
 
 def is_running(instance_id):
@@ -38,9 +42,9 @@ def is_running(instance_id):
 
 
 def find_healthy_candidates(exclude_id=""):
-    """Find running instances with the cluster tag."""
+    """Find running instances with an eligible bootstrap role."""
     resp = ec2.describe_instances(Filters=[
-        {"Name": f"tag:{TAG_KEY}", "Values": [TAG_VALUE]},
+        {"Name": "tag:k8s:bootstrap-role", "Values": ELIGIBLE_ROLES},
         {"Name": "instance-state-name", "Values": ["running"]},
     ])
     return [
@@ -51,12 +55,13 @@ def find_healthy_candidates(exclude_id=""):
     ]
 
 
-def has_cluster_tag(instance_id):
-    """Check if instance has the expected cluster tag (defense-in-depth)."""
+def is_eligible(instance_id):
+    """Check if instance has an eligible bootstrap role (defense-in-depth)."""
     try:
         resp = ec2.describe_instances(InstanceIds=[instance_id])
         tags = resp["Reservations"][0]["Instances"][0].get("Tags", [])
-        return any(t["Key"] == TAG_KEY and t["Value"] == TAG_VALUE for t in tags)
+        role = next((t["Value"] for t in tags if t["Key"] == "k8s:bootstrap-role"), "")
+        return role in ELIGIBLE_ROLES
     except Exception:
         return False
 
@@ -78,18 +83,18 @@ def handler(event, context):
     """Handle ASG launch/terminate events and manage EIP association."""
     detail_type = event.get("detail-type", "")
     instance_id = event.get("detail", {}).get("EC2InstanceId", "")
-    logger.info("Event: %s | Instance: %s", detail_type, instance_id)
+    logger.info("Event: %s | Instance: %s | Eligible roles: %s", detail_type, instance_id, ELIGIBLE_ROLES)
 
     eip = ec2.describe_addresses(AllocationIds=[EIP_ALLOCATION_ID])["Addresses"][0]
     current_holder = eip.get("InstanceId", "")
 
     # ── LAUNCH EVENT ─────────────────────────────────────────────────
     if "Launch" in detail_type:
-        # Only associate to instances with the correct cluster tag
-        if not has_cluster_tag(instance_id):
+        # Only associate to instances with an eligible bootstrap role
+        if not is_eligible(instance_id):
             logger.info(
-                "Instance %s does not have tag %s=%s — skipping",
-                instance_id, TAG_KEY, TAG_VALUE,
+                "Instance %s is not eligible (roles: %s) — skipping",
+                instance_id, ELIGIBLE_ROLES,
             )
             return {"statusCode": 200}
 
@@ -115,10 +120,9 @@ def handler(event, context):
     # EIP was on the terminated instance or holder is unhealthy — failover
     candidates = find_healthy_candidates(exclude_id=instance_id)
     if not candidates:
-        logger.error("No healthy instances for EIP failover")
+        logger.error("No healthy eligible instances for EIP failover")
         return {"statusCode": 503}
 
     associate_eip(candidates[0], eip)
     logger.info("EIP failed over to %s", candidates[0])
     return {"statusCode": 200}
-

@@ -4,7 +4,7 @@
  *
  * Runs AFTER the KubernetesAppWorkerStack is deployed via CI (_deploy-kubernetes.yml).
  * Calls real AWS APIs to verify that the app worker instance is running with the
- * correct EIP association, security group attachment, expected SG port rules,
+ * correct security group attachment, expected SG port rules,
  * and disabled Source/Destination Check (required for Calico pod networking).
  *
  * SSM-Anchored Strategy:
@@ -13,9 +13,10 @@
  *   This guarantees we're testing the SAME resources the stack created.
  *
  * Security Group Scope:
- *   The app worker node attaches the Cluster Base SG. The EIP is managed
- *   by the EipFailover Lambda for CloudFront origin traffic. It does NOT
- *   receive the Control Plane, Ingress, or Monitoring SGs.
+ *   The app worker node attaches the Cluster Base SG and the Ingress SG.
+ *   The EIP is managed by the EipFailover Lambda in this stack and should
+ *   be associated to the app-worker (primary) or mon-worker (failover).
+ *   The control plane is isolated from external traffic.
  *
  * Environment Variables:
  *   CDK_ENV      — Target environment (default: development)
@@ -230,8 +231,8 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
     // =========================================================================
     // Security Group Attachment
     //
-    // The app worker only attaches the Cluster Base SG. It does NOT get
-    // control-plane, ingress, or monitoring SGs — those are role-specific.
+    // The app worker attaches the Cluster Base SG and the Ingress SG.
+    // The ingress SG allows CloudFront (port 80) + admin (port 443) traffic.
     // =========================================================================
     describe('Security Group Attachment', () => {
         it('Cluster Base SG should be attached to the app-worker instance', () => {
@@ -239,13 +240,20 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
             expect(sgId).toBeDefined();
             expect(appWorker.securityGroupIds).toContain(sgId);
         });
+
+        it('Ingress SG should be attached to the app-worker instance', () => {
+            const ingressSgId = ssmParams.get(SSM_PATHS.ingressSgId)!;
+            expect(ingressSgId).toBeDefined();
+            expect(appWorker.securityGroupIds).toContain(ingressSgId);
+        });
     });
 
     // =========================================================================
     // Elastic IP Association
     //
-    // The EIP is managed by the EipFailover Lambda and should be associated
-    // to the app-worker instance. CloudFront uses this EIP as its origin.
+    // The EIP is managed by the EipFailover Lambda in this stack. The
+    // app-worker is the primary EIP holder — CloudFront and admin traffic
+    // enter through the EIP on port 80/443 via Traefik.
     // =========================================================================
     describe('Elastic IP', () => {
         it('should have the EIP associated to the app-worker instance', async () => {
@@ -385,6 +393,7 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
             const requiredPaths = [
                 SSM_PATHS.vpcId,
                 SSM_PATHS.securityGroupId,
+                SSM_PATHS.ingressSgId,
                 SSM_PATHS.elasticIp,
                 SSM_PATHS.elasticIpAllocationId,
                 SSM_PATHS.kmsKeyArn,

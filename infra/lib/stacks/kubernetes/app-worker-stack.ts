@@ -145,9 +145,14 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
             this, `${ssmPrefix}/scripts-bucket`,
         );
         const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
+        const ingressSg = ec2.SecurityGroup.fromSecurityGroupId(
+            this, 'IngressSg',
+            ssm.StringParameter.valueForStringParameter(this, `${ssmPrefix}/ingress-sg-id`),
+        );
         const eipAllocationId = ssm.StringParameter.valueForStringParameter(
             this, `${ssmPrefix}/elastic-ip-allocation-id`,
         );
+
 
         // =====================================================================
         // User Data — kubeadm join
@@ -165,6 +170,7 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
         // =====================================================================
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup,
+            additionalSecurityGroups: [ingressSg],
             instanceType: workerConfig.instanceType,
             volumeSizeGb: workerConfig.rootVolumeSizeGb,
             detailedMonitoring: workerConfig.detailedMonitoring,
@@ -388,28 +394,16 @@ echo "SSM Automation will be triggered by the CI pipeline"
         // =====================================================================
         // EIP Failover — Self-Healing EIP Association
         //
-        // Automatically associates the cluster EIP to this app-worker when
-        // the ASG launches a new instance (or the old one is terminated).
-        // Defense-in-depth:
-        //   1. EventBridge rule scoped to THIS ASG only (asgName filter)
-        //   2. Lambda verifies instance has k8s:bootstrap-role=app-worker tag
+        // Automatically re-associates the cluster EIP when any ASG instance
+        // is launched or terminated. Only nodes with the ingress SG
+        // (app-worker, mon-worker) are eligible — the control plane is
+        // isolated from external traffic per K8s best practices.
         // =====================================================================
         new EipFailoverConstruct(this, 'EipFailover', {
             eipAllocationId,
-            clusterTagKey: 'k8s:bootstrap-role',
-            clusterTagValue: 'app-worker',
+            eligibleRoles: ['app-worker', 'mon-worker'],
             namePrefix: workerPrefix,
-            asgName: asgConstruct.autoScalingGroup.autoScalingGroupName,
         });
-
-        // Belt-and-suspenders: grant the instance itself EIP association
-        // permission so boot-time scripts can also associate if needed.
-        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'EipAssociation',
-            effect: iam.Effect.ALLOW,
-            actions: ['ec2:AssociateAddress', 'ec2:DescribeAddresses'],
-            resources: ['*'],
-        }));
 
         // =====================================================================
         // cert-manager DNS-01 — Cross-account Route 53 access
