@@ -58,7 +58,7 @@ jobs:
     with:
       stack-name: Org-DnsRoleStack-prod
       project: org
-      environment: prod
+      environment: development
       aws-account-id: ${{ vars.ROOT_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
