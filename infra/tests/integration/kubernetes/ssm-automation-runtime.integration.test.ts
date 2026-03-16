@@ -175,8 +175,9 @@ describe('SSM Automation Runtime — Post-Deploy Verification', () => {
         });
 
         it('should have non-empty Outputs (CommandId)', () => {
-            expect(execution?.outputs).toBeDefined();
-            expect(Object.keys(execution?.outputs ?? {}).length).toBeGreaterThan(0);
+            expect(execution).toBeDefined();
+            expect(execution!.outputs).toBeDefined();
+            expect(Object.keys(execution!.outputs).length).toBeGreaterThan(0);
         });
     });
 });

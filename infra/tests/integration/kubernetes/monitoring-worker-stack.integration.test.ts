@@ -114,6 +114,32 @@ async function loadSsmParameters(): Promise<Map<string, string>> {
 // Helpers
 // =============================================================================
 
+/** Security group ingress rule shape from AWS SDK DescribeSecurityGroups */
+interface IpPermission {
+    FromPort?: number;
+    ToPort?: number;
+    IpProtocol?: string;
+    IpRanges?: Array<{ CidrIp?: string }>;
+    PrefixListIds?: Array<{ PrefixListId?: string }>;
+}
+
+/**
+ * Find an ingress rule matching a port range and protocol.
+ *
+ * Extracted to module level so the predicate logic (&&) does not
+ * appear inside it() blocks (jest/no-conditional-in-test).
+ */
+function findRule(
+    rules: IpPermission[],
+    fromPort: number,
+    toPort: number,
+    protocol: string,
+): IpPermission | undefined {
+    return rules.find(
+        (r) => r.FromPort === fromPort && r.ToPort === toPort && r.IpProtocol === protocol,
+    );
+}
+
 /**
  * Find the running EC2 instance launched by the monitoring worker ASG.
  * Uses the Name tag `k8s-dev-mon-worker` set by AutoScalingGroupConstruct.
@@ -250,13 +276,9 @@ describe('KubernetesMonitoringWorkerStack — Post-Deploy Verification', () => {
     //   - Tempo OTLP gRPC (30417)
     // =========================================================================
     describe('Monitoring SG — Port Rules', () => {
-        let ingressRules: Array<{
-            FromPort?: number;
-            ToPort?: number;
-            IpProtocol?: string;
-            IpRanges?: Array<{ CidrIp?: string }>;
-        }>;
+        let ingressRules: IpPermission[];
 
+        // Depends on: ssmParams populated in top-level beforeAll
         beforeAll(async () => {
             const sgId = ssmParams.get(SSM_PATHS.monitoringSgId)!;
 
@@ -268,31 +290,19 @@ describe('KubernetesMonitoringWorkerStack — Post-Deploy Verification', () => {
         });
 
         it('should allow Prometheus port 9090/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 9090 && r.ToPort === 9090 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 9090, 9090, 'tcp')).toBeDefined();
         });
 
         it('should allow Node Exporter port 9100/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 9100 && r.ToPort === 9100 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 9100, 9100, 'tcp')).toBeDefined();
         });
 
         it('should allow Loki push API port 30100/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 30100 && r.ToPort === 30100 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 30100, 30100, 'tcp')).toBeDefined();
         });
 
         it('should allow Tempo OTLP gRPC port 30417/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 30417 && r.ToPort === 30417 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 30417, 30417, 'tcp')).toBeDefined();
         });
     });
 
@@ -303,12 +313,9 @@ describe('KubernetesMonitoringWorkerStack — Post-Deploy Verification', () => {
     // Not exhaustive — spot-checks critical Kubernetes ports.
     // =========================================================================
     describe('Cluster Base SG — Port Rules', () => {
-        let ingressRules: Array<{
-            FromPort?: number;
-            ToPort?: number;
-            IpProtocol?: string;
-        }>;
+        let ingressRules: IpPermission[];
 
+        // Depends on: ssmParams populated in top-level beforeAll
         beforeAll(async () => {
             const sgId = ssmParams.get(SSM_PATHS.securityGroupId)!;
 
@@ -320,31 +327,19 @@ describe('KubernetesMonitoringWorkerStack — Post-Deploy Verification', () => {
         });
 
         it('should allow K8s API port 6443/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 6443 && r.ToPort === 6443 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 6443, 6443, 'tcp')).toBeDefined();
         });
 
         it('should allow kubelet API port 10250/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 10250 && r.ToPort === 10250 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 10250, 10250, 'tcp')).toBeDefined();
         });
 
         it('should allow VXLAN overlay port 4789/udp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 4789 && r.ToPort === 4789 && r.IpProtocol === 'udp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 4789, 4789, 'udp')).toBeDefined();
         });
 
         it('should allow CoreDNS port 53/udp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 53 && r.ToPort === 53 && r.IpProtocol === 'udp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 53, 53, 'udp')).toBeDefined();
         });
     });
 
@@ -388,17 +383,28 @@ describe('KubernetesMonitoringWorkerStack — Post-Deploy Verification', () => {
     // CloudFormation Outputs
     // =========================================================================
     describe('CloudFormation Outputs', () => {
-        it('should have all expected outputs on the stack', async () => {
+        let outputKeys: (string | undefined)[];
+
+        // Depends on: MONITORING_WORKER_STACK_NAME constant
+        beforeAll(async () => {
             const { Stacks } = await cfn.send(
                 new DescribeStacksCommand({ StackName: MONITORING_WORKER_STACK_NAME }),
             );
 
             expect(Stacks).toHaveLength(1);
             const outputs = Stacks![0].Outputs ?? [];
-            const outputKeys = outputs.map((o) => o.OutputKey);
+            outputKeys = outputs.map((o) => o.OutputKey);
+        });
 
+        it('should export MonitoringWorkerAsgName', () => {
             expect(outputKeys).toContain('MonitoringWorkerAsgName');
+        });
+
+        it('should export MonitoringWorkerInstanceRoleArn', () => {
             expect(outputKeys).toContain('MonitoringWorkerInstanceRoleArn');
+        });
+
+        it('should export MonitoringAlertsTopicArn', () => {
             expect(outputKeys).toContain('MonitoringAlertsTopicArn');
         });
     });

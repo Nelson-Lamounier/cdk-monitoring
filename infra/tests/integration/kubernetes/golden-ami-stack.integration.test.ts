@@ -263,46 +263,42 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
     // AMI Metadata
     // =========================================================================
     describe('AMI Metadata', () => {
-        it('should exist and be in available state', async () => {
+        let amiState: string;
+        let tags: Array<{ Key?: string; Value?: string }>;
+        let description: string;
+
+        // Depends on: amiId populated in top-level beforeAll
+        beforeAll(async () => {
             const { Images } = await ec2.send(
                 new DescribeImagesCommand({ ImageIds: [amiId] }),
             );
 
             expect(Images).toBeDefined();
             expect(Images!).toHaveLength(1);
-            expect(Images![0].State).toBe('available');
+
+            const image = Images![0];
+            amiState = image.State ?? '';
+            tags = image.Tags ?? [];
+            description = image.Description ?? '';
         });
 
-        it('should have the KubernetesVersion tag', async () => {
-            const { Images } = await ec2.send(
-                new DescribeImagesCommand({ ImageIds: [amiId] }),
-            );
+        it('should exist and be in available state', () => {
+            expect(amiState).toBe('available');
+        });
 
-            const tags = Images?.[0]?.Tags ?? [];
+        it('should have the KubernetesVersion tag', () => {
             const k8sTag = tags.find(t => t.Key === 'KubernetesVersion');
-
             expect(k8sTag).toBeDefined();
             expect(k8sTag!.Value).toBe(CONFIGS.cluster.kubernetesVersion);
         });
 
-        it('should have the Purpose tag set to GoldenAMI', async () => {
-            const { Images } = await ec2.send(
-                new DescribeImagesCommand({ ImageIds: [amiId] }),
-            );
-
-            const tags = Images?.[0]?.Tags ?? [];
+        it('should have the Purpose tag set to GoldenAMI', () => {
             const purposeTag = tags.find(t => t.Key === 'Purpose');
-
             expect(purposeTag).toBeDefined();
             expect(purposeTag!.Value).toBe('GoldenAMI');
         });
 
-        it('should have a description containing the name prefix and K8s version', async () => {
-            const { Images } = await ec2.send(
-                new DescribeImagesCommand({ ImageIds: [amiId] }),
-            );
-
-            const description = Images?.[0]?.Description ?? '';
+        it('should have a description containing the name prefix and K8s version', () => {
             expect(description).toContain(CONFIGS.cluster.kubernetesVersion);
         });
     });

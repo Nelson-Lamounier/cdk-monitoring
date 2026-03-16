@@ -138,9 +138,6 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
         it('should have loaded SSM parameters from the correct prefix', () => {
             console.log(`[Pre-Flight] SSM prefix: ${SSM_PATHS.prefix}`);
             console.log(`[Pre-Flight] Parameters loaded: ${ssmParams.size}`);
-            if (ssmParams.size > 0) {
-                console.log(`[Pre-Flight] Keys: ${[...ssmParams.keys()].join(', ')}`);
-            }
             expect(ssmParams.size).toBeGreaterThan(0);
         });
 
@@ -200,26 +197,35 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
     // DynamoDB Table
     // =========================================================================
     describe('DynamoDB Table', () => {
-        it('should exist with the expected table name', async () => {
-            const tableName = ssmParams.get(SSM_PATHS.dynamodbTableName)!;
+        let tableName: string;
+        let tableStatus: string;
+        let tableNameActual: string;
+        let keySchema: Array<{ AttributeName?: string; KeyType?: string }>;
+        let gsiNames: (string | undefined)[];
+        let billingMode: string | undefined;
+
+        // Depends on: ssmParams populated in top-level beforeAll
+        beforeAll(async () => {
+            tableName = ssmParams.get(SSM_PATHS.dynamodbTableName)!;
 
             const { Table } = await dynamodb.send(
                 new DescribeTableCommand({ TableName: tableName }),
             );
 
             expect(Table).toBeDefined();
-            expect(Table!.TableName).toBe(EXPECTED_TABLE_NAME);
-            expect(Table!.TableStatus).toBe('ACTIVE');
+            tableNameActual = Table!.TableName ?? '';
+            tableStatus = Table!.TableStatus ?? '';
+            keySchema = Table!.KeySchema ?? [];
+            gsiNames = (Table!.GlobalSecondaryIndexes ?? []).map((g) => g.IndexName);
+            billingMode = Table!.BillingModeSummary?.BillingMode;
         });
 
-        it('should have pk/sk key schema', async () => {
-            const tableName = ssmParams.get(SSM_PATHS.dynamodbTableName)!;
+        it('should exist with the expected table name', () => {
+            expect(tableNameActual).toBe(EXPECTED_TABLE_NAME);
+            expect(tableStatus).toBe('ACTIVE');
+        });
 
-            const { Table } = await dynamodb.send(
-                new DescribeTableCommand({ TableName: tableName }),
-            );
-
-            const keySchema = Table!.KeySchema ?? [];
+        it('should have pk/sk key schema', () => {
             const pk = keySchema.find((k) => k.AttributeName === 'pk');
             const sk = keySchema.find((k) => k.AttributeName === 'sk');
 
@@ -229,57 +235,21 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
             expect(sk!.KeyType).toBe('RANGE');
         });
 
-        it('should have GSI1 and GSI2 matching config constants', async () => {
-            const tableName = ssmParams.get(SSM_PATHS.dynamodbTableName)!;
-
-            const { Table } = await dynamodb.send(
-                new DescribeTableCommand({ TableName: tableName }),
-            );
-
-            const gsis = Table!.GlobalSecondaryIndexes ?? [];
-            const gsiNames = gsis.map((g) => g.IndexName);
-
+        it('should have GSI1 and GSI2 matching config constants', () => {
             expect(gsiNames).toContain(PORTFOLIO_GSI1_NAME);
             expect(gsiNames).toContain(PORTFOLIO_GSI2_NAME);
         });
 
-        it('should use PAY_PER_REQUEST billing mode', async () => {
-            const tableName = ssmParams.get(SSM_PATHS.dynamodbTableName)!;
-
-            const { Table } = await dynamodb.send(
-                new DescribeTableCommand({ TableName: tableName }),
-            );
-
-            expect(Table!.BillingModeSummary?.BillingMode).toBe(
-                'PAY_PER_REQUEST',
-            );
+        it('should use PAY_PER_REQUEST billing mode', () => {
+            expect(billingMode).toBe('PAY_PER_REQUEST');
         });
 
-        it('should have point-in-time recovery enabled', async () => {
-            const tableName = ssmParams.get(SSM_PATHS.dynamodbTableName)!;
-
-            // PITR status is part of ContinuousBackupsDescription (separate API),
-            // but DescribeTable returns enough — SSEDescription confirms encryption.
-            // For PITR we check via the DescribeTable metadata if available.
-            const { Table } = await dynamodb.send(
-                new DescribeTableCommand({ TableName: tableName }),
-            );
-
-            // Table must at least be ACTIVE — PITR is validated in unit tests
-            expect(Table!.TableStatus).toBe('ACTIVE');
+        it('should be in ACTIVE state (PITR validated in unit tests)', () => {
+            expect(tableStatus).toBe('ACTIVE');
         });
 
-        it('should have TTL enabled on the ttl attribute', async () => {
-            const tableName = ssmParams.get(SSM_PATHS.dynamodbTableName)!;
-
-            // TTL status comes from DescribeTimeToLive but we validate
-            // the table is correctly receiving writes via TTL in production.
-            // Integration tests validate table existence and schema.
-            const { Table } = await dynamodb.send(
-                new DescribeTableCommand({ TableName: tableName }),
-            );
-
-            expect(Table).toBeDefined();
+        it('should exist (TTL validated at runtime)', () => {
+            expect(tableNameActual).toBeDefined();
         });
     });
 
@@ -341,36 +311,58 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
     // CloudFormation Outputs
     // =========================================================================
     describe('CloudFormation Outputs', () => {
-        it('should have all expected exports on the stack', async () => {
+        let outputKeys: (string | undefined)[];
+        let outputs: Array<{ OutputKey?: string; OutputValue?: string; ExportName?: string }>;
+
+        // Depends on: DATA_STACK_NAME constant
+        beforeAll(async () => {
             const { Stacks } = await cfn.send(
                 new DescribeStacksCommand({ StackName: DATA_STACK_NAME }),
             );
 
             expect(Stacks).toHaveLength(1);
-            const outputs = Stacks![0].Outputs ?? [];
-            const outputKeys = outputs.map((o) => o.OutputKey);
+            outputs = Stacks![0].Outputs ?? [];
+            outputKeys = outputs.map((o) => o.OutputKey);
+        });
 
-            // All outputs declared in the stack
+        it('should export PortfolioTableName', () => {
             expect(outputKeys).toContain('PortfolioTableName');
+        });
+
+        it('should export PortfolioTableArn', () => {
             expect(outputKeys).toContain('PortfolioTableArn');
+        });
+
+        it('should export PortfolioTableGsi1Name', () => {
             expect(outputKeys).toContain('PortfolioTableGsi1Name');
+        });
+
+        it('should export PortfolioTableGsi2Name', () => {
             expect(outputKeys).toContain('PortfolioTableGsi2Name');
+        });
+
+        it('should export AssetsBucketName', () => {
             expect(outputKeys).toContain('AssetsBucketName');
+        });
+
+        it('should export AssetsBucketArn', () => {
             expect(outputKeys).toContain('AssetsBucketArn');
+        });
+
+        it('should export AssetsBucketRegionalDomainName', () => {
             expect(outputKeys).toContain('AssetsBucketRegionalDomainName');
+        });
+
+        it('should export SsmParameterPrefix', () => {
             expect(outputKeys).toContain('SsmParameterPrefix');
         });
 
-        it('should have cross-stack export names on key outputs', async () => {
-            const { Stacks } = await cfn.send(
-                new DescribeStacksCommand({ StackName: DATA_STACK_NAME }),
-            );
-
-            const outputs = Stacks![0].Outputs ?? [];
+        it('should have cross-stack export names on key outputs', () => {
             const exportPrefix = `${CDK_ENV}-${NEXTJS_NAME_PREFIX}`;
 
-            const exportedOutputs = outputs.filter((o) => o.ExportName);
-            const exportNames = exportedOutputs.map((o) => o.ExportName);
+            const exportNames = outputs
+                .map((o) => o.ExportName)
+                .filter(Boolean);
 
             expect(exportNames).toContain(`${exportPrefix}-portfolio-table-name`);
             expect(exportNames).toContain(`${exportPrefix}-portfolio-table-arn`);
@@ -378,12 +370,7 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
             expect(exportNames).toContain(`${exportPrefix}-assets-bucket-arn`);
         });
 
-        it('should export GSI names matching config constants', async () => {
-            const { Stacks } = await cfn.send(
-                new DescribeStacksCommand({ StackName: DATA_STACK_NAME }),
-            );
-
-            const outputs = Stacks![0].Outputs ?? [];
+        it('should export GSI names matching config constants', () => {
             const gsi1Output = outputs.find((o) => o.OutputKey === 'PortfolioTableGsi1Name');
             const gsi2Output = outputs.find((o) => o.OutputKey === 'PortfolioTableGsi2Name');
 

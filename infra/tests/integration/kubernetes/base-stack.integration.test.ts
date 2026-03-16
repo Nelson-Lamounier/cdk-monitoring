@@ -242,6 +242,46 @@ function expectPrefixListSource(rule: IpPermission): void {
     expect(rule.PrefixListIds?.length).toBeGreaterThan(0);
 }
 
+/**
+ * Find an egress rule matching a specific port and protocol.
+ *
+ * Extracted to module level so the predicate logic (&&) does not
+ * appear inside it() blocks (jest/no-conditional-in-test).
+ */
+function findEgressRule(
+    egress: IpPermission[],
+    fromPort: number,
+    toPort: number,
+    protocol: string,
+): IpPermission | undefined {
+    return egress.find(
+        (r) => r.FromPort === fromPort && r.ToPort === toPort && r.IpProtocol === protocol,
+    );
+}
+
+/**
+ * Find an unrestricted egress rule (all protocols, 0.0.0.0/0).
+ *
+ * Extracted to module level so the predicate logic (&&) does not
+ * appear inside it() blocks (jest/no-conditional-in-test).
+ */
+function findAllTrafficEgress(egress: IpPermission[]): IpPermission | undefined {
+    return egress.find(
+        (r) => r.IpProtocol === '-1'
+            && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
+    );
+}
+
+/**
+ * Find an NLB listener by port.
+ *
+ * Extracted to module level so the predicate logic does not
+ * appear inside it() blocks (jest/no-conditional-in-test).
+ */
+function findListener(listeners: Listener[], port: number): Listener | undefined {
+    return listeners.find((l) => l.Port === port);
+}
+
 // =============================================================================
 // Module-Level Cached State (Rule 1 + Rule 10)
 //
@@ -256,6 +296,9 @@ let nlbArn: string;
 let nlbAttributes: LoadBalancerAttribute[];
 let nlbListeners: Listener[];
 let nlbLogBucketName: string;
+
+// NLB public IP addresses (extracted from AZ info)
+let nlbPublicAddresses: (string | undefined)[];
 
 // NLB Target Groups
 let httpTargetGroup: TargetGroup;
@@ -299,6 +342,12 @@ beforeAll(async () => {
         (a) => a.Key === 'access_logs.s3.bucket',
     )?.Value ?? '';
     expect(nlbLogBucketName).toBeTruthy();
+
+    // NLB public IP addresses (from AZ info)
+    const azInfo = nlb.AvailabilityZones ?? [];
+    nlbPublicAddresses = azInfo.flatMap((az) =>
+        (az.LoadBalancerAddresses ?? []).map((a) => a.IpAddress),
+    );
 
     // NLB Listeners
     const { Listeners } = await elbv2.send(
@@ -562,11 +611,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
 
         it('should allow all outbound traffic', () => {
-            const allTrafficRule = egress.find(
-                (r) => r.IpProtocol === '-1'
-                    && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
-            );
-            expect(allTrafficRule).toBeDefined();
+            expect(findAllTrafficEgress(egress)).toBeDefined();
         });
     });
 
@@ -596,11 +641,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
 
         it('should NOT allow all outbound traffic (restricted)', () => {
-            const allTrafficRule = egress.find(
-                (r) => r.IpProtocol === '-1'
-                    && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
-            );
-            expect(allTrafficRule).toBeUndefined();
+            expect(findAllTrafficEgress(egress)).toBeUndefined();
         });
     });
 
@@ -645,11 +686,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
 
         it('should NOT allow all outbound traffic (restricted)', () => {
-            const allTrafficRule = egress.find(
-                (r) => r.IpProtocol === '-1'
-                    && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
-            );
-            expect(allTrafficRule).toBeUndefined();
+            expect(findAllTrafficEgress(egress)).toBeUndefined();
         });
     });
 
@@ -693,11 +730,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
 
         it('should NOT allow all outbound traffic (restricted)', () => {
-            const allTrafficRule = egress.find(
-                (r) => r.IpProtocol === '-1'
-                    && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
-            );
-            expect(allTrafficRule).toBeUndefined();
+            expect(findAllTrafficEgress(egress)).toBeUndefined();
         });
     });
 
@@ -722,27 +755,19 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
 
         it('should have outbound TCP 80 to VPC CIDR', () => {
-            const http = nlbSgEgress.find(
-                (r) => r.FromPort === 80 && r.ToPort === 80 && r.IpProtocol === 'tcp',
-            );
+            const http = findEgressRule(nlbSgEgress, 80, 80, 'tcp');
             expect(http).toBeDefined();
             expectCidrSource(http!, VPC_CIDR_PREFIX);
         });
 
         it('should have outbound TCP 443 to VPC CIDR', () => {
-            const https = nlbSgEgress.find(
-                (r) => r.FromPort === 443 && r.ToPort === 443 && r.IpProtocol === 'tcp',
-            );
+            const https = findEgressRule(nlbSgEgress, 443, 443, 'tcp');
             expect(https).toBeDefined();
             expectCidrSource(https!, VPC_CIDR_PREFIX);
         });
 
         it('should NOT have unrestricted outbound (0.0.0.0/0 all protocols)', () => {
-            const allTrafficRule = nlbSgEgress.find(
-                (r) => r.IpProtocol === '-1'
-                    && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
-            );
-            expect(allTrafficRule).toBeUndefined();
+            expect(findAllTrafficEgress(nlbSgEgress)).toBeUndefined();
         });
     });
 
@@ -761,12 +786,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
 
         it('should have EIP attached (public IP matches SSM)', () => {
             const expectedIp = requireParam(ssmParams, SSM_PATHS.elasticIp);
-
-            const azInfo = nlb.AvailabilityZones ?? [];
-            const addresses = azInfo.flatMap((az) =>
-                (az.LoadBalancerAddresses ?? []).map((a) => a.IpAddress),
-            );
-            expect(addresses).toContain(expectedIp);
+            expect(nlbPublicAddresses).toContain(expectedIp);
         });
 
         it('should have access logging enabled', () => {
@@ -815,13 +835,13 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
 
         it('should have a TCP listener on port 80', () => {
-            const httpListener = nlbListeners.find((l) => l.Port === 80);
+            const httpListener = findListener(nlbListeners, 80);
             expect(httpListener).toBeDefined();
             expect(httpListener!.Protocol).toBe('TCP');
         });
 
         it('should have a TCP listener on port 443', () => {
-            const httpsListener = nlbListeners.find((l) => l.Port === 443);
+            const httpsListener = findListener(nlbListeners, 443);
             expect(httpsListener).toBeDefined();
             expect(httpsListener!.Protocol).toBe('TCP');
         });
