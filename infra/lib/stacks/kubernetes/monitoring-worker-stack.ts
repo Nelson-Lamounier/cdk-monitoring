@@ -210,6 +210,27 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
             disableSourceDestCheck: true,
         });
 
+        // =====================================================================
+        // Spot Instance Configuration
+        //
+        // Override the L1 CfnLaunchTemplate to add Spot market options.
+        // CDK's L2 LaunchTemplate doesn't expose instanceMarketOptions,
+        // so we use the escape hatch to set it on the underlying resource.
+        // =====================================================================
+        if (monitoringWorkerConfig.useSpotInstances) {
+            const cfnLaunchTemplate = launchTemplateConstruct.launchTemplate.node
+                .defaultChild as ec2.CfnLaunchTemplate;
+            cfnLaunchTemplate.addPropertyOverride(
+                'LaunchTemplateData.InstanceMarketOptions',
+                {
+                    MarketType: 'spot',
+                    SpotOptions: {
+                        SpotInstanceType: 'one-time',
+                    },
+                },
+            );
+        }
+
         const logGroupName = launchTemplateConstruct.logGroup?.logGroupName
             ?? `/ec2/${workerPrefix}/instances`;
 

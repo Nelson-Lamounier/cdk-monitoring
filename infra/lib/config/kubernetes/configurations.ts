@@ -191,6 +191,8 @@ export interface MonitoringWorkerConfig {
     readonly signalsTimeoutMinutes: number;
     /** EBS root volume size in GB */
     readonly rootVolumeSizeGb: number;
+    /** Whether to use EC2 Spot instances for cost optimisation */
+    readonly useSpotInstances: boolean;
 }
 
 /**
@@ -453,6 +455,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             useSignals: true,
             signalsTimeoutMinutes: 40,
             rootVolumeSizeGb: 30,
+            useSpotInstances: true,
         },
         argocdWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
@@ -532,6 +535,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             useSignals: true,
             signalsTimeoutMinutes: 40,
             rootVolumeSizeGb: 30,
+            useSpotInstances: true,
         },
         argocdWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
@@ -611,6 +615,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             useSignals: true,
             signalsTimeoutMinutes: 40,
             rootVolumeSizeGb: 30,
+            useSpotInstances: true,
         },
         argocdWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
