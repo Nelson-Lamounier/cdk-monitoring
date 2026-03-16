@@ -15,6 +15,7 @@
  * - Single-AZ deployment for cost-optimised solo-developer setups
  * - Configurable health checks and deregistration delay
  * - Helper methods for creating target groups and TCP listeners
+ * - NLB security group configuration (inbound + outbound rules)
  * - cdk-nag access log suppression for development environments
  *
  * Tag strategy:
@@ -158,6 +159,14 @@ export class NetworkLoadBalancerConstruct extends Construct {
     /** The Network Load Balancer */
     public readonly loadBalancer: elbv2.NetworkLoadBalancer;
 
+    /**
+     * The NLB security group (auto-created by CDK).
+     *
+     * Exposed so consuming stacks can reference it in other SG rules
+     * or for diagnostic purposes.
+     */
+    public readonly securityGroup: ec2.ISecurityGroup;
+
     /** VPC reference (stored for use by helper methods) */
     private readonly vpc: ec2.IVpc;
 
@@ -190,6 +199,21 @@ export class NetworkLoadBalancerConstruct extends Construct {
         const deletionProtection = props.deletionProtection ?? false;
 
         // ========================================
+        // NLB SECURITY GROUP
+        //
+        // Explicit SG for the NLB. Without this, CDK auto-creates a
+        // default SG that blocks all traffic (no inbound, "disallow all"
+        // outbound) — causing health checks and forwarding to fail.
+        //
+        // Rules are added later via configureSecurityGroup().
+        // ========================================
+        this.securityGroup = new ec2.SecurityGroup(this, 'NlbSecurityGroup', {
+            vpc: props.vpc,
+            description: `Security group for NLB ${props.loadBalancerName}`,
+            allowAllOutbound: false,
+        });
+
+        // ========================================
         // NETWORK LOAD BALANCER
         // ========================================
         this.loadBalancer = new elbv2.NetworkLoadBalancer(this, 'NLB', {
@@ -198,6 +222,7 @@ export class NetworkLoadBalancerConstruct extends Construct {
             loadBalancerName: props.loadBalancerName,
             crossZoneEnabled,
             deletionProtection,
+            securityGroups: [this.securityGroup],
         });
 
         // ========================================
@@ -262,6 +287,58 @@ export class NetworkLoadBalancerConstruct extends Construct {
      */
     public get dnsName(): string {
         return this.loadBalancer.loadBalancerDnsName;
+    }
+
+    // =========================================================================
+    // SECURITY GROUP CONFIGURATION
+    // =========================================================================
+
+    /**
+     * Configure the NLB security group with proper inbound and outbound rules.
+     *
+     * CDK auto-creates a default SG on NLBs with no inbound rules and a
+     * "disallow all" outbound. This method opens the SG so the NLB can:
+     *
+     * **Inbound** (from the internet → NLB):
+     * - Accepts traffic on listener ports from `0.0.0.0/0` and `::/0`.
+     * - This is safe because the NLB is Layer 4 (TCP passthrough) — it does
+     *   NOT terminate TLS or inspect traffic. Fine-grained IP filtering is
+     *   enforced by the instance-level Ingress SG.
+     *
+     * **Outbound** (NLB → targets):
+     * - Forwards traffic on target ports to the VPC CIDR.
+     * - Health check traffic also uses these outbound rules.
+     *
+     * @param ports - Listener/target ports to allow (e.g. `[80, 443]`)
+     *
+     * @example
+     * ```typescript
+     * nlb.configureSecurityGroup([80, 443]);
+     * ```
+     */
+    public configureSecurityGroup(ports: number[]): void {
+        const vpcCidr = this.vpc.vpcCidrBlock;
+
+        for (const port of ports) {
+            // Inbound: internet → NLB (IPv4 + IPv6)
+            this.securityGroup.addIngressRule(
+                ec2.Peer.anyIpv4(),
+                ec2.Port.tcp(port),
+                `TCP/${port} inbound from internet (IPv4)`,
+            );
+            this.securityGroup.addIngressRule(
+                ec2.Peer.anyIpv6(),
+                ec2.Port.tcp(port),
+                `TCP/${port} inbound from internet (IPv6)`,
+            );
+
+            // Outbound: NLB → targets (health checks + forwarding)
+            this.securityGroup.addEgressRule(
+                ec2.Peer.ipv4(vpcCidr),
+                ec2.Port.tcp(port),
+                `TCP/${port} to targets (VPC CIDR)`,
+            );
+        }
     }
 
     // =========================================================================
