@@ -38,6 +38,7 @@ import {
     DescribeInstancesCommand,
     DescribeSecurityGroupsCommand,
 } from '@aws-sdk/client-ec2';
+import type { Instance } from '@aws-sdk/client-ec2';
 import {
     SNSClient,
     GetTopicAttributesCommand,
@@ -141,6 +142,14 @@ function findRule(
 }
 
 /**
+ * Check whether an EC2 instance is a Spot instance.
+ * Extracted to module level to avoid conditional logic inside it() blocks.
+ */
+function isSpotInstance(instance: Instance): boolean {
+    return instance.InstanceLifecycle === 'spot';
+}
+
+/**
  * Find the running EC2 instance launched by the monitoring worker ASG.
  * Uses the Name tag `k8s-dev-mon-worker` set by AutoScalingGroupConstruct.
  *
@@ -149,7 +158,7 @@ function findRule(
  * the CloudFormation deploy completes.
  */
 async function findMonitoringWorkerInstance(): Promise<{
-    instanceId: string;
+    instance: Instance;
     securityGroupIds: string[];
 }> {
     const maxAttempts = 5;
@@ -176,7 +185,7 @@ async function findMonitoringWorkerInstance(): Promise<{
                 .filter((id): id is string => !!id);
 
             return {
-                instanceId: instance.InstanceId!,
+                instance,
                 securityGroupIds: sgIds,
             };
         }
@@ -200,7 +209,7 @@ async function findMonitoringWorkerInstance(): Promise<{
 
 describe('KubernetesMonitoringWorkerStack — Post-Deploy Verification', () => {
     let ssmParams: Map<string, string>;
-    let monWorker: { instanceId: string; securityGroupIds: string[] };
+    let monWorker: { instance: Instance; securityGroupIds: string[] };
 
     // Load SSM parameters and find instance ONCE before all tests
     // Extended timeout to accommodate instance launch retries (up to ~75s)
@@ -214,8 +223,12 @@ describe('KubernetesMonitoringWorkerStack — Post-Deploy Verification', () => {
     // =========================================================================
     describe('EC2 Instance', () => {
         it('should have a running monitoring-worker instance', () => {
-            expect(monWorker.instanceId).toBeDefined();
-            expect(monWorker.instanceId.startsWith('i-')).toBe(true);
+            expect(monWorker.instance.InstanceId).toBeDefined();
+            expect(monWorker.instance.InstanceId!.startsWith('i-')).toBe(true);
+        });
+
+        it('should be a Spot instance', () => {
+            expect(isSpotInstance(monWorker.instance)).toBe(true);
         });
 
         it('should have an ASG with min=0, max=1, desired=1', async () => {
