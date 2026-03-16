@@ -7427,9 +7427,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"aws-cdk-lib@npm:^2.232.1":
-  version: 2.241.0
-  resolution: "aws-cdk-lib@npm:2.241.0"
+"aws-cdk-lib@npm:^2.243.0":
+  version: 2.243.0
+  resolution: "aws-cdk-lib@npm:2.243.0"
   dependencies:
     "@aws-cdk/asset-awscli-v1": "npm:2.2.263"
     "@aws-cdk/asset-node-proxy-agent-v6": "npm:^2.1.1"
@@ -7448,16 +7448,25 @@ __metadata:
     yaml: "npm:1.10.2"
   peerDependencies:
     constructs: ^10.5.0
-  checksum: 10c0/4693bf228f89557fcf8d79efb8a9d0e551bc676cc928501ed457ace5592db186961a40dd6f3b4d6a85f586a71fd6b4c39d4171e782289d033b90f62258ad7840
+  checksum: 10c0/34b25f4d7b8b12bf5a38a40138517ec819e0ab2daa81e6af7f5f78ca79ae1c533ba15e618d458df7037be06bc6279ba66730396e99f07edb3ac9a36a13c94adc
   languageName: node
   linkType: hard
 
-"aws-cdk@npm:2.1108.0, aws-cdk@npm:^2.232.1":
+"aws-cdk@npm:2.1108.0":
   version: 2.1108.0
   resolution: "aws-cdk@npm:2.1108.0"
   bin:
     cdk: bin/cdk
   checksum: 10c0/6f85b0ce809bda9a62959728852fdc71b1b00bea3ec2eb59ab8f8f1c1f650a68acd625decbc55a4894dbbf7e2bc599ee7011cbd76d58029c4422035ee7d14f9a
+  languageName: node
+  linkType: hard
+
+"aws-cdk@npm:^2.1111.0":
+  version: 2.1111.0
+  resolution: "aws-cdk@npm:2.1111.0"
+  bin:
+    cdk: bin/cdk
+  checksum: 10c0/7cf579068b19a211a845a5f55676dd335209ec91b3783845d0ed5e72f4fa1fcd3d39cc7f878c82c3628302b05639fccf006b4b956127e169fb9b469e7bf3b3a9
   languageName: node
   linkType: hard
 
@@ -7867,8 +7876,8 @@ __metadata:
     "@types/source-map-support": "npm:^0.5.10"
     "@typescript-eslint/eslint-plugin": "npm:^8.18.1"
     "@typescript-eslint/parser": "npm:^8.18.1"
-    aws-cdk: "npm:^2.232.1"
-    aws-cdk-lib: "npm:^2.232.1"
+    aws-cdk: "npm:^2.1111.0"
+    aws-cdk-lib: "npm:^2.243.0"
     aws-sdk-client-mock: "npm:^4.1.0"
     aws-sdk-client-mock-jest: "npm:^4.1.0"
     babel-jest: "npm:^30.2.0"
