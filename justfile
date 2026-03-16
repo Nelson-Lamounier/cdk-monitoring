@@ -57,6 +57,15 @@ deploy project environment *ARGS:
       --require-approval never \
       {{ARGS}}
 
+# Deploy a single CDK stack (e.g., just deploy-stack ArgocdWorker-development kubernetes development)
+[group('cdk')]
+deploy-stack stack project environment *ARGS:
+    cd infra && npx cdk deploy {{stack}} --exclusively \
+      -c project={{project}} -c environment={{environment}} \
+      --profile $(just _profile {{environment}}) \
+      --require-approval never \
+      {{ARGS}}
+
 # Show diff between local and deployed stacks
 [group('cdk')]
 diff project environment *ARGS:
