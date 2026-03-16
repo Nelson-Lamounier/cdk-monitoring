@@ -36,6 +36,41 @@ import {
 const TEST_CONFIGS = getK8sConfigs(Environment.DEVELOPMENT);
 
 /**
+ * VPC context for Vpc.fromLookup() in tests.
+ *
+ * CDK's default dummy VPC uses AZs like 'dummy1a'/'dummy1b', which causes
+ * the NLB construct to fail (it expects 'eu-west-1a'). This context entry
+ * provides a realistic VPC with eu-west-1 AZs so the NLB subnet lookup works.
+ */
+const TEST_VPC_CONTEXT_KEY =
+    'vpc-provider:account=123456789012:filter.tag:Name=shared-vpc-development:region=eu-west-1:returnAsymmetricSubnets=true';
+
+const TEST_VPC_CONTEXT = {
+    vpcId: 'vpc-12345',
+    vpcCidrBlock: '10.0.0.0/16',
+    ownerAccountId: '123456789012',
+    availabilityZones: ['eu-west-1a', 'eu-west-1b'],
+    subnetGroups: [
+        {
+            name: 'Public',
+            type: 'Public',
+            subnets: [
+                { subnetId: 'subnet-pub-1a', cidr: '10.0.1.0/24', availabilityZone: 'eu-west-1a', routeTableId: 'rtb-pub-1a' },
+                { subnetId: 'subnet-pub-1b', cidr: '10.0.2.0/24', availabilityZone: 'eu-west-1b', routeTableId: 'rtb-pub-1b' },
+            ],
+        },
+        {
+            name: 'Private',
+            type: 'Private',
+            subnets: [
+                { subnetId: 'subnet-priv-1a', cidr: '10.0.11.0/24', availabilityZone: 'eu-west-1a', routeTableId: 'rtb-priv-1a' },
+                { subnetId: 'subnet-priv-1b', cidr: '10.0.12.0/24', availabilityZone: 'eu-west-1b', routeTableId: 'rtb-priv-1b' },
+            ],
+        },
+    ],
+};
+
+/**
  * Helper to create KubernetesBaseStack with sensible defaults.
  *
  * Override any prop via the `overrides` parameter.
@@ -44,6 +79,9 @@ function createBaseStack(
     overrides?: Partial<KubernetesBaseStackProps>,
 ): { stack: KubernetesBaseStack; template: Template; app: cdk.App } {
     const app = createTestApp();
+
+    // Provide VPC context so Vpc.fromLookup() resolves with eu-west-1 AZs
+    app.node.setContext(TEST_VPC_CONTEXT_KEY, TEST_VPC_CONTEXT);
 
     const stack = new KubernetesBaseStack(app, 'TestK8sBaseStack', {
         env: TEST_ENV_EU,
@@ -77,8 +115,8 @@ describe('KubernetesBaseStack', () => {
     // Security Groups
     // =========================================================================
     describe('Security Groups', () => {
-        it('should create exactly 4 security groups', () => {
-            template.resourceCountIs('AWS::EC2::SecurityGroup', 4);
+        it('should create exactly 5 security groups (4 custom + 1 NLB)', () => {
+            template.resourceCountIs('AWS::EC2::SecurityGroup', 5);
         });
 
         it('should create cluster base SG with all outbound allowed', () => {
@@ -145,7 +183,7 @@ describe('KubernetesBaseStack', () => {
             });
         });
 
-        it('should create HTTP ingress rule for Let\'s Encrypt on ingress SG', () => {
+        it('should create HTTP ingress rule for NLB health checks on ingress SG', () => {
             template.hasResourceProperties('AWS::EC2::SecurityGroup', {
                 GroupName: 'k8s-dev-k8s-ingress',
                 SecurityGroupIngress: Match.arrayWith([
@@ -153,7 +191,7 @@ describe('KubernetesBaseStack', () => {
                         FromPort: 80,
                         ToPort: 80,
                         IpProtocol: 'tcp',
-                        CidrIp: '0.0.0.0/0',
+                        CidrIp: '10.0.0.0/16',
                     }),
                 ]),
             });
@@ -394,8 +432,8 @@ describe('KubernetesBaseStack', () => {
     // SSM Parameters
     // =========================================================================
     describe('SSM Parameters', () => {
-        it('should create 12 SSM parameters for cross-stack discovery', () => {
-            template.resourceCountIs('AWS::SSM::Parameter', 12);
+        it('should create 14 SSM parameters for cross-stack discovery', () => {
+            template.resourceCountIs('AWS::SSM::Parameter', 14);
         });
 
         it('should create SSM parameters under the /k8s/development prefix', () => {
@@ -408,7 +446,7 @@ describe('KubernetesBaseStack', () => {
             const expectedPrefixes = paramNames.filter(
                 (name) => name.startsWith('/k8s/development/'),
             );
-            expect(expectedPrefixes.length).toBe(12);
+            expect(expectedPrefixes.length).toBe(14);
         });
 
         it('should publish the security group ID to SSM', () => {
@@ -640,7 +678,7 @@ describe('KubernetesBaseStack', () => {
     // =========================================================================
     describe('Resource Counts', () => {
         it('should create expected number of core resources', () => {
-            template.resourceCountIs('AWS::EC2::SecurityGroup', 4);
+            template.resourceCountIs('AWS::EC2::SecurityGroup', 5);
             template.resourceCountIs('AWS::EC2::Volume', 1);
             template.resourceCountIs('AWS::EC2::EIP', 1);
             template.resourceCountIs('AWS::KMS::Key', 1);
@@ -648,7 +686,7 @@ describe('KubernetesBaseStack', () => {
             template.resourceCountIs('AWS::Route53::HostedZone', 1);
             template.resourceCountIs('AWS::Route53::RecordSet', 1);
             template.resourceCountIs('AWS::S3::Bucket', 2);
-            template.resourceCountIs('AWS::SSM::Parameter', 12);
+            template.resourceCountIs('AWS::SSM::Parameter', 14);
             template.resourceCountIs('AWS::DLM::LifecyclePolicy', 1);
         });
     });
