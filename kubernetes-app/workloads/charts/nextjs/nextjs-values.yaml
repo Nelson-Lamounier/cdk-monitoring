@@ -3,6 +3,7 @@
 
 image:
   repository: 771826808455.dkr.ecr.eu-west-1.amazonaws.com/nextjs-frontend
+  tag: "51eda925b1817cb286a849cabe2023ca8d5bf19c"
 
 replicas: 1
 
