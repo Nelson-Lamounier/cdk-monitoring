@@ -55,6 +55,7 @@ jobs:
       any-src: ${{ steps.filter.outputs.any-src }}
       any-tests: ${{ steps.filter.outputs.any-tests }}
       k8s-content: ${{ steps.filter.outputs.k8s-content }}
+      frontend-ops: ${{ steps.filter.outputs.frontend-ops }}
       # Computed: should we run all tests?
       run-all: ${{ steps.compute.outputs.run-all }}
 
@@ -89,6 +90,10 @@ jobs:
               - 'kubernetes-app/platform/charts/**/chart/**'
               - 'kubernetes-app/workloads/charts/**/chart/**'
               - 'kubernetes-app/k8s-bootstrap/**'
+            frontend-ops:
+              - 'frontend-ops/**'
+              - '.github/workflows/deploy-frontend.yml'
+              - '.github/workflows/_sync-assets.yml'
 
       - name: Compute Run Flags
         id: compute
@@ -333,7 +338,33 @@ jobs:
       - name: Run Stack Tests
         run: just test-stacks
 
+  # ============================================================================
+  # Frontend Ops Tests
+  # ============================================================================
+  test-frontend-ops:
+    name: Test Frontend Ops
+    needs: [setup, detect-changes]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    if: |
+      needs.detect-changes.outputs.frontend-ops == 'true' ||
+      needs.detect-changes.outputs.run-all == 'true'
 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      # Runs sync-static-to-s3 unit tests and deploy-frontend workflow validation.
+      # Recipe: justfile → test-frontend-ops → npx jest --config frontend-ops/jest.config.js
+      - name: Run Frontend Ops Tests
+        run: just test-frontend-ops
 
   # ============================================================================
   # NOTE: Snapshot Tests
@@ -480,6 +511,7 @@ jobs:
       - deps-check
       - typecheck
       - test-stacks
+      - test-frontend-ops
       - build
       - validate-cdk
       - validate-helm
@@ -509,6 +541,7 @@ jobs:
 
           echo "### Tests" >> $GITHUB_STEP_SUMMARY
           echo "- Stack Tests: ${{ needs.test-stacks.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Frontend Ops Tests: ${{ needs.test-frontend-ops.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Build & Validation" >> $GITHUB_STEP_SUMMARY
@@ -527,6 +560,7 @@ jobs:
             "deps-check:${{ needs.deps-check.result }}" \
             "typecheck:${{ needs.typecheck.result }}" \
             "test-stacks:${{ needs.test-stacks.result }}" \
+            "test-frontend-ops:${{ needs.test-frontend-ops.result }}" \
             "build:${{ needs.build.result }}" \
             "validate-cdk:${{ needs.validate-cdk.result }}" \
             "validate-helm:${{ needs.validate-helm.result }}"; do

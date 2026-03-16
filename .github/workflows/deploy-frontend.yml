@@ -86,7 +86,7 @@ jobs:
   # ===========================================================================
   deploy-to-cluster:
     name: Deploy to Kubernetes
-    needs: [build-and-push]
+    needs: [build-and-push, sync-assets]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: development

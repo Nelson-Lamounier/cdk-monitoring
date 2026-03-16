@@ -312,6 +312,12 @@ ci-integration-test project environment *ARGS:
 test-integration project environment *ARGS:
     cd infra && AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPatterns="tests/integration/{{project}}" {{ARGS}}
 
+# Run frontend-ops tests (sync script + workflow validation)
+# Usage: just test-frontend-ops
+[group('test')]
+test-frontend-ops *ARGS:
+    npx jest --config frontend-ops/jest.config.js {{ARGS}}
+
 # =============================================================================
 # CODE QUALITY
 # =============================================================================
