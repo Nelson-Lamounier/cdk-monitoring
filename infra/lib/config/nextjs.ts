@@ -635,7 +635,7 @@ function buildNextJsConfigs(): Record<Environment, NextJsConfigs> {
             priceClass: cloudfront.PriceClass.PRICE_CLASS_100, // US/Canada/Europe only
             minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
             httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
-            loggingEnabled: false,
+            loggingEnabled: true,
             staticAssetsTtl: { default: cdk.Duration.days(365), max: cdk.Duration.days(365), min: cdk.Duration.days(1) },
             dynamicContentTtl: { default: cdk.Duration.seconds(0), max: cdk.Duration.seconds(300), min: cdk.Duration.seconds(0) },
             noCacheTtl: { default: cdk.Duration.seconds(0), max: cdk.Duration.seconds(0), min: cdk.Duration.seconds(0) },
