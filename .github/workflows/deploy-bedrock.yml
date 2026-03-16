@@ -11,17 +11,17 @@ name: Deploy Bedrock (Dev)
 
 on:
   workflow_dispatch: # Manual trigger
-  push:
-    branches: [develop]
-    paths:
-      - "infra/lib/stacks/bedrock/**"
-      - "infra/lib/config/bedrock/**"
-      - "infra/lib/projects/bedrock/**"
-      - "bedrock-publisher/src/**"
-      - "infra/bin/app.ts"
-      - ".github/workflows/deploy-bedrock*.yml"
-      - ".github/workflows/_deploy-stack.yml"
-      - ".github/actions/**"
+  # push:
+  #   branches: [develop]
+  #   paths:
+  #     - "infra/lib/stacks/bedrock/**"
+  #     - "infra/lib/config/bedrock/**"
+  #     - "infra/lib/projects/bedrock/**"
+  #     - "bedrock-publisher/src/**"
+  #     - "infra/bin/app.ts"
+  #     - ".github/workflows/deploy-bedrock*.yml"
+  #     - ".github/workflows/_deploy-stack.yml"
+  #     - ".github/actions/**"
 
 permissions:
   id-token: write

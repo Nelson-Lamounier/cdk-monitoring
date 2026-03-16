@@ -58,14 +58,14 @@ jobs:
     with:
       stack-name: Org-DnsRoleStack-prod
       project: org
-      environment: prod
+      environment: development
       aws-account-id: ${{ vars.ROOT_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
       root-account-id: ${{ vars.ROOT_ACCOUNT_ID }}
       additional-args: >-
-        --context hostedZoneIds='["${{ vars.HOSTED_ZONE_ID }}"]'
-        --context trustedAccountIds='["${{ vars.AWS_ACCOUNT_ID }}"]'
+        --context hostedZoneIds=${{ vars.HOSTED_ZONE_ID }}
+        --context trustedAccountIds=${{ vars.AWS_ACCOUNT_ID }}
         --context account=${{ vars.ROOT_ACCOUNT_ID }}
         --context region=${{ vars.AWS_REGION || 'eu-west-1' }}
       outputs-directory: org-outputs
