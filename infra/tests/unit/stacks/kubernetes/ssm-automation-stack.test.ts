@@ -3,7 +3,7 @@
  * SSM Automation Stack Unit Tests
  *
  * Tests for K8sSsmAutomationStack:
- * - SSM Automation Documents (control plane, worker, nextjs secrets, monitoring secrets)
+ * - SSM Automation Documents (control plane, app-worker, mon-worker, argocd-worker, nextjs secrets, monitoring secrets)
  * - IAM Role for automation execution
  * - SSM Parameters for document discovery
  * - Step configuration and ordering
@@ -60,8 +60,8 @@ describe('K8sSsmAutomationStack', () => {
     describe('SSM Automation Documents', () => {
         const { template } = createSsmAutomationStack();
 
-        it('should create 4 SSM Automation documents', () => {
-            template.resourceCountIs('AWS::SSM::Document', 5);
+        it('should create 6 SSM Automation documents', () => {
+            template.resourceCountIs('AWS::SSM::Document', 6);
         });
 
         it('should create a control plane automation document', () => {
@@ -86,6 +86,15 @@ describe('K8sSsmAutomationStack', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 DocumentType: 'Automation',
                 Name: 'k8s-dev-bootstrap-mon-worker',
+                DocumentFormat: 'JSON',
+                UpdateMethod: 'NewVersion',
+            });
+        });
+
+        it('should create an argocd-worker automation document', () => {
+            template.hasResourceProperties('AWS::SSM::Document', {
+                DocumentType: 'Automation',
+                Name: 'k8s-dev-bootstrap-argocd-worker',
                 DocumentFormat: 'JSON',
                 UpdateMethod: 'NewVersion',
             });
@@ -282,6 +291,13 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
+        it('should create SSM parameter for argocd-worker document name', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/k8s/development/bootstrap/argocd-worker-doc-name',
+                Value: 'k8s-dev-bootstrap-argocd-worker',
+            });
+        });
+
         it('should create SSM parameter for automation role ARN', () => {
             template.hasResourceProperties('AWS::SSM::Parameter', {
                 Name: '/k8s/development/bootstrap/automation-role-arn',
@@ -319,6 +335,10 @@ describe('K8sSsmAutomationStack', () => {
 
         it('should expose monWorkerDocName', () => {
             expect(stack.monWorkerDocName).toBe('k8s-dev-bootstrap-mon-worker');
+        });
+
+        it('should expose argocdWorkerDocName', () => {
+            expect(stack.argocdWorkerDocName).toBe('k8s-dev-bootstrap-argocd-worker');
         });
 
         it('should expose automationRoleArn', () => {

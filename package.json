@@ -13,7 +13,8 @@
   "resolutions": {
     "markdown-it": ">=14.1.1",
     "fast-xml-parser": ">=5.3.6",
-    "tar": ">=7.5.8",
+    "tar": ">=7.5.11",
+    "flatted": ">=3.4.0",
     "picomatch": "^3.0.0"
   },
   "packageManager": "yarn@4.12.0",

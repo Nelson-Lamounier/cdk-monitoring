@@ -152,6 +152,9 @@ export class K8sSsmAutomationStack extends cdk.Stack {
     /** Monitoring worker SSM Automation document name */
     public readonly monWorkerDocName: string;
 
+    /** ArgoCD worker SSM Automation document name */
+    public readonly argocdWorkerDocName: string;
+
     /** Next.js secrets SSM Automation document name */
     public readonly nextjsSecretsDocName: string;
 
@@ -349,6 +352,8 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             documentFormat: 'JSON',
             updateMethod: 'NewVersion',
         });
+
+        this.argocdWorkerDocName = argocdWorkerDocName;
 
         // =====================================================================
         // SSM Automation Document — Next.js Secrets Deployment
