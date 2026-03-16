@@ -331,6 +331,26 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         this.monWorkerDocName = monWorkerDocName;
 
         // =====================================================================
+        // SSM Automation Document — ArgoCD Worker Node Bootstrap
+        // =====================================================================
+
+        const argocdWorkerDocName = `${prefix}-bootstrap-argocd-worker`;
+
+        const _argocdWorkerDocument = new ssm.CfnDocument(this, 'ArgocdWorkerAutomation', {
+            documentType: 'Automation',
+            name: argocdWorkerDocName,
+            content: this.buildAutomationContent({
+                description: 'Orchestrates Kubernetes argocd-worker node bootstrap (consolidated)',
+                steps: WORKER_STEPS,
+                ssmPrefix: props.ssmPrefix,
+                s3Bucket: props.scriptsBucketName,
+                automationRoleArn: automationRole.roleArn,
+            }),
+            documentFormat: 'JSON',
+            updateMethod: 'NewVersion',
+        });
+
+        // =====================================================================
         // SSM Automation Document — Next.js Secrets Deployment
         //
         // Single-step automation that syncs deploy scripts from S3 and runs
@@ -409,6 +429,12 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             description: 'SSM Automation document name for mon-worker node bootstrap',
         });
 
+        new ssm.StringParameter(this, 'ArgocdWorkerDocNameParam', {
+            parameterName: `${props.ssmPrefix}/bootstrap/argocd-worker-doc-name`,
+            stringValue: argocdWorkerDocName,
+            description: 'SSM Automation document name for argocd-worker node bootstrap',
+        });
+
         new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
             parameterName: `${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`,
             stringValue: nextjsDocName,
@@ -465,6 +491,10 @@ ROLE_MAP = {
     "mon-worker": {
         "doc_param": "bootstrap/mon-worker-doc-name",
         "instance_param": "bootstrap/mon-worker-instance-id",
+    },
+    "argocd-worker": {
+        "doc_param": "bootstrap/argocd-worker-doc-name",
+        "instance_param": "bootstrap/argocd-worker-instance-id",
     },
 }
 

@@ -152,7 +152,7 @@ jobs:
       domain-name: ${{ steps.resolve-edge.outputs.domain-name }}
       hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
       cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
-      # Stack names from synthesize-ci.ts (10-stack architecture)
+      # Stack names from synthesize-ci.ts (11-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
       goldenami-stack: ${{ steps.synth.outputs.goldenAmi }}
@@ -160,6 +160,7 @@ jobs:
       ssmautomation-stack: ${{ steps.synth.outputs.ssmAutomation }}
       worker-stack: ${{ steps.synth.outputs.appWorker }}
       monitoring-worker-stack: ${{ steps.synth.outputs.monitoringWorker }}
+      argocd-worker-stack: ${{ steps.synth.outputs.argocdWorker }}
       appiam-stack: ${{ steps.synth.outputs.appIam }}
       edge-stack: ${{ steps.synth.outputs.edge }}
 
@@ -862,17 +863,78 @@ jobs:
         run: just ci-integration-test kubernetes/monitoring-worker-stack $CDK_ENV --verbose
 
   # ===========================================================================
+  # Deploy ArgoCD Worker Stack (3d) — ArgoCD Node (Spot)
+  # ===========================================================================
+  deploy-argocd-worker:
+    name: Deploy ArgoCD Worker
+    needs: [setup, deploy-controlplane, verify-controlplane-stack]
+    if: always() && needs.deploy-controlplane.result == 'success' && needs.verify-controlplane-stack.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.argocd-worker-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+      # cert-manager DNS-01 — pods may run on this worker node
+      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
+    secrets: inherit
+
+  # ===========================================================================
+  # Verify ArgoCD Worker Stack — Validate Spot instance, ASG, IAM
+  # ===========================================================================
+  verify-argocd-worker-stack:
+    name: Verify ArgoCD Worker
+    needs: [setup, deploy-argocd-worker]
+    if: always() && needs.deploy-argocd-worker.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run ArgoCD Worker Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes/argocd-worker-stack $CDK_ENV --verbose
+
+  # ===========================================================================
   # Deploy AppIam Stack (4/8) — Application-tier IAM grants
   # ===========================================================================
   deploy-appiam:
     name: Deploy App IAM
-    needs: [setup, deploy-app-worker, deploy-monitoring-worker, verify-app-worker-stack, verify-monitoring-worker-stack]
+    needs: [setup, deploy-app-worker, deploy-monitoring-worker, deploy-argocd-worker, verify-app-worker-stack, verify-monitoring-worker-stack, verify-argocd-worker-stack]
     if: >-
       always()
       && needs.deploy-app-worker.result == 'success'
       && needs.deploy-monitoring-worker.result == 'success'
+      && needs.deploy-argocd-worker.result == 'success'
       && needs.verify-app-worker-stack.result == 'success'
       && needs.verify-monitoring-worker-stack.result == 'success'
+      && needs.verify-argocd-worker-stack.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.appiam-stack }}
@@ -980,6 +1042,7 @@ jobs:
         deploy-controlplane,
         deploy-app-worker,
         deploy-monitoring-worker,
+        deploy-argocd-worker,
         deploy-edge,
       ]
     runs-on: ubuntu-latest
@@ -992,6 +1055,7 @@ jobs:
         || needs.deploy-controlplane.result == 'failure'
         || needs.deploy-app-worker.result == 'failure'
         || needs.deploy-monitoring-worker.result == 'failure'
+        || needs.deploy-argocd-worker.result == 'failure'
         || needs.deploy-edge.result == 'failure'
       )
       && inputs.cdk-environment != 'development'
@@ -1027,13 +1091,14 @@ jobs:
               "control-plane": "${{ needs.deploy-controlplane.result }}",
               "app-worker": "${{ needs.deploy-app-worker.result }}",
               "monitoring-worker": "${{ needs.deploy-monitoring-worker.result }}",
+              "argocd-worker": "${{ needs.deploy-argocd-worker.result }}",
               "edge": "${{ needs.deploy-edge.result || 'skipped' }}"
             }
           RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           COMMIT_URL: "${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
         run: |
           just ci-failure-report \
-            --stacks "${{ needs.setup.outputs.data-stack }},${{ needs.setup.outputs.base-stack }},${{ needs.setup.outputs.controlplane-stack }},${{ needs.setup.outputs.worker-stack }},${{ needs.setup.outputs.monitoring-worker-stack }},${{ needs.setup.outputs.appiam-stack }},${{ needs.setup.outputs.edge-stack }}" \
+            --stacks "${{ needs.setup.outputs.data-stack }},${{ needs.setup.outputs.base-stack }},${{ needs.setup.outputs.controlplane-stack }},${{ needs.setup.outputs.worker-stack }},${{ needs.setup.outputs.monitoring-worker-stack }},${{ needs.setup.outputs.argocd-worker-stack }},${{ needs.setup.outputs.appiam-stack }},${{ needs.setup.outputs.edge-stack }}" \
             --region ${{ env.AWS_REGION }} \
             --ssm-prefix "/k8s/${{ inputs.cdk-environment }}"
 
@@ -1052,6 +1117,7 @@ jobs:
       - deploy-goldenami
       - deploy-app-worker
       - deploy-monitoring-worker
+      - deploy-argocd-worker
       - deploy-edge
       - deployment-failure-alert
     runs-on: ubuntu-latest
@@ -1118,6 +1184,7 @@ jobs:
           DEPLOY_CONTROLPLANE_RESULT: ${{ needs.deploy-controlplane.result }}
           DEPLOY_WORKER_RESULT: ${{ needs.deploy-app-worker.result || 'skipped' }}
           DEPLOY_MON_WORKER_RESULT: ${{ needs.deploy-monitoring-worker.result || 'skipped' }}
+          DEPLOY_ARGOCD_WORKER_RESULT: ${{ needs.deploy-argocd-worker.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
           VERIFY_RESULT: "moved-to-ssm-pipeline"

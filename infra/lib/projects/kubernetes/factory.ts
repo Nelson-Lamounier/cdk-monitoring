@@ -5,14 +5,15 @@
  * Creates shared Kubernetes infrastructure hosting both monitoring and
  * application workloads on a kubeadm Kubernetes cluster.
  *
- * Stack Architecture (10 stacks):
+ * Stack Architecture (11 stacks):
  *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
  *   2. Kubernetes-Base: VPC, Security Group, KMS, EBS, Elastic IP
  *   2b. Kubernetes-GoldenAmi: EC2 Image Builder pipeline (bakes Golden AMI)
  *   2c. Kubernetes-SsmAutomation: SSM Automation bootstrap documents
  *   3. Kubernetes-ControlPlane: Control plane EC2 (t3.medium), ASG, IAM,
  *   3b. Kubernetes-AppWorker: Application node EC2 (t3.small), ASG, kubeadm join
- *   3c. Kubernetes-MonitoringWorker: Monitoring node EC2 (t3.small), ASG, kubeadm join
+ *   3c. Kubernetes-MonitoringWorker: Monitoring node EC2 (t3.medium), ASG, kubeadm join
+ *   3d. Kubernetes-ArgocdWorker: ArgoCD node EC2 (t3.small Spot), ASG, kubeadm join
  *   4. Kubernetes-AppIam: Application-tier IAM grants (DynamoDB, S3, Secrets)
  *   5. Kubernetes-API: API Gateway + Lambda (email subscriptions)
  *   6. Kubernetes-Edge: ACM + WAF + CloudFront (us-east-1)
@@ -51,6 +52,7 @@ import {
     KubernetesEdgeStack,
     KubernetesMonitoringWorkerStack,
     KubernetesAppWorkerStack,
+    KubernetesArgocdWorkerStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId, flatName } from '../../utilities/naming';
@@ -358,6 +360,34 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         monitoringWorkerStack.addDependency(controlPlaneStack);
         stacks.push(monitoringWorkerStack);
         stackMap.monitoringWorker = monitoringWorkerStack;
+
+        // =================================================================
+        // Stack 3d: ARGOCD WORKER STACK (ArgoCD Node — t3.small Spot)
+        //
+        // Dedicated worker node for ArgoCD GitOps controller.
+        // Uses Spot instances for cost optimisation (~70% savings).
+        // ArgoCD UI accessed via: ops.nelsonlamounier.com/argocd
+        //   → NLB → Traefik (monitoring node) → ArgoCD Service → pod
+        // No NLB registration or ingress SG needed.
+        // =================================================================
+        const argocdWorkerStack = new KubernetesArgocdWorkerStack(
+            scope,
+            stackId(this.namespace, 'ArgocdWorker', environment),
+            {
+                vpcId: sharedVpcId,
+                env,
+                description: `Kubernetes ArgoCD worker node (Spot) - ${environment}`,
+                targetEnvironment: environment,
+                argocdWorkerConfig: configs.argocdWorker,
+                controlPlaneSsmPrefix: ssmPrefix,
+                namePrefix,
+                // cert-manager DNS-01 — pods may run on this worker node
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
+            },
+        );
+        argocdWorkerStack.addDependency(controlPlaneStack);
+        stacks.push(argocdWorkerStack);
+        stackMap.argocdWorker = argocdWorkerStack;
 
         // =================================================================
         // Stack 4: APP IAM STACK (Application-Tier Grants)

@@ -175,6 +175,15 @@ const k8sStacks: StackConfig[] = [
     dependsOn: ['controlPlane'],
   },
   {
+    id: 'argocdWorker',
+    name: 'ArgoCD Worker Stack',
+    getStackName: (env) =>
+      getStackId(Project.KUBERNETES, 'argocdWorker', env),
+    description:
+      'ArgoCD worker node: kubeadm join + role=argocd label/taint (Spot)',
+    dependsOn: ['controlPlane'],
+  },
+  {
     id: 'appIam',
     name: 'App IAM Stack',
     getStackName: (env) => getStackId(Project.KUBERNETES, 'appIam', env),

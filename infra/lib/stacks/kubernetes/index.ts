@@ -13,6 +13,8 @@ export { KubernetesAppWorkerStack } from './app-worker-stack';
 export type { KubernetesAppWorkerStackProps } from './app-worker-stack';
 export { KubernetesMonitoringWorkerStack } from './monitoring-worker-stack';
 export type { KubernetesMonitoringWorkerStackProps } from './monitoring-worker-stack';
+export { KubernetesArgocdWorkerStack } from './argocd-worker-stack';
+export type { KubernetesArgocdWorkerStackProps } from './argocd-worker-stack';
 export { KubernetesEdgeStack } from './edge-stack';
 export type { KubernetesEdgeStackProps } from './edge-stack';
 export { KubernetesDataStack } from './data-stack';

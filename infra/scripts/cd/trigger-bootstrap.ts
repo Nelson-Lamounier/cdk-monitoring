@@ -5,7 +5,7 @@
  * Triggers SSM Automation on Kubernetes nodes in a defined order:
  *   1. Start control-plane bootstrap
  *   2. Wait for control-plane to complete (workers need join credentials)
- *   3. Start app-worker + mon-worker bootstrap (if instances exist)
+ *   3. Start app-worker + mon-worker + argocd-worker bootstrap (if instances exist)
  *
  * For each node role, the script:
  *   - Resolves the instance ID from SSM Parameter Store
@@ -134,6 +134,13 @@ function buildTargets(prefix: string): TriggerTarget[] {
             execParam: `${prefix}/bootstrap/mon-worker-execution-id`,
             outputKey: 'mon_worker_execution_id',
             targetTagValue: 'mon-worker',
+        },
+        {
+            role: 'argocd-worker',
+            docParam: `${prefix}/bootstrap/argocd-worker-doc-name`,
+            execParam: `${prefix}/bootstrap/argocd-worker-execution-id`,
+            outputKey: 'argocd_worker_execution_id',
+            targetTagValue: 'argocd-worker',
         },
     ];
 }

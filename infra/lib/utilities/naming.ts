@@ -39,6 +39,7 @@ export const STACK_REGISTRY = {
         controlPlane: 'ControlPlane',
         appWorker: 'AppWorker',
         monitoringWorker: 'MonitoringWorker',
+        argocdWorker: 'ArgocdWorker',
         appIam: 'AppIam',
         api: 'Api',
         edge: 'Edge',
