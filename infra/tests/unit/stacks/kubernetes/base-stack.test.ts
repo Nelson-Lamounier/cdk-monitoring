@@ -26,6 +26,8 @@ import {
 } from '../../../../lib/stacks/kubernetes/base-stack';
 import {
     TEST_ENV_EU,
+    TEST_VPC_CONTEXT_KEY,
+    TEST_VPC_CONTEXT,
     createTestApp,
 } from '../../../fixtures';
 
@@ -35,40 +37,7 @@ import {
 
 const TEST_CONFIGS = getK8sConfigs(Environment.DEVELOPMENT);
 
-/**
- * VPC context for Vpc.fromLookup() in tests.
- *
- * CDK's default dummy VPC uses AZs like 'dummy1a'/'dummy1b', which causes
- * the NLB construct to fail (it expects 'eu-west-1a'). This context entry
- * provides a realistic VPC with eu-west-1 AZs so the NLB subnet lookup works.
- */
-const TEST_VPC_CONTEXT_KEY =
-    'vpc-provider:account=123456789012:filter.tag:Name=shared-vpc-development:region=eu-west-1:returnAsymmetricSubnets=true';
 
-const TEST_VPC_CONTEXT = {
-    vpcId: 'vpc-12345',
-    vpcCidrBlock: '10.0.0.0/16',
-    ownerAccountId: '123456789012',
-    availabilityZones: ['eu-west-1a', 'eu-west-1b'],
-    subnetGroups: [
-        {
-            name: 'Public',
-            type: 'Public',
-            subnets: [
-                { subnetId: 'subnet-pub-1a', cidr: '10.0.1.0/24', availabilityZone: 'eu-west-1a', routeTableId: 'rtb-pub-1a' },
-                { subnetId: 'subnet-pub-1b', cidr: '10.0.2.0/24', availabilityZone: 'eu-west-1b', routeTableId: 'rtb-pub-1b' },
-            ],
-        },
-        {
-            name: 'Private',
-            type: 'Private',
-            subnets: [
-                { subnetId: 'subnet-priv-1a', cidr: '10.0.11.0/24', availabilityZone: 'eu-west-1a', routeTableId: 'rtb-priv-1a' },
-                { subnetId: 'subnet-priv-1b', cidr: '10.0.12.0/24', availabilityZone: 'eu-west-1b', routeTableId: 'rtb-priv-1b' },
-            ],
-        },
-    ],
-};
 
 /**
  * Helper to create KubernetesBaseStack with sensible defaults.
