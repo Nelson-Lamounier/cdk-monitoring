@@ -442,6 +442,11 @@ export class KubernetesBaseStack extends cdk.Stack {
         this.nlbConstruct.addTcpListener('HttpListener', TRAEFIK_HTTP_PORT, this.nlbHttpTargetGroup);
         this.nlbConstruct.addTcpListener('HttpsListener', TRAEFIK_HTTPS_PORT, this.nlbHttpsTargetGroup);
 
+        // NLB Security Group — CDK auto-creates a default SG that blocks all
+        // traffic. Open inbound (0.0.0.0/0) and outbound (VPC CIDR) for the
+        // listener ports. Fine-grained IP filtering is handled by the Ingress SG.
+        this.nlbConstruct.configureSecurityGroup([TRAEFIK_HTTP_PORT, TRAEFIK_HTTPS_PORT]);
+
         // =====================================================================
         // Route 53 Private Hosted Zone (stable API server DNS)
         //

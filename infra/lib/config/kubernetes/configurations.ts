@@ -349,7 +349,7 @@ const DEFAULT_K8S_SECURITY_GROUPS: K8sSecurityGroupConfig = {
     ingress: {
         allowAllOutbound: false,
         rules: [
-            // No static rules — CloudFront prefix list + admin IPs added at runtime in base-stack.ts
+             { port: 80, protocol: 'tcp', source: 'vpcCidr', description: 'HTTP health checks from NLB' },
         ],
     },
 };
