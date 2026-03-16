@@ -61,21 +61,64 @@ import {
 } from '@aws-sdk/client-cloudwatch-logs';
 
 import type { IpPermission } from '@aws-sdk/client-ec2';
+import type { FlowLog } from '@aws-sdk/client-ec2';
+import type { LoadBalancer, Listener, TargetGroup, LoadBalancerAttribute } from '@aws-sdk/client-elastic-load-balancing-v2';
+import type { KeyMetadata } from '@aws-sdk/client-kms';
+import type { HostedZone, ResourceRecordSet } from '@aws-sdk/client-route-53';
+import type { LogGroup } from '@aws-sdk/client-cloudwatch-logs';
 
 import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
+import type { K8sSsmPaths } from '../../../lib/config/ssm-paths';
+
+// =============================================================================
+// Rule 4: Environment Variable Parsing — No Silent `as` Casts
+// =============================================================================
+
+/**
+ * Parse and validate CDK_ENV environment variable.
+ * Throws with a descriptive error for invalid values.
+ */
+function parseEnvironment(raw: string): Environment {
+    const valid = ['development', 'staging', 'production'] as const satisfies readonly Environment[];
+    if (!valid.includes(raw as Environment)) {
+        throw new Error(`Invalid CDK_ENV: "${raw}". Expected one of: ${valid.join(', ')}`);
+    }
+    return raw as Environment;
+}
 
 // =============================================================================
 // Configuration
 // =============================================================================
 
-const CDK_ENV = (process.env.CDK_ENV ?? 'development') as Environment;
+const CDK_ENV = parseEnvironment(process.env.CDK_ENV ?? 'development');
 const REGION = process.env.AWS_REGION ?? 'eu-west-1';
 const CONFIGS = getK8sConfigs(CDK_ENV);
 const SSM_PATHS = k8sSsmPaths(CDK_ENV);
 const PREFIX = k8sSsmPrefix(CDK_ENV);
 const NAME_PREFIX = `k8s-${CDK_ENV}`;
+
+// =============================================================================
+// Rule 3: Magic Values — Named Constants Only
+// =============================================================================
+
+// Networking
+const VPC_CIDR_PREFIX = '10.';
+const POD_CIDR_PREFIX = '192.168.';
+const ANY_IPV4 = '0.0.0.0/0';
+
+// Retention / lifecycle
+const FLOW_LOG_RETENTION_DAYS = 3;
+const NLB_LOG_LIFECYCLE_DAYS = 3;
+const NLB_LOG_PREFIX = 'nlb-access-logs';
+const API_RECORD_TTL = 30;
+const K8S_INTERNAL_ZONE = 'k8s.internal.';
+const K8S_API_FQDN = 'k8s-api.k8s.internal';
+const K8S_API_FQDN_DOT = `${K8S_API_FQDN}.`;
+
+// Listener count
+const EXPECTED_LISTENER_COUNT = 2;
 
 // AWS SDK clients (shared across tests)
 const ssm = new SSMClient({ region: REGION });
@@ -87,7 +130,26 @@ const elbv2 = new ElasticLoadBalancingV2Client({ region: REGION });
 const cwl = new CloudWatchLogsClient({ region: REGION });
 
 // =============================================================================
-// SSM Parameter Cache
+// Rule 2: Non-Null Assertions — Use a `requireParam` Helper
+// =============================================================================
+
+/**
+ * Retrieve a required SSM parameter from the cached map.
+ * Throws a descriptive error if the parameter is missing or empty.
+ *
+ * @param params - The SSM parameter Map<path, value>
+ * @param path - The full SSM path to look up
+ * @returns The parameter value (guaranteed non-empty)
+ * @throws Error if the parameter is missing or empty
+ */
+function requireParam(params: Map<string, string>, path: string): string {
+    const value = params.get(path);
+    if (!value) throw new Error(`Missing required SSM parameter: ${path}`);
+    return value;
+}
+
+// =============================================================================
+// SSM Parameter Cache (loaded once at module level — Rule 1)
 // =============================================================================
 
 /**
@@ -120,7 +182,7 @@ async function loadSsmParameters(): Promise<Map<string, string>> {
 }
 
 // =============================================================================
-// Helper: SG Rule Assertion Utilities
+// Helper: SG Rule Assertion Utilities (module-level — Rule 10)
 // =============================================================================
 
 /**
@@ -181,21 +243,128 @@ function expectPrefixListSource(rule: IpPermission): void {
 }
 
 // =============================================================================
+// Module-Level Cached State (Rule 1 + Rule 10)
+//
+// All shared API responses are fetched once in beforeAll and reused.
+// =============================================================================
+
+let ssmParams: Map<string, string>;
+
+// NLB — fetched once, shared across NLB Config, NLB SG, NLB Access Logs
+let nlb: LoadBalancer;
+let nlbArn: string;
+let nlbAttributes: LoadBalancerAttribute[];
+let nlbListeners: Listener[];
+let nlbLogBucketName: string;
+
+// NLB Target Groups
+let httpTargetGroup: TargetGroup;
+let httpsTargetGroup: TargetGroup;
+
+// NLB SG
+let nlbSgIngress: IpPermission[];
+let nlbSgEgress: IpPermission[];
+
+// VPC Flow Logs
+let flowLogs: FlowLog[];
+let cwlFlowLog: FlowLog | undefined;
+let flowLogGroup: LogGroup | undefined;
+
+// =============================================================================
+// Top-Level beforeAll — Fetch All Module-Level Resources Once (Rule 1)
+// =============================================================================
+
+beforeAll(async () => {
+    // --- SSM Parameters (gate for everything else) ---
+    ssmParams = await loadSsmParameters();
+
+    // --- NLB ---
+    const { LoadBalancers } = await elbv2.send(
+        new DescribeLoadBalancersCommand({
+            Names: [`${NAME_PREFIX}-nlb`],
+        }),
+    );
+    expect(LoadBalancers).toHaveLength(1);
+    nlb = LoadBalancers![0];
+    nlbArn = nlb.LoadBalancerArn!;
+
+    // NLB Attributes (access logs config)
+    const { Attributes } = await elbv2.send(
+        new DescribeLoadBalancerAttributesCommand({ LoadBalancerArn: nlbArn }),
+    );
+    nlbAttributes = Attributes ?? [];
+
+    // NLB log bucket name from attributes
+    nlbLogBucketName = nlbAttributes.find(
+        (a) => a.Key === 'access_logs.s3.bucket',
+    )?.Value ?? '';
+    expect(nlbLogBucketName).toBeTruthy();
+
+    // NLB Listeners
+    const { Listeners } = await elbv2.send(
+        new DescribeListenersCommand({ LoadBalancerArn: nlbArn }),
+    );
+    nlbListeners = Listeners ?? [];
+
+    // NLB Target Groups
+    const httpArn = requireParam(ssmParams, SSM_PATHS.nlbHttpTargetGroupArn);
+    const httpsArn = requireParam(ssmParams, SSM_PATHS.nlbHttpsTargetGroupArn);
+
+    const [httpTgResp, httpsTgResp] = await Promise.all([
+        elbv2.send(new DescribeTargetGroupsCommand({ TargetGroupArns: [httpArn] })),
+        elbv2.send(new DescribeTargetGroupsCommand({ TargetGroupArns: [httpsArn] })),
+    ]);
+    expect(httpTgResp.TargetGroups).toHaveLength(1);
+    expect(httpsTgResp.TargetGroups).toHaveLength(1);
+    httpTargetGroup = httpTgResp.TargetGroups![0];
+    httpsTargetGroup = httpsTgResp.TargetGroups![0];
+
+    // NLB SG — discovered from NLB, not SSM
+    const nlbSgIds = nlb.SecurityGroups ?? [];
+    expect(nlbSgIds.length).toBeGreaterThan(0);
+    const { SecurityGroups: nlbSgs } = await ec2.send(
+        new DescribeSecurityGroupsCommand({ GroupIds: [nlbSgIds[0]] }),
+    );
+    expect(nlbSgs).toHaveLength(1);
+    nlbSgIngress = nlbSgs![0].IpPermissions ?? [];
+    nlbSgEgress = nlbSgs![0].IpPermissionsEgress ?? [];
+
+    // --- VPC Flow Logs ---
+    const vpcId = requireParam(ssmParams, SSM_PATHS.vpcId);
+    const { FlowLogs } = await ec2.send(
+        new DescribeFlowLogsCommand({
+            Filter: [{ Name: 'resource-id', Values: [vpcId] }],
+        }),
+    );
+    flowLogs = FlowLogs ?? [];
+
+    cwlFlowLog = flowLogs.find(
+        (f) => f.LogDestinationType === 'cloud-watch-logs',
+    );
+
+    // Flow log group retention (only if CloudWatch flow log exists)
+    if (cwlFlowLog?.LogGroupName) {
+        const { logGroups } = await cwl.send(
+            new DescribeLogGroupsCommand({
+                logGroupNamePrefix: cwlFlowLog.LogGroupName,
+            }),
+        );
+        flowLogGroup = logGroups?.find(
+            (g) => g.logGroupName === cwlFlowLog!.LogGroupName,
+        );
+    }
+});
+
+// =============================================================================
 // Tests
 // =============================================================================
 
 describe('KubernetesBaseStack — Post-Deploy Verification', () => {
-    let ssmParams: Map<string, string>;
-
-    // Load SSM parameters ONCE before all tests
-    beforeAll(async () => {
-        ssmParams = await loadSsmParameters();
-    });
-
     // =========================================================================
     // SSM Parameters (14)
     // =========================================================================
     describe('SSM Parameters', () => {
+        // Rule 5: Use `satisfies` instead of `as const`
         const expectedPaths = [
             'vpcId',
             'elasticIp',
@@ -211,7 +380,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
             'kmsKeyArn',
             'nlbHttpTargetGroupArn',
             'nlbHttpsTargetGroupArn',
-        ] as const;
+        ] satisfies Array<keyof K8sSsmPaths>;
 
         it('should have all 14 SSM parameters published', () => {
             expect(ssmParams.size).toBeGreaterThanOrEqual(expectedPaths.length);
@@ -227,15 +396,15 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
             },
         );
 
-        it('should store k8s-api.k8s.internal as the API DNS name', () => {
-            expect(ssmParams.get(SSM_PATHS.apiDnsName)).toBe(
-                'k8s-api.k8s.internal',
+        it('should store the K8s API FQDN as the API DNS name', () => {
+            expect(requireParam(ssmParams, SSM_PATHS.apiDnsName)).toBe(
+                K8S_API_FQDN,
             );
         });
 
         it('NLB target group ARNs should be valid ARN format', () => {
-            const httpArn = ssmParams.get(SSM_PATHS.nlbHttpTargetGroupArn)!;
-            const httpsArn = ssmParams.get(SSM_PATHS.nlbHttpsTargetGroupArn)!;
+            const httpArn = requireParam(ssmParams, SSM_PATHS.nlbHttpTargetGroupArn);
+            const httpsArn = requireParam(ssmParams, SSM_PATHS.nlbHttpsTargetGroupArn);
 
             expect(httpArn).toMatch(/^arn:aws:elasticloadbalancing:/);
             expect(httpsArn).toMatch(/^arn:aws:elasticloadbalancing:/);
@@ -247,102 +416,55 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     // =========================================================================
     describe('VPC', () => {
         it('should exist and be in available state', async () => {
-            const vpcId = ssmParams.get(SSM_PATHS.vpcId)!;
+            const vpcId = requireParam(ssmParams, SSM_PATHS.vpcId);
 
             const { Vpcs } = await ec2.send(
                 new DescribeVpcsCommand({ VpcIds: [vpcId] }),
             );
 
             expect(Vpcs).toHaveLength(1);
-            expect(Vpcs![0].State).toBe('available');
+            const vpc = Vpcs![0];
+            expect(vpc.State).toBe('available');
         });
     });
 
     // =========================================================================
     // VPC Flow Logs
+    // Depends on: flowLogs, cwlFlowLog, flowLogGroup populated in top-level beforeAll
     // =========================================================================
     describe('VPC Flow Logs', () => {
-        it('should have flow logs enabled for the VPC', async () => {
-            const vpcId = ssmParams.get(SSM_PATHS.vpcId)!;
-
-            const { FlowLogs } = await ec2.send(
-                new DescribeFlowLogsCommand({
-                    Filter: [{
-                        Name: 'resource-id',
-                        Values: [vpcId],
-                    }],
-                }),
-            );
-
-            expect(FlowLogs).toBeDefined();
-            expect(FlowLogs!.length).toBeGreaterThan(0);
+        it('should have flow logs enabled for the VPC', () => {
+            expect(flowLogs.length).toBeGreaterThan(0);
         });
 
-        it('flow logs should deliver to CloudWatch Logs', async () => {
-            const vpcId = ssmParams.get(SSM_PATHS.vpcId)!;
-
-            const { FlowLogs } = await ec2.send(
-                new DescribeFlowLogsCommand({
-                    Filter: [{
-                        Name: 'resource-id',
-                        Values: [vpcId],
-                    }],
-                }),
-            );
-
-            const cwlFlow = FlowLogs?.find(
-                (f) => f.LogDestinationType === 'cloud-watch-logs',
-            );
-            expect(cwlFlow).toBeDefined();
-            expect(cwlFlow!.FlowLogStatus).toBe('ACTIVE');
+        it('flow logs should deliver to CloudWatch Logs', () => {
+            expect(cwlFlowLog).toBeDefined();
+            expect(cwlFlowLog!.FlowLogStatus).toBe('ACTIVE');
         });
 
-        it('CloudWatch log group should have 3-day retention', async () => {
-            const vpcId = ssmParams.get(SSM_PATHS.vpcId)!;
-
-            const { FlowLogs } = await ec2.send(
-                new DescribeFlowLogsCommand({
-                    Filter: [{
-                        Name: 'resource-id',
-                        Values: [vpcId],
-                    }],
-                }),
-            );
-
-            const cwlFlow = FlowLogs?.find(
-                (f) => f.LogDestinationType === 'cloud-watch-logs',
-            );
-            const logGroupName = cwlFlow?.LogGroupName;
-            expect(logGroupName).toBeDefined();
-
-            const { logGroups } = await cwl.send(
-                new DescribeLogGroupsCommand({
-                    logGroupNamePrefix: logGroupName!,
-                }),
-            );
-
-            const logGroup = logGroups?.find((g) => g.logGroupName === logGroupName);
-            expect(logGroup).toBeDefined();
-            expect(logGroup!.retentionInDays).toBe(3);
+        it('CloudWatch log group should have correct retention', () => {
+            expect(flowLogGroup).toBeDefined();
+            expect(flowLogGroup!.retentionInDays).toBe(FLOW_LOG_RETENTION_DAYS);
         });
     });
 
     // =========================================================================
-    // Security Groups — Existence & VPC Attachment (×5)
+    // Security Groups — Existence & VPC Attachment (×4)
     // =========================================================================
     describe('Security Groups — Existence', () => {
+        // Rule 5: Use `satisfies` for typed literals
         const sgKeys = [
             { key: 'securityGroupId', label: 'Cluster Base' },
             { key: 'controlPlaneSgId', label: 'Control Plane' },
             { key: 'ingressSgId', label: 'Ingress' },
             { key: 'monitoringSgId', label: 'Monitoring' },
-        ] as const;
+        ] satisfies Array<{ key: keyof K8sSsmPaths; label: string }>;
 
         it.each(sgKeys)(
             '$label SG should exist and be attached to the VPC',
             async ({ key }) => {
-                const sgId = ssmParams.get(SSM_PATHS[key])!;
-                const vpcId = ssmParams.get(SSM_PATHS.vpcId)!;
+                const sgId = requireParam(ssmParams, SSM_PATHS[key]);
+                const vpcId = requireParam(ssmParams, SSM_PATHS.vpcId);
 
                 const { SecurityGroups } = await ec2.send(
                     new DescribeSecurityGroupsCommand({
@@ -351,7 +473,8 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
                 );
 
                 expect(SecurityGroups).toHaveLength(1);
-                expect(SecurityGroups![0].VpcId).toBe(vpcId);
+                const sg = SecurityGroups![0];
+                expect(sg.VpcId).toBe(vpcId);
             },
         );
     });
@@ -365,15 +488,19 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     // =========================================================================
     describe('Cluster Base SG — Rule Validation', () => {
         let ingress: IpPermission[];
+        let egress: IpPermission[];
         let sgId: string;
 
+        // Depends on: ssmParams populated in top-level beforeAll
         beforeAll(async () => {
-            sgId = ssmParams.get(SSM_PATHS.securityGroupId)!;
+            sgId = requireParam(ssmParams, SSM_PATHS.securityGroupId);
 
             const { SecurityGroups } = await ec2.send(
                 new DescribeSecurityGroupsCommand({ GroupIds: [sgId] }),
             );
+            expect(SecurityGroups).toHaveLength(1);
             ingress = SecurityGroups![0].IpPermissions ?? [];
+            egress = SecurityGroups![0].IpPermissionsEgress ?? [];
         });
 
         // --- Self-referencing TCP rules ---
@@ -423,8 +550,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
             ({ port }) => {
                 const rule = findTcpIngressRule(ingress, port);
                 expect(rule).toBeDefined();
-                // Pod CIDR is 192.168.0.0/16
-                expectCidrSource(rule!, '192.168.');
+                expectCidrSource(rule!, POD_CIDR_PREFIX);
             },
         );
 
@@ -432,19 +558,13 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         it('should have pod CIDR UDP rule for CoreDNS (port 53)', () => {
             const rule = findUdpIngressRule(ingress, 53);
             expect(rule).toBeDefined();
-            expectCidrSource(rule!, '192.168.');
+            expectCidrSource(rule!, POD_CIDR_PREFIX);
         });
 
-        it('should allow all outbound traffic', async () => {
-            const { SecurityGroups } = await ec2.send(
-                new DescribeSecurityGroupsCommand({ GroupIds: [sgId] }),
-            );
-            const egress = SecurityGroups![0].IpPermissionsEgress ?? [];
-
-            // allowAllOutbound: true creates a 0.0.0.0/0 all-protocols egress rule
+        it('should allow all outbound traffic', () => {
             const allTrafficRule = egress.find(
                 (r) => r.IpProtocol === '-1'
-                    && r.IpRanges?.some((ip) => ip.CidrIp === '0.0.0.0/0'),
+                    && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
             );
             expect(allTrafficRule).toBeDefined();
         });
@@ -457,12 +577,14 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         let ingress: IpPermission[];
         let egress: IpPermission[];
 
+        // Depends on: ssmParams populated in top-level beforeAll
         beforeAll(async () => {
-            const sgId = ssmParams.get(SSM_PATHS.controlPlaneSgId)!;
+            const sgId = requireParam(ssmParams, SSM_PATHS.controlPlaneSgId);
 
             const { SecurityGroups } = await ec2.send(
                 new DescribeSecurityGroupsCommand({ GroupIds: [sgId] }),
             );
+            expect(SecurityGroups).toHaveLength(1);
             ingress = SecurityGroups![0].IpPermissions ?? [];
             egress = SecurityGroups![0].IpPermissionsEgress ?? [];
         });
@@ -470,15 +592,13 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         it('should have K8s API port 6443 open from VPC CIDR', () => {
             const apiRule = findTcpIngressRule(ingress, 6443);
             expect(apiRule).toBeDefined();
-            // VPC CIDR starts with 10.
-            expectCidrSource(apiRule!, '10.');
+            expectCidrSource(apiRule!, VPC_CIDR_PREFIX);
         });
 
         it('should NOT allow all outbound traffic (restricted)', () => {
-            // allowAllOutbound: false → CDK creates a "disallow all" placeholder egress
             const allTrafficRule = egress.find(
                 (r) => r.IpProtocol === '-1'
-                    && r.IpRanges?.some((ip) => ip.CidrIp === '0.0.0.0/0'),
+                    && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
             );
             expect(allTrafficRule).toBeUndefined();
         });
@@ -495,12 +615,14 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         let ingress: IpPermission[];
         let egress: IpPermission[];
 
+        // Depends on: ssmParams populated in top-level beforeAll
         beforeAll(async () => {
-            const sgId = ssmParams.get(SSM_PATHS.ingressSgId)!;
+            const sgId = requireParam(ssmParams, SSM_PATHS.ingressSgId);
 
             const { SecurityGroups } = await ec2.send(
                 new DescribeSecurityGroupsCommand({ GroupIds: [sgId] }),
             );
+            expect(SecurityGroups).toHaveLength(1);
             ingress = SecurityGroups![0].IpPermissions ?? [];
             egress = SecurityGroups![0].IpPermissionsEgress ?? [];
         });
@@ -508,7 +630,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         it('should have HTTP port 80 from VPC CIDR (NLB health checks)', () => {
             const httpRule = findTcpIngressRule(ingress, 80);
             expect(httpRule).toBeDefined();
-            expectCidrSource(httpRule!, '10.');
+            expectCidrSource(httpRule!, VPC_CIDR_PREFIX);
         });
 
         it('should have HTTP port 80 from CloudFront prefix list', () => {
@@ -525,7 +647,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         it('should NOT allow all outbound traffic (restricted)', () => {
             const allTrafficRule = egress.find(
                 (r) => r.IpProtocol === '-1'
-                    && r.IpRanges?.some((ip) => ip.CidrIp === '0.0.0.0/0'),
+                    && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
             );
             expect(allTrafficRule).toBeUndefined();
         });
@@ -538,40 +660,42 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         let ingress: IpPermission[];
         let egress: IpPermission[];
 
+        // Depends on: ssmParams populated in top-level beforeAll
         beforeAll(async () => {
-            const sgId = ssmParams.get(SSM_PATHS.monitoringSgId)!;
+            const sgId = requireParam(ssmParams, SSM_PATHS.monitoringSgId);
 
             const { SecurityGroups } = await ec2.send(
                 new DescribeSecurityGroupsCommand({ GroupIds: [sgId] }),
             );
+            expect(SecurityGroups).toHaveLength(1);
             ingress = SecurityGroups![0].IpPermissions ?? [];
             egress = SecurityGroups![0].IpPermissionsEgress ?? [];
         });
 
         it.each([
-            { port: 9090, desc: 'Prometheus metrics', source: '10.' },
-            { port: 9100, desc: 'Node Exporter metrics (VPC)', source: '10.' },
-            { port: 30100, desc: 'Loki push API', source: '10.' },
-            { port: 30417, desc: 'Tempo OTLP gRPC', source: '10.' },
+            { port: 9090, desc: 'Prometheus metrics' },
+            { port: 9100, desc: 'Node Exporter metrics (VPC)' },
+            { port: 30100, desc: 'Loki push API' },
+            { port: 30417, desc: 'Tempo OTLP gRPC' },
         ])(
             'should have TCP rule for $desc (port $port) from VPC CIDR',
-            ({ port, source }) => {
+            ({ port }) => {
                 const rule = findTcpIngressRule(ingress, port);
                 expect(rule).toBeDefined();
-                expectCidrSource(rule!, source);
+                expectCidrSource(rule!, VPC_CIDR_PREFIX);
             },
         );
 
         it('should have Node Exporter port 9100 from pod CIDR (Prometheus scraping)', () => {
             const rule = findTcpIngressRule(ingress, 9100);
             expect(rule).toBeDefined();
-            expectCidrSource(rule!, '192.168.');
+            expectCidrSource(rule!, POD_CIDR_PREFIX);
         });
 
         it('should NOT allow all outbound traffic (restricted)', () => {
             const allTrafficRule = egress.find(
                 (r) => r.IpProtocol === '-1'
-                    && r.IpRanges?.some((ip) => ip.CidrIp === '0.0.0.0/0'),
+                    && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
             );
             expect(allTrafficRule).toBeUndefined();
         });
@@ -582,64 +706,41 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     //
     // Inbound: 0.0.0.0/0 on ports 80 and 443
     // Outbound: VPC CIDR on ports 80 and 443
+    // Depends on: nlbSgIngress, nlbSgEgress populated in top-level beforeAll
     // =========================================================================
     describe('NLB SG — Rule Validation', () => {
-        let nlbSgId: string;
-        let ingress: IpPermission[];
-        let egress: IpPermission[];
-
-        beforeAll(async () => {
-            // Discover NLB by name, then get its SGs
-            const { LoadBalancers } = await elbv2.send(
-                new DescribeLoadBalancersCommand({
-                    Names: [`${NAME_PREFIX}-nlb`],
-                }),
-            );
-            expect(LoadBalancers).toHaveLength(1);
-
-            const sgIds = LoadBalancers![0].SecurityGroups ?? [];
-            expect(sgIds.length).toBeGreaterThan(0);
-            nlbSgId = sgIds[0];
-
-            const { SecurityGroups } = await ec2.send(
-                new DescribeSecurityGroupsCommand({ GroupIds: [nlbSgId] }),
-            );
-            ingress = SecurityGroups![0].IpPermissions ?? [];
-            egress = SecurityGroups![0].IpPermissionsEgress ?? [];
-        });
-
         it('should have inbound TCP 80 from 0.0.0.0/0', () => {
-            const httpRule = findTcpIngressRule(ingress, 80);
+            const httpRule = findTcpIngressRule(nlbSgIngress, 80);
             expect(httpRule).toBeDefined();
-            expectCidrSource(httpRule!, '0.0.0.0/0');
+            expectCidrSource(httpRule!, ANY_IPV4);
         });
 
         it('should have inbound TCP 443 from 0.0.0.0/0', () => {
-            const httpsRule = findTcpIngressRule(ingress, 443);
+            const httpsRule = findTcpIngressRule(nlbSgIngress, 443);
             expect(httpsRule).toBeDefined();
-            expectCidrSource(httpsRule!, '0.0.0.0/0');
+            expectCidrSource(httpsRule!, ANY_IPV4);
         });
 
         it('should have outbound TCP 80 to VPC CIDR', () => {
-            const http = egress.find(
+            const http = nlbSgEgress.find(
                 (r) => r.FromPort === 80 && r.ToPort === 80 && r.IpProtocol === 'tcp',
             );
             expect(http).toBeDefined();
-            expectCidrSource(http!, '10.');
+            expectCidrSource(http!, VPC_CIDR_PREFIX);
         });
 
         it('should have outbound TCP 443 to VPC CIDR', () => {
-            const https = egress.find(
+            const https = nlbSgEgress.find(
                 (r) => r.FromPort === 443 && r.ToPort === 443 && r.IpProtocol === 'tcp',
             );
             expect(https).toBeDefined();
-            expectCidrSource(https!, '10.');
+            expectCidrSource(https!, VPC_CIDR_PREFIX);
         });
 
         it('should NOT have unrestricted outbound (0.0.0.0/0 all protocols)', () => {
-            const allTrafficRule = egress.find(
+            const allTrafficRule = nlbSgEgress.find(
                 (r) => r.IpProtocol === '-1'
-                    && r.IpRanges?.some((ip) => ip.CidrIp === '0.0.0.0/0'),
+                    && r.IpRanges?.some((ip) => ip.CidrIp === ANY_IPV4),
             );
             expect(allTrafficRule).toBeUndefined();
         });
@@ -647,173 +748,80 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
 
     // =========================================================================
     // Network Load Balancer — Configuration
+    // Depends on: nlb, nlbAttributes populated in top-level beforeAll
     // =========================================================================
     describe('NLB — Configuration', () => {
-        let nlbArn: string;
-
-        beforeAll(async () => {
-            const { LoadBalancers } = await elbv2.send(
-                new DescribeLoadBalancersCommand({
-                    Names: [`${NAME_PREFIX}-nlb`],
-                }),
-            );
-            expect(LoadBalancers).toHaveLength(1);
-            nlbArn = LoadBalancers![0].LoadBalancerArn!;
+        it('should be internet-facing', () => {
+            expect(nlb.Scheme).toBe('internet-facing');
         });
 
-        it('should be internet-facing', async () => {
-            const { LoadBalancers } = await elbv2.send(
-                new DescribeLoadBalancersCommand({
-                    Names: [`${NAME_PREFIX}-nlb`],
-                }),
-            );
-            expect(LoadBalancers![0].Scheme).toBe('internet-facing');
+        it('should be of type network', () => {
+            expect(nlb.Type).toBe('network');
         });
 
-        it('should be of type network', async () => {
-            const { LoadBalancers } = await elbv2.send(
-                new DescribeLoadBalancersCommand({
-                    Names: [`${NAME_PREFIX}-nlb`],
-                }),
-            );
-            expect(LoadBalancers![0].Type).toBe('network');
-        });
+        it('should have EIP attached (public IP matches SSM)', () => {
+            const expectedIp = requireParam(ssmParams, SSM_PATHS.elasticIp);
 
-        it('should have EIP attached (public IP matches SSM)', async () => {
-            const expectedIp = ssmParams.get(SSM_PATHS.elasticIp)!;
-
-            const { LoadBalancers } = await elbv2.send(
-                new DescribeLoadBalancersCommand({
-                    Names: [`${NAME_PREFIX}-nlb`],
-                }),
-            );
-
-            // NLB with EIP — the static IP appears in the AZ info
-            const azInfo = LoadBalancers![0].AvailabilityZones ?? [];
+            const azInfo = nlb.AvailabilityZones ?? [];
             const addresses = azInfo.flatMap((az) =>
                 (az.LoadBalancerAddresses ?? []).map((a) => a.IpAddress),
             );
             expect(addresses).toContain(expectedIp);
         });
 
-        it('should have access logging enabled', async () => {
-            const { Attributes } = await elbv2.send(
-                new DescribeLoadBalancerAttributesCommand({
-                    LoadBalancerArn: nlbArn,
-                }),
-            );
-
-            const accessLogs = Attributes?.find(
+        it('should have access logging enabled', () => {
+            const accessLogs = nlbAttributes.find(
                 (a) => a.Key === 'access_logs.s3.enabled',
             );
             expect(accessLogs?.Value).toBe('true');
         });
 
-        it('should have access logs S3 prefix set', async () => {
-            const { Attributes } = await elbv2.send(
-                new DescribeLoadBalancerAttributesCommand({
-                    LoadBalancerArn: nlbArn,
-                }),
-            );
-
-            const prefix = Attributes?.find(
+        it('should have access logs S3 prefix set', () => {
+            const prefix = nlbAttributes.find(
                 (a) => a.Key === 'access_logs.s3.prefix',
             );
-            expect(prefix?.Value).toBe('nlb-access-logs');
+            expect(prefix?.Value).toBe(NLB_LOG_PREFIX);
         });
     });
 
     // =========================================================================
     // NLB Target Groups (HTTP + HTTPS)
+    // Depends on: httpTargetGroup, httpsTargetGroup populated in top-level beforeAll
     // =========================================================================
     describe('NLB — Target Groups', () => {
-        it('should have an HTTP target group on port 80', async () => {
-            const arn = ssmParams.get(SSM_PATHS.nlbHttpTargetGroupArn)!;
-
-            const { TargetGroups } = await elbv2.send(
-                new DescribeTargetGroupsCommand({
-                    TargetGroupArns: [arn],
-                }),
-            );
-
-            expect(TargetGroups).toHaveLength(1);
-            expect(TargetGroups![0].Port).toBe(80);
-            expect(TargetGroups![0].Protocol).toBe('TCP');
+        it('should have an HTTP target group on port 80', () => {
+            expect(httpTargetGroup.Port).toBe(80);
+            expect(httpTargetGroup.Protocol).toBe('TCP');
         });
 
-        it('should have an HTTPS target group on port 443', async () => {
-            const arn = ssmParams.get(SSM_PATHS.nlbHttpsTargetGroupArn)!;
-
-            const { TargetGroups } = await elbv2.send(
-                new DescribeTargetGroupsCommand({
-                    TargetGroupArns: [arn],
-                }),
-            );
-
-            expect(TargetGroups).toHaveLength(1);
-            expect(TargetGroups![0].Port).toBe(443);
-            expect(TargetGroups![0].Protocol).toBe('TCP');
+        it('should have an HTTPS target group on port 443', () => {
+            expect(httpsTargetGroup.Port).toBe(443);
+            expect(httpsTargetGroup.Protocol).toBe('TCP');
         });
 
-        it('HTTPS target group should health-check on port 80', async () => {
-            const arn = ssmParams.get(SSM_PATHS.nlbHttpsTargetGroupArn)!;
-
-            const { TargetGroups } = await elbv2.send(
-                new DescribeTargetGroupsCommand({
-                    TargetGroupArns: [arn],
-                }),
-            );
-
+        it('HTTPS target group should health-check on port 80', () => {
             // Health check port is 80 (Traefik always listening), not 443
-            expect(TargetGroups![0].HealthCheckPort).toBe('80');
+            expect(httpsTargetGroup.HealthCheckPort).toBe('80');
         });
     });
 
     // =========================================================================
     // NLB Listeners
+    // Depends on: nlbListeners populated in top-level beforeAll
     // =========================================================================
     describe('NLB — Listeners', () => {
-        let nlbArn: string;
-
-        beforeAll(async () => {
-            const { LoadBalancers } = await elbv2.send(
-                new DescribeLoadBalancersCommand({
-                    Names: [`${NAME_PREFIX}-nlb`],
-                }),
-            );
-            nlbArn = LoadBalancers![0].LoadBalancerArn!;
+        it(`should have ${EXPECTED_LISTENER_COUNT} listeners (HTTP + HTTPS)`, () => {
+            expect(nlbListeners).toHaveLength(EXPECTED_LISTENER_COUNT);
         });
 
-        it('should have 2 listeners (HTTP + HTTPS)', async () => {
-            const { Listeners } = await elbv2.send(
-                new DescribeListenersCommand({
-                    LoadBalancerArn: nlbArn,
-                }),
-            );
-
-            expect(Listeners).toHaveLength(2);
-        });
-
-        it('should have a TCP listener on port 80', async () => {
-            const { Listeners } = await elbv2.send(
-                new DescribeListenersCommand({
-                    LoadBalancerArn: nlbArn,
-                }),
-            );
-
-            const httpListener = Listeners?.find((l) => l.Port === 80);
+        it('should have a TCP listener on port 80', () => {
+            const httpListener = nlbListeners.find((l) => l.Port === 80);
             expect(httpListener).toBeDefined();
             expect(httpListener!.Protocol).toBe('TCP');
         });
 
-        it('should have a TCP listener on port 443', async () => {
-            const { Listeners } = await elbv2.send(
-                new DescribeListenersCommand({
-                    LoadBalancerArn: nlbArn,
-                }),
-            );
-
-            const httpsListener = Listeners?.find((l) => l.Port === 443);
+        it('should have a TCP listener on port 443', () => {
+            const httpsListener = nlbListeners.find((l) => l.Port === 443);
             expect(httpsListener).toBeDefined();
             expect(httpsListener!.Protocol).toBe('TCP');
         });
@@ -823,28 +831,39 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     // EBS Volume
     // =========================================================================
     describe('EBS Volume', () => {
-        it('should exist, be encrypted, and use GP3', async () => {
-            const volumeId = ssmParams.get(SSM_PATHS.ebsVolumeId)!;
+        let volumeId: string;
+        let volume: {
+            Encrypted?: boolean;
+            VolumeType?: string;
+            Size?: number;
+            AvailabilityZone?: string;
+        };
+
+        // Depends on: ssmParams populated in top-level beforeAll
+        beforeAll(async () => {
+            volumeId = requireParam(ssmParams, SSM_PATHS.ebsVolumeId);
 
             const { Volumes } = await ec2.send(
                 new DescribeVolumesCommand({ VolumeIds: [volumeId] }),
             );
-
             expect(Volumes).toHaveLength(1);
-            const vol = Volumes![0];
-            expect(vol.Encrypted).toBe(true);
-            expect(vol.VolumeType).toBe('gp3');
-            expect(vol.Size).toBe(CONFIGS.storage.volumeSizeGb);
+            volume = Volumes![0];
         });
 
-        it('should be in the correct availability zone', async () => {
-            const volumeId = ssmParams.get(SSM_PATHS.ebsVolumeId)!;
+        it('should be encrypted', () => {
+            expect(volume.Encrypted).toBe(true);
+        });
 
-            const { Volumes } = await ec2.send(
-                new DescribeVolumesCommand({ VolumeIds: [volumeId] }),
-            );
+        it('should use GP3 volume type', () => {
+            expect(volume.VolumeType).toBe('gp3');
+        });
 
-            expect(Volumes![0].AvailabilityZone).toBe(`${REGION}a`);
+        it('should be the configured size', () => {
+            expect(volume.Size).toBe(CONFIGS.storage.volumeSizeGb);
+        });
+
+        it('should be in the correct availability zone', () => {
+            expect(volume.AvailabilityZone).toBe(`${REGION}a`);
         });
     });
 
@@ -852,30 +871,31 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     // Elastic IP
     // =========================================================================
     describe('Elastic IP', () => {
-        it('should exist as a VPC allocation', async () => {
-            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
+        let eipAddress: {
+            Domain?: string;
+            PublicIp?: string;
+        };
+
+        // Depends on: ssmParams populated in top-level beforeAll
+        beforeAll(async () => {
+            const allocationId = requireParam(ssmParams, SSM_PATHS.elasticIpAllocationId);
 
             const { Addresses } = await ec2.send(
                 new DescribeAddressesCommand({
                     AllocationIds: [allocationId],
                 }),
             );
-
             expect(Addresses).toHaveLength(1);
-            expect(Addresses![0].Domain).toBe('vpc');
+            eipAddress = Addresses![0];
         });
 
-        it('should have a public IP matching the SSM parameter', async () => {
-            const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
-            const expectedIp = ssmParams.get(SSM_PATHS.elasticIp)!;
+        it('should exist as a VPC allocation', () => {
+            expect(eipAddress.Domain).toBe('vpc');
+        });
 
-            const { Addresses } = await ec2.send(
-                new DescribeAddressesCommand({
-                    AllocationIds: [allocationId],
-                }),
-            );
-
-            expect(Addresses![0].PublicIp).toBe(expectedIp);
+        it('should have a public IP matching the SSM parameter', () => {
+            const expectedIp = requireParam(ssmParams, SSM_PATHS.elasticIp);
+            expect(eipAddress.PublicIp).toBe(expectedIp);
         });
     });
 
@@ -883,26 +903,30 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     // KMS Key
     // =========================================================================
     describe('KMS Key', () => {
-        it('should exist and be enabled', async () => {
-            const keyArn = ssmParams.get(SSM_PATHS.kmsKeyArn)!;
+        let keyMetadata: KeyMetadata;
+        let keyRotationEnabled: boolean;
 
-            const { KeyMetadata } = await kms.send(
-                new DescribeKeyCommand({ KeyId: keyArn }),
-            );
+        // Depends on: ssmParams populated in top-level beforeAll
+        beforeAll(async () => {
+            const keyArn = requireParam(ssmParams, SSM_PATHS.kmsKeyArn);
 
-            expect(KeyMetadata).toBeDefined();
-            expect(KeyMetadata!.Enabled).toBe(true);
-            expect(KeyMetadata!.KeyState).toBe('Enabled');
+            const [descResp, rotResp] = await Promise.all([
+                kms.send(new DescribeKeyCommand({ KeyId: keyArn })),
+                kms.send(new GetKeyRotationStatusCommand({ KeyId: keyArn })),
+            ]);
+
+            expect(descResp.KeyMetadata).toBeDefined();
+            keyMetadata = descResp.KeyMetadata!;
+            keyRotationEnabled = rotResp.KeyRotationEnabled ?? false;
         });
 
-        it('should have key rotation enabled', async () => {
-            const keyArn = ssmParams.get(SSM_PATHS.kmsKeyArn)!;
+        it('should be enabled', () => {
+            expect(keyMetadata.Enabled).toBe(true);
+            expect(keyMetadata.KeyState).toBe('Enabled');
+        });
 
-            const { KeyRotationEnabled } = await kms.send(
-                new GetKeyRotationStatusCommand({ KeyId: keyArn }),
-            );
-
-            expect(KeyRotationEnabled).toBe(true);
+        it('should have key rotation enabled', () => {
+            expect(keyRotationEnabled).toBe(true);
         });
     });
 
@@ -910,17 +934,20 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     // S3 Buckets — Scripts
     // =========================================================================
     describe('S3 Scripts Bucket', () => {
-        it('should exist and be accessible', async () => {
-            const bucketName = ssmParams.get(SSM_PATHS.scriptsBucket)!;
+        let bucketName: string;
 
+        // Depends on: ssmParams populated in top-level beforeAll
+        beforeAll(() => {
+            bucketName = requireParam(ssmParams, SSM_PATHS.scriptsBucket);
+        });
+
+        it('should exist and be accessible', async () => {
             await expect(
                 s3.send(new HeadBucketCommand({ Bucket: bucketName })),
             ).resolves.toBeDefined();
         });
 
         it('should have server-side encryption enabled', async () => {
-            const bucketName = ssmParams.get(SSM_PATHS.scriptsBucket)!;
-
             const { ServerSideEncryptionConfiguration } = await s3.send(
                 new GetBucketEncryptionCommand({ Bucket: bucketName }),
             );
@@ -932,54 +959,22 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
 
     // =========================================================================
     // S3 Buckets — NLB Access Logs
+    // Depends on: nlbLogBucketName populated in top-level beforeAll
     // =========================================================================
     describe('S3 NLB Access Logs Bucket', () => {
-        const nlbBucketName = `${NAME_PREFIX}-nlb-access-logs`;
-
-        /**
-         * Find the NLB access log bucket by name prefix.
-         * The full name includes account ID and region.
-         */
-        async function findNlbLogBucket(): Promise<string> {
-            const { Attributes } = await elbv2.send(
-                new DescribeLoadBalancerAttributesCommand({
-                    LoadBalancerArn: await getNlbArn(),
-                }),
-            );
-            const bucket = Attributes?.find(
-                (a) => a.Key === 'access_logs.s3.bucket',
-            );
-            expect(bucket?.Value).toBeDefined();
-            return bucket!.Value!;
-        }
-
-        async function getNlbArn(): Promise<string> {
-            const { LoadBalancers } = await elbv2.send(
-                new DescribeLoadBalancersCommand({
-                    Names: [`${NAME_PREFIX}-nlb`],
-                }),
-            );
-            return LoadBalancers![0].LoadBalancerArn!;
-        }
-
         it('should exist and be accessible', async () => {
-            const bucketName = await findNlbLogBucket();
-
             await expect(
-                s3.send(new HeadBucketCommand({ Bucket: bucketName })),
+                s3.send(new HeadBucketCommand({ Bucket: nlbLogBucketName })),
             ).resolves.toBeDefined();
         });
 
-        it('should have the correct bucket name prefix', async () => {
-            const bucketName = await findNlbLogBucket();
-            expect(bucketName).toContain(nlbBucketName);
+        it('should have the correct bucket name prefix', () => {
+            expect(nlbLogBucketName).toContain(`${NAME_PREFIX}-nlb-access-logs`);
         });
 
-        it('should have server-side encryption enabled', async () => {
-            const bucketName = await findNlbLogBucket();
-
+        it('should have SSE-S3 encryption enabled', async () => {
             const { ServerSideEncryptionConfiguration } = await s3.send(
-                new GetBucketEncryptionCommand({ Bucket: bucketName }),
+                new GetBucketEncryptionCommand({ Bucket: nlbLogBucketName }),
             );
 
             expect(ServerSideEncryptionConfiguration?.Rules).toBeDefined();
@@ -992,10 +987,8 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
 
         it('should have a 3-day lifecycle expiration policy', async () => {
-            const bucketName = await findNlbLogBucket();
-
             const { Rules } = await s3.send(
-                new GetBucketLifecycleConfigurationCommand({ Bucket: bucketName }),
+                new GetBucketLifecycleConfigurationCommand({ Bucket: nlbLogBucketName }),
             );
 
             expect(Rules).toBeDefined();
@@ -1005,7 +998,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
                 (r) => r.Expiration?.Days !== undefined,
             );
             expect(expirationRule).toBeDefined();
-            expect(expirationRule!.Expiration!.Days).toBe(3);
+            expect(expirationRule!.Expiration!.Days).toBe(NLB_LOG_LIFECYCLE_DAYS);
             expect(expirationRule!.Status).toBe('Enabled');
         });
     });
@@ -1014,67 +1007,39 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     // Route 53 Private Hosted Zone
     // =========================================================================
     describe('Route 53', () => {
-        it('should have a private hosted zone for k8s.internal', async () => {
-            const hostedZoneId = ssmParams.get(SSM_PATHS.hostedZoneId)!;
+        let hostedZone: HostedZone;
+        let aRecord: ResourceRecordSet | undefined;
 
-            const { HostedZone } = await route53.send(
-                new GetHostedZoneCommand({
-                    Id: hostedZoneId,
-                }),
-            );
+        // Depends on: ssmParams populated in top-level beforeAll
+        beforeAll(async () => {
+            const hostedZoneId = requireParam(ssmParams, SSM_PATHS.hostedZoneId);
 
-            expect(HostedZone?.Name).toBe('k8s.internal.');
-            expect(HostedZone?.Config?.PrivateZone).toBe(true);
-        });
-
-        it('should have an A record for k8s-api.k8s.internal', async () => {
-            const hostedZoneId = ssmParams.get(SSM_PATHS.hostedZoneId)!;
-
-            const { ResourceRecordSets } = await route53.send(
-                new ListResourceRecordSetsCommand({
+            const [zoneResp, recordResp] = await Promise.all([
+                route53.send(new GetHostedZoneCommand({ Id: hostedZoneId })),
+                route53.send(new ListResourceRecordSetsCommand({
                     HostedZoneId: hostedZoneId,
-                    StartRecordName: 'k8s-api.k8s.internal',
+                    StartRecordName: K8S_API_FQDN,
                     StartRecordType: 'A',
                     MaxItems: 1,
-                }),
-            );
+                })),
+            ]);
 
-            const aRecord = ResourceRecordSets?.find(
-                (r) => r.Name === 'k8s-api.k8s.internal.' && r.Type === 'A',
-            );
+            expect(zoneResp.HostedZone).toBeDefined();
+            hostedZone = zoneResp.HostedZone!;
 
-            expect(aRecord).toBeDefined();
-            expect(aRecord!.TTL).toBe(30);
+            aRecord = recordResp.ResourceRecordSets?.find(
+                (r) => r.Name === K8S_API_FQDN_DOT && r.Type === 'A',
+            );
         });
-    });
 
-    // =========================================================================
-    // Readiness Gate
-    // =========================================================================
-    describe('Downstream Readiness', () => {
-        it('all resources required by downstream stacks should be discoverable via SSM', () => {
-            // Compute stack needs: VPC, SGs, EBS, KMS, Scripts Bucket, Hosted Zone, NLB TGs
-            const requiredKeys = [
-                SSM_PATHS.vpcId,
-                SSM_PATHS.securityGroupId,
-                SSM_PATHS.controlPlaneSgId,
-                SSM_PATHS.ingressSgId,
-                SSM_PATHS.monitoringSgId,
-                SSM_PATHS.ebsVolumeId,
-                SSM_PATHS.kmsKeyArn,
-                SSM_PATHS.scriptsBucket,
-                SSM_PATHS.hostedZoneId,
-                SSM_PATHS.elasticIp,
-                SSM_PATHS.elasticIpAllocationId,
-                SSM_PATHS.nlbHttpTargetGroupArn,
-                SSM_PATHS.nlbHttpsTargetGroupArn,
-            ];
+        it('should have a private hosted zone for k8s.internal', () => {
+            expect(hostedZone.Name).toBe(K8S_INTERNAL_ZONE);
+            expect(hostedZone.Config?.PrivateZone).toBe(true);
+        });
 
-            for (const path of requiredKeys) {
-                const value = ssmParams.get(path);
-                expect(value).toBeDefined();
-                expect(value!.trim().length).toBeGreaterThan(0);
-            }
+        it('should have an A record for k8s-api.k8s.internal', () => {
+            expect(aRecord).toBeDefined();
+            expect(aRecord!.TTL).toBe(API_RECORD_TTL);
         });
     });
 });
