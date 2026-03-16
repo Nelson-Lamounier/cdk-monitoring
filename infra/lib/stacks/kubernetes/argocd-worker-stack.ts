@@ -268,14 +268,16 @@ export class KubernetesArgocdWorkerStack extends cdk.Stack {
         // Grant S3 read for boot script download + orchestrator fallback
         scriptsBucket.grantRead(launchTemplateConstruct.instanceRole);
 
-        // Grant ECR pull for ArgoCD container images
+        // Grant ECR access for ArgoCD container images and Image Updater tag discovery
         launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'EcrPullImages',
+            sid: 'EcrImageAccess',
             effect: iam.Effect.ALLOW,
             actions: [
                 'ecr:GetDownloadUrlForLayer',
                 'ecr:BatchGetImage',
                 'ecr:BatchCheckLayerAvailability',
+                'ecr:ListImages',
+                'ecr:DescribeImages',
             ],
             resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/*`],
         }));

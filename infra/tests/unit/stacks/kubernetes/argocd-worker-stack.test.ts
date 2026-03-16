@@ -283,13 +283,17 @@ describe('KubernetesArgocdWorkerStack', () => {
             });
         });
 
-        it('should grant ECR pull for container images', () => {
+        it('should grant ECR image access including ListImages for Image Updater', () => {
             template.hasResourceProperties('AWS::IAM::Policy', {
                 PolicyDocument: Match.objectLike({
                     Statement: Match.arrayWith([
                         Match.objectLike({
-                            Sid: 'EcrPullImages',
+                            Sid: 'EcrImageAccess',
                             Effect: 'Allow',
+                            Action: Match.arrayWith([
+                                'ecr:ListImages',
+                                'ecr:DescribeImages',
+                            ]),
                         }),
                     ]),
                 }),
