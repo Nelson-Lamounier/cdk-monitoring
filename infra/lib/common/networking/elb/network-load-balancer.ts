@@ -33,6 +33,7 @@ import { NagSuppressions } from 'cdk-nag';
 
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -405,5 +406,28 @@ export class NetworkLoadBalancerConstruct extends Construct {
             protocol: elbv2.Protocol.TCP,
             defaultTargetGroups: [targetGroup],
         });
+    }
+
+    // =========================================================================
+    // ACCESS LOGGING
+    // =========================================================================
+
+    /**
+     * Enable NLB access logs to an S3 bucket.
+     *
+     * NLB access logs capture per-connection metadata (source IP, target IP,
+     * TLS handshake details, bytes transferred). These complement VPC Flow Logs
+     * by providing NLB-specific context (target group, health check state).
+     *
+     * @param bucket - S3 bucket for log delivery (must allow NLB writes)
+     * @param prefix - S3 key prefix for the logs
+     *
+     * @example
+     * ```typescript
+     * nlb.enableAccessLogs(logBucket, 'nlb-access-logs');
+     * ```
+     */
+    public enableAccessLogs(bucket: s3.IBucket, prefix = 'nlb-logs'): void {
+        this.loadBalancer.logAccessLogs(bucket, prefix);
     }
 }

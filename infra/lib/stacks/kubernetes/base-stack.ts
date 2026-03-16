@@ -448,6 +448,35 @@ export class KubernetesBaseStack extends cdk.Stack {
         this.nlbConstruct.configureSecurityGroup([TRAEFIK_HTTP_PORT, TRAEFIK_HTTPS_PORT]);
 
         // =====================================================================
+        // NLB Access Logs
+        //
+        // Per-connection metadata (source IP, target, TLS, bytes) for
+        // troubleshooting. 3-day S3 lifecycle keeps costs below £0.01/month
+        // for a solo developer.
+        // =====================================================================
+        const nlbLogBucket = new S3BucketConstruct(this, 'NlbAccessLogsBucket', {
+            environment: targetEnvironment,
+            config: {
+                bucketName: `${namePrefix}-nlb-access-logs-${this.account}-${this.region}`,
+                purpose: 'nlb-access-logs',
+                encryption: s3.BucketEncryption.S3_MANAGED,
+                removalPolicy: configs.removalPolicy,
+                autoDeleteObjects: !configs.isProduction,
+                lifecycleRules: [{
+                    id: 'DeleteAfter3Days',
+                    expiration: cdk.Duration.days(3),
+                }],
+            },
+        });
+
+        NagSuppressions.addResourceSuppressions(nlbLogBucket.bucket, [{
+            id: 'AwsSolutions-S1',
+            reason: 'NLB access log bucket is a terminal logging destination — cannot log to itself',
+        }]);
+
+        this.nlbConstruct.enableAccessLogs(nlbLogBucket.bucket, 'nlb-access-logs');
+
+        // =====================================================================
         // Route 53 Private Hosted Zone (stable API server DNS)
         //
         // Provides a DNS-based control plane endpoint so that workers

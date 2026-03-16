@@ -415,8 +415,8 @@ describe('KubernetesBaseStack', () => {
     // S3 Buckets
     // =========================================================================
     describe('S3 Buckets', () => {
-        it('should create 2 S3 buckets (scripts + access logs)', () => {
-            template.resourceCountIs('AWS::S3::Bucket', 2);
+        it('should create 3 S3 buckets (scripts + access logs + NLB access logs)', () => {
+            template.resourceCountIs('AWS::S3::Bucket', 3);
         });
 
         it('should encrypt all S3 buckets', () => {
@@ -685,7 +685,7 @@ describe('KubernetesBaseStack', () => {
             template.resourceCountIs('AWS::KMS::Alias', 1);
             template.resourceCountIs('AWS::Route53::HostedZone', 1);
             template.resourceCountIs('AWS::Route53::RecordSet', 1);
-            template.resourceCountIs('AWS::S3::Bucket', 2);
+            template.resourceCountIs('AWS::S3::Bucket', 3);
             template.resourceCountIs('AWS::SSM::Parameter', 14);
             template.resourceCountIs('AWS::DLM::LifecyclePolicy', 1);
         });
