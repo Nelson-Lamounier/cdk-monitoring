@@ -70,6 +70,7 @@ import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import type { K8sSsmPaths } from '../../../lib/config/ssm-paths';
+import { flatName } from '../../../lib/utilities/naming';
 
 // =============================================================================
 // Rule 4: Environment Variable Parsing — No Silent `as` Casts
@@ -96,7 +97,7 @@ const REGION = process.env.AWS_REGION ?? 'eu-west-1';
 const CONFIGS = getK8sConfigs(CDK_ENV);
 const SSM_PATHS = k8sSsmPaths(CDK_ENV);
 const PREFIX = k8sSsmPrefix(CDK_ENV);
-const NAME_PREFIX = `k8s-${CDK_ENV}`;
+const NAME_PREFIX = flatName('k8s', '', CDK_ENV);
 
 // =============================================================================
 // Rule 3: Magic Values — Named Constants Only
