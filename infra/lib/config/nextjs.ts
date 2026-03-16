@@ -587,7 +587,7 @@ function buildNextJsConfigs(): Record<Environment, NextJsConfigs> {
         crossAccountRoleArn: fromEnv('CROSS_ACCOUNT_ROLE_ARN'),
 
         // WAF access restriction (env var at synth time)
-        restrictAccess: fromEnv('RESTRICT_ACCESS') !== 'false',
+        restrictAccess: fromEnv('RESTRICT_ACCESS') === 'true',
         allowedIpv4: fromEnv('ALLOW_IPV4'),
         allowedIpv6: fromEnv('ALLOW_IPV6'),
 
@@ -678,7 +678,7 @@ function buildNextJsConfigs(): Record<Environment, NextJsConfigs> {
         crossAccountRoleArn: fromEnv('CROSS_ACCOUNT_ROLE_ARN'),
 
         // WAF access restriction (env var at synth time)
-        restrictAccess: fromEnv('RESTRICT_ACCESS') !== 'false',
+        restrictAccess: fromEnv('RESTRICT_ACCESS') === 'true',
         allowedIpv4: fromEnv('ALLOW_IPV4'),
         allowedIpv6: fromEnv('ALLOW_IPV6'),
 
@@ -767,7 +767,7 @@ function buildNextJsConfigs(): Record<Environment, NextJsConfigs> {
         crossAccountRoleArn: fromEnv('CROSS_ACCOUNT_ROLE_ARN'),
 
         // WAF access restriction (env var at synth time)
-        restrictAccess: fromEnv('RESTRICT_ACCESS') !== 'false',
+        restrictAccess: fromEnv('RESTRICT_ACCESS') === 'true',
         allowedIpv4: fromEnv('ALLOW_IPV4'),
         allowedIpv6: fromEnv('ALLOW_IPV6'),
 

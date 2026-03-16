@@ -1010,6 +1010,7 @@ jobs:
       domain-name: ${{ needs.setup.outputs.domain-name }}
       hosted-zone-id: ${{ needs.setup.outputs.hosted-zone-id }}
       cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
+      restrict-access: ${{ vars.RESTRICT_ACCESS }}
     secrets: inherit
 
   # ===========================================================================

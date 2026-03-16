@@ -95,6 +95,11 @@ on:
         required: false
         type: string
         default: ""
+      restrict-access:
+        description: "WAF access restriction flag (true/false). Only relevant for edge stack."
+        required: false
+        type: string
+        default: ""
       root-account-id:
         description: "Root/management AWS account ID (org project only — sets ROOT_ACCOUNT env var)"
         required: false
@@ -198,6 +203,7 @@ jobs:
           [[ -n "$ALLOW_IPV4"                ]] && echo "ALLOW_IPV4=$ALLOW_IPV4"                             >> $GITHUB_ENV
           [[ -n "$ALLOW_IPV6"                ]] && echo "ALLOW_IPV6=$ALLOW_IPV6"                             >> $GITHUB_ENV
           [[ -n "$ROOT_ACCOUNT"              ]] && echo "ROOT_ACCOUNT=$ROOT_ACCOUNT"                         >> $GITHUB_ENV
+          [[ -n "$RESTRICT_ACCESS"           ]] && echo "RESTRICT_ACCESS=$RESTRICT_ACCESS"                   >> $GITHUB_ENV
           echo "✓ Scoped config applied"
         env:
           DOMAIN_NAME: ${{ inputs.domain-name }}
@@ -212,6 +218,7 @@ jobs:
           ALLOW_IPV4: ${{ secrets.ALLOW_IPV4 }}
           ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
           ROOT_ACCOUNT: ${{ inputs.root-account-id }}
+          RESTRICT_ACCESS: ${{ inputs.restrict-access }}
 
       - name: Deploy CDK Stack
         id: deploy-stack
