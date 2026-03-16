@@ -20,16 +20,6 @@
  */
 
 import {
-    SSMClient,
-    GetParametersByPathCommand,
-} from '@aws-sdk/client-ssm';
-import {
-    EC2Client,
-    DescribeInstancesCommand,
-    DescribeSecurityGroupsCommand,
-    DescribeImagesCommand,
-} from '@aws-sdk/client-ec2';
-import {
     AutoScalingClient,
     DescribeAutoScalingGroupsCommand,
 } from '@aws-sdk/client-auto-scaling';
@@ -37,12 +27,22 @@ import {
     CloudFormationClient,
     DescribeStacksCommand,
 } from '@aws-sdk/client-cloudformation';
+import {
+    EC2Client,
+    DescribeInstancesCommand,
+    DescribeSecurityGroupsCommand,
+    DescribeImagesCommand,
+} from '@aws-sdk/client-ec2';
+import {
+    SSMClient,
+    GetParametersByPathCommand,
+} from '@aws-sdk/client-ssm';
 
 import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import { stackId, STACK_REGISTRY, flatName } from '../../../lib/utilities/naming';
-import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
 // Configuration
@@ -219,7 +219,7 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
             expect(controlPlane.imageId).toBe(expectedAmi);
         });
 
-        it('AMI should have Purpose=GoldenAMI tag', async () => {
+        it('should have Purpose=GoldenAMI tag on AMI', async () => {
             const { Images } = await ec2.send(
                 new DescribeImagesCommand({
                     ImageIds: [controlPlane.imageId],
@@ -234,7 +234,7 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
             expect(purposeTag!.Value).toBe('GoldenAMI');
         });
 
-        it('AMI should be in available state', async () => {
+        it('should have AMI in available state', async () => {
             const { Images } = await ec2.send(
                 new DescribeImagesCommand({
                     ImageIds: [controlPlane.imageId],
@@ -257,7 +257,7 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
         ] as const;
 
         it.each(sgKeys)(
-            '$label SG should be attached to the control-plane instance',
+            'should have $label SG attached to the control-plane instance',
             ({ key }) => {
                 const sgId = ssmParams.get(SSM_PATHS[key])!;
                 expect(sgId).toBeDefined();
@@ -427,7 +427,7 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     // Downstream Readiness Gate
     // =========================================================================
     describe('Downstream Readiness', () => {
-        it('all SSM parameters required by downstream stacks should be discoverable', () => {
+        it('should have all SSM parameters required by downstream stacks discoverable', () => {
             // Worker stacks and AppIam need: VPC, SGs, KMS, EBS, Scripts Bucket
             // These are published by base stack but consumed through the same prefix
             const requiredPaths = [

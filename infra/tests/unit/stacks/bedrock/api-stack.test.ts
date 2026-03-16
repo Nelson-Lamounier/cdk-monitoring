@@ -28,8 +28,8 @@ import {
 // =============================================================================
 
 const NAME_PREFIX = 'bedrock-development';
-const AGENT_ID = 'test-agent-id';
-const AGENT_ALIAS_ID = 'test-agent-alias-id';
+const _AGENT_ID = 'test-agent-id';
+const _AGENT_ALIAS_ID = 'test-agent-alias-id';
 
 /**
  * Helper to create BedrockApiStack with sensible defaults.

@@ -35,7 +35,6 @@ import {
   EC2Client,
   DescribeSecurityGroupsCommand,
 } from '@aws-sdk/client-ec2';
-
 import { emitAnnotation, writeSummary } from '@repo/script-utils/github.js';
 import logger from '@repo/script-utils/logger.js';
 

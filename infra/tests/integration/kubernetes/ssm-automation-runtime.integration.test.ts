@@ -153,32 +153,30 @@ describe('SSM Automation Runtime — Post-Deploy Verification', () => {
     }, 30_000);
 
     // ── Dynamic test generation per automation target ──────────────────
-    for (const target of AUTOMATION_TARGETS) {
-        describe(target.label, () => {
-            let execution: ExecutionResult | undefined;
+    describe.each(AUTOMATION_TARGETS)('$label', (target) => {
+        let execution: ExecutionResult | undefined;
 
-            beforeAll(() => {
-                execution = executionResults.get(target.label);
-            });
-
-            it('should have a recent execution', () => {
-                expect(execution).toBeDefined();
-            });
-
-            it('should have completed successfully', () => {
-                expect(execution?.status).toBe('Success');
-            });
-
-            it('should have document name matching expected pattern', () => {
-                expect(execution?.documentName).toMatch(
-                    new RegExp(`^${NAME_PREFIX}-`),
-                );
-            });
-
-            it('should have non-empty Outputs (CommandId)', () => {
-                expect(execution?.outputs).toBeDefined();
-                expect(Object.keys(execution?.outputs ?? {}).length).toBeGreaterThan(0);
-            });
+        beforeAll(() => {
+            execution = executionResults.get(target.label);
         });
-    }
+
+        it('should have a recent execution', () => {
+            expect(execution).toBeDefined();
+        });
+
+        it('should have completed successfully', () => {
+            expect(execution?.status).toBe('Success');
+        });
+
+        it('should have document name matching expected pattern', () => {
+            expect(execution?.documentName).toMatch(
+                new RegExp(`^${NAME_PREFIX}-`),
+            );
+        });
+
+        it('should have non-empty Outputs (CommandId)', () => {
+            expect(execution?.outputs).toBeDefined();
+            expect(Object.keys(execution?.outputs ?? {}).length).toBeGreaterThan(0);
+        });
+    });
 });

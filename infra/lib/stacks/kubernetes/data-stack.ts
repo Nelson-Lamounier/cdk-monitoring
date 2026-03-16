@@ -49,11 +49,11 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import { Construct } from "constructs";
 
 import { applyCommonSuppressions } from "../../aspects/cdk-nag-aspect";
+import { SsmParameterStoreConstruct } from "../../common/ssm";
 import {
   DynamoDbTableConstruct,
   S3BucketConstruct,
 } from "../../common/storage";
-import { SsmParameterStoreConstruct } from "../../common/ssm";
 import {
   Environment,
   isProductionEnvironment,

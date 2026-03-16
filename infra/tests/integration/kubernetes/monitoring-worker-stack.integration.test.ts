@@ -49,9 +49,9 @@ import {
 } from '@aws-sdk/client-ssm';
 
 import { Environment } from '../../../lib/config';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import { stackId, STACK_REGISTRY, flatName } from '../../../lib/utilities/naming';
-import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
 // Configuration

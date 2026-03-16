@@ -32,9 +32,6 @@
  * ```
  */
 
-
-import { NagSuppressions } from 'cdk-nag';
-
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';

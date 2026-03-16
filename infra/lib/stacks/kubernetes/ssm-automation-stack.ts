@@ -28,6 +28,8 @@
  * ```
  */
 
+import { NagSuppressions } from 'cdk-nag';
+
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as events from 'aws-cdk-lib/aws-events';
@@ -38,7 +40,6 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
-import { NagSuppressions } from 'cdk-nag';
 
 import { Construct } from 'constructs';
 

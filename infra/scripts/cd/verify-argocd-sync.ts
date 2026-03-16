@@ -38,7 +38,6 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import {
   SSMClient,
-  GetParameterCommand,
   SendCommandCommand,
   GetCommandInvocationCommand,
 } from '@aws-sdk/client-ssm';
@@ -121,7 +120,7 @@ function buildArgoCDCurl(curlFlags: string, apiPath: string, extraHeaders: strin
   ].join(' && ');
 }
 
-const ssmPrefix = `/k8s/${environment}`;
+
 
 // =============================================================================
 // Expected ArgoCD Applications
@@ -167,17 +166,7 @@ const ec2 = new EC2Client({
 // Helpers
 // =============================================================================
 
-/** Fetch a single SSM parameter value, returning undefined if missing. */
-async function getParam(name: string): Promise<string | undefined> {
-  try {
-    const result = await ssm.send(new GetParameterCommand({ Name: name }));
-    const value = result.Parameter?.Value;
-    if (value && value !== 'None') return value;
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
+
 
 /** Fetch a secret from Secrets Manager, returning undefined if missing. */
 async function getSecret(secretId: string): Promise<string | undefined> {

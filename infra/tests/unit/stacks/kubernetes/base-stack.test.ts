@@ -15,7 +15,7 @@
  * - Stack Properties (public fields)
  */
 
-import { Template, Match, Capture } from 'aws-cdk-lib/assertions';
+import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Environment } from '../../../../lib/config';
@@ -446,7 +446,7 @@ describe('KubernetesBaseStack', () => {
             const expectedPrefixes = paramNames.filter(
                 (name) => name.startsWith('/k8s/development/'),
             );
-            expect(expectedPrefixes.length).toBe(14);
+            expect(expectedPrefixes).toHaveLength(14);
         });
 
         it('should publish the security group ID to SSM', () => {
@@ -663,9 +663,9 @@ describe('KubernetesBaseStack', () => {
         it('should use the default SG config for all environments', () => {
             // Verify the config is properly loaded
             expect(TEST_CONFIGS.securityGroups.clusterBase.rules.length).toBeGreaterThan(10);
-            expect(TEST_CONFIGS.securityGroups.controlPlane.rules.length).toBe(1);
-            expect(TEST_CONFIGS.securityGroups.monitoring.rules.length).toBe(5);
-            expect(TEST_CONFIGS.securityGroups.ingress.rules.length).toBe(1);
+            expect(TEST_CONFIGS.securityGroups.controlPlane.rules).toHaveLength(1);
+            expect(TEST_CONFIGS.securityGroups.monitoring.rules).toHaveLength(5);
+            expect(TEST_CONFIGS.securityGroups.ingress.rules).toHaveLength(1);
         });
 
         it('should use isProduction=false for development environment', () => {

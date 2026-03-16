@@ -27,16 +27,6 @@
  */
 
 import {
-    SSMClient,
-    GetParametersByPathCommand,
-} from '@aws-sdk/client-ssm';
-import {
-    EC2Client,
-    DescribeInstancesCommand,
-    DescribeAddressesCommand,
-    DescribeSecurityGroupsCommand,
-} from '@aws-sdk/client-ec2';
-import {
     AutoScalingClient,
     DescribeAutoScalingGroupsCommand,
 } from '@aws-sdk/client-auto-scaling';
@@ -44,11 +34,21 @@ import {
     CloudFormationClient,
     DescribeStacksCommand,
 } from '@aws-sdk/client-cloudformation';
+import {
+    EC2Client,
+    DescribeInstancesCommand,
+    DescribeAddressesCommand,
+    DescribeSecurityGroupsCommand,
+} from '@aws-sdk/client-ec2';
+import {
+    SSMClient,
+    GetParametersByPathCommand,
+} from '@aws-sdk/client-ssm';
 
 import { Environment } from '../../../lib/config';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import { stackId, STACK_REGISTRY, flatName } from '../../../lib/utilities/naming';
-import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
 // Configuration
@@ -235,13 +235,13 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
     // The ingress SG allows CloudFront (port 80) + admin (port 443) traffic.
     // =========================================================================
     describe('Security Group Attachment', () => {
-        it('Cluster Base SG should be attached to the app-worker instance', () => {
+        it('should have Cluster Base SG attached to the app-worker instance', () => {
             const sgId = ssmParams.get(SSM_PATHS.securityGroupId)!;
             expect(sgId).toBeDefined();
             expect(appWorker.securityGroupIds).toContain(sgId);
         });
 
-        it('Ingress SG should be attached to the app-worker instance', () => {
+        it('should have Ingress SG attached to the app-worker instance', () => {
             const ingressSgId = ssmParams.get(SSM_PATHS.ingressSgId)!;
             expect(ingressSgId).toBeDefined();
             expect(appWorker.securityGroupIds).toContain(ingressSgId);
@@ -256,7 +256,7 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
     // target health instead of EIP-to-instance association.
     // =========================================================================
     describe('NLB Target Group', () => {
-        it('EIP should be on the NLB, not on the app-worker instance', async () => {
+        it('should have EIP on the NLB, not on the app-worker instance', async () => {
             const allocationId = ssmParams.get(SSM_PATHS.elasticIpAllocationId)!;
             expect(allocationId).toBeDefined();
 
@@ -377,7 +377,7 @@ describe('KubernetesAppWorkerStack — Post-Deploy Verification', () => {
     // Downstream Readiness Gate
     // =========================================================================
     describe('Downstream Readiness', () => {
-        it('SSM parameters required by this stack should be present', () => {
+        it('should have all SSM parameters required by this stack present', () => {
             // The app worker stack consumes these SSM parameters from
             // data + base + control plane stacks
             const requiredPaths = [

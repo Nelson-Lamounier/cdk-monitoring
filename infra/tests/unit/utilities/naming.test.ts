@@ -6,8 +6,8 @@
  * CloudFormation stack names / CDK construct IDs.
  */
 
-import { Project } from '../../../lib/config/projects';
 import { shortEnv } from '../../../lib/config/environments';
+import { Project } from '../../../lib/config/projects';
 import {
     stackId,
     getStackId,

@@ -21,9 +21,10 @@
  */
 
 import {
-    SSMClient,
-    GetParametersByPathCommand,
-} from '@aws-sdk/client-ssm';
+    CloudWatchLogsClient,
+    DescribeLogGroupsCommand,
+} from '@aws-sdk/client-cloudwatch-logs';
+import type { LogGroup } from '@aws-sdk/client-cloudwatch-logs';
 import {
     EC2Client,
     DescribeVpcsCommand,
@@ -32,22 +33,8 @@ import {
     DescribeAddressesCommand,
     DescribeFlowLogsCommand,
 } from '@aws-sdk/client-ec2';
-import {
-    KMSClient,
-    DescribeKeyCommand,
-    GetKeyRotationStatusCommand,
-} from '@aws-sdk/client-kms';
-import {
-    S3Client,
-    HeadBucketCommand,
-    GetBucketEncryptionCommand,
-    GetBucketLifecycleConfigurationCommand,
-} from '@aws-sdk/client-s3';
-import {
-    Route53Client,
-    GetHostedZoneCommand,
-    ListResourceRecordSetsCommand,
-} from '@aws-sdk/client-route-53';
+import type { IpPermission } from '@aws-sdk/client-ec2';
+import type { FlowLog } from '@aws-sdk/client-ec2';
 import {
     ElasticLoadBalancingV2Client,
     DescribeLoadBalancersCommand,
@@ -55,17 +42,29 @@ import {
     DescribeListenersCommand,
     DescribeLoadBalancerAttributesCommand,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
-import {
-    CloudWatchLogsClient,
-    DescribeLogGroupsCommand,
-} from '@aws-sdk/client-cloudwatch-logs';
-
-import type { IpPermission } from '@aws-sdk/client-ec2';
-import type { FlowLog } from '@aws-sdk/client-ec2';
 import type { LoadBalancer, Listener, TargetGroup, LoadBalancerAttribute } from '@aws-sdk/client-elastic-load-balancing-v2';
+import {
+    KMSClient,
+    DescribeKeyCommand,
+    GetKeyRotationStatusCommand,
+} from '@aws-sdk/client-kms';
 import type { KeyMetadata } from '@aws-sdk/client-kms';
+import {
+    Route53Client,
+    GetHostedZoneCommand,
+    ListResourceRecordSetsCommand,
+} from '@aws-sdk/client-route-53';
 import type { HostedZone, ResourceRecordSet } from '@aws-sdk/client-route-53';
-import type { LogGroup } from '@aws-sdk/client-cloudwatch-logs';
+import {
+    S3Client,
+    HeadBucketCommand,
+    GetBucketEncryptionCommand,
+    GetBucketLifecycleConfigurationCommand,
+} from '@aws-sdk/client-s3';
+import {
+    SSMClient,
+    GetParametersByPathCommand,
+} from '@aws-sdk/client-ssm';
 
 import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
@@ -81,7 +80,7 @@ import type { K8sSsmPaths } from '../../../lib/config/ssm-paths';
  * Throws with a descriptive error for invalid values.
  */
 function parseEnvironment(raw: string): Environment {
-    const valid = ['development', 'staging', 'production'] as const satisfies readonly Environment[];
+    const valid = [Environment.DEVELOPMENT, Environment.STAGING, Environment.PRODUCTION] as const satisfies readonly Environment[];
     if (!valid.includes(raw as Environment)) {
         throw new Error(`Invalid CDK_ENV: "${raw}". Expected one of: ${valid.join(', ')}`);
     }
@@ -402,7 +401,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
             );
         });
 
-        it('NLB target group ARNs should be valid ARN format', () => {
+        it('should have NLB target group ARNs in valid ARN format', () => {
             const httpArn = requireParam(ssmParams, SSM_PATHS.nlbHttpTargetGroupArn);
             const httpsArn = requireParam(ssmParams, SSM_PATHS.nlbHttpsTargetGroupArn);
 
@@ -437,12 +436,12 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
             expect(flowLogs.length).toBeGreaterThan(0);
         });
 
-        it('flow logs should deliver to CloudWatch Logs', () => {
+        it('should deliver flow logs to CloudWatch Logs', () => {
             expect(cwlFlowLog).toBeDefined();
             expect(cwlFlowLog!.FlowLogStatus).toBe('ACTIVE');
         });
 
-        it('CloudWatch log group should have correct retention', () => {
+        it('should have correct retention on CloudWatch log group', () => {
             expect(flowLogGroup).toBeDefined();
             expect(flowLogGroup!.retentionInDays).toBe(FLOW_LOG_RETENTION_DAYS);
         });
@@ -461,7 +460,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         ] satisfies Array<{ key: keyof K8sSsmPaths; label: string }>;
 
         it.each(sgKeys)(
-            '$label SG should exist and be attached to the VPC',
+            'should exist and be attached to the VPC ($label SG)',
             async ({ key }) => {
                 const sgId = requireParam(ssmParams, SSM_PATHS[key]);
                 const vpcId = requireParam(ssmParams, SSM_PATHS.vpcId);
@@ -799,7 +798,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
             expect(httpsTargetGroup.Protocol).toBe('TCP');
         });
 
-        it('HTTPS target group should health-check on port 80', () => {
+        it('should health-check HTTPS target group on port 80', () => {
             // Health check port is 80 (Traefik always listening), not 443
             expect(httpsTargetGroup.HealthCheckPort).toBe('80');
         });
@@ -810,7 +809,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     // Depends on: nlbListeners populated in top-level beforeAll
     // =========================================================================
     describe('NLB — Listeners', () => {
-        it(`should have ${EXPECTED_LISTENER_COUNT} listeners (HTTP + HTTPS)`, () => {
+        it('should have the expected number of listeners (HTTP + HTTPS)', () => {
             expect(nlbListeners).toHaveLength(EXPECTED_LISTENER_COUNT);
         });
 

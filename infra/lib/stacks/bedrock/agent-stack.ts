@@ -15,7 +15,6 @@ import { NagSuppressions } from 'cdk-nag';
 
 import * as cdkBedrock from 'aws-cdk-lib/aws-bedrock';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 

@@ -9,7 +9,7 @@
  *   e.g. NextJS-Compute-development, ControlPlane-production
  */
 
-import { EnvironmentName } from '../config/environments';
+import { EnvironmentName, shortEnv } from '../config/environments';
 import { Project, getProjectConfig } from '../config/projects';
 
 // =============================================================================
@@ -148,7 +148,7 @@ export function getStackId(
 // FLAT RESOURCE NAMING
 // =============================================================================
 
-import { shortEnv } from '../config/environments';
+
 
 /**
  * Generate a flat, semantic resource name using short environment abbreviations.

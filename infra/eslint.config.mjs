@@ -314,6 +314,8 @@ export default [
                         "**.hasResourceProperties",
                         "**.resourceCountIs",
                         "**.hasOutput",
+                        // Custom test assertion helpers
+                        "StackAssertions.**",
                     ],
                 },
             ],
@@ -382,6 +384,16 @@ export default [
         rules: {
             // Integration tests may need longer timeouts and conditional logic
             "jest/no-conditional-in-test": "warn",
+
+            // Integration tests use expect() in beforeAll for API response shape
+            // validation (Rule 8: validate shape before accessing properties).
+            "jest/no-standalone-expect": [
+                "error",
+                { additionalTestBlockFunctions: ["beforeAll", "beforeEach", "afterAll", "afterEach"] },
+            ],
+
+            // Integration tests may have top-level beforeAll for shared resource fetching
+            "jest/require-top-level-describe": "off",
 
             // Larger snapshots acceptable for full stack tests
             "jest/no-large-snapshots": [

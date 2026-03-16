@@ -26,9 +26,15 @@
  */
 
 import {
-    SSMClient,
-    GetParameterCommand,
-} from '@aws-sdk/client-ssm';
+    CloudFormationClient,
+    DescribeStacksCommand,
+} from '@aws-sdk/client-cloudformation';
+import {
+    CloudWatchLogsClient,
+    DescribeLogGroupsCommand,
+    DescribeLogStreamsCommand,
+    GetLogEventsCommand,
+} from '@aws-sdk/client-cloudwatch-logs';
 import {
     EC2Client,
     DescribeImagesCommand,
@@ -39,21 +45,15 @@ import {
     GetObjectCommand,
 } from '@aws-sdk/client-s3';
 import {
-    CloudWatchLogsClient,
-    DescribeLogGroupsCommand,
-    DescribeLogStreamsCommand,
-    GetLogEventsCommand,
-} from '@aws-sdk/client-cloudwatch-logs';
-import {
-    CloudFormationClient,
-    DescribeStacksCommand,
-} from '@aws-sdk/client-cloudformation';
+    SSMClient,
+    GetParameterCommand,
+} from '@aws-sdk/client-ssm';
 
 import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
 import { k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import { stackId, STACK_REGISTRY } from '../../../lib/utilities/naming';
-import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
 // Configuration (config-driven — no hardcoded values)
@@ -269,7 +269,7 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
             );
 
             expect(Images).toBeDefined();
-            expect(Images!.length).toBe(1);
+            expect(Images!).toHaveLength(1);
             expect(Images![0].State).toBe('available');
         });
 
@@ -311,11 +311,12 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
     // Package Verification (log-based)
     // =========================================================================
     describe('Package Verification (build logs)', () => {
-        for (const pkg of EXPECTED_PACKAGES) {
-            it(`should have ${pkg.name} verified in build logs`, () => {
-                expect(pkg.pattern.test(allLogContent)).toBe(true);
-            });
-        }
+        it.each(EXPECTED_PACKAGES)(
+            'should have $name verified in build logs',
+            ({ pattern }) => {
+                expect(pattern.test(allLogContent)).toBe(true);
+            },
+        );
     });
 
     // =========================================================================
@@ -328,7 +329,7 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
             );
 
             expect(Stacks).toBeDefined();
-            expect(Stacks!.length).toBe(1);
+            expect(Stacks!).toHaveLength(1);
 
             const status = Stacks![0].StackStatus!;
             expect(status).toMatch(/COMPLETE$/);

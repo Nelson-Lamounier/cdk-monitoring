@@ -21,9 +21,9 @@
  */
 
 import {
-    SSMClient,
-    GetParametersByPathCommand,
-} from '@aws-sdk/client-ssm';
+    CloudFormationClient,
+    DescribeStacksCommand,
+} from '@aws-sdk/client-cloudformation';
 import {
     DynamoDBClient,
     DescribeTableCommand,
@@ -35,14 +35,11 @@ import {
     GetPublicAccessBlockCommand,
 } from '@aws-sdk/client-s3';
 import {
-    CloudFormationClient,
-    DescribeStacksCommand,
-} from '@aws-sdk/client-cloudformation';
+    SSMClient,
+    GetParametersByPathCommand,
+} from '@aws-sdk/client-ssm';
 
 import { Environment } from '../../../lib/config';
-import {
-    nextjsSsmPaths,
-} from '../../../lib/config/ssm-paths';
 import {
     PORTFOLIO_GSI1_NAME,
     PORTFOLIO_GSI2_NAME,
@@ -51,6 +48,9 @@ import {
     nextjsResourceNames,
 } from '../../../lib/config/nextjs';
 import { Project, getProjectConfig } from '../../../lib/config/projects';
+import {
+    nextjsSsmPaths,
+} from '../../../lib/config/ssm-paths';
 import { stackId, STACK_REGISTRY } from '../../../lib/utilities/naming';
 
 // =============================================================================
@@ -396,7 +396,7 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
     // Downstream Readiness Gate
     // =========================================================================
     describe('Downstream Readiness', () => {
-        it('all SSM parameters required by downstream stacks should be discoverable', () => {
+        it('should have all SSM parameters required by downstream stacks discoverable', () => {
             // Edge stack needs: assets bucket (for CloudFront origin)
             // AppIam stack needs: table ARN (for IAM grants)
             // Both discover via SSM parameters published by this data stack

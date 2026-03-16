@@ -62,7 +62,7 @@ export class EcrRepositoryConstruct extends Construct {
     constructor(scope: Construct, id: string, props: EcrRepositoryConstructProps) {
         super(scope, id);
 
-        const environment = props.environment ?? Environment.DEVELOPMENT;
+        const _environment = props.environment ?? Environment.DEVELOPMENT;
         const scanOnPush = props.scanOnPush ?? true;
         const untaggedExpiryDays = props.untaggedImageExpiryDays ?? 30;
         const maxTaggedImages = props.maxTaggedImages ?? 50;
