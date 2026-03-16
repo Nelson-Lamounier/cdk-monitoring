@@ -48,38 +48,10 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       nodeSelector:
         {{- toYaml .Values.nodeSelector | nindent 8 }}
-      {{- if .Values.otel.enabled }}
-      initContainers:
-        # ---------------------------------------------------------------
-        # Wait-for-Tempo — blocks pod start until Tempo OTLP gRPC is reachable.
-        # Prevents OTel SDK from buffering/dropping spans during Tempo restarts.
-        # Uses nc (netcat) TCP check; exits 0 once the port accepts connections.
-        # ---------------------------------------------------------------
-        - name: wait-for-tempo
-          image: busybox:1.37
-          command:
-            - sh
-            - -c
-            - |
-              echo "Waiting for Tempo OTLP endpoint..."
-              until nc -z tempo.monitoring.svc.cluster.local 4317 2>/dev/null; do
-                echo "Tempo not ready — retrying in 5s..."
-                sleep 5
-              done
-              echo "Tempo is reachable — proceeding with app startup"
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              cpu: 10m
-              memory: 16Mi
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 65534
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-      {{- end }}
+      # NOTE: wait-for-tempo init container removed (2026-03-16).
+      # The OTel SDK gracefully handles an unreachable Tempo endpoint by
+      # dropping spans — a hard init container dependency caused the app
+      # to block indefinitely when Tempo entered CrashLoopBackOff.
       containers:
         - name: nextjs
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
