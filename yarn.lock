@@ -2634,6 +2634,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@aws-sdk/types@npm:^3.973.6":
+  version: 3.973.6
+  resolution: "@aws-sdk/types@npm:3.973.6"
+  dependencies:
+    "@smithy/types": "npm:^4.13.1"
+    tslib: "npm:^2.6.2"
+  checksum: 10c0/3a5c65313a3faadf854dd1055e5768c0477ecd10e8a597d0c0041fb69efdcefc399bf263f86fef93754d2d9a91d4f0eb78f5f1de14779657f84a24218a457fc3
+  languageName: node
+  linkType: hard
+
 "@aws-sdk/util-arn-parser@npm:^3.972.2":
   version: 3.972.2
   resolution: "@aws-sdk/util-arn-parser@npm:3.972.2"
@@ -6115,6 +6125,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@smithy/types@npm:^4.13.1":
+  version: 4.13.1
+  resolution: "@smithy/types@npm:4.13.1"
+  dependencies:
+    tslib: "npm:^2.6.2"
+  checksum: 10c0/775ed9748d9290b8816d933bfb9726eb9301ef2fe9fba1bfbc1966372b9f0d4dd1d3b611aca3c000094bed2ca9d821e10fe2795a75df5bc305bc8845a1e413f7
+  languageName: node
+  linkType: hard
+
 "@smithy/url-parser@npm:^4.2.10":
   version: 4.2.10
   resolution: "@smithy/url-parser@npm:4.2.10"
@@ -7812,7 +7831,7 @@ __metadata:
     "@aws-sdk/client-sts": "npm:^3.1001.0"
     "@aws-sdk/credential-providers": "npm:^3.1001.0"
     "@aws-sdk/lib-dynamodb": "npm:^3.1001.0"
-    "@aws-sdk/types": "npm:^3.973.4"
+    "@aws-sdk/types": "npm:^3.973.6"
     "@types/mime-types": "npm:^3.0.1"
     esbuild: "npm:^0.27.3"
     mime-types: "npm:^3.0.2"
