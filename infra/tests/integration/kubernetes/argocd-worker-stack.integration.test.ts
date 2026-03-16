@@ -174,6 +174,58 @@ function extractTargetIds(
 }
 
 /**
+ * Poll DescribeTargetHealth until the expected instance appears in the
+ * NLB target group.
+ *
+ * After a Spot instance replacement or stack redeployment, the ASG needs
+ * time to register the new instance with the NLB. This helper retries
+ * with a configurable backoff to accommodate the propagation delay.
+ *
+ * @param client     - ELBv2 client
+ * @param tgArn      - Target group ARN to poll
+ * @param expectedId - Instance ID that must appear in the targets
+ * @param maxAttempts - Maximum number of polling attempts
+ * @param backoffMs  - Milliseconds to wait between attempts
+ * @returns The final list of target IDs (including the expected one)
+ * @throws If the expected instance never appears after all attempts
+ */
+async function waitForTargetRegistration(
+    client: ElasticLoadBalancingV2Client,
+    tgArn: string,
+    expectedId: string,
+    maxAttempts: number,
+    backoffMs: number,
+): Promise<string[]> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const { TargetHealthDescriptions } = await client.send(
+            new DescribeTargetHealthCommand({ TargetGroupArn: tgArn }),
+        );
+
+        const targetIds = extractTargetIds(TargetHealthDescriptions ?? []);
+
+        if (targetIds.includes(expectedId)) {
+            return targetIds;
+        }
+
+        if (attempt < maxAttempts) {
+            // eslint-disable-next-line no-console
+            console.log(
+                `[Retry ${attempt}/${maxAttempts}] Instance ${expectedId} not yet in target group — ` +
+                `current targets: [${targetIds.join(', ')}]. Retrying in ${backoffMs / 1000}s`,
+            );
+            await new Promise((r) => setTimeout(r, backoffMs));
+        }
+    }
+
+    // Final attempt failed — return whatever targets exist so the assertion
+    // produces a clear diff showing which targets ARE registered
+    const { TargetHealthDescriptions } = await client.send(
+        new DescribeTargetHealthCommand({ TargetGroupArn: tgArn }),
+    );
+    return extractTargetIds(TargetHealthDescriptions ?? []);
+}
+
+/**
  * Find the running EC2 instance launched by the ArgoCD worker ASG.
  * Uses the Name tag `k8s-dev-argocd-worker` set by AutoScalingGroupConstruct.
  *
@@ -305,10 +357,19 @@ describe('KubernetesArgocdWorkerStack — Post-Deploy Verification', () => {
     //
     // The ArgoCD worker ASG must be registered with the NLB HTTP and HTTPS
     // target groups so NLB can route traffic directly to Traefik on this node.
+    //
+    // After a Spot instance replacement or stack redeployment, the ASG needs
+    // time to register the new instance with the NLB. We poll DescribeTargetHealth
+    // until the expected instance appears (up to ~2.5 min).
     // =========================================================================
     describe('NLB Target Group Registration', () => {
         let httpTgArn: string;
         let httpsTgArn: string;
+
+        /** Max attempts for NLB target registration polling */
+        const NLB_MAX_ATTEMPTS = 10;
+        /** Backoff between NLB polling attempts in milliseconds */
+        const NLB_BACKOFF_MS = 15_000;
 
         // Depends on: ssmParams populated in top-level beforeAll
         beforeAll(() => {
@@ -317,26 +378,30 @@ describe('KubernetesArgocdWorkerStack — Post-Deploy Verification', () => {
         });
 
         it('should be registered with the HTTP target group', async () => {
-            const { TargetHealthDescriptions } = await elbv2Client.send(
-                new DescribeTargetHealthCommand({ TargetGroupArn: httpTgArn }),
+            const expectedId = argocdWorker.instance.InstanceId!;
+            const targetIds = await waitForTargetRegistration(
+                elbv2Client,
+                httpTgArn,
+                expectedId,
+                NLB_MAX_ATTEMPTS,
+                NLB_BACKOFF_MS,
             );
 
-            expect(TargetHealthDescriptions).toBeDefined();
-            const targetIds = extractTargetIds(TargetHealthDescriptions!);
-
-            expect(targetIds).toContain(argocdWorker.instance.InstanceId);
-        });
+            expect(targetIds).toContain(expectedId);
+        }, 180_000);
 
         it('should be registered with the HTTPS target group', async () => {
-            const { TargetHealthDescriptions } = await elbv2Client.send(
-                new DescribeTargetHealthCommand({ TargetGroupArn: httpsTgArn }),
+            const expectedId = argocdWorker.instance.InstanceId!;
+            const targetIds = await waitForTargetRegistration(
+                elbv2Client,
+                httpsTgArn,
+                expectedId,
+                NLB_MAX_ATTEMPTS,
+                NLB_BACKOFF_MS,
             );
 
-            expect(TargetHealthDescriptions).toBeDefined();
-            const targetIds = extractTargetIds(TargetHealthDescriptions!);
-
-            expect(targetIds).toContain(argocdWorker.instance.InstanceId);
-        });
+            expect(targetIds).toContain(expectedId);
+        }, 180_000);
     });
 
     // =========================================================================
