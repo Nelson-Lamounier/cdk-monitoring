@@ -52,7 +52,7 @@ export const VPC_DEFAULTS = {
     /** NAT gateways (0 for cost optimization) */
     natGateways: 0,
     /** Flow log retention */
-    flowLogRetention: logs.RetentionDays.ONE_MONTH,
+    flowLogRetention: logs.RetentionDays.THREE_DAYS,
 } as const;
 
 
