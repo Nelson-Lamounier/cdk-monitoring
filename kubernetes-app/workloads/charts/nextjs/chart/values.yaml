@@ -145,6 +145,7 @@ rollout:
     interval: 60s            # Run analysis every 60s during pause
     count: 3                 # Require 3 consecutive measurements
     failureLimit: 1          # Abort after 1 failed measurement
+    consecutiveErrorLimit: 5 # Tolerate Prometheus being unreachable
     errorRateThreshold: 0.05 # Max 5% error rate
     latencyThresholdMs: 2000 # Max 2000ms P95 latency
 

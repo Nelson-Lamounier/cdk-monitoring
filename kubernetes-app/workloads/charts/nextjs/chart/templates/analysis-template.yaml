@@ -8,8 +8,9 @@
 # If either metric breaches its threshold, the AnalysisRun fails
 # and the Rollout auto-aborts, rolling back to the stable revision.
 #
-# Metrics come from Tempo's span-metrics (traces_spanmetrics_*)
-# which are scraped by Prometheus.
+# Metrics source: Traefik request metrics (always available).
+# Decoupled from Tempo — monitoring outages do not block deploys.
+# consecutiveErrorLimit tolerates Prometheus being unreachable.
 # ---------------------------------------------------------------
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
@@ -22,41 +23,43 @@ spec:
   args:
     - name: service-name
   metrics:
-    # ----- Error Rate: 5xx errors / total requests -----
+    # ----- Error Rate: 5xx errors / total requests (via Traefik) -----
     - name: error-rate
       interval: {{ .Values.rollout.analysis.interval }}
       count: {{ .Values.rollout.analysis.count }}
       failureLimit: {{ .Values.rollout.analysis.failureLimit }}
+      consecutiveErrorLimit: {{ .Values.rollout.analysis.consecutiveErrorLimit }}
       provider:
         prometheus:
-          address: http://prometheus.monitoring.svc.cluster.local:9090
+          address: http://prometheus.monitoring.svc.cluster.local:9090/prometheus
           query: |
             sum(rate(
-              traces_spanmetrics_calls_total{
-                service_name="{{`{{args.service-name}}`}}",
-                status_code="STATUS_CODE_ERROR"
+              traefik_service_requests_total{
+                service=~"nextjs-nextjs-app-.*@kubernetes",
+                code=~"5.."
               }[5m]
             )) /
             sum(rate(
-              traces_spanmetrics_calls_total{
-                service_name="{{`{{args.service-name}}`}}"
+              traefik_service_requests_total{
+                service=~"nextjs-nextjs-app-.*@kubernetes"
               }[5m]
             ))
       successCondition: "isNaN(result) || result < {{ .Values.rollout.analysis.errorRateThreshold }}"
-    # ----- P95 Latency: 95th percentile response time -----
+    # ----- P95 Latency: 95th percentile response time (via Traefik) -----
     - name: p95-latency
       interval: {{ .Values.rollout.analysis.interval }}
       count: {{ .Values.rollout.analysis.count }}
       failureLimit: {{ .Values.rollout.analysis.failureLimit }}
+      consecutiveErrorLimit: {{ .Values.rollout.analysis.consecutiveErrorLimit }}
       provider:
         prometheus:
-          address: http://prometheus.monitoring.svc.cluster.local:9090
+          address: http://prometheus.monitoring.svc.cluster.local:9090/prometheus
           query: |
             histogram_quantile(0.95,
               sum(rate(
-                traces_spanmetrics_duration_milliseconds_bucket{
-                  service_name="{{`{{args.service-name}}`}}"
+                traefik_service_request_duration_seconds_bucket{
+                  service=~"nextjs-nextjs-app-.*@kubernetes"
                 }[5m]
               )) by (le)
-            )
+            ) * 1000
       successCondition: "isNaN(result) || result < {{ .Values.rollout.analysis.latencyThresholdMs }}"
