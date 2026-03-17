@@ -39,7 +39,7 @@ concurrency:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-  SSM_PREFIX: bedrock-development
+  SSM_PREFIX: bedrock-dev
 
 jobs:
   publish:
