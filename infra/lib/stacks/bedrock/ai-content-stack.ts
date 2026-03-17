@@ -183,6 +183,7 @@ export class AiContentStack extends cdk.Stack {
             queueName: `${namePrefix}-publisher-dlq`,
             retentionPeriod: cdk.Duration.days(14),
             enforceSSL: true,
+            encryption: sqs.QueueEncryption.SQS_MANAGED,
             removalPolicy: props.removalPolicy,
         });
 

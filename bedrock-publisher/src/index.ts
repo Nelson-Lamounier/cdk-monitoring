@@ -38,11 +38,26 @@ import { BLOG_PERSONA_SYSTEM_PROMPT } from './prompts/blog-persona.js';
 // ENVIRONMENT & CLIENTS
 // =============================================================================
 
-const ASSETS_BUCKET = process.env.ASSETS_BUCKET!;
+/**
+ * Validate and retrieve a required environment variable.
+ *
+ * @param name - The environment variable name
+ * @returns The environment variable value
+ * @throws Error with a descriptive message if the variable is missing
+ */
+function requireEnv(name: string): string {
+    const value = process.env[name];
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${name}`);
+    }
+    return value;
+}
+
+const ASSETS_BUCKET = requireEnv('ASSETS_BUCKET');
 const DRAFT_PREFIX = process.env.DRAFT_PREFIX ?? 'drafts/';
 const PUBLISHED_PREFIX = process.env.PUBLISHED_PREFIX ?? 'published/';
 const CONTENT_PREFIX = process.env.CONTENT_PREFIX ?? 'content/';
-const TABLE_NAME = process.env.TABLE_NAME!;
+const TABLE_NAME = requireEnv('TABLE_NAME');
 const FOUNDATION_MODEL = process.env.FOUNDATION_MODEL ?? 'anthropic.claude-sonnet-4-6';
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS ?? '8192', 10);
 const THINKING_BUDGET_TOKENS = parseInt(process.env.THINKING_BUDGET_TOKENS ?? '16000', 10);
@@ -223,6 +238,11 @@ export function analyseComplexity(markdown: string): ComplexityAnalysis {
 
 /**
  * Read the raw markdown file from S3
+ *
+ * @param bucket - The S3 bucket name
+ * @param key - The S3 object key
+ * @returns The file contents as a UTF-8 string
+ * @throws Error if the S3 object body is empty or missing
  */
 async function readDraftFromS3(bucket: string, key: string): Promise<string> {
     const response = await s3Client.send(new GetObjectCommand({
@@ -230,7 +250,11 @@ async function readDraftFromS3(bucket: string, key: string): Promise<string> {
         Key: key,
     }));
 
-    return await response.Body!.transformToString('utf-8');
+    if (!response.Body) {
+        throw new Error(`S3 GetObject returned empty body for s3://${bucket}/${key}`);
+    }
+
+    return await response.Body.transformToString('utf-8');
 }
 
 /**
@@ -296,8 +320,9 @@ async function writeMetadataToDynamoDB(
     sourceKey: string,
     publishedKey: string,
     complexity: ComplexityAnalysis,
+    versionTimestamp: string,
 ): Promise<void> {
-    const now = new Date().toISOString();
+    const now = versionTimestamp;
     const pk = `ARTICLE#${slug}`;
     const contentRef = `s3://${ASSETS_BUCKET}/${publishedKey}`;
 
@@ -390,7 +415,7 @@ async function writeMetadataToDynamoDB(
  * Input:  drafts/my-article.md
  * Output: published/my-article.mdx
  */
-function derivePublishedKey(draftKey: string): string {
+export function derivePublishedKey(draftKey: string): string {
     const filename = draftKey
         .replace(DRAFT_PREFIX, '')
         .replace(/\.md$/, '.mdx');
@@ -399,14 +424,20 @@ function derivePublishedKey(draftKey: string): string {
 
 /**
  * Derive the versioned content blob S3 key (Metadata Brain).
- * Input:  drafts/my-article.md, version 1
- * Output: content/v1/my-article.mdx
+ *
+ * Uses ISO timestamp to align with DynamoDB sort key format
+ * (`CONTENT#v_2026-03-17T08:30:00.000Z`) for easier debugging
+ * and cross-reference between S3 and DynamoDB.
+ *
+ * @param draftKey - The source draft S3 key (e.g. `drafts/my-article.md`)
+ * @param isoTimestamp - ISO 8601 timestamp for versioning
+ * @returns The versioned content S3 key (e.g. `content/v_2026-03-17T.../my-article.mdx`)
  */
-function deriveContentKey(draftKey: string, version: number): string {
+export function deriveContentKey(draftKey: string, isoTimestamp: string): string {
     const filename = draftKey
         .replace(DRAFT_PREFIX, '')
         .replace(/\.md$/, '.mdx');
-    return `${CONTENT_PREFIX}v${version}/${filename}`;
+    return `${CONTENT_PREFIX}v_${isoTimestamp}/${filename}`;
 }
 
 /**
@@ -414,7 +445,7 @@ function deriveContentKey(draftKey: string, version: number): string {
  * Input:  drafts/deploying-k8s-on-aws.md
  * Output: deploying-k8s-on-aws
  */
-function deriveSlug(draftKey: string): string {
+export function deriveSlug(draftKey: string): string {
     return draftKey
         .replace(DRAFT_PREFIX, '')
         .replace(/\.md$/, '');
@@ -435,7 +466,7 @@ function deriveSlug(draftKey: string): string {
  *   3. Only escape control characters (U+0000-U+001F) when inside a
  *      string value; structural whitespace is left alone.
  */
-function parseTransformResult(responseText: string): TransformResult {
+export function parseTransformResult(responseText: string): TransformResult {
     // ── Step 1: find the outermost JSON object ──
     const firstBrace = responseText.indexOf('{');
     const lastBrace  = responseText.lastIndexOf('}');
@@ -695,10 +726,11 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
                 `Complexity: ${complexity.tier} → ${complexity.budgetTokens} thinking tokens | ${complexity.reason}`,
             );
 
-            // 3. Derive output paths
+            // 3. Derive output paths (ISO timestamp shared between S3 key and DynamoDB sort key)
             const slug = deriveSlug(key);
             const publishedKey = derivePublishedKey(key);
-            const contentKey = deriveContentKey(key, Date.now());
+            const versionTimestamp = new Date().toISOString();
+            const contentKey = deriveContentKey(key, versionTimestamp);
 
             // 4. Transform via Bedrock Converse API (budget scales with complexity)
             console.log(`Invoking ${FOUNDATION_MODEL} with Adaptive Thinking (budget: ${complexity.budgetTokens} tokens)`);
@@ -728,6 +760,7 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
                 key,
                 publishedKey,
                 complexity,
+                versionTimestamp,
             );
             console.log(`Metadata written to ${TABLE_NAME} (pk=ARTICLE#${result.metadata.slug || slug})`);
 
@@ -741,10 +774,12 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
                     const articleSlug = result.metadata.slug || slug;
                     const url = new URL(revalidationUrl);
                     url.searchParams.set('slug', articleSlug);
+                    // Send secret as a header to avoid it appearing in URL logs
+                    const headers: Record<string, string> = {};
                     if (revalidationSecret) {
-                        url.searchParams.set('secret', revalidationSecret);
+                        headers['x-revalidation-secret'] = revalidationSecret;
                     }
-                    const response = await fetch(url.toString(), { method: 'GET' });
+                    const response = await fetch(url.toString(), { method: 'GET', headers });
                     if (response.ok) {
                         console.log(`ISR revalidation triggered for /blog/${articleSlug}`);
                     } else {

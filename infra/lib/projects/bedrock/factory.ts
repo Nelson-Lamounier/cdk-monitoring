@@ -160,7 +160,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
             stackId(this.namespace, 'Content', this.environment),
             {
                 namePrefix,
-                assetsBucketName: `${namePrefix}-kb-data`,
+                assetsBucketName: dataStack.bucketName,
                 draftPrefix: contentConfigs.s3.draftPrefix,
                 publishedPrefix: contentConfigs.s3.publishedPrefix,
                 contentPrefix: contentConfigs.s3.contentPrefix,

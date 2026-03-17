@@ -61,8 +61,6 @@ export class BedrockAgentStack extends cdk.Stack {
     /** The Agent Alias for stable invocations */
     public readonly agentAlias: bedrock.AgentAlias;
 
-
-
     /** The Guardrail */
     public readonly guardrail: bedrock.Guardrail;
 
@@ -280,7 +278,6 @@ export class BedrockAgentStack extends cdk.Stack {
             tier: ssm.ParameterTier.STANDARD,
         });
 
-
         // =================================================================
         // Stack Outputs
         // =================================================================
@@ -298,8 +295,6 @@ export class BedrockAgentStack extends cdk.Stack {
             value: this.agentAlias.aliasId,
             description: 'Bedrock Agent Alias ID',
         });
-
-
 
         new cdk.CfnOutput(this, 'GuardrailId', {
             value: this.guardrail.guardrailId,

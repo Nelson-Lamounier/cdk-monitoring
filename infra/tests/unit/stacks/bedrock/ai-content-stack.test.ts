@@ -172,6 +172,47 @@ describe('AiContentStack', () => {
     });
 
     // =========================================================================
+    // DynamoDB GSI — gsi1-status-date
+    // =========================================================================
+    describe('DynamoDB GSI', () => {
+        const { template } = createContentStack();
+
+        it('should create a GSI with gsi1pk as partition key and gsi1sk as sort key', () => {
+            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+                GlobalSecondaryIndexes: Match.arrayWith([
+                    Match.objectLike({
+                        IndexName: 'gsi1-status-date',
+                        KeySchema: Match.arrayWith([
+                            Match.objectLike({ AttributeName: 'gsi1pk', KeyType: 'HASH' }),
+                            Match.objectLike({ AttributeName: 'gsi1sk', KeyType: 'RANGE' }),
+                        ]),
+                    }),
+                ]),
+            });
+        });
+    });
+
+    // =========================================================================
+    // SQS Dead Letter Queue
+    // =========================================================================
+    describe('SQS Dead Letter Queue', () => {
+        const { template } = createContentStack();
+
+        it('should create the publisher DLQ', () => {
+            template.hasResourceProperties('AWS::SQS::Queue', {
+                QueueName: `${NAME_PREFIX}-publisher-dlq`,
+            });
+        });
+
+        it('should enable SQS managed encryption on the DLQ', () => {
+            template.hasResourceProperties('AWS::SQS::Queue', {
+                QueueName: `${NAME_PREFIX}-publisher-dlq`,
+                SqsManagedSseEnabled: true,
+            });
+        });
+    });
+
+    // =========================================================================
     // IAM — Bedrock InvokeModel permission
     // =========================================================================
     describe('IAM Policies', () => {
