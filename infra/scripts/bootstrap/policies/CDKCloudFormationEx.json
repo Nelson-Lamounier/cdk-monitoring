@@ -151,6 +151,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "StepFunctionsOrchestration",
+      "Effect": "Allow",
+      "Action": "states:*",
+      "Resource": "*"
+    },
+    {
       "Sid": "STSAccess",
       "Effect": "Allow",
       "Action": ["sts:AssumeRole", "sts:GetCallerIdentity"],

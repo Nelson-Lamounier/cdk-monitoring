@@ -2,14 +2,18 @@
  * @format
  * SSM Automation Runtime — Post-Deployment Integration Test
  *
- * Runs AFTER SSM Automation documents have been deployed and bootstrap/secrets
- * automations have completed. Calls real AWS APIs to verify that each automation
- * execution finished successfully with correct tag-based targeting.
+ * Runs AFTER SSM Automation documents and the Step Functions orchestrator
+ * have been deployed and bootstrap automations have completed. Calls real
+ * AWS APIs to verify that each automation execution finished successfully.
  *
- * SSM-Anchored Strategy:
- *   1. Read SSM parameters for automation document names
- *   2. Query DescribeAutomationExecutions for the most recent execution
- *   3. Verify status, targets, resolved targets, and outputs
+ * Architecture (post–Step Functions migration):
+ *   EventBridge → Step Functions → SSM Automation (per-role documents)
+ *
+ * Test Strategy:
+ *   1. Verify the Step Functions state machine exists and has recent executions
+ *   2. Read SSM parameters for automation document names
+ *   3. Query DescribeAutomationExecutions for the most recent execution
+ *   4. Verify status and document name pattern
  *
  * Environment Variables:
  *   CDK_ENV      — Target environment (default: development)
@@ -25,12 +29,21 @@ import {
     DescribeAutomationExecutionsCommand,
 } from '@aws-sdk/client-ssm';
 
+import {
+    SFNClient,
+    ListStateMachinesCommand,
+    ListExecutionsCommand,
+} from '@aws-sdk/client-sfn';
+
+import type { AutomationExecutionMetadata } from '@aws-sdk/client-ssm';
+import type { ExecutionListItem } from '@aws-sdk/client-sfn';
+
 import { Environment } from '../../../lib/config';
 import { k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import { flatName } from '../../../lib/utilities/naming';
 
 // =============================================================================
-// Configuration
+// Configuration — Named Constants (Rule 3)
 // =============================================================================
 
 const CDK_ENV = (process.env.CDK_ENV ?? 'development') as Environment;
@@ -39,8 +52,18 @@ const PREFIX = k8sSsmPrefix(CDK_ENV);
 /** Resource name prefix — e.g. 'k8s-dev' */
 const NAME_PREFIX = flatName('k8s', '', CDK_ENV);
 
-// AWS SDK client
+/** Step Functions state machine name as defined in ssm-automation-stack.ts */
+const STATE_MACHINE_NAME = `${NAME_PREFIX}-bootstrap-orchestrator`;
+
+/** Successful SSM Automation terminal statuses */
+const SSM_SUCCESS_STATUSES = ['Success'];
+
+/** Step Functions successful terminal statuses */
+const SFN_SUCCESS_STATUSES = ['SUCCEEDED'];
+
+// AWS SDK clients
 const ssm = new SSMClient({ region: REGION });
+const sfn = new SFNClient({ region: REGION });
 
 // =============================================================================
 // Types
@@ -56,7 +79,7 @@ interface AutomationTestTarget {
 }
 
 // =============================================================================
-// Test Targets — Bootstrap + Secrets Automations
+// Test Targets — Bootstrap Automations (all 4 roles)
 // =============================================================================
 
 /**
@@ -79,6 +102,11 @@ const AUTOMATION_TARGETS: AutomationTestTarget[] = [
         docNameParam: `${PREFIX}/bootstrap/mon-worker-doc-name`,
         expectedTargetTagValue: 'mon-worker',
     },
+    {
+        label: 'ArgoCD Worker Bootstrap',
+        docNameParam: `${PREFIX}/bootstrap/argocd-worker-doc-name`,
+        expectedTargetTagValue: 'argocd-worker',
+    },
 ];
 
 // =============================================================================
@@ -93,28 +121,56 @@ async function getParam(name: string): Promise<string> {
     return value;
 }
 
+/**
+ * Require a value from a Map or throw with a descriptive message.
+ * Replaces unsafe non-null assertions (Rule 2).
+ */
+function requireResult<T>(map: Map<string, T>, key: string): T {
+    const value = map.get(key);
+    if (!value) throw new Error(`Missing expected result for: ${key}`);
+    return value;
+}
+
 // =============================================================================
-// Execution result cache — populated in beforeAll
+// Execution result caches — populated in beforeAll
 // =============================================================================
 
-interface ExecutionResult {
+interface SsmExecutionResult {
     status: string;
-    targets: Array<{ Key?: string; Values?: string[] }>;
-    resolvedTargetValues: string[];
-    resolvedTargetTruncated: boolean;
-    outputs: Record<string, string[]>;
     documentName: string;
 }
 
-const executionResults = new Map<string, ExecutionResult>();
+const ssmResults = new Map<string, SsmExecutionResult>();
+
+let stateMachineArn: string | undefined;
+let latestSfnExecution: ExecutionListItem | undefined;
 
 // =============================================================================
 // Tests
 // =============================================================================
 
 describe('SSM Automation Runtime — Post-Deploy Verification', () => {
-    // ── Setup: resolve document names and fetch latest executions ──────
+    // ── Global Setup ─────────────────────────────────────────────────────
     beforeAll(async () => {
+        // 1. Resolve Step Functions state machine ARN
+        const machines = await sfn.send(new ListStateMachinesCommand({}));
+        const match = machines.stateMachines?.find(
+            (sm) => sm.name === STATE_MACHINE_NAME,
+        );
+        stateMachineArn = match?.stateMachineArn;
+
+        // 2. Fetch latest SFN execution if state machine exists
+        if (stateMachineArn) {
+            const executions = await sfn.send(
+                new ListExecutionsCommand({
+                    stateMachineArn,
+                    maxResults: 1,
+                }),
+            );
+            latestSfnExecution = executions.executions?.[0];
+        }
+
+        // 3. Resolve SSM Automation execution results
         for (const target of AUTOMATION_TARGETS) {
             let docName: string;
 
@@ -125,7 +181,6 @@ describe('SSM Automation Runtime — Post-Deploy Verification', () => {
                 continue;
             }
 
-            // Fetch the most recent execution for this document
             const result = await ssm.send(
                 new DescribeAutomationExecutionsCommand({
                     Filters: [
@@ -138,26 +193,43 @@ describe('SSM Automation Runtime — Post-Deploy Verification', () => {
                 }),
             );
 
-            const exec = result.AutomationExecutionMetadataList?.[0];
+            const exec: AutomationExecutionMetadata | undefined =
+                result.AutomationExecutionMetadataList?.[0];
             if (!exec) continue;
 
-            executionResults.set(target.label, {
+            ssmResults.set(target.label, {
                 status: exec.AutomationExecutionStatus ?? 'Unknown',
-                targets: (exec.Targets ?? []) as Array<{ Key?: string; Values?: string[] }>,
-                resolvedTargetValues: exec.ResolvedTargets?.ParameterValues ?? [],
-                resolvedTargetTruncated: exec.ResolvedTargets?.Truncated ?? false,
-                outputs: (exec.Outputs ?? {}) as Record<string, string[]>,
                 documentName: exec.DocumentName ?? '',
             });
         }
     }, 30_000);
 
-    // ── Dynamic test generation per automation target ──────────────────
-    describe.each(AUTOMATION_TARGETS)('$label', (target) => {
-        let execution: ExecutionResult | undefined;
+    // ── Step Functions Orchestrator ───────────────────────────────────────
+    describe('Step Functions Orchestrator', () => {
+        it('should have the bootstrap orchestrator state machine', () => {
+            expect(stateMachineArn).toBeDefined();
+            expect(stateMachineArn).toContain(STATE_MACHINE_NAME);
+        });
 
+        it('should have at least one execution', () => {
+            expect(latestSfnExecution).toBeDefined();
+        });
+
+        it('should have a successful latest execution', () => {
+            expect(latestSfnExecution).toBeDefined();
+            expect(SFN_SUCCESS_STATUSES).toContain(
+                latestSfnExecution!.status,
+            );
+        });
+    });
+
+    // ── SSM Automation per-role verification ─────────────────────────────
+    describe.each(AUTOMATION_TARGETS)('$label', (target) => {
+        let execution: SsmExecutionResult | undefined;
+
+        // Depends on: ssmResults populated in top-level beforeAll
         beforeAll(() => {
-            execution = executionResults.get(target.label);
+            execution = ssmResults.get(target.label);
         });
 
         it('should have a recent execution', () => {
@@ -165,19 +237,17 @@ describe('SSM Automation Runtime — Post-Deploy Verification', () => {
         });
 
         it('should have completed successfully', () => {
-            expect(execution?.status).toBe('Success');
+            expect(execution).toBeDefined();
+            const exec = requireResult(ssmResults, target.label);
+            expect(SSM_SUCCESS_STATUSES).toContain(exec.status);
         });
 
         it('should have document name matching expected pattern', () => {
-            expect(execution?.documentName).toMatch(
+            expect(execution).toBeDefined();
+            const exec = requireResult(ssmResults, target.label);
+            expect(exec.documentName).toMatch(
                 new RegExp(`^${NAME_PREFIX}-`),
             );
-        });
-
-        it('should have non-empty Outputs (CommandId)', () => {
-            expect(execution).toBeDefined();
-            expect(execution!.outputs).toBeDefined();
-            expect(Object.keys(execution!.outputs).length).toBeGreaterThan(0);
         });
     });
 });
