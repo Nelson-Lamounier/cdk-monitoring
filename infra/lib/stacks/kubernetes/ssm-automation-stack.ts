@@ -38,6 +38,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
+import * as sfnTasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -459,23 +461,25 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         });
 
         // =====================================================================
-        // Auto-Bootstrap Lambda — EventBridge → SSM Automation
+        // Step Functions Orchestrator — EventBridge → State Machine → SSM
         //
-        // When an ASG launches a replacement instance, this Lambda:
-        //   1. Reads the ASG's k8s:bootstrap-role tag
-        //   2. Maps role → SSM Automation document
-        //   3. Updates the instance-id SSM parameter
-        //   4. Starts SSM Automation execution
+        // When an ASG launches a replacement instance, this state machine:
+        //   1. Invokes a thin router Lambda to read ASG tags and resolve role
+        //   2. Updates the instance-id SSM parameter
+        //   3. Starts the appropriate SSM Automation document
+        //   4. Waits for completion (polling loop)
+        //   5. For control-plane: chains secrets deployment + worker re-join
         //
         // Non-K8s ASGs are silently ignored (no k8s:bootstrap-role tag).
         // =====================================================================
 
-        const autoBootstrapFn = new lambda.Function(this, 'AutoBootstrapFn', {
-            functionName: `${prefix}-auto-bootstrap`,
+        // --- Thin Router Lambda: reads ASG tags, resolves doc names ---
+        const routerFn = new lambda.Function(this, 'BootstrapRouterFn', {
+            functionName: `${prefix}-bootstrap-router`,
             runtime: lambda.Runtime.PYTHON_3_13,
             handler: 'index.handler',
             code: lambda.Code.fromInline(`
-import json, logging, os, boto3
+import logging, boto3
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -483,242 +487,434 @@ logger.setLevel(logging.INFO)
 asg_client = boto3.client("autoscaling")
 ssm_client = boto3.client("ssm")
 
-# Role → SSM parameter suffix for doc name and instance ID
-ROLE_MAP = {
-    "control-plane": {
-        "doc_param": "bootstrap/control-plane-doc-name",
-        "instance_param": "bootstrap/control-plane-instance-id",
-    },
-    "app-worker": {
-        "doc_param": "bootstrap/app-worker-doc-name",
-        "instance_param": "bootstrap/app-worker-instance-id",
-    },
-    "mon-worker": {
-        "doc_param": "bootstrap/mon-worker-doc-name",
-        "instance_param": "bootstrap/mon-worker-instance-id",
-    },
-    "argocd-worker": {
-        "doc_param": "bootstrap/argocd-worker-doc-name",
-        "instance_param": "bootstrap/argocd-worker-instance-id",
-    },
+ROLE_DOC_MAP = {
+    "control-plane": "bootstrap/control-plane-doc-name",
+    "app-worker": "bootstrap/app-worker-doc-name",
+    "mon-worker": "bootstrap/mon-worker-doc-name",
+    "argocd-worker": "bootstrap/argocd-worker-doc-name",
 }
 
 def handler(event, context):
+    """Read ASG tags and return role + SSM metadata for Step Functions."""
     detail = event.get("detail", {})
     instance_id = detail.get("EC2InstanceId", "")
     asg_name = detail.get("AutoScalingGroupName", "")
 
     if not instance_id or not asg_name:
         logger.info("Missing instance or ASG info, skipping")
-        return {"statusCode": 200}
+        return {"role": None, "reason": "Missing instance or ASG info"}
 
     logger.info("Instance launched: %s in ASG %s", instance_id, asg_name)
 
-    # Read ASG tags to determine role
     resp = asg_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
     groups = resp.get("AutoScalingGroups", [])
     if not groups:
         logger.info("ASG %s not found, skipping", asg_name)
-        return {"statusCode": 200}
+        return {"role": None, "reason": f"ASG {asg_name} not found"}
 
     tags = {t["Key"]: t["Value"] for t in groups[0].get("Tags", [])}
     role = tags.get("k8s:bootstrap-role")
     ssm_prefix = tags.get("k8s:ssm-prefix")
 
     if not role or not ssm_prefix:
-        logger.info("No k8s:bootstrap-role tag on ASG %s, skipping (not a K8s node)", asg_name)
-        return {"statusCode": 200}
+        logger.info("No k8s tags on ASG %s, skipping", asg_name)
+        return {"role": None, "reason": f"No k8s tags on ASG {asg_name}"}
 
-    if role not in ROLE_MAP:
+    doc_param = ROLE_DOC_MAP.get(role)
+    if not doc_param:
         logger.warning("Unknown bootstrap role: %s", role)
-        return {"statusCode": 400}
+        return {"role": None, "reason": f"Unknown role: {role}"}
 
-    mapping = ROLE_MAP[role]
-    doc_param_path = f"{ssm_prefix}/{mapping['doc_param']}"
-    instance_param_path = f"{ssm_prefix}/{mapping['instance_param']}"
-    bucket_param_path = f"{ssm_prefix}/scripts-bucket"
+    # Resolve the SSM Automation document name + S3 bucket
+    doc_name = ssm_client.get_parameter(Name=f"{ssm_prefix}/{doc_param}")["Parameter"]["Value"]
+    s3_bucket = ssm_client.get_parameter(Name=f"{ssm_prefix}/scripts-bucket")["Parameter"]["Value"]
 
-    # Update instance ID in SSM
-    ssm_client.put_parameter(
-        Name=instance_param_path,
-        Value=instance_id,
-        Type="String",
-        Overwrite=True,
-    )
-    logger.info("Updated SSM %s = %s", instance_param_path, instance_id)
-
-    # Resolve automation document name and S3 bucket
-    doc_name = ssm_client.get_parameter(Name=doc_param_path)["Parameter"]["Value"]
-    s3_bucket = ssm_client.get_parameter(Name=bucket_param_path)["Parameter"]["Value"]
-    region = os.environ.get("AWS_REGION", "eu-west-1")
-
-    # Start SSM Automation (direct instance targeting)
-    # Pass the instance ID directly from the EventBridge event instead of
-    # using Targets with tag-based resolution, which requires tag:GetResources
-    # permission and also finds terminated instances that retain their tags.
-    result = ssm_client.start_automation_execution(
-        DocumentName=doc_name,
-        Parameters={
-            "InstanceId": [instance_id],
-            "SsmPrefix": [ssm_prefix],
-            "S3Bucket": [s3_bucket],
-            "Region": [region],
-        },
-    )
-
-    exec_id = result.get("AutomationExecutionId", "unknown")
-    logger.info("Started %s automation for %s: %s", role, instance_id, exec_id)
-
-    # Publish execution ID for observability
-    try:
-        exec_param = f"{ssm_prefix}/bootstrap/execution-id" if role == "control-plane" else f"{ssm_prefix}/bootstrap/{role.replace('-', '-')}-execution-id"
-        ssm_client.put_parameter(Name=exec_param, Value=exec_id, Type="String", Overwrite=True)
-    except Exception:
-        logger.warning("Could not publish execution ID (non-fatal)")
-
-    # ─── CA Re-Join: Trigger worker re-bootstrap on CP replacement ───
-    # When a control plane is replaced (new CA certificate), existing workers
-    # hold a stale CA and need to re-join. We trigger re-bootstrap on all
-    # worker ASGs after a delay to allow the CP to finish bootstrapping
-    # and publish the new CA hash to SSM.
-    if role == "control-plane":
-        WORKER_REJOIN_DELAY_MINUTES = 15
-        logger.info("Control-plane replacement detected — scheduling worker re-bootstrap in %d minutes", WORKER_REJOIN_DELAY_MINUTES)
-
-        worker_roles = ["app-worker", "mon-worker", "argocd-worker"]
-        for worker_role in worker_roles:
-            try:
-                worker_mapping = ROLE_MAP[worker_role]
-                worker_instance_param = f"{ssm_prefix}/{worker_mapping['instance_param']}"
-                worker_doc_param = f"{ssm_prefix}/{worker_mapping['doc_param']}"
-
-                worker_instance_id = ssm_client.get_parameter(
-                    Name=worker_instance_param
-                )["Parameter"]["Value"]
-                worker_doc_name = ssm_client.get_parameter(
-                    Name=worker_doc_param
-                )["Parameter"]["Value"]
-
-                # Schedule a one-time EventBridge rule to trigger worker re-bootstrap
-                # after the control plane has had time to publish new CA credentials.
-                events_client = boto3.client("events")
-                from datetime import datetime, timedelta, timezone
-                run_at = datetime.now(timezone.utc) + timedelta(minutes=WORKER_REJOIN_DELAY_MINUTES)
-                schedule_name = f"ca-rejoin-{worker_role}-{instance_id[:8]}"
-
-                # Create a one-shot scheduled rule
-                events_client.put_rule(
-                    Name=schedule_name,
-                    ScheduleExpression=f"at({run_at.strftime('%Y-%m-%dT%H:%M:%S')})",
-                    State="ENABLED",
-                    Description=f"One-time CA re-join trigger for {worker_role} after CP replacement",
-                )
-
-                # Target: start SSM Automation directly
-                events_client.put_targets(
-                    Rule=schedule_name,
-                    Targets=[{
-                        "Id": f"rejoin-{worker_role}",
-                        "Arn": f"arn:aws:ssm:{region}:{os.environ.get('AWS_ACCOUNT_ID', boto3.client('sts').get_caller_identity()['Account'])}:automation-definition/{worker_doc_name}",
-                        "RoleArn": ssm_client.get_parameter(Name=f"{ssm_prefix}/bootstrap/automation-role-arn")["Parameter"]["Value"],
-                        "Input": json.dumps({
-                            "InstanceId": [worker_instance_id],
-                            "SsmPrefix": [ssm_prefix],
-                            "S3Bucket": [s3_bucket],
-                            "Region": [region],
-                        }),
-                    }],
-                )
-
-                logger.info("Scheduled %s re-bootstrap at %s (rule: %s, instance: %s)",
-                            worker_role, run_at.isoformat(), schedule_name, worker_instance_id)
-            except Exception as e:
-                logger.warning("Could not schedule %s re-bootstrap (non-fatal): %s", worker_role, str(e))
-
-    return {"statusCode": 200, "executionId": exec_id}
+    result = {
+        "role": role,
+        "instanceId": instance_id,
+        "asgName": asg_name,
+        "ssmPrefix": ssm_prefix,
+        "docName": doc_name,
+        "s3Bucket": s3_bucket,
+        "region": context.invoked_function_arn.split(":")[3],
+    }
+    logger.info("Router result: %s", result)
+    return result
 `),
-            timeout: cdk.Duration.seconds(90),
+            timeout: cdk.Duration.seconds(30),
             memorySize: 128,
-            description: 'Auto-triggers SSM Automation bootstrap when an ASG launches a K8s instance',
+            description: 'Thin router: reads ASG tags and resolves SSM doc names for Step Functions',
         });
 
-        // IAM: Allow Lambda to read ASG tags, manage SSM params, and start automation
-        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'AutoBootstrapDescribeAsg',
+        // IAM for router Lambda
+        routerFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'RouterDescribeAsg',
             effect: iam.Effect.ALLOW,
             actions: ['autoscaling:DescribeAutoScalingGroups'],
             resources: ['*'],
         }));
 
-        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'AutoBootstrapSsmParams',
+        routerFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'RouterReadSsmParams',
             effect: iam.Effect.ALLOW,
-            actions: ['ssm:GetParameter', 'ssm:PutParameter'],
+            actions: ['ssm:GetParameter'],
             resources: [
                 `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
             ],
         }));
 
-        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'AutoBootstrapStartAutomation',
-            effect: iam.Effect.ALLOW,
-            actions: ['ssm:StartAutomationExecution'],
-            resources: [
-                `arn:aws:ssm:${this.region}:${this.account}:automation-definition/*`,
-                `arn:aws:ssm:${this.region}:${this.account}:automation-execution/*`,
-            ],
-        }));
+        // --- Step Functions State Machine ---
 
-        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'AutoBootstrapPassRole',
-            effect: iam.Effect.ALLOW,
-            actions: ['iam:PassRole'],
-            resources: [automationRole.roleArn],
-        }));
 
-        // IAM: Allow Lambda to schedule one-time EventBridge rules for CA re-join
-        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'AutoBootstrapEventBridgeSchedule',
-            effect: iam.Effect.ALLOW,
-            actions: [
-                'events:PutRule',
-                'events:PutTargets',
-            ],
-            resources: [
-                `arn:aws:events:${this.region}:${this.account}:rule/ca-rejoin-*`,
-            ],
-        }));
+        // Helper: build an SSM Automation polling loop (wait → check → loop/proceed)
+        const buildAutomationChain = (
+            id: string,
+            docNamePath: string,
+            instanceIdPath: string,
+            ssmPrefixPath: string,
+            s3BucketPath: string,
+            regionPath: string,
+        ): { start: sfn.IChainable; end: sfn.Pass } => {
+            const startExec = new sfnTasks.CallAwsService(this, `${id}Start`, {
+                service: 'ssm',
+                action: 'startAutomationExecution',
+                parameters: {
+                    DocumentName: sfn.JsonPath.stringAt(docNamePath),
+                    Parameters: {
+                        InstanceId: sfn.JsonPath.array(sfn.JsonPath.stringAt(instanceIdPath)),
+                        SsmPrefix: sfn.JsonPath.array(sfn.JsonPath.stringAt(ssmPrefixPath)),
+                        S3Bucket: sfn.JsonPath.array(sfn.JsonPath.stringAt(s3BucketPath)),
+                        Region: sfn.JsonPath.array(sfn.JsonPath.stringAt(regionPath)),
+                    },
+                },
+                iamResources: [
+                    `arn:aws:ssm:${this.region}:${this.account}:automation-definition/*`,
+                    `arn:aws:ssm:${this.region}:${this.account}:automation-execution/*`,
+                ],
+                additionalIamStatements: [
+                    new iam.PolicyStatement({
+                        actions: ['iam:PassRole'],
+                        resources: [automationRole.roleArn],
+                    }),
+                ],
+                resultSelector: {
+                    'AutomationExecutionId.$': '$.AutomationExecutionId',
+                },
+                resultPath: `$.${id}Result`,
+            });
 
-        // IAM: Allow Lambda to resolve AWS account ID for ARN construction
-        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'AutoBootstrapStsIdentity',
-            effect: iam.Effect.ALLOW,
-            actions: ['sts:GetCallerIdentity'],
-            resources: ['*'],
-        }));
+            const waitStep = new sfn.Wait(this, `${id}Wait`, {
+                time: sfn.WaitTime.duration(cdk.Duration.seconds(30)),
+            });
+
+            const pollStatus = new sfnTasks.CallAwsService(this, `${id}Poll`, {
+                service: 'ssm',
+                action: 'getAutomationExecution',
+                parameters: {
+                    AutomationExecutionId: sfn.JsonPath.stringAt(`$.${id}Result.AutomationExecutionId`),
+                },
+                iamResources: [
+                    `arn:aws:ssm:${this.region}:${this.account}:automation-execution/*`,
+                ],
+                resultSelector: {
+                    'Status.$': '$.AutomationExecution.AutomationExecutionStatus',
+                },
+                resultPath: `$.${id}Status`,
+            });
+
+            const successState = new sfn.Pass(this, `${id}Done`);
+
+            const failState = new sfn.Fail(this, `${id}Failed`, {
+                cause: `SSM Automation ${id} failed`,
+                error: 'AutomationFailed',
+            });
+
+            const checkStatus = new sfn.Choice(this, `${id}Check`)
+                .when(
+                    sfn.Condition.stringEquals(`$.${id}Status.Status`, 'Success'),
+                    successState,
+                )
+                .when(
+                    sfn.Condition.or(
+                        sfn.Condition.stringEquals(`$.${id}Status.Status`, 'InProgress'),
+                        sfn.Condition.stringEquals(`$.${id}Status.Status`, 'Waiting'),
+                        sfn.Condition.stringEquals(`$.${id}Status.Status`, 'Pending'),
+                    ),
+                    waitStep,
+                )
+                .otherwise(failState);
+
+            // Chain: Start → Wait → Poll → Check → (loop back to Wait or proceed)
+            startExec.next(waitStep);
+            waitStep.next(pollStatus);
+            pollStatus.next(checkStatus);
+
+            return { start: startExec, end: successState };
+        };
+
+        // ── Router Lambda invocation ──
+        const invokeRouter = new sfnTasks.LambdaInvoke(this, 'InvokeRouter', {
+            lambdaFunction: routerFn,
+            resultSelector: {
+                'role.$': '$.Payload.role',
+                'instanceId.$': '$.Payload.instanceId',
+                'asgName.$': '$.Payload.asgName',
+                'ssmPrefix.$': '$.Payload.ssmPrefix',
+                'docName.$': '$.Payload.docName',
+                's3Bucket.$': '$.Payload.s3Bucket',
+                'region.$': '$.Payload.region',
+                'reason.$': '$.Payload.reason',
+            },
+            resultPath: '$.router',
+        });
+
+        // ── Skip non-K8s instances ──
+        const skipNonK8s = new sfn.Succeed(this, 'SkipNonK8s', {
+            comment: 'Not a K8s ASG — no bootstrap role tag',
+        });
+
+        // ── Update instance ID in SSM ──
+        const updateInstanceId = new sfnTasks.CallAwsService(this, 'UpdateInstanceId', {
+            service: 'ssm',
+            action: 'putParameter',
+            parameters: {
+                Name: sfn.JsonPath.format(
+                    '{}/bootstrap/{}-instance-id',
+                    sfn.JsonPath.stringAt('$.router.ssmPrefix'),
+                    sfn.JsonPath.stringAt('$.router.role'),
+                ),
+                Value: sfn.JsonPath.stringAt('$.router.instanceId'),
+                Type: 'String',
+                Overwrite: true,
+            },
+            iamResources: [
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
+            ],
+            resultPath: sfn.JsonPath.DISCARD,
+        });
+
+        // ── Control Plane Branch ──
+
+        // Step 1: CP Bootstrap
+        const cpBootstrap = buildAutomationChain(
+            'CpBootstrap',
+            '$.router.docName',
+            '$.router.instanceId',
+            '$.router.ssmPrefix',
+            '$.router.s3Bucket',
+            '$.router.region',
+        );
+
+        // Step 2: Resolve nextjs secrets doc name
+        const getNextjsDocName = new sfnTasks.CallAwsService(this, 'GetNextjsDocName', {
+            service: 'ssm',
+            action: 'getParameter',
+            parameters: {
+                Name: sfn.JsonPath.format(
+                    '{}/deploy/nextjs-secrets-doc-name',
+                    sfn.JsonPath.stringAt('$.router.ssmPrefix'),
+                ),
+            },
+            iamResources: [
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
+            ],
+            resultSelector: {
+                'docName.$': '$.Parameter.Value',
+            },
+            resultPath: '$.nextjsDoc',
+        });
+
+        // Step 3: Deploy nextjs secrets
+        const nextjsSecrets = buildAutomationChain(
+            'NextjsSecrets',
+            '$.nextjsDoc.docName',
+            '$.router.instanceId',
+            '$.router.ssmPrefix',
+            '$.router.s3Bucket',
+            '$.router.region',
+        );
+
+        // Step 4: Resolve monitoring secrets doc name
+        const getMonDocName = new sfnTasks.CallAwsService(this, 'GetMonDocName', {
+            service: 'ssm',
+            action: 'getParameter',
+            parameters: {
+                Name: sfn.JsonPath.format(
+                    '{}/deploy/monitoring-secrets-doc-name',
+                    sfn.JsonPath.stringAt('$.router.ssmPrefix'),
+                ),
+            },
+            iamResources: [
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
+            ],
+            resultSelector: {
+                'docName.$': '$.Parameter.Value',
+            },
+            resultPath: '$.monDoc',
+        });
+
+        // Step 5: Deploy monitoring secrets
+        const monSecrets = buildAutomationChain(
+            'MonSecrets',
+            '$.monDoc.docName',
+            '$.router.instanceId',
+            '$.router.ssmPrefix',
+            '$.router.s3Bucket',
+            '$.router.region',
+        );
+
+        // Step 6: Wait for CA to propagate before worker re-join
+        const waitForCa = new sfn.Wait(this, 'WaitForCaPublish', {
+            time: sfn.WaitTime.duration(cdk.Duration.minutes(15)),
+            comment: 'Wait for CP to publish new CA hash before worker re-bootstrap',
+        });
+
+        // Step 7: Resolve worker doc names and instance IDs, then re-bootstrap in parallel
+
+        // Helper: build a worker re-bootstrap branch for the Parallel state
+        const buildWorkerRejoinBranch = (workerRole: string): sfn.Chain => {
+            const docParamName = `${props.ssmPrefix}/bootstrap/${workerRole}-doc-name`;
+            const instanceParamName = `${props.ssmPrefix}/bootstrap/${workerRole}-instance-id`;
+
+            const getWorkerDoc = new sfnTasks.CallAwsService(this, `GetDoc-${workerRole}`, {
+                service: 'ssm',
+                action: 'getParameter',
+                parameters: { Name: docParamName },
+                iamResources: [
+                    `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
+                ],
+                resultSelector: { 'docName.$': '$.Parameter.Value' },
+                resultPath: '$.workerDoc',
+            });
+
+            const getWorkerInstance = new sfnTasks.CallAwsService(this, `GetInst-${workerRole}`, {
+                service: 'ssm',
+                action: 'getParameter',
+                parameters: { Name: instanceParamName },
+                iamResources: [
+                    `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
+                ],
+                resultSelector: { 'instanceId.$': '$.Parameter.Value' },
+                resultPath: '$.workerInst',
+            });
+
+            const startWorkerReboot = new sfnTasks.CallAwsService(this, `Rejoin-${workerRole}`, {
+                service: 'ssm',
+                action: 'startAutomationExecution',
+                parameters: {
+                    DocumentName: sfn.JsonPath.stringAt('$.workerDoc.docName'),
+                    Parameters: {
+                        InstanceId: sfn.JsonPath.array(sfn.JsonPath.stringAt('$.workerInst.instanceId')),
+                        SsmPrefix: sfn.JsonPath.array(sfn.JsonPath.stringAt('$.router.ssmPrefix')),
+                        S3Bucket: sfn.JsonPath.array(sfn.JsonPath.stringAt('$.router.s3Bucket')),
+                        Region: sfn.JsonPath.array(sfn.JsonPath.stringAt('$.router.region')),
+                    },
+                },
+                iamResources: [
+                    `arn:aws:ssm:${this.region}:${this.account}:automation-definition/*`,
+                    `arn:aws:ssm:${this.region}:${this.account}:automation-execution/*`,
+                ],
+                additionalIamStatements: [
+                    new iam.PolicyStatement({
+                        actions: ['iam:PassRole'],
+                        resources: [automationRole.roleArn],
+                    }),
+                ],
+                resultPath: sfn.JsonPath.DISCARD,
+            });
+
+            return sfn.Chain.start(getWorkerDoc)
+                .next(getWorkerInstance)
+                .next(startWorkerReboot);
+        };
+
+        const workerRejoinParallel = new sfn.Parallel(this, 'RejoinAllWorkers', {
+            comment: 'Re-bootstrap all worker nodes in parallel after CP replacement',
+            resultPath: sfn.JsonPath.DISCARD,
+        });
+
+        workerRejoinParallel.branch(buildWorkerRejoinBranch('app-worker'));
+        workerRejoinParallel.branch(buildWorkerRejoinBranch('mon-worker'));
+        workerRejoinParallel.branch(buildWorkerRejoinBranch('argocd-worker'));
+
+        // Chain the CP branch: connect each sub-chain's end → next step
+        // cpBootstrap is internally: Start → Wait → Poll → Check → Done(Pass)
+        // We connect Done(Pass).next → getNextjsDocName, etc.
+        cpBootstrap.end.next(getNextjsDocName);
+        getNextjsDocName.next(nextjsSecrets.start as sfn.IChainable);
+        nextjsSecrets.end.next(getMonDocName);
+        getMonDocName.next(monSecrets.start as sfn.IChainable);
+        monSecrets.end.next(waitForCa);
+        waitForCa.next(workerRejoinParallel);
+
+        const cpChain = sfn.Chain.start(cpBootstrap.start as sfn.IChainable);
+
+        // ── Worker Branch ──
+        const workerBootstrap = buildAutomationChain(
+            'WorkerBootstrap',
+            '$.router.docName',
+            '$.router.instanceId',
+            '$.router.ssmPrefix',
+            '$.router.s3Bucket',
+            '$.router.region',
+        );
+
+        const workerChain = sfn.Chain.start(workerBootstrap.start as sfn.IChainable);
+
+        // ── Role Branching ──
+        const roleBranch = new sfn.Choice(this, 'RoleBranch')
+            .when(
+                sfn.Condition.stringEquals('$.router.role', 'control-plane'),
+                cpChain,
+            )
+            .otherwise(workerChain);
+
+        // ── Top-Level Chain ──
+        const hasRole = new sfn.Choice(this, 'HasRole')
+            .when(
+                sfn.Condition.isPresent('$.router.role'),
+                new sfn.Choice(this, 'RoleNotNull')
+                    .when(
+                        sfn.Condition.isNull('$.router.role'),
+                        skipNonK8s,
+                    )
+                    .otherwise(updateInstanceId.next(roleBranch)),
+            )
+            .otherwise(skipNonK8s);
+
+        const definition = sfn.Chain.start(invokeRouter).next(hasRole);
+
+        // ── State Machine ──
+        const stateMachine = new sfn.StateMachine(this, 'BootstrapOrchestrator', {
+            stateMachineName: `${prefix}-bootstrap-orchestrator`,
+            definitionBody: sfn.DefinitionBody.fromChainable(definition),
+            timeout: cdk.Duration.hours(2),
+            tracingEnabled: true,
+            comment: 'Orchestrates K8s instance bootstrap: CP → secrets → worker CA re-join',
+        });
 
         // EventBridge: trigger on any ASG instance launch
         new events.Rule(this, 'AutoBootstrapRule', {
             ruleName: `${prefix}-auto-bootstrap`,
-            description: 'Trigger SSM Automation bootstrap when an ASG launches an instance',
+            description: 'Trigger Step Functions orchestrator when an ASG launches an instance',
             eventPattern: {
                 source: ['aws.autoscaling'],
                 detailType: ['EC2 Instance Launch Successful'],
             },
-            targets: [new targets.LambdaFunction(autoBootstrapFn)],
+            targets: [new targets.SfnStateMachine(stateMachine)],
         });
 
         // =====================================================================
-        // CloudWatch Alarm — Auto-Bootstrap Lambda Failures
+        // CloudWatch Alarm — Step Functions Execution Failures
         //
-        // Fires when the Lambda encounters any error (permissions, API failures,
-        // unhandled exceptions). Sends notification to SNS topic so failures
-        // are surfaced immediately rather than silently swallowed.
+        // Fires when any state machine execution fails (permissions, SSM
+        // Automation failures, unhandled exceptions). Sends notification to
+        // SNS topic so failures are surfaced immediately.
         // =====================================================================
 
         const bootstrapAlarmTopic = new sns.Topic(this, 'BootstrapAlarmTopic', {
             topicName: `${prefix}-bootstrap-alarm`,
-            displayName: `${prefix} Auto-Bootstrap Failure Alarm`,
+            displayName: `${prefix} Bootstrap Orchestrator Failure Alarm`,
             enforceSSL: true,  // AwsSolutions-SNS3: Require SSL for publishers
         });
 
@@ -729,11 +925,11 @@ def handler(event, context):
         }
 
         const bootstrapAlarm = new cloudwatch.Alarm(this, 'AutoBootstrapErrorAlarm', {
-            alarmName: `${prefix}-auto-bootstrap-errors`,
+            alarmName: `${prefix}-bootstrap-orchestrator-errors`,
             alarmDescription:
-                'Auto-bootstrap Lambda failed — new EC2 instance may not be bootstrapped. ' +
-                'Check CloudWatch Logs for /aws/lambda/' + autoBootstrapFn.functionName,
-            metric: autoBootstrapFn.metricErrors({
+                'Bootstrap orchestrator failed — K8s instance may not be bootstrapped. ' +
+                'Check Step Functions execution history for ' + stateMachine.stateMachineName,
+            metric: stateMachine.metricFailed({
                 period: cdk.Duration.minutes(5),
                 statistic: 'Sum',
             }),
@@ -748,7 +944,7 @@ def handler(event, context):
         );
 
         // cdk-nag: Python 3.13 is the latest GA runtime
-        NagSuppressions.addResourceSuppressions(autoBootstrapFn, [{
+        NagSuppressions.addResourceSuppressions(routerFn, [{
             id: 'AwsSolutions-L1',
             reason: 'Python 3.13 is the latest GA Lambda runtime. PYTHON_3_14 is a CDK placeholder for an unreleased version.',
         }], true);
