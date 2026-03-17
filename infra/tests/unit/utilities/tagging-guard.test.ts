@@ -15,7 +15,7 @@
 import { readFileSync } from 'fs';
 import { resolve, relative } from 'path';
 
-import { globSync } from 'glob';
+import glob from 'glob';
 
 const LIB_DIR = resolve(__dirname, '../../../lib');
 
@@ -67,7 +67,7 @@ function findTagViolations(
 }
 
 describe('Tagging Guard', () => {
-    const tsFiles = globSync('**/*.ts', {
+    const tsFiles = glob.sync('**/*.ts', {
         cwd: LIB_DIR,
         absolute: true,
         ignore: ['**/node_modules/**', '**/*.d.ts', '**/*.test.ts'],

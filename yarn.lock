@@ -5617,6 +5617,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/glob@npm:^7":
+  version: 7.2.0
+  resolution: "@types/glob@npm:7.2.0"
+  dependencies:
+    "@types/minimatch": "npm:*"
+    "@types/node": "npm:*"
+  checksum: 10c0/a8eb5d5cb5c48fc58c7ca3ff1e1ddf771ee07ca5043da6e4871e6757b4472e2e73b4cfef2644c38983174a4bc728c73f8da02845c28a1212f98cabd293ecae98
+  languageName: node
+  linkType: hard
+
 "@types/graceful-fs@npm:^4.1.3":
   version: 4.1.9
   resolution: "@types/graceful-fs@npm:4.1.9"
@@ -5688,6 +5698,13 @@ __metadata:
   version: 3.0.1
   resolution: "@types/mime-types@npm:3.0.1"
   checksum: 10c0/61c2056529dc5bc73c25b2a053e21f063fd547c21e12a2be94ca78b89b0f83c9a75afed9a8bda3c78592ee880acc82778302651527f7882cf5ba8e58ab320e29
+  languageName: node
+  linkType: hard
+
+"@types/minimatch@npm:*":
+  version: 5.1.2
+  resolution: "@types/minimatch@npm:5.1.2"
+  checksum: 10c0/83cf1c11748891b714e129de0585af4c55dd4c2cafb1f1d5233d79246e5e1e19d1b5ad9e8db449667b3ffa2b6c80125c429dbee1054e9efb45758dbc4e118562
   languageName: node
   linkType: hard
 
@@ -6872,6 +6889,7 @@ __metadata:
     "@repo/script-utils": "workspace:*"
     "@smithy/util-waiter": "npm:^4.2.8"
     "@types/aws-lambda": "npm:^8.10.159"
+    "@types/glob": "npm:^7"
     "@types/jest": "npm:^29.5.11"
     "@types/node": "npm:^22.0.0"
     "@types/source-map-support": "npm:^0.5.10"
