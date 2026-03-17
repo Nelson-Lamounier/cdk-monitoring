@@ -576,9 +576,68 @@ def handler(event, context):
     except Exception:
         logger.warning("Could not publish execution ID (non-fatal)")
 
+    # ─── CA Re-Join: Trigger worker re-bootstrap on CP replacement ───
+    # When a control plane is replaced (new CA certificate), existing workers
+    # hold a stale CA and need to re-join. We trigger re-bootstrap on all
+    # worker ASGs after a delay to allow the CP to finish bootstrapping
+    # and publish the new CA hash to SSM.
+    if role == "control-plane":
+        WORKER_REJOIN_DELAY_MINUTES = 15
+        logger.info("Control-plane replacement detected — scheduling worker re-bootstrap in %d minutes", WORKER_REJOIN_DELAY_MINUTES)
+
+        worker_roles = ["app-worker", "mon-worker", "argocd-worker"]
+        for worker_role in worker_roles:
+            try:
+                worker_mapping = ROLE_MAP[worker_role]
+                worker_instance_param = f"{ssm_prefix}/{worker_mapping['instance_param']}"
+                worker_doc_param = f"{ssm_prefix}/{worker_mapping['doc_param']}"
+
+                worker_instance_id = ssm_client.get_parameter(
+                    Name=worker_instance_param
+                )["Parameter"]["Value"]
+                worker_doc_name = ssm_client.get_parameter(
+                    Name=worker_doc_param
+                )["Parameter"]["Value"]
+
+                # Schedule a one-time EventBridge rule to trigger worker re-bootstrap
+                # after the control plane has had time to publish new CA credentials.
+                events_client = boto3.client("events")
+                from datetime import datetime, timedelta, timezone
+                run_at = datetime.now(timezone.utc) + timedelta(minutes=WORKER_REJOIN_DELAY_MINUTES)
+                schedule_name = f"ca-rejoin-{worker_role}-{instance_id[:8]}"
+
+                # Create a one-shot scheduled rule
+                events_client.put_rule(
+                    Name=schedule_name,
+                    ScheduleExpression=f"at({run_at.strftime('%Y-%m-%dT%H:%M:%S')})",
+                    State="ENABLED",
+                    Description=f"One-time CA re-join trigger for {worker_role} after CP replacement",
+                )
+
+                # Target: start SSM Automation directly
+                events_client.put_targets(
+                    Rule=schedule_name,
+                    Targets=[{
+                        "Id": f"rejoin-{worker_role}",
+                        "Arn": f"arn:aws:ssm:{region}:{os.environ.get('AWS_ACCOUNT_ID', boto3.client('sts').get_caller_identity()['Account'])}:automation-definition/{worker_doc_name}",
+                        "RoleArn": ssm_client.get_parameter(Name=f"{ssm_prefix}/bootstrap/automation-role-arn")["Parameter"]["Value"],
+                        "Input": json.dumps({
+                            "InstanceId": [worker_instance_id],
+                            "SsmPrefix": [ssm_prefix],
+                            "S3Bucket": [s3_bucket],
+                            "Region": [region],
+                        }),
+                    }],
+                )
+
+                logger.info("Scheduled %s re-bootstrap at %s (rule: %s, instance: %s)",
+                            worker_role, run_at.isoformat(), schedule_name, worker_instance_id)
+            except Exception as e:
+                logger.warning("Could not schedule %s re-bootstrap (non-fatal): %s", worker_role, str(e))
+
     return {"statusCode": 200, "executionId": exec_id}
 `),
-            timeout: cdk.Duration.seconds(60),
+            timeout: cdk.Duration.seconds(90),
             memorySize: 128,
             description: 'Auto-triggers SSM Automation bootstrap when an ASG launches a K8s instance',
         });
@@ -615,6 +674,27 @@ def handler(event, context):
             effect: iam.Effect.ALLOW,
             actions: ['iam:PassRole'],
             resources: [automationRole.roleArn],
+        }));
+
+        // IAM: Allow Lambda to schedule one-time EventBridge rules for CA re-join
+        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'AutoBootstrapEventBridgeSchedule',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'events:PutRule',
+                'events:PutTargets',
+            ],
+            resources: [
+                `arn:aws:events:${this.region}:${this.account}:rule/ca-rejoin-*`,
+            ],
+        }));
+
+        // IAM: Allow Lambda to resolve AWS account ID for ARN construction
+        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'AutoBootstrapStsIdentity',
+            effect: iam.Effect.ALLOW,
+            actions: ['sts:GetCallerIdentity'],
+            resources: ['*'],
         }));
 
         // EventBridge: trigger on any ASG instance launch
