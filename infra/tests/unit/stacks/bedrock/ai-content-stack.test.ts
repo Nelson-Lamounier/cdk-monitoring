@@ -177,7 +177,7 @@ describe('AiContentStack', () => {
     describe('DynamoDB GSI', () => {
         const { template } = createContentStack();
 
-        it('should create a GSI with gsi1pk as partition key and gsi1sk as sort key', () => {
+        it('should create GSI1 with gsi1pk as partition key and gsi1sk as sort key', () => {
             template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
                 GlobalSecondaryIndexes: Match.arrayWith([
                     Match.objectLike({
@@ -185,6 +185,20 @@ describe('AiContentStack', () => {
                         KeySchema: Match.arrayWith([
                             Match.objectLike({ AttributeName: 'gsi1pk', KeyType: 'HASH' }),
                             Match.objectLike({ AttributeName: 'gsi1sk', KeyType: 'RANGE' }),
+                        ]),
+                    }),
+                ]),
+            });
+        });
+
+        it('should create GSI2 with gsi2pk as partition key and gsi2sk as sort key', () => {
+            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+                GlobalSecondaryIndexes: Match.arrayWith([
+                    Match.objectLike({
+                        IndexName: 'gsi2-tag-date',
+                        KeySchema: Match.arrayWith([
+                            Match.objectLike({ AttributeName: 'gsi2pk', KeyType: 'HASH' }),
+                            Match.objectLike({ AttributeName: 'gsi2sk', KeyType: 'RANGE' }),
                         ]),
                     }),
                 ]),

@@ -7,6 +7,9 @@
  * configured, and the SSM parameters are discoverable for downstream stacks
  * (Base, Edge, AppIam).
  *
+ * NOTE: DynamoDB tests have been removed — the portfolio table is now
+ * consolidated in AiContentStack (bedrock-{env}-ai-content).
+ *
  * SSM-Anchored Strategy:
  *   1. Read all SSM parameters published by the data stack
  *   2. Use those values to verify the actual AWS resources
@@ -25,10 +28,6 @@ import {
     DescribeStacksCommand,
 } from '@aws-sdk/client-cloudformation';
 import {
-    DynamoDBClient,
-    DescribeTableCommand,
-} from '@aws-sdk/client-dynamodb';
-import {
     S3Client,
     HeadBucketCommand,
     GetBucketVersioningCommand,
@@ -40,10 +39,6 @@ import {
 } from '@aws-sdk/client-ssm';
 
 import { Environment } from '../../../lib/config';
-import {
-    PORTFOLIO_GSI1_NAME,
-    PORTFOLIO_GSI2_NAME,
-} from '../../../lib/config/defaults';
 import {
     nextjsResourceNames,
 } from '../../../lib/config/nextjs';
@@ -66,7 +61,6 @@ const NEXTJS_NAME_PREFIX = 'nextjs';
 // Config-driven values — same references the stack uses
 const SSM_PATHS = nextjsSsmPaths(CDK_ENV, NEXTJS_NAME_PREFIX);
 const RESOURCE_NAMES = nextjsResourceNames(NEXTJS_NAME_PREFIX, CDK_ENV);
-const EXPECTED_TABLE_NAME = RESOURCE_NAMES.dynamoTableName;
 
 // Stack name — derived from naming utility (same as factory)
 const KUBERNETES_NAMESPACE = getProjectConfig(Project.KUBERNETES).namespace;
@@ -74,7 +68,6 @@ const DATA_STACK_NAME = stackId(KUBERNETES_NAMESPACE, STACK_REGISTRY.kubernetes.
 
 // AWS SDK clients (shared across tests)
 const ssm = new SSMClient({ region: REGION });
-const dynamodb = new DynamoDBClient({ region: REGION });
 const s3 = new S3Client({ region: REGION });
 const cfn = new CloudFormationClient({ region: REGION });
 
@@ -162,12 +155,6 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
     // SSM Parameters
     // =========================================================================
     describe('SSM Parameters', () => {
-        it('should have SSM parameter for DynamoDB table name', () => {
-            const value = ssmParams.get(SSM_PATHS.dynamodbTableName);
-            expect(value).toBeDefined();
-            expect(value!.length).toBeGreaterThan(0);
-        });
-
         it('should have SSM parameter for assets bucket name', () => {
             const value = ssmParams.get(SSM_PATHS.assetsBucketName);
             expect(value).toBeDefined();
@@ -180,12 +167,6 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
             expect(value).toBe(REGION);
         });
 
-        it('should store the correct DynamoDB table name in SSM', () => {
-            expect(ssmParams.get(SSM_PATHS.dynamodbTableName)).toBe(
-                EXPECTED_TABLE_NAME,
-            );
-        });
-
         it('should store the correct assets bucket name in SSM', () => {
             expect(ssmParams.get(SSM_PATHS.assetsBucketName)).toBe(
                 RESOURCE_NAMES.assetsBucketName,
@@ -193,65 +174,6 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
         });
     });
 
-    // =========================================================================
-    // DynamoDB Table
-    // =========================================================================
-    describe('DynamoDB Table', () => {
-        let tableName: string;
-        let tableStatus: string;
-        let tableNameActual: string;
-        let keySchema: Array<{ AttributeName?: string; KeyType?: string }>;
-        let gsiNames: (string | undefined)[];
-        let billingMode: string | undefined;
-
-        // Depends on: ssmParams populated in top-level beforeAll
-        beforeAll(async () => {
-            tableName = ssmParams.get(SSM_PATHS.dynamodbTableName)!;
-
-            const { Table } = await dynamodb.send(
-                new DescribeTableCommand({ TableName: tableName }),
-            );
-
-            expect(Table).toBeDefined();
-            tableNameActual = Table!.TableName ?? '';
-            tableStatus = Table!.TableStatus ?? '';
-            keySchema = Table!.KeySchema ?? [];
-            gsiNames = (Table!.GlobalSecondaryIndexes ?? []).map((g) => g.IndexName);
-            billingMode = Table!.BillingModeSummary?.BillingMode;
-        });
-
-        it('should exist with the expected table name', () => {
-            expect(tableNameActual).toBe(EXPECTED_TABLE_NAME);
-            expect(tableStatus).toBe('ACTIVE');
-        });
-
-        it('should have pk/sk key schema', () => {
-            const pk = keySchema.find((k) => k.AttributeName === 'pk');
-            const sk = keySchema.find((k) => k.AttributeName === 'sk');
-
-            expect(pk).toBeDefined();
-            expect(pk!.KeyType).toBe('HASH');
-            expect(sk).toBeDefined();
-            expect(sk!.KeyType).toBe('RANGE');
-        });
-
-        it('should have GSI1 and GSI2 matching config constants', () => {
-            expect(gsiNames).toContain(PORTFOLIO_GSI1_NAME);
-            expect(gsiNames).toContain(PORTFOLIO_GSI2_NAME);
-        });
-
-        it('should use PAY_PER_REQUEST billing mode', () => {
-            expect(billingMode).toBe('PAY_PER_REQUEST');
-        });
-
-        it('should be in ACTIVE state (PITR validated in unit tests)', () => {
-            expect(tableStatus).toBe('ACTIVE');
-        });
-
-        it('should exist (TTL validated at runtime)', () => {
-            expect(tableNameActual).toBeDefined();
-        });
-    });
 
     // =========================================================================
     // S3 Buckets
@@ -325,22 +247,6 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
             outputKeys = outputs.map((o) => o.OutputKey);
         });
 
-        it('should export PortfolioTableName', () => {
-            expect(outputKeys).toContain('PortfolioTableName');
-        });
-
-        it('should export PortfolioTableArn', () => {
-            expect(outputKeys).toContain('PortfolioTableArn');
-        });
-
-        it('should export PortfolioTableGsi1Name', () => {
-            expect(outputKeys).toContain('PortfolioTableGsi1Name');
-        });
-
-        it('should export PortfolioTableGsi2Name', () => {
-            expect(outputKeys).toContain('PortfolioTableGsi2Name');
-        });
-
         it('should export AssetsBucketName', () => {
             expect(outputKeys).toContain('AssetsBucketName');
         });
@@ -364,18 +270,8 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
                 .map((o) => o.ExportName)
                 .filter(Boolean);
 
-            expect(exportNames).toContain(`${exportPrefix}-portfolio-table-name`);
-            expect(exportNames).toContain(`${exportPrefix}-portfolio-table-arn`);
             expect(exportNames).toContain(`${exportPrefix}-assets-bucket-name`);
             expect(exportNames).toContain(`${exportPrefix}-assets-bucket-arn`);
-        });
-
-        it('should export GSI names matching config constants', () => {
-            const gsi1Output = outputs.find((o) => o.OutputKey === 'PortfolioTableGsi1Name');
-            const gsi2Output = outputs.find((o) => o.OutputKey === 'PortfolioTableGsi2Name');
-
-            expect(gsi1Output?.OutputValue).toBe(PORTFOLIO_GSI1_NAME);
-            expect(gsi2Output?.OutputValue).toBe(PORTFOLIO_GSI2_NAME);
         });
     });
 
@@ -385,10 +281,8 @@ describe('KubernetesDataStack — Post-Deploy Verification', () => {
     describe('Downstream Readiness', () => {
         it('should have all SSM parameters required by downstream stacks discoverable', () => {
             // Edge stack needs: assets bucket (for CloudFront origin)
-            // AppIam stack needs: table ARN (for IAM grants)
             // Both discover via SSM parameters published by this data stack
             const requiredPaths = [
-                SSM_PATHS.dynamodbTableName,
                 SSM_PATHS.assetsBucketName,
                 SSM_PATHS.awsRegion,
             ];

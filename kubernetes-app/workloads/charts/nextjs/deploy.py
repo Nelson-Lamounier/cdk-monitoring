@@ -159,6 +159,10 @@ def resolve_ssm_secrets(cfg: Config) -> dict[str, str]:
     Resolves frontend application secrets from FRONTEND_SSM_PREFIX and
     the ECR repository URI from SSM_PREFIX.
 
+    For the DynamoDB table name, falls back to the Bedrock SSM path
+    (/bedrock-{env}/content-table-name) if the legacy nextjs path is
+    not found — the table is now consolidated in AiContentStack.
+
     Returns a dict of env_var_name → value for all resolved secrets.
     """
     log.info("=== Step 2: Resolving secrets from SSM ===")
@@ -187,6 +191,21 @@ def resolve_ssm_secrets(cfg: Config) -> dict[str, str]:
             code = exc.response["Error"]["Code"]
             if code == "ParameterNotFound":
                 log.warning("  ⚠ %s: not found in SSM (%s)", env_var, ssm_path)
+
+                # Fallback: DynamoDB table is now in AiContentStack
+                # Try /bedrock-{env}/content-table-name
+                if env_var == "DYNAMODB_TABLE_NAME":
+                    env = cfg.ssm_prefix.rsplit("/", 1)[-1]
+                    bedrock_path = f"/bedrock-{env}/content-table-name"
+                    log.info("  → Fallback: trying Bedrock SSM path: %s", bedrock_path)
+                    try:
+                        resp = ssm.get_parameter(Name=bedrock_path, WithDecryption=True)
+                        value = resp["Parameter"]["Value"]
+                        secrets[env_var] = value
+                        log.info("  ✓ %s: resolved from Bedrock SSM path", env_var)
+                    except ClientError as inner_exc:
+                        inner_code = inner_exc.response["Error"]["Code"]
+                        log.warning("  ⚠ %s: Bedrock fallback also failed (%s)", env_var, inner_code)
             else:
                 log.warning("  ⚠ %s: SSM error (%s)", env_var, code)
 

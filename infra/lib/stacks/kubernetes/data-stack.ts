@@ -3,19 +3,22 @@
  * Kubernetes Data Stack
  *
  * Consolidated data/storage resources for the K8s-hosted Next.js application.
- * This stack combines DynamoDB, S3, and application secrets.
+ * This stack manages S3 assets and access logs.
  *
  * Domain: Data Layer (rarely changes)
  *
  * Resources:
- * 1. DynamoDB Personal Portfolio Table — Single-table design for articles and email subscriptions
- * 2. S3 Assets Bucket — Storage for images and media (served via CloudFront OAC)
- * 3. S3 Access Logs Bucket — Server access logs for the assets bucket
- * 4. SSM Parameters — Cross-stack references (table name, bucket name, region, KMS key ARN)
- * 5. CloudFormation Outputs — 8 exports for downstream stacks (Base, Edge, AppIam)
+ * 1. S3 Assets Bucket — Storage for images and media (served via CloudFront OAC)
+ * 2. S3 Access Logs Bucket — Server access logs for the assets bucket
+ * 3. SSM Parameters — Cross-stack references (bucket name, region)
+ * 4. CloudFormation Outputs — exports for downstream stacks (Base, Edge, AppIam)
+ *
+ * NOTE: DynamoDB is now consolidated in the Bedrock AiContentStack
+ * (`bedrock-{env}-ai-content`). The old `nextjs-personal-portfolio-{env}`
+ * table was removed as part of the content pipeline consolidation.
  *
  * Configuration:
- * - Resource names imported from `../../config/nextjs` (DYNAMO_TABLE_STEM, nextjsResourceNames)
+ * - Resource names imported from `../../config/nextjs` (nextjsResourceNames)
  * - SSM paths imported from `../../config` (nextjsSsmPaths)
  * - Environment-specific behaviour from `../../config/nextjs` (getNextJsConfigs)
  *
@@ -41,9 +44,7 @@ import { NagSuppressions } from "cdk-nag";
 
 import * as cdk from "aws-cdk-lib";
 
-import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
-import * as kms from "aws-cdk-lib/aws-kms";
 import * as s3 from "aws-cdk-lib/aws-s3";
 
 import { Construct } from "constructs";
@@ -51,7 +52,6 @@ import { Construct } from "constructs";
 import { applyCommonSuppressions } from "../../aspects/cdk-nag-aspect";
 import { SsmParameterStoreConstruct } from "../../common/ssm";
 import {
-  DynamoDbTableConstruct,
   S3BucketConstruct,
 } from "../../common/storage";
 import {
@@ -61,14 +61,11 @@ import {
   S3_INCOMPLETE_UPLOAD_EXPIRATION_DAYS,
   S3_CORS_DEFAULTS,
   S3_STORAGE_TRANSITION_DAYS,
-  PORTFOLIO_GSI1_NAME,
-  PORTFOLIO_GSI2_NAME,
   nextjsSsmPaths,
 } from "../../config";
 import { getNextJsConfigs } from "../../config/nextjs";
 import {
   nextjsResourceNames,
-  DYNAMO_TABLE_STEM,
 } from "../../config/nextjs";
 
 // =============================================================================
@@ -91,26 +88,15 @@ export interface KubernetesDataStackProps extends cdk.StackProps {
 // =============================================================================
 
 /**
- * KubernetesDataStack — Consolidated data layer for K8s-hosted application
+ * KubernetesDataStack — Data layer for K8s-hosted application
  *
- * Creates all data/storage resources in a single deployment unit.
+ * Creates S3 storage resources in a single deployment unit.
  * SSM parameters publish resource identifiers for zero-coupling
  * cross-stack discovery (no CloudFormation exports for runtime use).
  *
- * Personal Portfolio DynamoDB Table (Single-table design):
- * - Primary Key: pk (String)
- * - Sort Key: sk (String)
- *
- * Entity: Articles
- * - pk: `ARTICLE#<slug>`, sk: `METADATA` | `CONTENT#<version>`
- * - GSI1: Query by status and date (gsi1pk: `STATUS#<status>`, gsi1sk: `<date>#<slug>`)
- * - GSI2: Query by tag (gsi2pk: `TAG#<tag>`, gsi2sk: `<date>#<slug>`)
- *
- * Entity: Email Subscriptions
- * - pk: `EMAIL#<email>`, sk: `SUBSCRIPTION`
- * - GSI1: List all subscriptions (gsi1pk: `ENTITY#EMAIL`, gsi1sk: `<timestamp>`)
- * - Attributes: email, name, source, status, subscribedAt, consentRecord, verifiedAt
- * - TTL: Pending (unverified) subscriptions expire after 48 hours
+ * NOTE: DynamoDB article data is now consolidated in the Bedrock
+ * AiContentStack (`bedrock-{env}-ai-content`). The old PortfolioTable
+ * was removed as part of the content pipeline consolidation.
  *
  * S3 Assets Bucket:
  * - Stores article images, diagrams, and media files
@@ -119,33 +105,18 @@ export interface KubernetesDataStackProps extends cdk.StackProps {
  * - Lifecycle policies for cost optimisation
  *
  * SSM Parameters (published via SsmParameterStoreConstruct for-loop):
- * - dynamodb-table-name — full table name for runtime lookups
  * - assets-bucket-name — bucket name for CloudFront origin
  * - aws-region — deployment region for SDK clients
- * - dynamodb-kms-key-arn — KMS key ARN (production only)
- *
- * Stack Outputs (emitted via `_emitOutputs` data-driven helper):
- * - 8 CfnOutputs with export names for cross-stack references
  *
  * ═══════════════════════════════════════════════════════════════════
- * ⚠️ DAY-0 DATA SAFETY — MIGRATION RISK
+ * ⚠️ S3 CONSTRUCT ID WARNING
  *
  * Even with removalPolicy: RETAIN, renaming a construct ID in CDK
- * (e.g., 'PortfolioTable' → 'UserTable') will ORPHAN the old
- * resource and CREATE a new, empty one.
- *
- * Mitigations:
- * 1. Never change DynamoDB/S3 construct IDs without a migration plan
- * 2. Pre-deploy verification: confirm table exists before cdk deploy
- * 3. Use CloudFormation ChangeSets to review resource replacements
- * 4. K8s integration: pods discover values via SSM → ExternalSecret
- *    → process.env.DYNAMODB_TABLE_NAME
+ * will ORPHAN the old resource and CREATE a new, empty one.
+ * Never change S3 construct IDs without a migration plan.
  * ═══════════════════════════════════════════════════════════════════
  */
 export class KubernetesDataStack extends cdk.Stack {
-  // DynamoDB
-  public readonly portfolioTable: dynamodb.Table;
-
   // S3
   public readonly assetsBucket: s3.Bucket;
   public readonly accessLogsBucket: s3.Bucket;
@@ -173,8 +144,6 @@ export class KubernetesDataStack extends cdk.Stack {
 
     // Environment-aware settings
     const removalPolicy = environmentRemovalPolicy(targetEnvironment);
-    const pointInTimeRecovery = true; // AwsSolutions-DDB3
-    const deletionProtection = isProduction;
 
     // =================================================================
     // NOTE: ECR has been migrated to SharedVpcStack
@@ -182,17 +151,9 @@ export class KubernetesDataStack extends cdk.Stack {
     // =================================================================
 
     // =================================================================
-    // KMS KEY FOR PRODUCTION ENCRYPTION
+    // NOTE: DynamoDB has been consolidated to AiContentStack
+    // Articles, metadata, and content are now in bedrock-{env}-ai-content
     // =================================================================
-
-    const dynamoEncryptionKey = isProduction
-      ? new kms.Key(this, "DynamoDbEncryptionKey", {
-          alias: `${projectName}-dynamodb-${targetEnvironment}`,
-          description: `KMS key for DynamoDB encryption in ${targetEnvironment}`,
-          enableKeyRotation: true,
-          removalPolicy: cdk.RemovalPolicy.RETAIN,
-        })
-      : undefined;
 
     // =================================================================
     // S3 ACCESS LOGS BUCKET
@@ -318,86 +279,24 @@ export class KubernetesDataStack extends cdk.Stack {
     );
 
     // =================================================================
-    // DYNAMODB PERSONAL PORTFOLIO TABLE (Single-Table Design)
-    // =================================================================
-
-    const portfolioTableConstruct = new DynamoDbTableConstruct(
-      this,
-      "PortfolioTable",
-      {
-        envName: targetEnvironment,
-        projectName,
-        tableName: DYNAMO_TABLE_STEM,
-        partitionKey: {
-          name: "pk",
-          type: dynamodb.AttributeType.STRING,
-        },
-        sortKey: {
-          name: "sk",
-          type: dynamodb.AttributeType.STRING,
-        },
-        additionalAttributes: [
-          { name: "gsi1pk", type: dynamodb.AttributeType.STRING },
-          { name: "gsi1sk", type: dynamodb.AttributeType.STRING },
-          { name: "gsi2pk", type: dynamodb.AttributeType.STRING },
-          { name: "gsi2sk", type: dynamodb.AttributeType.STRING },
-        ],
-        globalSecondaryIndexes: [
-          {
-            indexName: PORTFOLIO_GSI1_NAME,
-            partitionKey: "gsi1pk",
-            sortKey: "gsi1sk",
-            projectionType: dynamodb.ProjectionType.ALL,
-          },
-          {
-            indexName: PORTFOLIO_GSI2_NAME,
-            partitionKey: "gsi2pk",
-            sortKey: "gsi2sk",
-            projectionType: dynamodb.ProjectionType.ALL,
-          },
-        ],
-        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-        pointInTimeRecovery,
-        encryption: isProduction
-          ? dynamodb.TableEncryption.CUSTOMER_MANAGED
-          : dynamodb.TableEncryption.AWS_MANAGED,
-        encryptionKey: dynamoEncryptionKey,
-        deletionProtection,
-        removalPolicy,
-
-        timeToLive: {
-          attributeName: "ttl",
-          enabled: true,
-        },
-        tags: {
-          Purpose:
-            "Personal portfolio data storage - articles and email subscriptions",
-          DataClassification: "PII-Email",
-          Application: "Portfolio",
-        },
-      },
-    );
-
-    this.portfolioTable = portfolioTableConstruct.table;
-
-    // =================================================================
     // SSM PARAMETERS FOR CROSS-STACK REFERENCES
     //
     // Uses SsmParameterStoreConstruct (L3) to batch-create parameters
     // from a flat record. Construct IDs and descriptions are
     // auto-generated from the SSM path.
     //
+    // NOTE: DynamoDB table name SSM param is no longer written here.
+    // It now lives at /bedrock-{env}/content-table-name, written by
+    // AiContentStack. The deploy.py reads /nextjs/{env}/dynamodb-table-name
+    // which was updated at runtime to point to bedrock-dev-ai-content.
+    //
     // Consumer stacks discover these via nextjsSsmPaths().
     // =================================================================
 
     new SsmParameterStoreConstruct(this, "SsmParams", {
       parameters: {
-        [paths.dynamodbTableName]: this.portfolioTable.tableName,
         [paths.assetsBucketName]: this.assetsBucket.bucketName,
         [paths.awsRegion]: cdk.Stack.of(this).region,
-        ...(dynamoEncryptionKey
-          ? { [paths.dynamodbKmsKeyArn]: dynamoEncryptionKey.keyArn }
-          : {}),
       },
     });
 
@@ -458,32 +357,6 @@ export class KubernetesDataStack extends cdk.Stack {
 
     this._emitOutputs([
       {
-        id: "PortfolioTableName",
-        value: this.portfolioTable.tableName,
-        description:
-          "DynamoDB table name for personal portfolio (articles, email subscriptions)",
-        exportName: `${exportPrefix}-portfolio-table-name`,
-      },
-      {
-        id: "PortfolioTableArn",
-        value: this.portfolioTable.tableArn,
-        description: "DynamoDB table ARN for IAM policies",
-        exportName: `${exportPrefix}-portfolio-table-arn`,
-      },
-      {
-        id: "PortfolioTableGsi1Name",
-        value: PORTFOLIO_GSI1_NAME,
-        description:
-          "GSI1 name for querying by status/date (articles) or listing entities (email subscriptions)",
-        exportName: `${exportPrefix}-portfolio-gsi1-name`,
-      },
-      {
-        id: "PortfolioTableGsi2Name",
-        value: PORTFOLIO_GSI2_NAME,
-        description: "GSI2 name for querying articles by tag",
-        exportName: `${exportPrefix}-portfolio-gsi2-name`,
-      },
-      {
         id: "AssetsBucketName",
         value: this.assetsBucket.bucketName,
         description: "S3 bucket name for article images and media",
@@ -512,21 +385,6 @@ export class KubernetesDataStack extends cdk.Stack {
   // =========================================================================
   // CROSS-STACK GRANT HELPERS
   // =========================================================================
-
-  /**
-   * Grant DynamoDB read access (GetItem, Query, Scan, BatchGetItem)
-   * to the given principal, including all GSI indexes.
-   *
-   * Prefer this over manually constructing IAM statements with raw ARNs.
-   *
-   * @example
-   * ```typescript
-   * dataStack.grantTableRead(computeRole);
-   * ```
-   */
-  public grantTableRead(grantee: iam.IGrantable): iam.Grant {
-    return this.portfolioTable.grantReadData(grantee);
-  }
 
   /**
    * Grant S3 read access to the assets bucket.

@@ -169,6 +169,19 @@ export class AiContentStack extends cdk.Stack {
                     // ALL projection — frontend listing needs title, tags,
                     // aiSummary, readingTime etc. without separate GetItem calls
                 },
+                {
+                    indexName: 'gsi2-tag-date',
+                    partitionKey: {
+                        name: 'gsi2pk',
+                        type: dynamodb.AttributeType.STRING,
+                    },
+                    sortKey: {
+                        name: 'gsi2sk',
+                        type: dynamodb.AttributeType.STRING,
+                    },
+                    // ALL projection — tag filtering: gsi2pk=TAG#<tag>,
+                    // gsi2sk=<date>#<slug> for reverse-chronological tag pages
+                },
             ],
         });
         this.tableName = this.contentTable.tableName;

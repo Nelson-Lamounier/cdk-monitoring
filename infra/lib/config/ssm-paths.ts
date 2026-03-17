@@ -448,6 +448,10 @@ export interface BedrockSsmPaths {
     readonly apiUrl: string;
     /** S3 data bucket name (for Knowledge Base documents) */
     readonly dataBucketName: string;
+    /** AI Content DynamoDB table name (articles, metadata) */
+    readonly contentTableName: string;
+    /** AI Content DynamoDB table ARN */
+    readonly contentTableArn: string;
     /** Wildcard path for IAM: /bedrock/{environment}/* */
     readonly wildcard: string;
 }
@@ -465,6 +469,8 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
         agentAliasId: `${prefix}/agent-alias-id`,
         apiUrl: `${prefix}/api-url`,
         dataBucketName: `${prefix}/data-bucket-name`,
+        contentTableName: `${prefix}/content-table-name`,
+        contentTableArn: `${prefix}/content-table-arn`,
         wildcard: `${prefix}/*`,
     };
 }
