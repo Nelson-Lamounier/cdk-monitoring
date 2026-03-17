@@ -373,7 +373,19 @@ async function main(): Promise<void> {
 
   // 2. Find orphaned resources
   logger.task('Scanning stack events for orphaned resources...');
-  const orphaned = await findOrphanedResources(cfn);
+  let orphaned: OrphanedResource[];
+  try {
+    orphaned = await findOrphanedResources(cfn);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn(`Could not scan stack events: ${message}`);
+    logger.info(
+      'This is likely due to a large number of stack events exceeding the XML parser limit. ' +
+      'Skipping rescue — deployment will proceed and may self-heal.',
+    );
+    writeSummary(buildSummary(status, [], null));
+    return;
+  }
 
   if (orphaned.length === 0) {
     logger.info('No orphaned resources found in stack events.');

@@ -69,7 +69,7 @@ runs:
 
     - name: Rescue Orphaned Resources
       shell: bash
-      continue-on-error: false
+      continue-on-error: true
       run: |
         just ci-cfn-rescue "${{ inputs.stack-name }}" "${{ inputs.project }}" \
           "${{ inputs.environment }}" --region "${{ inputs.aws-region }}"
@@ -106,12 +106,14 @@ runs:
         if [ -n "${{ inputs.outputs-directory }}" ]; then
           OUTPUTS_DIR_FLAG="--outputs-dir ${{ inputs.outputs-directory }}"
         fi
+        DEPLOY_STATUS="${{ steps.deploy.outputs.status || 'unknown' }}"
+        DEPLOY_DURATION="${{ steps.deploy.outputs.duration || '0' }}"
         just ci-finalize-deployment "${{ inputs.stack-name }}" \
-          --deploy-status "${{ steps.deploy.outputs.status }}" \
+          --deploy-status "$DEPLOY_STATUS" \
           --environment "${{ inputs.environment }}" \
           --region "${{ inputs.aws-region }}" \
           --account-id "${{ inputs.aws-account-id }}" \
-          --deploy-duration "${{ steps.deploy.outputs.duration }}" \
+          --deploy-duration "$DEPLOY_DURATION" \
           $OUTPUTS_DIR_FLAG
       env:
         GITHUB_WORKSPACE: ${{ github.workspace }}
