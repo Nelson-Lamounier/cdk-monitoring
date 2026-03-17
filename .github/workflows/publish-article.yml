@@ -2,10 +2,14 @@
 # Workflow: Publish Article Drafts
 # =============================================================================
 #
-# Push-to-Compute pipeline for the Bedrock Publisher.
+# Push-to-Compute pipeline for the Bedrock Publisher (manual trigger).
 #
-# When a .md file is added or modified in articles-draft/, this workflow:
-#   1. Detects the changed .md files via git diff
+# Triggered via workflow_dispatch (Actions UI or GitHub CLI). Optionally
+# accepts an article_path input to publish a single draft; if omitted,
+# publishes all .md files in articles-draft/.
+#
+# Steps:
+#   1. Detects target .md files (from input or directory scan)
 #   2. Resolves infrastructure names from SSM
 #   3. Uploads each file to s3://{bucket}/drafts/{filename}.md
 #   4. Waits for and monitors the Publisher Lambda processing
@@ -18,12 +22,12 @@
 name: Publish Article Drafts
 
 on:
-  push:
-    branches: [develop]
-    paths:
-      - "articles-draft/**/*.md"
-      - "articles-draft/*.md"
-      - ".github/workflows/publish-article.yml"
+  workflow_dispatch:
+    inputs:
+      article_path:
+        description: "Path to the article draft (e.g. articles-draft/my-article.md)"
+        required: false
+        type: string
 
 permissions:
   id-token: write
@@ -56,16 +60,22 @@ jobs:
       # ------------------------------------------------------------------
       # 2. Detect changed .md files in articles-draft/
       # ------------------------------------------------------------------
-      - name: Detect Changed Articles
+      - name: Detect Articles
         id: detect
         run: |
-          CHANGED_FILES=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'articles-draft/**/*.md' 'articles-draft/*.md' || true)
-
-          # Filter out README.md
-          CHANGED_FILES=$(echo "$CHANGED_FILES" | grep -v 'README.md' || true)
+          # Use input path if provided, otherwise scan articles-draft/
+          if [ -n "${{ inputs.article_path }}" ]; then
+            if [ ! -f "${{ inputs.article_path }}" ]; then
+              echo "::error::File not found: ${{ inputs.article_path }}"
+              exit 1
+            fi
+            CHANGED_FILES="${{ inputs.article_path }}"
+          else
+            CHANGED_FILES=$(find articles-draft -name '*.md' ! -name 'README.md' -type f | sort || true)
+          fi
 
           if [ -z "$CHANGED_FILES" ]; then
-            echo "No article drafts changed."
+            echo "No article drafts found."
             echo "has_changes=false" >> $GITHUB_OUTPUT
             exit 0
           fi
