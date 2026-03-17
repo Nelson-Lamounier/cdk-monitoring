@@ -562,6 +562,8 @@ function grantMonitoringPermissions(
             'ecr:BatchGetImage',
             'ecr:BatchCheckLayerAvailability',
             'ecr:GetAuthorizationToken',
+            'ecr:ListImages',       // ArgoCD Image Updater — poll for new tags
+            'ecr:DescribeImages',   // ArgoCD Image Updater — resolve tag metadata
         ],
         resources: ['*'],
     }));
