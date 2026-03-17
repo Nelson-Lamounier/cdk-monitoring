@@ -214,15 +214,22 @@ describe('KubernetesDataStack', () => {
             });
         });
 
-        it('should NOT export PortfolioTable outputs', () => {
-            const { template } = _createDataStack();
+        describe('PortfolioTable outputs removal', () => {
+            // Depends on: template from _createDataStack
+            let outputKeys: string[];
 
-            // DynamoDB outputs removed — table is in AiContentStack
-            const outputs = template.toJSON().Outputs ?? {};
-            const portfolioOutputs = Object.keys(outputs).filter(
-                (key) => key.startsWith('PortfolioTable'),
-            );
-            expect(portfolioOutputs).toHaveLength(0);
+            beforeAll(() => {
+                const { template } = _createDataStack();
+                const outputs = template.toJSON().Outputs ?? {};
+                outputKeys = Object.keys(outputs).filter(
+                    (key) => key.startsWith('PortfolioTable'),
+                );
+            });
+
+            it('should NOT export PortfolioTable outputs', () => {
+                // DynamoDB outputs removed — table is in AiContentStack
+                expect(outputKeys).toHaveLength(0);
+            });
         });
     });
 

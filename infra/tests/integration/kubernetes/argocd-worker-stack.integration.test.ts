@@ -208,7 +208,7 @@ async function waitForTargetRegistration(
         }
 
         if (attempt < maxAttempts) {
-            // eslint-disable-next-line no-console
+             
             console.log(
                 `[Retry ${attempt}/${maxAttempts}] Instance ${expectedId} not yet in target group — ` +
                 `current targets: [${targetIds.join(', ')}]. Retrying in ${backoffMs / 1000}s`,
