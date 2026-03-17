@@ -818,6 +818,65 @@ sync-k8s-all environment="development" profile="dev-account":
 ec2-session instance-id profile="dev-account":
     aws ssm start-session --target {{instance-id}} --profile {{profile}}
 
+# Port-forward K8s API server (6443) via SSM tunnel
+# Requires: local ~/.kube/config with server: https://127.0.0.1:6443
+# Usage: just k8s-tunnel i-046a1035c0d593dc7
+[group('k8s')]
+k8s-tunnel instance-id region="eu-west-1" profile="dev-account":
+    aws ssm start-session \
+      --target {{instance-id}} \
+      --document-name AWS-StartPortForwardingSession \
+      --parameters '{"portNumber":["6443"],"localPortNumber":["6443"]}' \
+      --region {{region}} --profile {{profile}}
+
+# Port-forward K8s API server — auto-resolves control plane instance ID from SSM
+# Usage: just k8s-tunnel-auto
+[group('k8s')]
+k8s-tunnel-auto env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    INSTANCE_ID=$(aws ssm get-parameter \
+      --name "/k8s/{{env}}/bootstrap/control-plane-instance-id" \
+      --query "Parameter.Value" --output text \
+      --region {{region}} --profile {{profile}})
+    echo "→ Control plane instance: ${INSTANCE_ID}"
+    echo "→ Opening tunnel to K8s API (port 6443)…"
+    aws ssm start-session \
+      --target "${INSTANCE_ID}" \
+      --document-name AWS-StartPortForwardingSession \
+      --parameters '{"portNumber":["6443"],"localPortNumber":["6443"]}' \
+      --region {{region}} --profile {{profile}}
+
+# Diagnose K8s cluster issues with AI explanations via Bedrock (Claude Sonnet 4)
+# Requires: active SSM tunnel (just k8s-tunnel-auto), k8sgpt CLI, Bedrock auth configured
+# Setup: k8sgpt auth add --backend amazonbedrock --model eu.anthropic.claude-sonnet-4-20250514-v1:0 --providerRegion eu-central-1
+[group('k8s')]
+k8s-diagnose environment="development":
+    AWS_PROFILE=$(just _profile {{environment}}) k8sgpt analyze --explain --backend amazonbedrock
+
+# Diagnose K8s cluster issues without AI (free — no Bedrock cost)
+# Requires: active SSM tunnel (just k8s-tunnel-auto), k8sgpt CLI
+[group('k8s')]
+k8s-diagnose-raw:
+    k8sgpt analyze
+
+# Build the unified MCP infrastructure server (K8s + AWS diagnostics → dist/)
+[group('mcp')]
+mcp-build:
+    cd mcp-infra-server && yarn build
+
+# Discover SSM parameters for Next.js or Bedrock stacks
+# Usage: just mcp-ssm-discover /nextjs/development
+#        just mcp-ssm-discover /bedrock/development
+[group('mcp')]
+mcp-ssm-discover prefix environment="development":
+    AWS_PROFILE=$(just _profile {{environment}}) aws ssm get-parameters-by-path \
+      --path "{{prefix}}" \
+      --recursive \
+      --query "Parameters[].{Name:Name,Value:Value}" \
+      --output table \
+      --region eu-west-1
+
 # Generate ArgoCD CI bot token and store in Secrets Manager.
 # Run AFTER Pipeline A (deploy-kubernetes) Day-1 completes and ArgoCD pods are Running.
 # Prerequisites:
