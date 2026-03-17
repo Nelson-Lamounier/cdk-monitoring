@@ -449,7 +449,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             baseDomain: 'nelsonlamounier.com',
         },
         monitoringWorker: {
-            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
             nodeLabel: 'workload=monitoring',
             detailedMonitoring: false,
             useSignals: true,
