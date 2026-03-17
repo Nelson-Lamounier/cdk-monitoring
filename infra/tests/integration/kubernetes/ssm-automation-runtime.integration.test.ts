@@ -28,19 +28,18 @@
  */
 
 import {
+    SFNClient,
+    DescribeStateMachineCommand,
+    ListExecutionsCommand,
+} from '@aws-sdk/client-sfn';
+import type { ExecutionListItem } from '@aws-sdk/client-sfn';
+import {
     SSMClient,
     GetParameterCommand,
     DescribeAutomationExecutionsCommand,
 } from '@aws-sdk/client-ssm';
-
-import {
-    SFNClient,
-    ListStateMachinesCommand,
-    ListExecutionsCommand,
-} from '@aws-sdk/client-sfn';
-
 import type { AutomationExecutionMetadata } from '@aws-sdk/client-ssm';
-import type { ExecutionListItem } from '@aws-sdk/client-sfn';
+import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 
 import { Environment } from '../../../lib/config';
 import { k8sSsmPrefix } from '../../../lib/config/ssm-paths';
@@ -68,6 +67,7 @@ const SFN_SUCCESS_STATUSES = ['SUCCEEDED'];
 // AWS SDK clients
 const ssm = new SSMClient({ region: REGION });
 const sfn = new SFNClient({ region: REGION });
+const sts = new STSClient({ region: REGION });
 
 // =============================================================================
 // Types
@@ -157,15 +157,18 @@ let latestSfnExecution: ExecutionListItem | undefined;
 describe('SSM Automation Runtime — Post-Deploy Verification', () => {
     // ── Global Setup ─────────────────────────────────────────────────────
     beforeAll(async () => {
-        // 1. Resolve Step Functions state machine ARN (may not exist yet)
+        // 1. Resolve Step Functions state machine ARN via direct lookup
+        //    Uses DescribeStateMachine with a constructed ARN instead of
+        //    ListStateMachines (which is paginated and eventually consistent).
         try {
-            const machines = await sfn.send(new ListStateMachinesCommand({}));
-            const match = machines.stateMachines?.find(
-                (sm) => sm.name === STATE_MACHINE_NAME,
+            const { Account } = await sts.send(new GetCallerIdentityCommand({}));
+            const expectedArn = `arn:aws:states:${REGION}:${Account}:stateMachine:${STATE_MACHINE_NAME}`;
+            const result = await sfn.send(
+                new DescribeStateMachineCommand({ stateMachineArn: expectedArn }),
             );
-            stateMachineArn = match?.stateMachineArn;
+            stateMachineArn = result.stateMachineArn;
         } catch {
-            // SFN permissions not available or service error
+            // State machine not yet created or SFN permissions not available
             stateMachineArn = undefined;
         }
 
