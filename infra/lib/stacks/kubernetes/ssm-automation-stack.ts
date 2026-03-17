@@ -36,6 +36,7 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
@@ -885,12 +886,23 @@ def handler(event, context):
         const definition = sfn.Chain.start(invokeRouter).next(hasRole);
 
         // ── State Machine ──
+        const sfnLogGroup = new logs.LogGroup(this, 'BootstrapOrchestratorLogs', {
+            logGroupName: `/aws/vendedlogs/states/${prefix}-bootstrap-orchestrator`,
+            retention: logs.RetentionDays.ONE_WEEK,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+        });
+
         const stateMachine = new sfn.StateMachine(this, 'BootstrapOrchestrator', {
             stateMachineName: `${prefix}-bootstrap-orchestrator`,
             definitionBody: sfn.DefinitionBody.fromChainable(definition),
             timeout: cdk.Duration.hours(2),
             tracingEnabled: true,
             comment: 'Orchestrates K8s instance bootstrap: CP → secrets → worker CA re-join',
+            logs: {
+                destination: sfnLogGroup,
+                level: sfn.LogLevel.ALL,
+                includeExecutionData: true,
+            },
         });
 
         // EventBridge: trigger on any ASG instance launch
