@@ -9,7 +9,7 @@ namespace: nextjs-app
 # ---------------------------------------------------------------------------
 image:
   repository: "" # Overridden at deploy time via --set image.repository=<ECR_URI>
-  tag: latest
+  tag: "" # Overridden by nextjs-values.yaml or ArgoCD Image Updater write-back
   pullPolicy: Always
 
 # ---------------------------------------------------------------------------
