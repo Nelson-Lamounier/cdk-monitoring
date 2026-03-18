@@ -38,6 +38,14 @@ ClientError = None
 k8s_client = None
 k8s_config = None
 
+# CDK flatName() uses shortEnv() abbreviations for resource prefixes.
+# This map mirrors infra/lib/config/environments.ts → shortEnv().
+SHORT_ENV_MAP: dict[str, str] = {
+    "development": "dev",
+    "staging": "stg",
+    "production": "prd",
+}
+
 
 def _load_dependencies() -> None:
     """Import third-party libraries. Called once from main() before real work."""
@@ -193,10 +201,12 @@ def resolve_ssm_secrets(cfg: Config) -> dict[str, str]:
                 log.warning("  ⚠ %s: not found in SSM (%s)", env_var, ssm_path)
 
                 # Fallback: DynamoDB table is now in AiContentStack
-                # Try /bedrock-{env}/content-table-name
+                # CDK flatName() abbreviates: development→dev, production→prd
+                # Try /bedrock-{short_env}/content-table-name
                 if env_var == "DYNAMODB_TABLE_NAME":
-                    env = cfg.ssm_prefix.rsplit("/", 1)[-1]
-                    bedrock_path = f"/bedrock-{env}/content-table-name"
+                    full_env = cfg.ssm_prefix.rsplit("/", 1)[-1]
+                    short = SHORT_ENV_MAP.get(full_env, full_env)
+                    bedrock_path = f"/bedrock-{short}/content-table-name"
                     log.info("  → Fallback: trying Bedrock SSM path: %s", bedrock_path)
                     try:
                         resp = ssm.get_parameter(Name=bedrock_path, WithDecryption=True)
@@ -239,6 +249,9 @@ def create_k8s_secrets(
         value = secrets.get(env_var, "")
         if value:
             secret_data[env_var] = value
+
+    # AWS_REGION is always needed for SDK calls — inject from config
+    secret_data["AWS_REGION"] = cfg.aws_region
 
     if secret_data:
         _upsert_secret(
