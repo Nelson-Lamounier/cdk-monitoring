@@ -664,7 +664,6 @@ def handler(event, context):
                 'docName.$': '$.Payload.docName',
                 's3Bucket.$': '$.Payload.s3Bucket',
                 'region.$': '$.Payload.region',
-                'reason.$': '$.Payload.reason',
             },
             resultPath: '$.router',
         });
