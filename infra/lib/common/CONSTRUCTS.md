@@ -47,12 +47,13 @@
 
 ### Security (`security/`)
 
-| Construct                              | File                 | Purpose                                           |
-| -------------------------------------- | -------------------- | ------------------------------------------------- |
-| `BaseSecurityGroupConstruct`           | `security-group.ts`  | Bare SG with no default rules                     |
-| `EcsSecurityGroupConstruct`            | `security-group.ts`  | Pre-configured SG for ECS (monitoring ports)      |
-| `NextJsTaskSecurityGroupConstruct`     | `security-group.ts`  | SG for Next.js ECS tasks (ALB ingress only)       |
-| `AcmCertificateDnsValidationConstruct` | `acm-certificate.ts` | Cross-account ACM certificate with DNS validation |
+| Construct                              | File                             | Purpose                                           |
+| -------------------------------------- | -------------------------------- | ------------------------------------------------- |
+| `BaseSecurityGroupConstruct`           | `security-group.ts`              | Bare SG with no default rules                     |
+| `EcsSecurityGroupConstruct`            | `security-group.ts`              | Pre-configured SG for ECS (monitoring ports)      |
+| `NextJsTaskSecurityGroupConstruct`     | `security-group.ts`              | SG for Next.js ECS tasks (ALB ingress only)       |
+| `AcmCertificateDnsValidationConstruct` | `acm-certificate.ts`             | Cross-account ACM certificate with DNS validation |
+| `AccountSecurityBaselineConstruct`     | `account-security-baseline.ts`   | GuardDuty + Security Hub + IAM Access Analyzer    |
 
 ### Events (`events/`)
 

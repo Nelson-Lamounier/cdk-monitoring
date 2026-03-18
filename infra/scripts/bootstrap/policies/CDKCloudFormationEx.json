@@ -157,6 +157,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "SecurityServices",
+      "Effect": "Allow",
+      "Action": ["guardduty:*", "securityhub:*", "access-analyzer:*"],
+      "Resource": "*"
+    },
+    {
       "Sid": "STSAccess",
       "Effect": "Allow",
       "Action": ["sts:AssumeRole", "sts:GetCallerIdentity"],

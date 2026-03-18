@@ -7,3 +7,4 @@ export * from './security-group';
 export * from './kms-key';
 export * from './acm-certificate';
 export * from './waf-rules';
+export * from './account-security-baseline';

@@ -9,4 +9,5 @@
  * Use: import { CrossAccountDnsRoleStack } from '../stacks/org'
  */
 
-// Currently empty - stacks moved to org project
+export { SecurityBaselineStack } from './security-baseline-stack';
+export type { SecurityBaselineStackProps } from './security-baseline-stack';
