@@ -334,6 +334,30 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
             ],
         }));
 
+        // Grant S3 read-only for Next.js article MDX content fetching.
+        // Article MDX blobs live in the Bedrock data bucket (bedrock-{env}-kb-data)
+        // at published/*.mdx and content/v{n}/*.mdx prefixes.
+        //
+        // NOTE: The legacy nextjs-article-assets-{env} bucket (from KubernetesDataStack)
+        // is kept for future non-article assets (images, uploads). Article content was
+        // consolidated into the Bedrock AI pipeline — see AiContentStack.
+        // TODO: Decommission legacy bucket once confirmed unused.
+        const contentBucketName = `bedrock-${envAbbrev}-kb-data`;
+        const contentBucketArn = `arn:aws:s3:::${contentBucketName}`;
+
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'S3ContentReadOnly',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                's3:GetObject',
+                's3:ListBucket',
+            ],
+            resources: [
+                contentBucketArn,
+                `${contentBucketArn}/*`,
+            ],
+        }));
+
         // ASG: min=0 allows scaling down to save costs, max=1 for single worker.
         // Scaling policy disabled — Kubernetes owns scaling decisions via HPA.
         // If node-level scaling is needed later, install Cluster Autoscaler.

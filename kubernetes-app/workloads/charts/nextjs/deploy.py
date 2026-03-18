@@ -219,7 +219,25 @@ def resolve_ssm_secrets(cfg: Config) -> dict[str, str]:
             else:
                 log.warning("  ⚠ %s: SSM error (%s)", env_var, code)
 
-
+    # Post-resolution override: Article MDX content now lives in the Bedrock
+    # data bucket (bedrock-{env}-kb-data), NOT the legacy nextjs-article-assets-{env}
+    # bucket. The legacy bucket and its SSM parameter still exist for potential
+    # future non-article assets (images, uploads), so we override here rather
+    # than deleting the legacy parameter.
+    # TODO: Remove once legacy bucket is decommissioned.
+    full_env = cfg.ssm_prefix.rsplit("/", 1)[-1]
+    short = SHORT_ENV_MAP.get(full_env, full_env)
+    bedrock_assets_path = f"/bedrock-{short}/assets-bucket-name"
+    try:
+        resp = ssm.get_parameter(Name=bedrock_assets_path, WithDecryption=True)
+        bedrock_value = resp["Parameter"]["Value"]
+        prev = secrets.get("ASSETS_BUCKET_NAME", "<unset>")
+        if prev != bedrock_value:
+            log.info("  → Overriding ASSETS_BUCKET_NAME: %s → %s (Bedrock source of truth)",
+                     prev, bedrock_value)
+            secrets["ASSETS_BUCKET_NAME"] = bedrock_value
+    except ClientError:
+        log.info("  → No Bedrock assets-bucket-name override found; using resolved value")
 
     log.info("")
     return secrets

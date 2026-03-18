@@ -538,6 +538,7 @@ def handler(event, context):
         "docName": doc_name,
         "s3Bucket": s3_bucket,
         "region": context.invoked_function_arn.split(":")[3],
+        "reason": "ok",
     }
     logger.info("Router result: %s", result)
     return result
