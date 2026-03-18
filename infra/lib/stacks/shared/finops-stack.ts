@@ -113,6 +113,7 @@ export class FinOpsStack extends cdk.Stack {
         this.alertsTopic = new sns.Topic(this, 'FinOpsAlertsTopic', {
             topicName: `${props.namePrefix}-finops-alerts`,
             displayName: `FinOps Alerts (${props.targetEnvironment})`,
+            enforceSSL: true,
         });
 
         // Email subscription (if provided)
