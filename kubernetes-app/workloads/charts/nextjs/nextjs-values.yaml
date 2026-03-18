@@ -23,8 +23,11 @@ hpa:
 
 resourceQuota:
   hard:
-    requests.cpu: "500m"
-    requests.memory: 512Mi
-    limits.cpu: "1"
-    limits.memory: 1Gi
+    requests.cpu: "750m"
+    requests.memory: 768Mi
+    limits.cpu: "1500m"
+    limits.memory: 1536Mi
     persistentvolumeclaims: "1"
+
+pdb:
+  enabled: true

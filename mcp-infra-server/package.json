@@ -1,6 +1,7 @@
 {
   "name": "@portfolio/mcp-infra-server",
   "version": "1.0.0",
+  "type": "module",
   "private": true,
   "description": "Unified MCP server — Kubernetes operations + Next.js application diagnostics (DynamoDB, SES, SSM, API)",
   "main": "dist/index.js",
@@ -9,7 +10,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "test": "jest --config jest.config.js",
+    "test": "jest --config jest.config.cjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

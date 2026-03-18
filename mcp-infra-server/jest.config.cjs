@@ -12,7 +12,7 @@ module.exports = {
   moduleFileExtensions: ['ts', 'js', 'json', 'node'],
   globals: {
     'ts-jest': {
-      useESM: false,
+      useESM: true,
     },
   },
 };
