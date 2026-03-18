@@ -1,0 +1,11 @@
+apiVersion: v2
+name: golden-path-service
+description: Golden-path Helm chart template for new Kubernetes services
+version: 0.1.0
+appVersion: "1.0.0"
+type: application
+keywords:
+  - golden-path
+  - platform-engineering
+  - self-service
+  - template

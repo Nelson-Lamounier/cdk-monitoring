@@ -18,6 +18,7 @@ import {
 import { SharedVpcStack } from '../../shared/vpc-stack';
 import { SecurityBaselineStack } from '../../stacks/shared/security-baseline-stack';
 import { FinOpsStack } from '../../stacks/shared/finops-stack';
+import { CrossplaneStack } from '../../stacks/shared/crossplane-stack';
 import { stackId, flatName } from '../../utilities/naming';
 
 /**
@@ -57,6 +58,7 @@ export interface SharedFactoryContext extends ProjectFactoryContext {
  * - VPC stack with public subnets, SSM exports, and flow logs
  * - Security baseline stack (GuardDuty, Security Hub, Access Analyzer)
  * - FinOps stack (AWS Budgets with SNS alerting)
+ * - Crossplane stack (IAM credentials for platform engineering)
  *
  * @example
  * ```typescript
@@ -149,6 +151,25 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
 
         stacks.push(finopsStack);
         stackMap['finops'] = finopsStack;
+
+        // =================================================================
+        // Stack 4: Crossplane — IAM Credentials for Platform Engineering
+        //
+        // Dedicated IAM user with tightly scoped S3/SQS/KMS permissions.
+        // Credentials stored in Secrets Manager for K8s bootstrap scripts.
+        //
+        // Cost: ~$0.40/month (single Secrets Manager secret).
+        // =================================================================
+        const crossplaneStackName = stackId(this.namespace, 'Crossplane', env);
+        const crossplaneStack = new CrossplaneStack(scope, crossplaneStackName, {
+            targetEnvironment: env,
+            namePrefix,
+            env: cdkEnvironment(this.environment),
+            description: `Crossplane IAM credentials for platform engineering - ${env}`,
+        });
+
+        stacks.push(crossplaneStack);
+        stackMap['crossplane'] = crossplaneStack;
 
         cdk.Annotations.of(scope).addInfo(
             `Shared factory created ${stacks.length} stacks. ` +

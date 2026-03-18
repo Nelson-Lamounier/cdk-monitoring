@@ -14,3 +14,6 @@ export type { SecurityBaselineStackProps } from './security-baseline-stack';
 
 export { FinOpsStack } from './finops-stack';
 export type { FinOpsStackProps, BudgetConfig } from './finops-stack';
+
+export { CrossplaneStack } from './crossplane-stack';
+export type { CrossplaneStackProps } from './crossplane-stack';

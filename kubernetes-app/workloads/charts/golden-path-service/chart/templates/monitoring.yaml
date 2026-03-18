@@ -1,0 +1,65 @@
+{{/*
+@format
+Golden Path Service — ServiceMonitor + HPA
+
+Optional monitoring and auto-scaling resources:
+- ServiceMonitor: Prometheus scraping configuration
+- HPA: Horizontal Pod Autoscaler (CPU-based)
+
+Only created when the corresponding feature flag is enabled
+in values.yaml.
+*/}}
+
+# =========================================================================
+# SERVICE MONITOR — Prometheus Scraping
+# =========================================================================
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    release: monitoring  # Matches the Prometheus Operator serviceMonitorSelector
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Release.Name }}
+  endpoints:
+    - port: http
+      path: {{ .Values.serviceMonitor.path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}
+
+---
+
+# =========================================================================
+# HORIZONTAL POD AUTOSCALER — CPU-Based
+# =========================================================================
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilisationPercentage }}
+{{- end }}

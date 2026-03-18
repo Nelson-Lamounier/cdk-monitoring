@@ -1,0 +1,51 @@
+{{/*
+@format
+Golden Path Service — NetworkPolicy
+
+Default-deny ingress with explicit allow from Traefik namespace.
+Only pods with matching labels can receive traffic.
+
+This ensures new services are secure by default — no open ports
+unless explicitly routed through Traefik.
+*/}}
+
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow traffic from Traefik ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+    # Allow traffic from within the same namespace (service mesh, sidecars)
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+    # Allow Prometheus scraping from monitoring namespace
+    {{- if .Values.serviceMonitor.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+    {{- end }}
+{{- end }}
