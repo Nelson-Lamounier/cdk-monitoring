@@ -2,7 +2,7 @@
  * @format
  * Shared Project Factory
  *
- * Creates shared infrastructure (VPC, Security Baseline) used by multiple
+ * Creates shared infrastructure (VPC, Security Baseline, FinOps) used by multiple
  * projects. This project should be deployed first before other projects.
  */
 
@@ -17,7 +17,18 @@ import {
 } from '../../factories/project-interfaces';
 import { SharedVpcStack } from '../../shared/vpc-stack';
 import { SecurityBaselineStack } from '../../stacks/shared/security-baseline-stack';
+import { FinOpsStack } from '../../stacks/shared/finops-stack';
 import { stackId, flatName } from '../../utilities/naming';
+
+/**
+ * Environment-specific monthly budget limits in USD.
+ * Conservative defaults — adjust via context or environment variables.
+ */
+const BUDGET_LIMITS: Record<Environment, number> = {
+    [Environment.DEVELOPMENT]: 100,
+    [Environment.STAGING]: 200,
+    [Environment.PRODUCTION]: 500,
+};
 
 /**
  * Factory context for Shared project.
@@ -34,6 +45,9 @@ export interface SharedFactoryContext extends ProjectFactoryContext {
 
     /** Enable IAM Access Analyzer @default true */
     readonly enableAccessAnalyzer?: boolean;
+
+    /** Optional override for monthly budget limit in USD */
+    readonly monthlyBudgetLimitUsd?: number;
 }
 
 /**
@@ -42,6 +56,7 @@ export interface SharedFactoryContext extends ProjectFactoryContext {
  * Creates:
  * - VPC stack with public subnets, SSM exports, and flow logs
  * - Security baseline stack (GuardDuty, Security Hub, Access Analyzer)
+ * - FinOps stack (AWS Budgets with SNS alerting)
  *
  * @example
  * ```typescript
@@ -109,6 +124,32 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
         stacks.push(securityStack);
         stackMap['securityBaseline'] = securityStack;
 
+        // =================================================================
+        // Stack 3: FinOps — AWS Budgets with SNS Alerting
+        //
+        // Monthly cost budget with threshold-based alerts.
+        // Alert thresholds: 50% (actual), 80% (actual), 100% (forecasted).
+        //
+        // Cost: Free (first 2 budgets per account).
+        // =================================================================
+        const finopsStackName = stackId(this.namespace, 'FinOps', env);
+        const monthlyLimit = context.monthlyBudgetLimitUsd ?? BUDGET_LIMITS[env];
+
+        const finopsStack = new FinOpsStack(scope, finopsStackName, {
+            targetEnvironment: env,
+            namePrefix,
+            notificationEmail: context.notificationEmail,
+            budgetConfig: {
+                monthlyLimitUsd: monthlyLimit,
+                thresholds: [50, 80, 100],
+            },
+            env: cdkEnvironment(this.environment),
+            description: `FinOps cost governance (AWS Budgets, $${monthlyLimit}/mo) - ${env}`,
+        });
+
+        stacks.push(finopsStack);
+        stackMap['finops'] = finopsStack;
+
         cdk.Annotations.of(scope).addInfo(
             `Shared factory created ${stacks.length} stacks. ` +
             `Other projects can reference this VPC using: -c useSharedVpc=Shared`,
@@ -120,3 +161,4 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
         };
     }
 }
+

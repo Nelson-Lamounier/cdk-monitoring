@@ -87,6 +87,7 @@ stacks.forEach(stack => {
         owner: 'nelson-l',
         component: inferComponent(stack.stackName),
         version: INFRA_VERSION,
+        costCentre: inferCostCentre(stack.stackName),
     }));
 });
 
@@ -100,7 +101,20 @@ function inferComponent(stackName: string): string {
     if (name.includes('edge') || name.includes('api') || name.includes('cloudfront')) return 'networking';
     if (name.includes('iam') || name.includes('dns') || name.includes('role')) return 'iam';
     if (name.includes('goldenami') || name.includes('ssm')) return 'tooling';
+    if (name.includes('finops') || name.includes('budget')) return 'finops';
+    if (name.includes('security')) return 'security';
     return 'compute';
+}
+
+/**
+ * Infer the cost-centre from a stack name.
+ * Maps stack names to FinOps cost-allocation categories.
+ */
+function inferCostCentre(stackName: string): 'infrastructure' | 'platform' | 'application' {
+    const name = stackName.toLowerCase();
+    if (name.includes('vpc') || name.includes('infra') || name.includes('dns') || name.includes('edge')) return 'infrastructure';
+    if (name.includes('api') || name.includes('bedrock') || name.includes('content')) return 'application';
+    return 'platform';
 }
 
 // CDK-Nag compliance checks

@@ -23,3 +23,6 @@ export * from './security';
 
 // SSM constructs (Run Command Documents)
 export * from './ssm';
+
+// FinOps constructs (Budgets, Cost Governance)
+export * from './finops';

@@ -1,7 +1,12 @@
 # @format
 # @description Deploy Shared Infrastructure to Development
 #
-# Deploys the shared VPC + ECR stack that other projects depend on.
+# Deploys all shared stacks that other projects depend on:
+#   1. VPC + ECR (foundation for all projects)
+#   2. Security Baseline (GuardDuty, Security Hub, Access Analyzer)
+#   3. FinOps (AWS Budgets + SNS alerting)
+#
+# All three stacks are independent and deploy in parallel.
 # Must be deployed BEFORE kubernetes/bedrock stacks.
 
 name: Deploy Shared (Dev)
@@ -12,9 +17,12 @@ on:
   #   branches: [develop]
   #   paths:
   #     - "infra/lib/shared/**"
+  #     - "infra/lib/stacks/shared/**"
+  #     - "infra/lib/common/finops/**"
+  #     - "infra/lib/common/security/**"
   #     - "infra/bin/app.ts"
   #     - "scripts/deployment/stacks.ts"
-  #     - ".github/workflows/deploy-shared-*.yml"
+  #     - ".github/workflows/deploy-shared.yml"
   #     - ".github/workflows/_deploy-stack.yml"
   #     - ".github/actions/**"
 
@@ -27,11 +35,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy Shared Infra
+  # ===========================================================================
+  # Stack 1: VPC + ECR — Foundation for all projects
+  # ===========================================================================
+  deploy-infra:
+    name: Deploy VPC + ECR
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-Infra-development
+      project: shared
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Stack 2: Security Baseline — GuardDuty + Security Hub + Access Analyzer
+  # Independent of VPC — runs in parallel.
+  # ===========================================================================
+  deploy-security:
+    name: Deploy Security Baseline
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Shared-SecurityBaseline-development
+      project: shared
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Stack 3: FinOps — AWS Budgets + SNS Alerting
+  # Independent of VPC — runs in parallel.
+  # Cost: Free (first 2 budgets per account).
+  # ===========================================================================
+  deploy-finops:
+    name: Deploy FinOps
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Shared-FinOps-development
       project: shared
       environment: development
       aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}

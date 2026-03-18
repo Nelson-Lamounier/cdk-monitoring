@@ -11,3 +11,6 @@
 
 export { SecurityBaselineStack } from './security-baseline-stack';
 export type { SecurityBaselineStackProps } from './security-baseline-stack';
+
+export { FinOpsStack } from './finops-stack';
+export type { FinOpsStackProps, BudgetConfig } from './finops-stack';
