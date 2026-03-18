@@ -35,7 +35,7 @@ podSecurityContext:
 # Security context for the container
 containerSecurityContext:
   allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true # Writable cache via emptyDir volume at /app/.next/cache
+  readOnlyRootFilesystem: true # Writable layers via emptyDir: /app/.next/cache, /app/.next/server (ISR), /tmp
 
 # ---------------------------------------------------------------------------
 # Node Placement

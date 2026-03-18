@@ -55,7 +55,7 @@ import {
     LaunchTemplateConstruct,
     UserDataBuilder,
 } from '../../common/index';
-import { Environment } from '../../config/environments';
+import { Environment, shortEnv } from '../../config/environments';
 import { NextJsK8sConfig } from '../../config/nextjs';
 
 // =============================================================================
@@ -310,6 +310,28 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
                 'cloudwatch:ListMetrics',
             ],
             resources: ['*'],
+        }));
+
+        // Grant DynamoDB read-only for Next.js article serving
+        // Table name follows CDK flatName convention: bedrock-{shortEnv}-ai-content
+        const envAbbrev = shortEnv(props.targetEnvironment);
+        const contentTableName = `bedrock-${envAbbrev}-ai-content`;
+        const contentTableArn =
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${contentTableName}`;
+
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'DynamoDBContentReadOnly',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'dynamodb:GetItem',
+                'dynamodb:BatchGetItem',
+                'dynamodb:Query',
+                'dynamodb:Scan',
+            ],
+            resources: [
+                contentTableArn,
+                `${contentTableArn}/index/*`,
+            ],
         }));
 
         // ASG: min=0 allows scaling down to save costs, max=1 for single worker.
