@@ -38,6 +38,7 @@
 #   2b. ✅ Verify Base    (Integration test — VPC, SGs, KMS, EBS, EIP, Route53)
 #   2c. Golden AMI       (Bake containerd + kubeadm into AMI)
 #   2d. SSM Automation   (SSM Automation documents + IAM role) [parallel with 2c]
+#   2e. API              (API Gateway + Lambda) [parallel with 2, depends on 1]
 #   3.  Compute          (Control Plane EC2 + ASG)
 #   3b. AppWorker        (Application worker node)
 #   3c. MonitoringWorker (Monitoring worker node)
@@ -162,6 +163,7 @@ jobs:
       monitoring-worker-stack: ${{ steps.synth.outputs.monitoringWorker }}
       argocd-worker-stack: ${{ steps.synth.outputs.argocdWorker }}
       appiam-stack: ${{ steps.synth.outputs.appIam }}
+      api-stack: ${{ steps.synth.outputs.api }}
       edge-stack: ${{ steps.synth.outputs.edge }}
 
     steps:
@@ -451,6 +453,28 @@ jobs:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
         run: just ci-integration-test kubernetes/data-stack $CDK_ENV --verbose
+
+  # ===========================================================================
+  # Deploy API Stack — API Gateway + Lambda (depends on Data only)
+  #
+  # Deploys in parallel with Base. The API stack only depends on the Data
+  # stack (DynamoDB table + SSM parameters). It is an application-layer
+  # stack that can be deployed independently from core infrastructure.
+  # ===========================================================================
+  deploy-api:
+    name: Deploy API
+    needs: [setup, deploy-data, verify-data-stack]
+    if: always() && needs.deploy-data.result == 'success' && needs.verify-data-stack.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.api-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
 
   # ===========================================================================
   # Verify Golden AMI (post-deploy) — AMI metadata + package verification
@@ -1044,6 +1068,7 @@ jobs:
         deploy-app-worker,
         deploy-monitoring-worker,
         deploy-argocd-worker,
+        deploy-api,
         deploy-edge,
       ]
     runs-on: ubuntu-latest
@@ -1057,6 +1082,7 @@ jobs:
         || needs.deploy-app-worker.result == 'failure'
         || needs.deploy-monitoring-worker.result == 'failure'
         || needs.deploy-argocd-worker.result == 'failure'
+        || needs.deploy-api.result == 'failure'
         || needs.deploy-edge.result == 'failure'
       )
       && inputs.cdk-environment != 'development'
@@ -1099,7 +1125,7 @@ jobs:
           COMMIT_URL: "${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
         run: |
           just ci-failure-report \
-            --stacks "${{ needs.setup.outputs.data-stack }},${{ needs.setup.outputs.base-stack }},${{ needs.setup.outputs.controlplane-stack }},${{ needs.setup.outputs.worker-stack }},${{ needs.setup.outputs.monitoring-worker-stack }},${{ needs.setup.outputs.argocd-worker-stack }},${{ needs.setup.outputs.appiam-stack }},${{ needs.setup.outputs.edge-stack }}" \
+            --stacks "${{ needs.setup.outputs.data-stack }},${{ needs.setup.outputs.base-stack }},${{ needs.setup.outputs.controlplane-stack }},${{ needs.setup.outputs.worker-stack }},${{ needs.setup.outputs.monitoring-worker-stack }},${{ needs.setup.outputs.argocd-worker-stack }},${{ needs.setup.outputs.appiam-stack }},${{ needs.setup.outputs.api-stack }},${{ needs.setup.outputs.edge-stack }}" \
             --region ${{ env.AWS_REGION }} \
             --ssm-prefix "/k8s/${{ inputs.cdk-environment }}"
 
@@ -1119,6 +1145,7 @@ jobs:
       - deploy-app-worker
       - deploy-monitoring-worker
       - deploy-argocd-worker
+      - deploy-api
       - deploy-edge
       - deployment-failure-alert
     runs-on: ubuntu-latest
@@ -1186,6 +1213,7 @@ jobs:
           DEPLOY_WORKER_RESULT: ${{ needs.deploy-app-worker.result || 'skipped' }}
           DEPLOY_MON_WORKER_RESULT: ${{ needs.deploy-monitoring-worker.result || 'skipped' }}
           DEPLOY_ARGOCD_WORKER_RESULT: ${{ needs.deploy-argocd-worker.result || 'skipped' }}
+          DEPLOY_API_RESULT: ${{ needs.deploy-api.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           SECURITY_SCAN_RESULT: ${{ needs.security-scan.result || 'skipped' }}
           VERIFY_RESULT: "moved-to-ssm-pipeline"

@@ -138,6 +138,12 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         const resourceNames = nextjsResourceNames(nextjsNamePrefix, environment);
         const ssmPaths = nextjsSsmPaths(environment, nextjsNamePrefix);
 
+        // Bedrock content table SSM path — DynamoDB was consolidated into
+        // AiContentStack (bedrock project). The API stack discovers the
+        // table name via this SSM parameter instead of the removed nextjs path.
+        const bedrockNamePrefix = flatName('bedrock', '', environment);
+        const bedrockContentTableSsmPath = `/${bedrockNamePrefix}/content-table-name`;
+
         // Edge configuration (context override > Next.js config)
         const edgeConfig = {
             domainName: context.domainName ?? nextjsConfig.domainName,
@@ -440,7 +446,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 targetEnvironment: environment,
                 projectName: nextjsNamePrefix,
-                tableSsmPath: ssmPaths.dynamodbTableName,
+                tableSsmPath: bedrockContentTableSsmPath,
                 bucketSsmPath: ssmPaths.assetsBucketName,
                 namePrefix: nextjsNamePrefix,
                 // WAF: API traffic is routed through CloudFront edge WAF
