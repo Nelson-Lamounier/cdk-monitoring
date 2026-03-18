@@ -35,7 +35,7 @@ podSecurityContext:
 # Security context for the container
 containerSecurityContext:
   allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true # Writable layers via emptyDir: /app/.next/cache, /app/.next/server (ISR), /tmp
+  readOnlyRootFilesystem: false # Next.js ISR writes to /app/.next/server at runtime; emptyDir there clobbers build output
 
 # ---------------------------------------------------------------------------
 # Node Placement

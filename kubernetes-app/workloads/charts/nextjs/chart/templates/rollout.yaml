@@ -74,8 +74,6 @@ spec:
           volumeMounts:
             - name: nextjs-cache
               mountPath: /app/.next/cache
-            - name: nextjs-isr-cache
-              mountPath: /app/.next/server
             - name: tmp
               mountPath: /tmp
           readinessProbe:
@@ -96,8 +94,6 @@ spec:
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
       volumes:
         - name: nextjs-cache
-          emptyDir: {}
-        - name: nextjs-isr-cache
           emptyDir: {}
         - name: tmp
           emptyDir: {}
