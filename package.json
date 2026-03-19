@@ -9,7 +9,8 @@
     "bedrock-publisher",
     "packages/script-utils",
     "kubernetes-app",
-    "mcp-infra-server"
+    "mcp-infra-server",
+    "mcp-portfolio-docs"
   ],
   "resolutions": {
     "markdown-it": ">=14.1.1",

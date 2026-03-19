@@ -4680,6 +4680,24 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@portfolio/mcp-portfolio-docs@workspace:mcp-portfolio-docs":
+  version: 0.0.0-use.local
+  resolution: "@portfolio/mcp-portfolio-docs@workspace:mcp-portfolio-docs"
+  dependencies:
+    "@modelcontextprotocol/sdk": "npm:^1.12.1"
+    "@types/jest": "npm:^29.5.14"
+    "@types/node": "npm:^22.15.3"
+    fast-glob: "npm:^3.3.3"
+    jest: "npm:^29.7.0"
+    ts-jest: "npm:^29.3.4"
+    tsx: "npm:^4.21.0"
+    typescript: "npm:~5.8.3"
+    zod: "npm:^3.24.4"
+  bin:
+    mcp-portfolio-docs: dist/index.js
+  languageName: unknown
+  linkType: soft
+
 "@repo/script-utils@workspace:*, @repo/script-utils@workspace:packages/script-utils":
   version: 0.0.0-use.local
   resolution: "@repo/script-utils@workspace:packages/script-utils"
