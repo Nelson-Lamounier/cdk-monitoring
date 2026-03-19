@@ -163,6 +163,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "FinOpsServices",
+      "Effect": "Allow",
+      "Action": "budgets:*",
+      "Resource": "*"
+    },
+    {
       "Sid": "STSAccess",
       "Effect": "Allow",
       "Action": ["sts:AssumeRole", "sts:GetCallerIdentity"],
