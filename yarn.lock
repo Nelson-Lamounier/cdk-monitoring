@@ -19,6 +19,27 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@aws-cdk/aws-bedrock-agentcore-alpha@npm:^2.243.0-alpha.0":
+  version: 2.243.0-alpha.0
+  resolution: "@aws-cdk/aws-bedrock-agentcore-alpha@npm:2.243.0-alpha.0"
+  peerDependencies:
+    "@aws-cdk/aws-bedrock-alpha": 2.243.0-alpha.0
+    aws-cdk-lib: ^2.243.0
+    constructs: ^10.5.0
+  checksum: 10c0/2968ab6ffd13d2714d89881defbcee8fc571d5bc39216407d113eabb7eb4f50dae3144e79ff3cb99ab45b6b892c824e47b0978ccaad0f56758ee750848bb2d0a
+  languageName: node
+  linkType: hard
+
+"@aws-cdk/aws-bedrock-alpha@npm:^2.243.0-alpha.0":
+  version: 2.243.0-alpha.0
+  resolution: "@aws-cdk/aws-bedrock-alpha@npm:2.243.0-alpha.0"
+  peerDependencies:
+    aws-cdk-lib: ^2.243.0
+    constructs: ^10.5.0
+  checksum: 10c0/f7f4c183bc1868d49a32fdcb7cf28a1bcc122fc58fe80bf043555db0606fad588f54e5580be7f23330bdb3a20f6cea3b3a73d03e8c4cf14fce100d532b47001e
+  languageName: node
+  linkType: hard
+
 "@aws-cdk/aws-lambda-python-alpha@npm:2.233.0-alpha.0":
   version: 2.233.0-alpha.0
   resolution: "@aws-cdk/aws-lambda-python-alpha@npm:2.233.0-alpha.0"
@@ -7252,6 +7273,8 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "cdk-monitoring@workspace:infra"
   dependencies:
+    "@aws-cdk/aws-bedrock-agentcore-alpha": "npm:^2.243.0-alpha.0"
+    "@aws-cdk/aws-bedrock-alpha": "npm:^2.243.0-alpha.0"
     "@aws-cdk/integ-runner": "npm:latest"
     "@aws-cdk/integ-tests-alpha": "npm:latest"
     "@aws-lambda-powertools/logger": "npm:^2.30.2"

@@ -2,12 +2,13 @@
  * @format
  * Self-Healing Gateway Stack Unit Tests
  *
- * Tests for the SelfHealingGatewayStack:
- * - IAM role with correct name and trust policy
- * - Lambda invoke permissions for registered tools
+ * Tests for the SelfHealingGatewayStack using the L2 AgentCore Gateway:
+ * - AgentCore Gateway resource (AWS::BedrockAgentCore::Gateway)
+ * - Auto-provisioned IAM role (Bedrock trust)
+ * - Cognito User Pool for M2M auth
  * - CloudWatch log group with correct name and retention
  * - SSM parameters for gateway-url and gateway-id
- * - Stack outputs
+ * - Stack outputs (URL, ID, ARN)
  * - Stack properties exposure
  */
 
@@ -66,46 +67,62 @@ function createGatewayStack(
 describe('SelfHealingGatewayStack', () => {
 
     // =========================================================================
-    // IAM Role
+    // AgentCore Gateway (L2 Construct)
     // =========================================================================
-    describe('IAM Role', () => {
+    describe('AgentCore Gateway', () => {
         const { template } = createGatewayStack();
 
-        it('should create a Gateway role with correct name', () => {
-            template.hasResourceProperties('AWS::IAM::Role', {
-                RoleName: `${NAME_PREFIX}-gateway-role`,
+        it('should create an AgentCore Gateway resource', () => {
+            template.resourceCountIs('AWS::BedrockAgentCore::Gateway', 1);
+        });
+
+        it('should set the correct gateway name', () => {
+            template.hasResourceProperties('AWS::BedrockAgentCore::Gateway', {
+                Name: `${NAME_PREFIX}-gateway`,
             });
         });
 
-        it('should trust the Bedrock service principal', () => {
+        it('should include a description', () => {
+            template.hasResourceProperties('AWS::BedrockAgentCore::Gateway', {
+                Description: `Self-healing MCP tool gateway for ${NAME_PREFIX}`,
+            });
+        });
+    });
+
+    // =========================================================================
+    // IAM Role (auto-created by L2)
+    // =========================================================================
+    describe('Gateway IAM Role', () => {
+        const { template } = createGatewayStack();
+
+        it('should create an IAM role for the Gateway', () => {
             template.hasResourceProperties('AWS::IAM::Role', {
                 AssumeRolePolicyDocument: {
-                    Statement: [
-                        {
-                            Effect: 'Allow',
-                            Principal: {
-                                Service: 'bedrock.amazonaws.com',
-                            },
-                            Action: 'sts:AssumeRole',
-                        },
-                    ],
-                },
-            });
-        });
-
-        it('should grant lambda:InvokeFunction on registered tool ARNs', () => {
-            template.hasResourceProperties('AWS::IAM::Policy', {
-                PolicyDocument: {
                     Statement: Match.arrayWith([
                         Match.objectLike({
-                            Sid: 'InvokeRegisteredTools',
                             Effect: 'Allow',
-                            Action: 'lambda:InvokeFunction',
-                            Resource: TOOL_LAMBDA_ARNS,
+                            Principal: Match.objectLike({
+                                Service: 'bedrock-agentcore.amazonaws.com',
+                            }),
                         }),
                     ]),
                 },
             });
+        });
+    });
+
+    // =========================================================================
+    // Cognito (default M2M auth)
+    // =========================================================================
+    describe('Cognito Authoriser', () => {
+        const { template } = createGatewayStack();
+
+        it('should create a Cognito User Pool for M2M auth', () => {
+            template.resourceCountIs('AWS::Cognito::UserPool', 1);
+        });
+
+        it('should create a Cognito User Pool Client', () => {
+            template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
         });
     });
 
@@ -156,8 +173,8 @@ describe('SelfHealingGatewayStack', () => {
             template.hasOutput('GatewayId', {});
         });
 
-        it('should output the Gateway Role ARN', () => {
-            template.hasOutput('GatewayRoleArn', {});
+        it('should output the Gateway ARN', () => {
+            template.hasOutput('GatewayArn', {});
         });
     });
 
@@ -167,8 +184,8 @@ describe('SelfHealingGatewayStack', () => {
     describe('Stack Properties', () => {
         const { stack } = createGatewayStack();
 
-        it('should expose gatewayRole', () => {
-            expect(stack.gatewayRole).toBeDefined();
+        it('should expose gateway L2 construct', () => {
+            expect(stack.gateway).toBeDefined();
         });
 
         it('should expose gatewayUrl', () => {
@@ -187,10 +204,8 @@ describe('SelfHealingGatewayStack', () => {
         it('should handle empty tool Lambda ARNs without error', () => {
             const { template } = createGatewayStack({ toolLambdaArns: [] });
 
-            // Should still create the role but without the invoke policy
-            template.hasResourceProperties('AWS::IAM::Role', {
-                RoleName: `${NAME_PREFIX}-gateway-role`,
-            });
+            // Gateway should still be created without targets
+            template.resourceCountIs('AWS::BedrockAgentCore::Gateway', 1);
         });
     });
 });
