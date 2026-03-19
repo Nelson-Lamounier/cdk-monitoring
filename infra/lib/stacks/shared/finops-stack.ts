@@ -142,6 +142,36 @@ export class FinOpsStack extends cdk.Stack {
         });
 
         // =================================================================
+        // CFN EXECUTION ROLE — Grant Budgets Permissions
+        // =================================================================
+        // The default CDK bootstrap execution role does not include AWS
+        // Budgets actions. We import the well-known role and attach a
+        // scoped policy so CloudFormation can manage Budget resources.
+        const cfnExecRole = iam.Role.fromRoleName(
+            this,
+            'CfnExecRole',
+            `cdk-hnb659fds-cfn-exec-role-${this.account}-${this.region}`,
+        );
+
+        new iam.Policy(this, 'BudgetsPolicy', {
+            policyName: `${props.namePrefix}-budgets-cfn-policy`,
+            roles: [cfnExecRole],
+            statements: [
+                new iam.PolicyStatement({
+                    sid: 'AllowBudgetManagement',
+                    effect: iam.Effect.ALLOW,
+                    actions: [
+                        'budgets:ModifyBudget',
+                        'budgets:ViewBudget',
+                        'budgets:CreateBudgetAction',
+                        'budgets:DeleteBudgetAction',
+                    ],
+                    resources: [`arn:aws:budgets::${this.account}:budget/*`],
+                }),
+            ],
+        });
+
+        // =================================================================
         // STACK OUTPUTS
         // =================================================================
         new cdk.CfnOutput(this, 'FinOpsTopicArn', {

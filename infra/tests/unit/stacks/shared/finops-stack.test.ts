@@ -255,6 +255,25 @@ describe('FinOpsStack', () => {
                 }),
             });
         });
+
+        it('should grant Budgets permissions to the CFN execution role', () => {
+            const { template } = _createFinOpsStack();
+
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyName: `${TEST_NAME_PREFIX}-budgets-cfn-policy`,
+                PolicyDocument: Match.objectLike({
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: Match.arrayWith([
+                                'budgets:ModifyBudget',
+                                'budgets:ViewBudget',
+                            ]),
+                            Effect: 'Allow',
+                        }),
+                    ]),
+                }),
+            });
+        });
     });
 
     // =========================================================================
