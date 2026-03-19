@@ -39,7 +39,7 @@ const environmentContext = app.node.tryGetContext('environment') as string | und
 
 if (!projectContext || !isValidProject(projectContext)) {
     throw new Error(
-        'Project context required. Use: -c project=kubernetes|shared|org|bedrock -c environment=dev|staging|prod'
+        'Project context required. Use: -c project=kubernetes|shared|org|bedrock|self-healing -c environment=dev|staging|prod'
     );
 }
 

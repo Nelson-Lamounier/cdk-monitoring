@@ -53,6 +53,10 @@ export const STACK_REGISTRY = {
         api: 'Api',
         content: 'Content',
     },
+    selfHealing: {
+        gateway: 'Gateway',
+        agent: 'Agent',
+    },
 } as const;
 
 /** Type-safe project keys */
@@ -103,6 +107,7 @@ const PROJECT_TO_REGISTRY: Record<Project, RegistryProject> = {
     [Project.KUBERNETES]: 'kubernetes',
     [Project.ORG]: 'org',
     [Project.BEDROCK]: 'bedrock',
+    [Project.SELF_HEALING]: 'selfHealing',
 };
 
 /**

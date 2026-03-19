@@ -475,3 +475,48 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
     };
 }
 
+// =============================================================================
+// SELF-HEALING SSM PATHS
+// =============================================================================
+
+/** Self-Healing SSM prefix: /self-healing/{environment} */
+export function selfHealingSsmPrefix(environment: Environment): string {
+    return `/self-healing/${environment}`;
+}
+
+/**
+ * SSM parameter paths for the Self-Healing pipeline.
+ *
+ * Published by GatewayStack and AgentStack for cross-stack discovery.
+ */
+export interface SelfHealingSsmPaths {
+    /** The prefix itself: /self-healing/{environment} */
+    readonly prefix: string;
+    /** AgentCore Gateway endpoint URL */
+    readonly gatewayUrl: string;
+    /** AgentCore Gateway ID */
+    readonly gatewayId: string;
+    /** Strands Agent Lambda function ARN */
+    readonly agentLambdaArn: string;
+    /** Strands Agent Lambda function name */
+    readonly agentLambdaName: string;
+    /** Wildcard path for IAM: /self-healing/{environment}/* */
+    readonly wildcard: string;
+}
+
+/**
+ * Get Self-Healing SSM parameter paths for a given environment.
+ */
+export function selfHealingSsmPaths(environment: Environment): SelfHealingSsmPaths {
+    const prefix = selfHealingSsmPrefix(environment);
+
+    return {
+        prefix,
+        gatewayUrl: `${prefix}/gateway-url`,
+        gatewayId: `${prefix}/gateway-id`,
+        agentLambdaArn: `${prefix}/agent-lambda-arn`,
+        agentLambdaName: `${prefix}/agent-lambda-name`,
+        wildcard: `${prefix}/*`,
+    };
+}
+
