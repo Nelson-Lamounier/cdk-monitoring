@@ -21,6 +21,7 @@ import type {
   DecisionOption,
   GeneratedDocument,
 } from '../types/index.js';
+import { mergeOrWrite } from '../utils/document-merger.js';
 
 /**
  * Generates a structured decision analysis document.
@@ -135,7 +136,7 @@ export async function handleGenerateDecisionAnalysis(
   await fs.mkdir(targetDir, { recursive: true });
   const fileSlug = template?.id ?? decisionId.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   const outputPath = path.join(targetDir, `${fileSlug}.md`);
-  await fs.writeFile(outputPath, content, 'utf-8');
+  await mergeOrWrite(outputPath, content);
 
   return { outputPath, content, documentType: 'decision-analysis' };
 }

@@ -2,7 +2,7 @@
  * @fileoverview Tool handler for `analyse-portfolio`.
  *
  * Orchestrates the full pipeline: scan → extract → match → generate.
- * Supports full-repo and scoped modes.
+ * Supports full-repo, scoped, and code-quality modes.
  *
  * @module tools/analyse-portfolio
  */
@@ -15,9 +15,15 @@ import { SCOPE_PROFILES } from '../data/scope-profiles.js';
 import { SKILLS_TAXONOMY } from '../data/skills-taxonomy.js';
 import { scanRepository } from '../scanners/repo-scanner.js';
 import { extractSkills } from '../scanners/skill-extractor.js';
+import { scanCodeQuality } from '../scanners/code-quality-scanner.js';
 import { matchAgainstMarket } from '../analysers/market-matcher.js';
 import { generatePortfolioOverview } from '../generators/portfolio-overview.js';
 import { generateFeatureArticle } from '../generators/feature-article.js';
+import { generateCodeQualityReport } from '../generators/code-quality-report.js';
+import { mergeOrWrite } from '../utils/document-merger.js';
+
+/** The scope ID that triggers the code-quality scanner pipeline. */
+const CODE_QUALITY_SCOPE_ID = 'code-quality';
 
 /**
  * Resolves a scope profile by ID.
@@ -46,6 +52,9 @@ async function ensureDir(dirPath: string): Promise<void> {
 
 /**
  * Executes the analyse-portfolio pipeline.
+ *
+ * When the scope is `'code-quality'`, runs the specialised code-quality scanner
+ * and generates a hygiene report instead of a feature article.
  *
  * @param repoPath - Absolute path to the repository root.
  * @param scopeId - Optional scope ID for targeted analysis.
@@ -79,7 +88,14 @@ export async function handleAnalysePortfolio(
   let markdownContent: string;
   let outputPath: string;
 
-  if (scope) {
+  if (scopeId === CODE_QUALITY_SCOPE_ID) {
+    // Code-quality scope → specialised scanner + report
+    const qualityReport = await scanCodeQuality(scanResult.files);
+    markdownContent = generateCodeQualityReport(qualityReport);
+    const targetDir = outputDir ?? path.join(repoPath, 'docs');
+    await ensureDir(targetDir);
+    outputPath = path.join(targetDir, 'code-quality-report.md');
+  } else if (scope) {
     // Scoped scan → feature article → articles-draft/
     markdownContent = generateFeatureArticle(scope, detectedSkills, coverage);
     const targetDir = outputDir ?? path.join(repoPath, 'articles-draft');
@@ -93,8 +109,8 @@ export async function handleAnalysePortfolio(
     outputPath = path.join(targetDir, 'portfolio-overview.md');
   }
 
-  // Step 5: Write to disk
-  await fs.writeFile(outputPath, markdownContent, 'utf-8');
+  // Step 5: Write to disk (merge if file already exists)
+  await mergeOrWrite(outputPath, markdownContent);
 
   return {
     detectedSkills,

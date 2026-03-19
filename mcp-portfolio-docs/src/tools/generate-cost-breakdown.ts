@@ -15,6 +15,7 @@ import { SKILLS_TAXONOMY } from '../data/skills-taxonomy.js';
 import { scanRepository } from '../scanners/repo-scanner.js';
 import { extractSkills } from '../scanners/skill-extractor.js';
 import { generateCostBreakdown } from '../generators/cost-breakdown-generator.js';
+import { mergeOrWrite } from '../utils/document-merger.js';
 
 /**
  * Generates a cost breakdown document.
@@ -40,7 +41,7 @@ export async function handleGenerateCostBreakdown(
   const targetDir = outputDir ?? path.join(repoPath, 'docs', 'cost');
   await fs.mkdir(targetDir, { recursive: true });
   const outputPath = path.join(targetDir, 'cost-breakdown.md');
-  await fs.writeFile(outputPath, content, 'utf-8');
+  await mergeOrWrite(outputPath, content);
 
   return { outputPath, content, documentType: 'cost-breakdown' };
 }

@@ -81,4 +81,16 @@ export const ADR_TOPICS: readonly AdrTopic[] = [
       '**/workload-generator*',
     ],
   },
+  {
+    id: 'mcp-for-operations',
+    title: 'MCP Servers for Operations & Developer Experience',
+    context:
+      'Built custom MCP servers (mcp-infra-server, mcp-portfolio-docs) for AI-assisted infrastructure operations, documentation generation, and developer experience — replacing ad-hoc CLI scripts with structured, evidence-based agentic tooling.',
+    evidencePatterns: [
+      '**/mcp-infra-server/**',
+      '**/mcp-portfolio-docs/**',
+      '**/well-architected*/**',
+      '**/@modelcontextprotocol/**',
+    ],
+  },
 ] as const;

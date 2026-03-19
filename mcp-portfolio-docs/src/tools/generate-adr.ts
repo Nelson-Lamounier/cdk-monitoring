@@ -14,6 +14,7 @@ import fg from 'fast-glob';
 import { ADR_TOPICS } from '../data/adr-topics.js';
 import { generateAdr } from '../generators/adr-generator.js';
 import type { GeneratedDocument } from '../types/index.js';
+import { mergeOrWrite } from '../utils/document-merger.js';
 
 /**
  * Generates an Architecture Decision Record.
@@ -46,7 +47,7 @@ export async function handleGenerateAdr(
   const targetDir = outputDir ?? path.join(repoPath, 'docs', 'adrs');
   await fs.mkdir(targetDir, { recursive: true });
   const outputPath = path.join(targetDir, `${topic.id}.md`);
-  await fs.writeFile(outputPath, content, 'utf-8');
+  await mergeOrWrite(outputPath, content);
 
   return { outputPath, content, documentType: 'adr' };
 }

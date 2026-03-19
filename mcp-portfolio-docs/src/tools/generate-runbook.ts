@@ -14,6 +14,7 @@ import fg from 'fast-glob';
 import { RUNBOOK_SCENARIOS } from '../data/runbook-scenarios.js';
 import { generateRunbook } from '../generators/runbook-generator.js';
 import type { GeneratedDocument } from '../types/index.js';
+import { mergeOrWrite } from '../utils/document-merger.js';
 
 /** Standard glob ignore patterns. */
 const IGNORE_PATTERNS = ['**/node_modules/**', '**/dist/**', '**/cdk.out/**', '**/.git/**'];
@@ -55,7 +56,7 @@ export async function handleGenerateRunbook(
   const targetDir = outputDir ?? path.join(repoPath, 'docs', 'runbooks');
   await fs.mkdir(targetDir, { recursive: true });
   const outputPath = path.join(targetDir, `${scenario.id}.md`);
-  await fs.writeFile(outputPath, content, 'utf-8');
+  await mergeOrWrite(outputPath, content);
 
   return { outputPath, content, documentType: 'runbook' };
 }

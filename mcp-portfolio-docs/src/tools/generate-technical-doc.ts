@@ -20,6 +20,7 @@ import type {
   SourceFileContent,
   TechnicalDocConfig,
 } from '../types/index.js';
+import { mergeOrWrite } from '../utils/document-merger.js';
 
 /** Maximum file size to read (100 KB). Larger files are skipped. */
 const MAX_FILE_SIZE_BYTES = 100 * 1024;
@@ -133,7 +134,7 @@ export async function handleGenerateTechnicalDoc(
   await fs.mkdir(targetDir, { recursive: true });
   const fileSlug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '');
   const outputPath = path.join(targetDir, `${fileSlug}.md`);
-  await fs.writeFile(outputPath, content, 'utf-8');
+  await mergeOrWrite(outputPath, content);
 
   return { outputPath, content, documentType: 'technical-doc' };
 }

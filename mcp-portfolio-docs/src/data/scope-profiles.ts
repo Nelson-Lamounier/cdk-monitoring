@@ -108,4 +108,17 @@ export const SCOPE_PROFILES: readonly ScopeProfile[] = [
     ],
     focusCategories: ['operational-maturity', 'container-orchestration'],
   },
+  {
+    id: 'code-quality',
+    name: 'Code Quality — TypeScript Hygiene & Standards',
+    includePatterns: [
+      '**/*.ts',
+      '**/*.tsx',
+      '**/eslint.config*',
+      '**/.eslintrc*',
+      '**/tsconfig.json',
+      '**/.prettierrc*',
+    ],
+    focusCategories: ['developer-experience', 'operational-maturity'],
+  },
 ] as const;

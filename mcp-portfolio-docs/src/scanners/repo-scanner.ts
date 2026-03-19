@@ -38,6 +38,7 @@ const CATEGORY_RULES: ReadonlyArray<{ readonly pattern: RegExp; readonly categor
   { pattern: /dashboards\/.*\.json$/, category: 'grafana-dashboard' },
   { pattern: /lib\/stacks\/.*\.ts$/, category: 'cdk-stack' },
   { pattern: /lib\/common\/.*\.ts$/, category: 'cdk-construct' },
+  { pattern: /lib\/constructs\/.*\.ts$/, category: 'cdk-construct' },
   { pattern: /cdk\.json$/, category: 'cdk-config' },
   { pattern: /kubernetes-app\/.*\.ya?ml$/, category: 'k8s-manifest' },
   { pattern: /package\.json$/, category: 'package-manifest' },

@@ -185,7 +185,8 @@ export interface GeneratedDocument {
     | 'cost-breakdown'
     | 'chaos-evidence'
     | 'decision-analysis'
-    | 'technical-doc';
+    | 'technical-doc'
+    | 'code-quality-report';
 }
 
 // =============================================================================
@@ -340,4 +341,39 @@ export interface TechnicalDocConfig {
   readonly context?: string;
   /** Glossary of terms to define in the output. */
   readonly glossary?: Record<string, string>;
+}
+
+// =============================================================================
+// CODE-QUALITY TYPES
+// =============================================================================
+
+/** Severity of a code-quality finding. */
+export type FindingSeverity = 'error' | 'warning' | 'info';
+
+/** A single code-quality finding detected in a source file. */
+export interface CodeQualityFinding {
+  /** Relative file path from repo root. */
+  readonly file: string;
+  /** Line number where the issue was found (1-indexed). */
+  readonly line: number;
+  /** Rule identifier (e.g. 'missing-jsdoc', 'any-usage'). */
+  readonly rule: string;
+  /** Human-readable description of the issue. */
+  readonly message: string;
+  /** Severity level. */
+  readonly severity: FindingSeverity;
+}
+
+/** Aggregated code-quality report for a repository scan. */
+export interface CodeQualityReport {
+  /** Total TypeScript files scanned. */
+  readonly totalFiles: number;
+  /** Total findings across all files. */
+  readonly totalFindings: number;
+  /** Breakdown of finding count by rule identifier. */
+  readonly findingsByRule: Record<string, number>;
+  /** All individual findings. */
+  readonly findings: readonly CodeQualityFinding[];
+  /** Overall quality score (0–100, higher is better). */
+  readonly score: number;
 }
