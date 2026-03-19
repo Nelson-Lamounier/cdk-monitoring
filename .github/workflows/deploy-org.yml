@@ -40,12 +40,12 @@ jobs:
         id: check
         run: |
           if [ "${{ inputs.confirm }}" != "DEPLOY-ORG" ]; then
-            echo "❌ Deployment not confirmed."
-            echo "   You must type 'DEPLOY-ORG' to confirm."
+            echo "[FAIL] Deployment not confirmed."
+            echo "       You must type 'DEPLOY-ORG' to confirm."
             exit 1
           fi
           echo "proceed=true" >> $GITHUB_OUTPUT
-          echo "✓ Root account deployment confirmed"
+          echo "[OK] Root account deployment confirmed"
 
   # ===========================================================================
   # Deploy DNS Role Stack (via reusable workflow)
@@ -114,8 +114,8 @@ jobs:
       - name: Check Final Status
         run: |
           if [ "${{ needs.deploy-dns-role.result }}" != "success" ]; then
-            echo "❌ Deployment failed or was skipped"
+            echo "[FAIL] Deployment failed or was skipped"
             exit 1
           fi
 
-          echo "✓ Org deployment completed successfully"
+          echo "[OK] Org deployment completed successfully"

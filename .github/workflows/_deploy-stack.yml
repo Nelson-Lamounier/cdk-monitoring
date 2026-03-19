@@ -188,7 +188,7 @@ jobs:
 
           echo "::add-mask::$ACCOUNT_ID"
           echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
-          echo "✓ Resolved AWS Account ID"
+          echo "[OK] Resolved AWS Account ID"
 
       - name: Set Scoped Config
         shell: bash
@@ -230,7 +230,7 @@ jobs:
           [[ -n "$GRAFANA_ADMIN_PASSWORD" ]] && printf '%s\n' "GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD" >> "$GITHUB_ENV"
           [[ -n "$ALLOW_IPV4"             ]] && printf '%s\n' "ALLOW_IPV4=$ALLOW_IPV4"                       >> "$GITHUB_ENV"
           [[ -n "$ALLOW_IPV6"             ]] && printf '%s\n' "ALLOW_IPV6=$ALLOW_IPV6"                       >> "$GITHUB_ENV"
-          echo "✓ Scoped config applied"
+          echo "[OK] Scoped config applied"
         env:
           DOMAIN_NAME: ${{ inputs.domain-name }}
           HOSTED_ZONE_ID: ${{ inputs.hosted-zone-id }}
