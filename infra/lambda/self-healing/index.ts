@@ -26,7 +26,6 @@ import {
     BedrockRuntimeClient,
     ConverseCommand,
 } from '@aws-sdk/client-bedrock-runtime';
-
 import type {
     ContentBlock,
     ConversationRole,

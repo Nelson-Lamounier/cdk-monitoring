@@ -22,7 +22,6 @@ import {
     DescribeAlarmsCommand,
     GetMetricDataCommand,
 } from '@aws-sdk/client-cloudwatch';
-
 import type {
     MetricAlarm,
     MetricDataResult,

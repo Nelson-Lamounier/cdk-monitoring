@@ -13,10 +13,10 @@
 
 import * as cdk from 'aws-cdk-lib/core';
 
-import { getSelfHealingAllocations } from '../../config/self-healing/allocations';
-import { getSelfHealingConfigs } from '../../config/self-healing/configurations';
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
+import { getSelfHealingAllocations } from '../../config/self-healing/allocations';
+import { getSelfHealingConfigs } from '../../config/self-healing/configurations';
 import {
     IProjectFactory,
     ProjectFactoryContext,

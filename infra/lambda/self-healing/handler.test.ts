@@ -15,7 +15,6 @@ import {
     getDefaultTools,
     buildToolConfig,
 } from './index';
-
 import type { AlarmEvent } from './index';
 
 // =============================================================================
