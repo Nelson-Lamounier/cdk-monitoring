@@ -11,7 +11,8 @@
     "packages/cdk-governance-aspects",
     "kubernetes-app",
     "mcp-infra-server",
-    "mcp-portfolio-docs"
+    "mcp-portfolio-docs",
+    "mcp-infra-diagram"
   ],
   "resolutions": {
     "markdown-it": ">=14.1.1",

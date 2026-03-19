@@ -1,0 +1,31 @@
+{
+  "name": "@portfolio/mcp-infra-diagram",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "MCP server — discovers live AWS + K8s infrastructure and generates architecture diagrams",
+  "main": "dist/index.js",
+  "bin": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-acm": "^3.1001.0",
+    "@aws-sdk/client-auto-scaling": "^3.1001.0",
+    "@aws-sdk/client-cloudfront": "^3.1001.0",
+    "@aws-sdk/client-ec2": "^3.1001.0",
+    "@aws-sdk/client-elastic-load-balancing-v2": "^3.1001.0",
+    "@aws-sdk/client-wafv2": "^3.1001.0",
+    "@kubernetes/client-node": "^1.2.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.3"
+  }
+}
