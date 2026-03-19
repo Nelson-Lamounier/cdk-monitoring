@@ -39,10 +39,9 @@ export interface OrgProjectConfig {
     readonly trustedAccountIds: string[];
 
     /**
-     * External ID for cross-account assume-role security.
-     * Enforces a `sts:ExternalId` condition on the DNS role trust policy.
+     * External ID for additional security (optional)
      */
-    readonly externalId: string;
+    readonly externalId?: string;
 }
 
 /**
@@ -55,7 +54,7 @@ export interface OrgFactoryContext extends ProjectFactoryContext {
     hostedZoneIds?: string;
     /** Trusted account IDs (comma-separated string) */
     trustedAccountIds?: string;
-    /** External ID for cross-account security */
+    /** External ID for additional security */
     externalId?: string;
 }
 
@@ -117,12 +116,6 @@ export class OrgProjectFactory implements IProjectFactory<OrgFactoryContext> {
         if (!trustedAccountIds || trustedAccountIds.length === 0) {
             throw new Error('trustedAccountIds is required for org project. Pass via context.');
         }
-        if (!externalId || externalId.trim().length === 0) {
-            throw new Error(
-                'externalId is required for org project. ' +
-                'Pass via --context externalId=acm-dns-validation',
-            );
-        }
 
         const env = {
             account: process.env.ROOT_ACCOUNT || process.env.CDK_DEFAULT_ACCOUNT,
@@ -135,7 +128,7 @@ export class OrgProjectFactory implements IProjectFactory<OrgFactoryContext> {
         const dnsRoleStack = new CrossAccountDnsRoleStack(scope, stackId(this.namespace, 'DnsRole', this.environment), {
             hostedZoneIds,
             trustedAccountIds,
-            externalId: externalId!,
+            externalId,
             namePrefix,
             env,
         });

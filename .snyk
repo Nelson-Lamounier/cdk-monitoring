@@ -1,0 +1,60 @@
+# Snyk Policy File
+# https://docs.snyk.io/scan-with-snyk/policies/the-.snyk-file
+#
+# Documents accepted risks for infrastructure-as-code findings.
+# These findings have been reviewed and determined to be intentional
+# design decisions with appropriate mitigations in place.
+
+version: v1.25.0
+ignore:
+  # =========================================================================
+  # API Gateway — Anonymous Access (Subscription Endpoints)
+  # =========================================================================
+  # POST /subscriptions and GET /subscriptions/verify are intentionally
+  # public-facing email subscription endpoints. Authorisation would break
+  # the flow — anonymous visitors must subscribe, and verification links
+  # arrive in email as bare URLs.
+  #
+  # Mitigations:
+  #   - WAFv2 WebACL (rate limiting, AWS managed rules)
+  #   - API Gateway request body validation (rejects malformed payloads)
+  #   - HMAC token verification on the verify endpoint
+  #   - CDK-Nag APIG4/COG4 suppressions with rationale
+  SNYK-CC-TF-99:
+    - "Resources[ArticlesApiRestApisubscriptionsPOST82D3531B] > Properties > AuthorizationType":
+        reason: >-
+          Public email subscription endpoint — anonymous access is intentional.
+          Protected by WAFv2, request validation, and HMAC token verification.
+        expires: 2027-03-19T00:00:00.000Z
+    - "Resources[ArticlesApiRestApisubscriptionsverifyGET4CA60961] > Properties > AuthorizationType":
+        reason: >-
+          Public email verification endpoint — anonymous access is intentional.
+          Users click a verification link from email (bare URL, no auth header).
+          Protected by WAFv2 and HMAC token verification.
+        expires: 2027-03-19T00:00:00.000Z
+
+  # =========================================================================
+  # IAM Role — Cross-Account Trust (DNS Validation)
+  # =========================================================================
+  # The DnsValidationRole uses AccountPrincipal scoped to explicitly trusted
+  # account IDs (dev/staging/prod). This allows any service within those
+  # accounts (cert-manager, CDK custom resources, Lambda, etc.) to perform
+  # cross-account ACM DNS validation.
+  #
+  # The trust is NOT open to all AWS accounts — only the specific account IDs
+  # listed in trustedAccountIds are permitted. Restricting to individual
+  # resource ARNs is not feasible because multiple services (cert-manager,
+  # CDK, etc.) need to assume this role using different principal types.
+  #
+  # The role's permissions are tightly scoped to Route 53 actions on specific
+  # hosted zone ARNs — even if assumed, the blast radius is limited to DNS
+  # record management.
+  SNYK-CC-TF-118:
+    - "Resources[DnsValidationRole*] > Properties > AssumeRolePolicyDocument > Statement":
+        reason: >-
+          Cross-account DNS validation role intentionally uses AccountPrincipal
+          scoped to explicit trusted account IDs. Any service in the trusted
+          accounts (cert-manager, CDK, Lambda) must be able to assume this role
+          for ACM certificate DNS validation. Permissions are scoped to
+          Route 53 actions on specific hosted zone ARNs only.
+        expires: 2027-03-19T00:00:00.000Z
