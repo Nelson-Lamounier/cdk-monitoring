@@ -74,6 +74,13 @@ export interface FinOpsStackProps extends cdk.StackProps {
      * @example { project: ['k8s-platform'] }
      */
     readonly costFilters?: Record<string, ReadonlyArray<string>>;
+
+    /**
+     * Optional Bedrock-specific budget configuration.
+     * Creates a second budget scoped to the Amazon Bedrock service.
+     * Uses the same SNS topic for alerts.
+     */
+    readonly bedrockBudgetConfig?: BudgetConfig;
 }
 
 // =========================================================================
@@ -154,5 +161,29 @@ export class FinOpsStack extends cdk.Stack {
             description: 'Monthly budget limit in USD',
             value: `$${props.budgetConfig.monthlyLimitUsd}`,
         });
+
+        // =================================================================
+        // AWS BUDGET — Bedrock Service Budget (Optional)
+        //
+        // Per-service budget filtered to 'Amazon Bedrock'.
+        // Provides early warning for AI model costs before the
+        // account-wide budget fires. Cost: Free.
+        // =================================================================
+        if (props.bedrockBudgetConfig) {
+            const bedrockThresholds = props.bedrockBudgetConfig.thresholds ?? [50, 80, 100];
+
+            new BudgetConstruct(this, 'BedrockBudget', {
+                budgetName: `${props.namePrefix}-bedrock-monthly`,
+                monthlyLimitUsd: props.bedrockBudgetConfig.monthlyLimitUsd,
+                alertsTopic: this.alertsTopic,
+                thresholds: bedrockThresholds.map((percentage) => ({ percentage })),
+                serviceFilter: 'Amazon Bedrock',
+            });
+
+            new cdk.CfnOutput(this, 'BedrockBudgetLimit', {
+                description: 'Monthly Bedrock budget limit in USD',
+                value: `$${props.bedrockBudgetConfig.monthlyLimitUsd}`,
+            });
+        }
     }
 }

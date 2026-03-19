@@ -32,6 +32,16 @@ const BUDGET_LIMITS: Record<Environment, number> = {
 };
 
 /**
+ * Bedrock-specific monthly budget limits in USD.
+ * Scoped to Amazon Bedrock service only — fires earlier than account budget.
+ */
+const BEDROCK_BUDGET_LIMITS: Record<Environment, number> = {
+    [Environment.DEVELOPMENT]: 30,
+    [Environment.STAGING]: 75,
+    [Environment.PRODUCTION]: 150,
+};
+
+/**
  * Factory context for Shared project.
  */
 export interface SharedFactoryContext extends ProjectFactoryContext {
@@ -143,6 +153,11 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
             notificationEmail: context.notificationEmail,
             budgetConfig: {
                 monthlyLimitUsd: monthlyLimit,
+                thresholds: [50, 80, 100],
+            },
+            // Bedrock-specific budget — per-service cost guardrail
+            bedrockBudgetConfig: {
+                monthlyLimitUsd: BEDROCK_BUDGET_LIMITS[env],
                 thresholds: [50, 80, 100],
             },
             env: cdkEnvironment(this.environment),

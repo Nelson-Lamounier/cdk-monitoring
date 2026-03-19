@@ -72,6 +72,14 @@ export interface BudgetConstructProps {
      * @example { project: 'k8s-platform', environment: 'development' }
      */
     readonly costFilters?: Record<string, ReadonlyArray<string>>;
+
+    /**
+     * Optional AWS service filter.
+     * Scopes the budget to a single AWS service.
+     * Uses the service name as shown on the AWS billing console
+     * (e.g. 'Amazon Bedrock', 'Amazon S3', 'AWS Lambda').
+     */
+    readonly serviceFilter?: string;
 }
 
 // =========================================================================
@@ -123,20 +131,26 @@ export class BudgetConstruct extends Construct {
             ],
         }));
 
-        // Build cost filters from tag map
-        const costFilters = props.costFilters
-            ? Object.entries(props.costFilters).reduce<Record<string, string[]>>(
-                (acc, [key, values]) => {
-                    // AWS Budgets uses TagKeyValue format: "tag-key$tag-value"
-                    acc[`TagKeyValue`] = [
-                        ...(acc['TagKeyValue'] ?? []),
-                        ...values.map((v) => `user:${key}$${v}`),
-                    ];
-                    return acc;
-                },
-                {},
-            )
-            : undefined;
+        // Build cost filters
+        const costFilters: Record<string, string[]> = {};
+
+        // Tag-based scoping
+        if (props.costFilters) {
+            for (const [key, values] of Object.entries(props.costFilters)) {
+                // AWS Budgets uses TagKeyValue format: "tag-key$tag-value"
+                costFilters['TagKeyValue'] = [
+                    ...(costFilters['TagKeyValue'] ?? []),
+                    ...values.map((v) => `user:${key}$${v}`),
+                ];
+            }
+        }
+
+        // Service-level scoping (e.g. 'Amazon Bedrock')
+        if (props.serviceFilter) {
+            costFilters['Service'] = [props.serviceFilter];
+        }
+
+        const hasCostFilters = Object.keys(costFilters).length > 0;
 
         this.budget = new budgets.CfnBudget(this, 'Budget', {
             budget: {
@@ -147,7 +161,7 @@ export class BudgetConstruct extends Construct {
                     amount: props.monthlyLimitUsd,
                     unit: 'USD',
                 },
-                ...(costFilters ? { costFilters } : {}),
+                ...(hasCostFilters ? { costFilters } : {}),
             },
             notificationsWithSubscribers,
         });
