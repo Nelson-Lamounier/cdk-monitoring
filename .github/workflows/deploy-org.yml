@@ -1,6 +1,25 @@
-# Deploy Organization Resources (Root Account)
-# MANUAL TRIGGER ONLY with confirmation
-# Uses root account OIDC credentials via the reusable _deploy-stack.yml workflow
+# @format
+# @description Deploy Organisation Resources to the Root/Management Account
+#
+# Deploys cross-account infrastructure that lives in the AWS root account:
+#   1. DNS Role — IAM role allowing the dev account to create Route 53 records
+#      in the root-account hosted zone for ACM certificate validation.
+#
+# Security:
+#   - Manual trigger only (workflow_dispatch) with a typed confirmation gate.
+#   - All sensitive values (account IDs, hosted zone, role ARN) are sourced
+#     from GitHub environment variables/secrets and masked in logs.
+#   - OIDC federation — no long-lived credentials stored anywhere.
+#
+# Prerequisites:
+#   - The 'management' GitHub environment must exist with these variables:
+#       ROOT_ACCOUNT_ID, DEV_ACCOUNT_ID, AWS_REGION, HOSTED_ZONE_ID
+#   - The AWS_OIDC_ROLE secret must grant access to the root account.
+#   - CDK bootstrap must already be present in the root account/region.
+#
+# Usage:
+#   gh workflow run deploy-org.yml --ref develop \
+#     -f confirm=DEPLOY-ORG -f stack=dns-role
 
 name: Deploy Organization (Root Account)
 
@@ -20,13 +39,15 @@ on:
           - dns-role
           - all
 
+# Minimum required permissions for OIDC token exchange and repo checkout.
 permissions:
-  id-token: write
-  contents: read
+  id-token: write   # Required by aws-actions/configure-aws-credentials (OIDC)
+  contents: read     # Required by actions/checkout
 
 jobs:
   # ===========================================================================
-  # Validation
+  # Gate — Require explicit confirmation before modifying the root account.
+  # Prevents accidental deployments; the caller must type "DEPLOY-ORG".
   # ===========================================================================
   validate:
     name: Validate Confirmation
@@ -48,7 +69,19 @@ jobs:
           echo "[OK] Root account deployment confirmed"
 
   # ===========================================================================
-  # Deploy DNS Role Stack (via reusable workflow)
+  # Stack 1: Cross-Account DNS Validation Role
+  #
+  # Creates an IAM role in the root account that the dev account can assume
+  # to create/delete Route 53 records for ACM certificate DNS validation.
+  #
+  # Context values passed to CDK:
+  #   hostedZoneIds  — The Route 53 hosted zone ID(s) the role can modify.
+  #   externalId     — STS external ID for additional assume-role security.
+  #
+  # Delegates to the reusable _deploy-stack.yml workflow for:
+  #   - AWS credential configuration (OIDC)
+  #   - CDK preflight checks and deployment
+  #   - Output capture and summary generation
   # ===========================================================================
   deploy-dns-role:
     name: Deploy DNS Role
@@ -58,20 +91,21 @@ jobs:
     with:
       stack-name: Org-DnsRole-management
       project: org
-      environment: management
-      aws-account-id: ${{ vars.ROOT_ACCOUNT_ID }}
+      environment: management                          # CDK environment (mapped to root account)
+      aws-account-id: ${{ vars.ROOT_ACCOUNT_ID }}      # Target account for deployment
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
-      root-account-id: ${{ vars.ROOT_ACCOUNT_ID }}
+      root-account-id: ${{ vars.ROOT_ACCOUNT_ID }}     # Passed as ROOT_ACCOUNT env var to CDK
       additional-args: >-
         --context hostedZoneIds=${{ vars.HOSTED_ZONE_ID }}
         --context externalId=acm-dns-validation
       outputs-directory: org-outputs
     secrets:
-      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}      # OIDC role ARN for root account access
 
   # ===========================================================================
-  # Summary
+  # Summary — Always runs, even on failure/skip, to provide a deployment report
+  # in the GitHub Actions step summary (visible on the workflow run page).
   # ===========================================================================
   summary:
     name: Deployment Summary
@@ -80,6 +114,8 @@ jobs:
     if: always()
 
     steps:
+      # Write a markdown summary table to the GitHub Actions step summary.
+      # This appears as a rich report on the workflow run page.
       - name: Generate Summary
         run: |
           TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
@@ -111,6 +147,8 @@ jobs:
           EOF
           fi
 
+      # Fail the workflow if the DNS role deployment did not succeed.
+      # This ensures the overall workflow status reflects the deployment outcome.
       - name: Check Final Status
         run: |
           if [ "${{ needs.deploy-dns-role.result }}" != "success" ]; then
