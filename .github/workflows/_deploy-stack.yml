@@ -15,9 +15,14 @@ on:
         required: true
         type: string
       environment:
-        description: "Target environment (development, staging, production)"
+        description: "CDK target environment (development, staging, production)"
         required: true
         type: string
+      github-environment:
+        description: "GitHub Actions environment for secrets/variables access (defaults to environment input)"
+        required: false
+        type: string
+        default: ""
       aws-account-id:
         description: "Target AWS account ID"
         required: true
@@ -146,7 +151,7 @@ jobs:
     # Required for Bedrock stacks that need Docker for CDK synth (VectorKnowledgeBase).
     container: ${{ inputs.use-container && 'ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest' || null }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.github-environment || inputs.environment }}
     outputs:
       status: ${{ steps.deploy-stack.outputs.deployment-status }}
       outputs: ${{ steps.deploy-stack.outputs.stack-outputs }}
