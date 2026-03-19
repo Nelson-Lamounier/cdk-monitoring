@@ -53,11 +53,6 @@ export interface SelfHealingAgentStackProps extends cdk.StackProps {
     readonly systemPrompt: string;
     /** AgentCore Gateway URL (resolved from SSM in factory) */
     readonly gatewayUrl: string;
-    /**
-     * CloudWatch Alarm name prefix for EventBridge rule scoping.
-     * Only alarms whose names start with this prefix trigger the agent.
-     */
-    readonly alarmNamePrefix: string;
     /** DLQ message retention in days */
     readonly dlqRetentionDays: number;
     /** Reserved concurrent executions for cost control */
@@ -238,19 +233,18 @@ export class SelfHealingAgentStack extends cdk.Stack {
         }));
 
         // =================================================================
-        // EventBridge Rule — Scoped CloudWatch Alarm → Agent
+        // EventBridge Rule — CloudWatch Alarm → Agent
         //
-        // Only triggers for alarms whose names start with the configured
-        // prefix, preventing the agent from reacting to unrelated alarms.
+        // Triggers on ALL CloudWatch alarms entering ALARM state.
+        // Solo-developer setup — no prefix scoping needed.
         // =================================================================
         const alarmRule = new events.Rule(this, 'AlarmTriggerRule', {
             ruleName: `${namePrefix}-alarm-trigger`,
-            description: `Triggers self-healing agent on scoped CloudWatch Alarm state changes for ${namePrefix}`,
+            description: `Triggers self-healing agent on CloudWatch Alarm state changes for ${namePrefix}`,
             eventPattern: {
                 source: ['aws.cloudwatch'],
                 detailType: ['CloudWatch Alarm State Change'],
                 detail: {
-                    alarmName: [{ prefix: props.alarmNamePrefix }],
                     state: {
                         value: ['ALARM'],
                     },

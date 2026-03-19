@@ -32,7 +32,6 @@ const NAME_PREFIX = 'self-healing-development';
 const GATEWAY_URL = 'https://self-healing-dev-gateway.bedrock.eu-west-1.amazonaws.com';
 const FOUNDATION_MODEL = 'eu.anthropic.claude-sonnet-4-6';
 const SYSTEM_PROMPT = 'You are a test agent.';
-const ALARM_NAME_PREFIX = 'k8s-dev-';
 const DLQ_RETENTION_DAYS = 7;
 
 // =============================================================================
@@ -60,7 +59,6 @@ function createAgentStack(
             enableDryRun: true,
             systemPrompt: SYSTEM_PROMPT,
             gatewayUrl: GATEWAY_URL,
-            alarmNamePrefix: ALARM_NAME_PREFIX,
             dlqRetentionDays: DLQ_RETENTION_DAYS,
             env: TEST_ENV_EU,
             ...overrides,
@@ -198,12 +196,12 @@ describe('SelfHealingAgentStack', () => {
     });
 
     // =========================================================================
-    // EventBridge Rule — Scoped Alarm Trigger
+    // EventBridge Rule — Alarm Trigger
     // =========================================================================
     describe('EventBridge Rule', () => {
         const { template } = createAgentStack();
 
-        it('should create a scoped alarm trigger rule', () => {
+        it('should create an alarm trigger rule', () => {
             template.hasResourceProperties('AWS::Events::Rule', {
                 Name: `${NAME_PREFIX}-alarm-trigger`,
                 EventPattern: Match.objectLike({
@@ -213,11 +211,11 @@ describe('SelfHealingAgentStack', () => {
             });
         });
 
-        it('should filter by alarm name prefix', () => {
+        it('should filter by ALARM state only', () => {
             template.hasResourceProperties('AWS::Events::Rule', {
                 EventPattern: Match.objectLike({
                     detail: Match.objectLike({
-                        alarmName: [{ prefix: ALARM_NAME_PREFIX }],
+                        state: { value: ['ALARM'] },
                     }),
                 }),
             });

@@ -39,12 +39,6 @@ export interface SelfHealingConfigs {
     readonly enableDryRun: boolean;
     /** System prompt describing the agent's role and guardrails */
     readonly systemPrompt: string;
-    /**
-     * CloudWatch Alarm name prefix filter for EventBridge rule.
-     * Only alarms whose names start with this prefix trigger the agent.
-     * Prevents the agent from firing on unrelated third-party alarms.
-     */
-    readonly alarmNamePrefix: string;
 }
 
 // =============================================================================
@@ -82,7 +76,6 @@ export const SELF_HEALING_CONFIGS: Record<Environment, SelfHealingConfigs> = {
         foundationModel: 'eu.anthropic.claude-sonnet-4-6',
         enableDryRun: true,     // Safe — agent proposes but does not act
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
-        alarmNamePrefix: 'k8s-dev-',
     },
 
     [Environment.STAGING]: {
@@ -91,7 +84,6 @@ export const SELF_HEALING_CONFIGS: Record<Environment, SelfHealingConfigs> = {
         foundationModel: 'eu.anthropic.claude-sonnet-4-6',
         enableDryRun: true,     // Still cautious in staging
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
-        alarmNamePrefix: 'k8s-staging-',
     },
 
     [Environment.PRODUCTION]: {
@@ -100,7 +92,6 @@ export const SELF_HEALING_CONFIGS: Record<Environment, SelfHealingConfigs> = {
         foundationModel: 'eu.anthropic.claude-sonnet-4-6',
         enableDryRun: false,    // Agent is trusted to act in production
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
-        alarmNamePrefix: 'k8s-',
     },
 };
 

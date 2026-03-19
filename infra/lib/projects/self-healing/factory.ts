@@ -109,7 +109,6 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
                 enableDryRun: configs.enableDryRun,
                 systemPrompt: configs.systemPrompt,
                 gatewayUrl: gatewayStack.gatewayUrl,
-                alarmNamePrefix: configs.alarmNamePrefix,
                 dlqRetentionDays: allocs.dlqRetentionDays,
                 reservedConcurrency: allocs.agentLambda.reservedConcurrency,
                 env,
