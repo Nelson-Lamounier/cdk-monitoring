@@ -16,7 +16,6 @@ cdk-outputs/
 cdk.context.json
 
 # Yarn 4+
-.yarnrc.yml
 .yarn/*
 !.yarn/patches
 !.yarn/plugins
