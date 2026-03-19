@@ -17,7 +17,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment } from '../environments';
+import { type DeployableEnvironment, Environment } from '../environments';
 
 // =============================================================================
 // KUBERNETES CONSTANTS
@@ -389,7 +389,7 @@ const DEFAULT_K8S_SECURITY_GROUPS: K8sSecurityGroupConfig = {
 /**
  * k8s resource configurations by environment
  */
-export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
+export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
     [Environment.DEVELOPMENT]: {
         cluster: {
             kubernetesVersion: KUBERNETES_VERSION,
@@ -641,5 +641,5 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
  * Get k8s configurations for an environment
  */
 export function getK8sConfigs(env: Environment): K8sConfigs {
-    return K8S_CONFIGS[env];
+    return K8S_CONFIGS[env as DeployableEnvironment];
 }

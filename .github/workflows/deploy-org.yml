@@ -56,10 +56,9 @@ jobs:
     if: inputs.stack == 'dns-role' || inputs.stack == 'all'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
-      stack-name: Org-DnsRole-production
+      stack-name: Org-DnsRole-management
       project: org
-      environment: production
-      github-environment: management
+      environment: management
       aws-account-id: ${{ vars.ROOT_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never

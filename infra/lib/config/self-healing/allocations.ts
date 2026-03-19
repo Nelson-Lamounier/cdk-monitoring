@@ -13,7 +13,7 @@
  * ```
  */
 
-import { Environment } from '../environments';
+import { type DeployableEnvironment, Environment } from '../environments';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -62,7 +62,7 @@ export interface SelfHealingAllocations {
  * because the Strands agentic loop involves multiple LLM round-trips and
  * tool invocations per execution.
  */
-export const SELF_HEALING_ALLOCATIONS: Record<Environment, SelfHealingAllocations> = {
+export const SELF_HEALING_ALLOCATIONS: Record<DeployableEnvironment, SelfHealingAllocations> = {
     [Environment.DEVELOPMENT]: {
         agentLambda: {
             memoryMb: 512,
@@ -111,5 +111,5 @@ export const SELF_HEALING_ALLOCATIONS: Record<Environment, SelfHealingAllocation
  * Get Self-Healing allocations for an environment
  */
 export function getSelfHealingAllocations(env: Environment): SelfHealingAllocations {
-    return SELF_HEALING_ALLOCATIONS[env];
+    return SELF_HEALING_ALLOCATIONS[env as DeployableEnvironment];
 }

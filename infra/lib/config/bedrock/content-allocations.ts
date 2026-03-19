@@ -12,7 +12,7 @@
  * ```
  */
 
-import { Environment } from '../environments';
+import { type DeployableEnvironment, Environment } from '../environments';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -54,7 +54,7 @@ export interface ContentAllocations {
 // ALLOCATIONS BY ENVIRONMENT
 // =============================================================================
 
-export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
+export const CONTENT_ALLOCATIONS: Record<DeployableEnvironment, ContentAllocations> = {
     [Environment.DEVELOPMENT]: {
         lambda: {
             memoryMb: 512,
@@ -103,5 +103,5 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
  * Get content pipeline allocations for an environment
  */
 export function getContentAllocations(env: Environment): ContentAllocations {
-    return CONTENT_ALLOCATIONS[env];
+    return CONTENT_ALLOCATIONS[env as DeployableEnvironment];
 }

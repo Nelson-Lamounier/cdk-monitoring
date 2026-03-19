@@ -66,6 +66,7 @@ import {
     GetParametersByPathCommand,
 } from '@aws-sdk/client-ssm';
 
+import type { DeployableEnvironment } from '../../../lib/config';
 import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
@@ -80,12 +81,12 @@ import { flatName } from '../../../lib/utilities/naming';
  * Parse and validate CDK_ENV environment variable.
  * Throws with a descriptive error for invalid values.
  */
-function parseEnvironment(raw: string): Environment {
-    const valid = [Environment.DEVELOPMENT, Environment.STAGING, Environment.PRODUCTION] as const satisfies readonly Environment[];
-    if (!valid.includes(raw as Environment)) {
+function parseEnvironment(raw: string): DeployableEnvironment {
+    const valid = [Environment.DEVELOPMENT, Environment.STAGING, Environment.PRODUCTION] as const satisfies readonly DeployableEnvironment[];
+    if (!valid.includes(raw as DeployableEnvironment)) {
         throw new Error(`Invalid CDK_ENV: "${raw}". Expected one of: ${valid.join(', ')}`);
     }
-    return raw as Environment;
+    return raw as DeployableEnvironment;
 }
 
 // =============================================================================

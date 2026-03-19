@@ -16,7 +16,7 @@
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment, environmentRemovalPolicy } from '../environments';
+import { type DeployableEnvironment, Environment, environmentRemovalPolicy } from '../environments';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -69,7 +69,7 @@ const DEFAULT_SYSTEM_PROMPT = [
 /**
  * Self-Healing behavioural configs by environment
  */
-export const SELF_HEALING_CONFIGS: Record<Environment, SelfHealingConfigs> = {
+export const SELF_HEALING_CONFIGS: Record<DeployableEnvironment, SelfHealingConfigs> = {
     [Environment.DEVELOPMENT]: {
         logRetention: logs.RetentionDays.ONE_WEEK,
         removalPolicy: environmentRemovalPolicy(Environment.DEVELOPMENT),
@@ -103,5 +103,5 @@ export const SELF_HEALING_CONFIGS: Record<Environment, SelfHealingConfigs> = {
  * Get Self-Healing configs for an environment
  */
 export function getSelfHealingConfigs(env: Environment): SelfHealingConfigs {
-    return SELF_HEALING_CONFIGS[env];
+    return SELF_HEALING_CONFIGS[env as DeployableEnvironment];
 }

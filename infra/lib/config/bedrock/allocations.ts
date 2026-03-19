@@ -13,7 +13,7 @@
  * ```
  */
 
-import { Environment } from '../environments';
+import { type DeployableEnvironment, Environment } from '../environments';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -76,7 +76,7 @@ export interface BedrockAllocations {
 /**
  * Bedrock resource allocations by environment
  */
-export const BEDROCK_ALLOCATIONS: Record<Environment, BedrockAllocations> = {
+export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocations> = {
     [Environment.DEVELOPMENT]: {
         agent: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',
@@ -143,5 +143,5 @@ export const BEDROCK_ALLOCATIONS: Record<Environment, BedrockAllocations> = {
  * Get Bedrock allocations for an environment
  */
 export function getBedrockAllocations(env: Environment): BedrockAllocations {
-    return BEDROCK_ALLOCATIONS[env];
+    return BEDROCK_ALLOCATIONS[env as DeployableEnvironment];
 }

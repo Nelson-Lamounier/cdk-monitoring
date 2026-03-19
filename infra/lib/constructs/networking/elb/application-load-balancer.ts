@@ -228,6 +228,7 @@ export class ApplicationLoadBalancerConstruct extends Construct {
                 development: 7,
                 staging: 30,
                 production: 90,
+                management: 7,
             }[props.environment] ?? 7;
 
             this.accessLogBucket = new s3.Bucket(this, 'AccessLogBucket', {

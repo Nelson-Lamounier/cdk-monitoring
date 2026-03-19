@@ -8,6 +8,7 @@
 
 import * as cdk from 'aws-cdk-lib/core';
 
+import type { DeployableEnvironment } from '../../config/environments';
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
 import {
@@ -25,7 +26,7 @@ import { stackId, flatName } from '../../utilities/naming';
  * Environment-specific monthly budget limits in USD.
  * Conservative defaults — adjust via context or environment variables.
  */
-const BUDGET_LIMITS: Record<Environment, number> = {
+const BUDGET_LIMITS: Record<DeployableEnvironment, number> = {
     [Environment.DEVELOPMENT]: 100,
     [Environment.STAGING]: 200,
     [Environment.PRODUCTION]: 500,
@@ -35,7 +36,7 @@ const BUDGET_LIMITS: Record<Environment, number> = {
  * Bedrock-specific monthly budget limits in USD.
  * Scoped to Amazon Bedrock service only — fires earlier than account budget.
  */
-const BEDROCK_BUDGET_LIMITS: Record<Environment, number> = {
+const BEDROCK_BUDGET_LIMITS: Record<DeployableEnvironment, number> = {
     [Environment.DEVELOPMENT]: 30,
     [Environment.STAGING]: 75,
     [Environment.PRODUCTION]: 150,
@@ -145,7 +146,7 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
         // Cost: Free (first 2 budgets per account).
         // =================================================================
         const finopsStackName = stackId(this.namespace, 'FinOps', env);
-        const monthlyLimit = context.monthlyBudgetLimitUsd ?? BUDGET_LIMITS[env];
+        const monthlyLimit = context.monthlyBudgetLimitUsd ?? BUDGET_LIMITS[env as DeployableEnvironment];
 
         const finopsStack = new FinOpsStack(scope, finopsStackName, {
             targetEnvironment: env,
@@ -157,7 +158,7 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
             },
             // Bedrock-specific budget — per-service cost guardrail
             bedrockBudgetConfig: {
-                monthlyLimitUsd: BEDROCK_BUDGET_LIMITS[env],
+                monthlyLimitUsd: BEDROCK_BUDGET_LIMITS[env as DeployableEnvironment],
                 thresholds: [50, 80, 100],
             },
             env: cdkEnvironment(this.environment),

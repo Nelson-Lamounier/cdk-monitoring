@@ -25,7 +25,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment } from './environments';
+import { type DeployableEnvironment, Environment } from './environments';
 
 // =============================================================================
 // ENVIRONMENT VARIABLE HELPER
@@ -173,7 +173,7 @@ export interface NextJsAllocations {
 /**
  * NextJS resource allocations by environment
  */
-export const NEXTJS_ALLOCATIONS: Record<Environment, NextJsAllocations> = {
+export const NEXTJS_ALLOCATIONS: Record<DeployableEnvironment, NextJsAllocations> = {
     [Environment.DEVELOPMENT]: {
         lambda: {
             memoryMiB: 256,
@@ -279,28 +279,28 @@ export const NEXTJS_ALLOCATIONS: Record<Environment, NextJsAllocations> = {
  * Get NextJS allocations for an environment
  */
 export function getNextJsAllocations(env: Environment): NextJsAllocations {
-    return NEXTJS_ALLOCATIONS[env];
+    return NEXTJS_ALLOCATIONS[env as DeployableEnvironment];
 }
 
 /**
  * Get Lambda allocation for an environment
  */
 export function getLambdaAllocation(env: Environment): LambdaAllocation {
-    return NEXTJS_ALLOCATIONS[env].lambda;
+    return NEXTJS_ALLOCATIONS[env as DeployableEnvironment].lambda;
 }
 
 /**
  * Get ECS allocation for an environment
  */
 export function getEcsAllocation(env: Environment): EcsAllocation {
-    return NEXTJS_ALLOCATIONS[env].ecs;
+    return NEXTJS_ALLOCATIONS[env as DeployableEnvironment].ecs;
 }
 
 /**
  * Get ECS task allocation for an environment
  */
 export function getEcsTaskAllocation(env: Environment): EcsTaskAllocation {
-    return NEXTJS_ALLOCATIONS[env].ecsTask;
+    return NEXTJS_ALLOCATIONS[env as DeployableEnvironment].ecsTask;
 }
 
 // =============================================================================
@@ -578,7 +578,7 @@ export const CLOUDFRONT_ERROR_RESPONSES = [
  * Build NextJS resource configurations for all environments.
  * Called lazily to ensure process.env is populated by dotenv first.
  */
-function buildNextJsConfigs(): Record<Environment, NextJsConfigs> {
+function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
     return {
     [Environment.DEVELOPMENT]: {
         // Synth-time context — Edge (env var > hardcoded default)
@@ -852,7 +852,7 @@ function buildNextJsConfigs(): Record<Environment, NextJsConfigs> {
 }
 
 // Memoised cache — built once on first access
-let _cachedConfigs: Record<Environment, NextJsConfigs> | undefined;
+let _cachedConfigs: Record<DeployableEnvironment, NextJsConfigs> | undefined;
 
 // =============================================================================
 // CONFIGURATION HELPER FUNCTIONS
@@ -866,7 +866,7 @@ export function getNextJsConfigs(env: Environment): NextJsConfigs {
     if (!_cachedConfigs) {
         _cachedConfigs = buildNextJsConfigs();
     }
-    return _cachedConfigs[env];
+    return _cachedConfigs[env as DeployableEnvironment];
 }
 
 /**
@@ -919,7 +919,7 @@ export interface NextJsK8sConfig {
 /**
  * Next.js K8s configurations by environment
  */
-export const NEXTJS_K8S_CONFIGS: Record<Environment, NextJsK8sConfig> = {
+export const NEXTJS_K8S_CONFIGS: Record<DeployableEnvironment, NextJsK8sConfig> = {
     [Environment.DEVELOPMENT]: {
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
         capacityType: 'on-demand',
@@ -961,5 +961,5 @@ export const NEXTJS_K8S_CONFIGS: Record<Environment, NextJsK8sConfig> = {
  * Get Next.js K8s configuration for an environment
  */
 export function getNextJsK8sConfig(env: Environment): NextJsK8sConfig {
-    return NEXTJS_K8S_CONFIGS[env];
+    return NEXTJS_K8S_CONFIGS[env as DeployableEnvironment];
 }

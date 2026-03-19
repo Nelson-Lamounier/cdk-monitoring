@@ -16,7 +16,7 @@
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment } from '../environments';
+import { type DeployableEnvironment, Environment } from '../environments';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -73,7 +73,7 @@ export interface BedrockConfigs {
 /**
  * Bedrock resource configurations by environment
  */
-export const BEDROCK_CONFIGS: Record<Environment, BedrockConfigs> = {
+export const BEDROCK_CONFIGS: Record<DeployableEnvironment, BedrockConfigs> = {
     [Environment.DEVELOPMENT]: {
         agentInstruction:
             'You are a helpful AI assistant for the portfolio application. ' +
@@ -147,5 +147,5 @@ export const BEDROCK_CONFIGS: Record<Environment, BedrockConfigs> = {
  * Get Bedrock configurations for an environment
  */
 export function getBedrockConfigs(env: Environment): BedrockConfigs {
-    return BEDROCK_CONFIGS[env];
+    return BEDROCK_CONFIGS[env as DeployableEnvironment];
 }

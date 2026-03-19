@@ -56,7 +56,7 @@ const verifyBootstrap = values['verify-bootstrap']!;
 // ---------------------------------------------------------------------------
 
 /** Allowed deployment target environments. */
-const VALID_ENVIRONMENTS = ['development', 'staging', 'production'];
+const VALID_ENVIRONMENTS = ['development', 'staging', 'production', 'management'];
 
 /** Allowed CDK approval modes. */
 const VALID_APPROVALS = ['never', 'any-change', 'broadening'];
