@@ -240,7 +240,7 @@ jobs:
           ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
           ROOT_ACCOUNT: ${{ inputs.root-account-id }}
           RESTRICT_ACCESS: ${{ inputs.restrict-access }}
-          TRUSTED_ACCOUNT_IDS: ${{ vars.AWS_ACCOUNT_ID }}
+          TRUSTED_ACCOUNT_IDS: ${{ vars.DEV_ACCOUNT_ID }}
 
       - name: Deploy CDK Stack
         id: deploy-stack

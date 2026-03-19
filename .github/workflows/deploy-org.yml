@@ -56,9 +56,9 @@ jobs:
     if: inputs.stack == 'dns-role' || inputs.stack == 'all'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
-      stack-name: Org-DnsRoleStack-prod
+      stack-name: Org-DnsRole-production
       project: org
-      environment: development
+      environment: management
       aws-account-id: ${{ vars.ROOT_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
@@ -66,6 +66,7 @@ jobs:
       additional-args: >-
         --context hostedZoneIds=${{ vars.HOSTED_ZONE_ID }}
         --context externalId=acm-dns-validation
+        --context environment=production
       outputs-directory: org-outputs
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
