@@ -52,7 +52,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
-import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
+import type * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import * as cdk from 'aws-cdk-lib/core';
 import * as cr from 'aws-cdk-lib/custom-resources';
 
@@ -69,7 +69,7 @@ import { nextjsSsmPaths } from '../../config/ssm-paths';
 import { LambdaFunctionConstruct } from '../../constructs/compute';
 import { CloudFrontConstruct } from '../../constructs/networking/cloudfront';
 import { AcmCertificateDnsValidationConstruct } from '../../constructs/security/acm-certificate';
-import { buildWafRules } from '../../constructs/security/waf-rules';
+import { WafWebAclConstruct } from '../../constructs/security/waf-web-acl';
 
 // =============================================================================
 // STACK PROPS
@@ -312,100 +312,20 @@ export class KubernetesEdgeStack extends cdk.Stack {
         // =====================================================================
         // WAF WEB ACL
         // =====================================================================
-        const wafRules = buildWafRules({
+        const wafConstruct = new WafWebAclConstruct(this, 'CloudFrontWebAcl', {
             envName,
             namePrefix,
+            scope: 'CLOUDFRONT',
             rateLimitPerIp: props.rateLimitPerIp ?? 5000,
             enableIpReputation: props.enableIpReputationList ?? true,
             enableRateLimiting: props.enableRateLimiting ?? true,
+            restrictAccess: props.restrictAccess,
+            allowedIps: props.allowedIps,
+            allowedIpv6s: props.allowedIpv6s,
         });
 
-        // =====================================================================
-        // IP Allowlist — Pre-launch access restriction
-        //
-        // When restrictAccess is true, only IPs in the allowedIps/allowedIpv6s
-        // props can reach the site. All other traffic is blocked at the
-        // CloudFront edge before hitting the origin.
-        //
-        // To go live:     set RESTRICT_ACCESS=false in GitHub Environment
-        // To lock down:   set RESTRICT_ACCESS=true  in GitHub Environment
-        // =====================================================================
-        const restrictAccess = props.restrictAccess ?? false;
-        const allowedIps = props.allowedIps ?? [];
-        const allowedIpv6s = props.allowedIpv6s ?? [];
-        const hasAllowlist = allowedIps.length > 0 || allowedIpv6s.length > 0;
-
-        if (restrictAccess && hasAllowlist) {
-            // WAF requires separate IP sets per address family.
-            // We combine them with an OR statement in one rule.
-            const ipSetStatements: wafv2.CfnWebACL.StatementProperty[] = [];
-
-            if (allowedIps.length > 0) {
-                const ipv4Set = new wafv2.CfnIPSet(this, 'AllowedIpv4Set', {
-                    name: `${envName}-${namePrefix}-allowed-ipv4`,
-                    description: 'IPv4 addresses allowed during pre-launch restricted access',
-                    scope: 'CLOUDFRONT',
-                    ipAddressVersion: 'IPV4',
-                    addresses: allowedIps,
-                });
-                ipSetStatements.push({
-                    ipSetReferenceStatement: { arn: ipv4Set.attrArn },
-                });
-            }
-
-            if (allowedIpv6s.length > 0) {
-                const ipv6Set = new wafv2.CfnIPSet(this, 'AllowedIpv6Set', {
-                    name: `${envName}-${namePrefix}-allowed-ipv6`,
-                    description: 'IPv6 addresses allowed during pre-launch restricted access',
-                    scope: 'CLOUDFRONT',
-                    ipAddressVersion: 'IPV6',
-                    addresses: allowedIpv6s,
-                });
-                ipSetStatements.push({
-                    ipSetReferenceStatement: { arn: ipv6Set.attrArn },
-                });
-            }
-
-            // Single IP set → direct reference; dual → OR statement
-            const allowStatement: wafv2.CfnWebACL.StatementProperty =
-                ipSetStatements.length === 1
-                    ? ipSetStatements[0]
-                    : { orStatement: { statements: ipSetStatements } };
-
-            // Insert as the highest-priority rule (priority 0) — evaluated first.
-            // Matching IPs are ALLOWed; the default action (BLOCK) handles the rest.
-            wafRules.unshift({
-                name: 'AllowListedIPs',
-                priority: 0,
-                action: { allow: {} },
-                statement: allowStatement,
-                visibilityConfig: {
-                    cloudWatchMetricsEnabled: true,
-                    metricName: `${envName}-${namePrefix}-allowed-ips`,
-                    sampledRequestsEnabled: true,
-                },
-            });
-        }
-
-        this.webAcl = new wafv2.CfnWebACL(this, 'CloudFrontWebAcl', {
-            name: `${envName}-${namePrefix}-cloudfront-waf`,
-            description: `WAF for ${namePrefix} CloudFront distribution - ${envName}`,
-            scope: 'CLOUDFRONT',
-            // When restrictAccess is true AND allowedIps are set: block everything
-            // except the allowlisted IPs. Otherwise: allow all (WAF managed rules
-            // still apply for XSS, SQLi, rate limiting, etc.)
-            defaultAction: restrictAccess && hasAllowlist
-                ? { block: {} }
-                : { allow: {} },
-            rules: wafRules,
-            visibilityConfig: {
-                cloudWatchMetricsEnabled: true,
-                metricName: `${envName}-${namePrefix}-cloudfront-waf`,
-                sampledRequestsEnabled: true,
-            },
-        });
-
-        this.webAclArn = this.webAcl.attrArn;
+        this.webAcl = wafConstruct.webAcl;
+        this.webAclArn = wafConstruct.webAclArn;
 
         // =====================================================================
         // CLOUDFRONT DISTRIBUTION
