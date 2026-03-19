@@ -34,7 +34,7 @@ childProcess.spawnSync = function mockedSpawnSync(command, args, options) {
 
 module.exports = {
   testEnvironment: "node",
-  roots: ["<rootDir>/tests"],
+  roots: ["<rootDir>/tests", "<rootDir>/lambda"],
   testMatch: ["**/*.test.ts"],
   testTimeout: 10000,
   verbose: false,
