@@ -34,6 +34,43 @@ const SERVICE_ACCOUNT_PATH = '/service-accounts/';
 const DEFAULT_MANAGED_SERVICES = ['s3', 'sqs'];
 
 // =============================================================================
+// Module-Level Helpers (Rule 10/11 — keep predicates outside it() blocks)
+// =============================================================================
+
+interface PolicyStatement {
+    Sid?: string;
+    [key: string]: unknown;
+}
+
+/**
+ * Extract all policy statements from CloudFormation IAM Policy resources.
+ * Lives at module level to avoid `?? []` inside `it()` blocks (Rule 11).
+ */
+function extractPolicyStatements(
+    policies: Array<Record<string, unknown>>,
+): PolicyStatement[] {
+    const results: PolicyStatement[] = [];
+    for (const p of policies) {
+        const props = p.Properties as Record<string, unknown> | undefined;
+        const doc = props?.PolicyDocument as Record<string, unknown> | undefined;
+        const statements = (doc?.Statement as PolicyStatement[] | undefined) ?? [];
+        results.push(...statements);
+    }
+    return results;
+}
+
+/**
+ * Find a policy statement by its Sid value.
+ * Lives at module level to keep `.find()` predicate outside `it()` blocks (Rule 11).
+ */
+function findStatementBySid(
+    statements: PolicyStatement[],
+    sid: string,
+): PolicyStatement | undefined {
+    return statements.find((s) => s.Sid === sid);
+}
+
+// =============================================================================
 // Test Fixtures
 // =============================================================================
 
@@ -273,13 +310,13 @@ describe('CrossplaneStack', () => {
                 }),
             });
 
-            // S3 policy should NOT exist — verify by checking no S3 statement
+            // S3 policy should NOT exist — verify via resource count.
+            // If S3 were included, there would be 2 policies (S3 + SQS).
+            // With only SQS, there should be fewer statements total.
             const policyResources = template.findResources('AWS::IAM::Policy');
             const policies = Object.values(policyResources);
-            const allStatements = policies.flatMap(
-                (p) => (p.Properties?.PolicyDocument?.Statement ?? []) as Array<{ Sid?: string }>,
-            );
-            const s3Statement = allStatements.find((s) => s.Sid === 'CrossplaneS3Management');
+            const allStatements = extractPolicyStatements(policies);
+            const s3Statement = findStatementBySid(allStatements, 'CrossplaneS3Management');
             expect(s3Statement).toBeUndefined();
         });
     });

@@ -253,13 +253,10 @@ describe('SSM Automation Runtime — Post-Deploy Verification', () => {
     // =====================================================================
     describe('Runtime — Step Functions Orchestrator', () => {
         it('should have a successful latest execution (if any)', () => {
-            if (!latestSfnExecution) {
-                console.warn(
-                    '⚠ No Step Functions executions found — ' +
-                    'instances have not been launched yet. Skipping runtime assertion.',
-                );
-                return;
-            }
+            // Phase 2: pass vacuously when no executions exist
+            // (instances not launched yet)
+            if (!latestSfnExecution) return;
+
             expect(SFN_SUCCESS_STATUSES).toContain(
                 latestSfnExecution.status,
             );
@@ -277,18 +274,16 @@ describe('SSM Automation Runtime — Post-Deploy Verification', () => {
             });
 
             it('should have completed successfully (if executed)', () => {
-                if (!execution) {
-                    console.warn(
-                        `⚠ No execution found for ${target.label} — ` +
-                        'instance not yet launched. Skipping runtime assertion.',
-                    );
-                    return;
-                }
+                // Phase 2: pass vacuously when no executions exist
+                if (!execution) return;
+
                 expect(SSM_SUCCESS_STATUSES).toContain(execution.status);
             });
 
             it('should have document name matching expected pattern (if executed)', () => {
+                // Phase 2: pass vacuously when no executions exist
                 if (!execution) return;
+
                 const exec = requireResult(ssmResults, target.label);
                 expect(exec.documentName).toMatch(
                     new RegExp(`^${NAME_PREFIX}-`),
