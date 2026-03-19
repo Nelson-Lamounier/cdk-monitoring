@@ -130,11 +130,13 @@ jobs:
           BUCKET_NAME=$(aws ssm get-parameter \
             --name "/${{ env.SSM_PREFIX }}/assets-bucket-name" \
             --query 'Parameter.Value' --output text)
+          echo "::add-mask::$BUCKET_NAME"
           echo "bucket_name=$BUCKET_NAME" >> $GITHUB_OUTPUT
 
           TABLE_NAME=$(aws ssm get-parameter \
             --name "/${{ env.SSM_PREFIX }}/content-table-name" \
             --query 'Parameter.Value' --output text)
+          echo "::add-mask::$TABLE_NAME"
           echo "table_name=$TABLE_NAME" >> $GITHUB_OUTPUT
 
           LAMBDA_ARN=$(aws ssm get-parameter \
@@ -142,15 +144,17 @@ jobs:
             --query 'Parameter.Value' --output text)
           # Extract function name from ARN
           LAMBDA_NAME=$(echo "$LAMBDA_ARN" | awk -F: '{print $NF}')
+          echo "::add-mask::$LAMBDA_ARN"
+          echo "::add-mask::$LAMBDA_NAME"
           echo "lambda_name=$LAMBDA_NAME" >> $GITHUB_OUTPUT
 
           echo "## 🏗️ Infrastructure" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| S3 Bucket | \`$BUCKET_NAME\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| DynamoDB Table | \`$TABLE_NAME\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Lambda Function | \`$LAMBDA_NAME\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| S3 Bucket | ✅ Resolved |" >> $GITHUB_STEP_SUMMARY
+          echo "| DynamoDB Table | ✅ Resolved |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lambda Function | ✅ Resolved |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
       # ------------------------------------------------------------------
@@ -170,11 +174,11 @@ jobs:
 
           while IFS= read -r FILE; do
             FILENAME=$(basename "$FILE")
-            echo "Uploading: $FILE → s3://$BUCKET/drafts/$FILENAME"
+            echo "Uploading: $FILENAME → drafts/"
 
             if aws s3 cp "$FILE" "s3://$BUCKET/drafts/$FILENAME" \
               --content-type "text/markdown"; then
-              echo "- ✅ \`$FILENAME\` → \`s3://$BUCKET/drafts/$FILENAME\`" >> $GITHUB_STEP_SUMMARY
+              echo "- ✅ \`$FILENAME\` uploaded to drafts/" >> $GITHUB_STEP_SUMMARY
               UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
             else
               echo "- ❌ \`$FILENAME\` — upload failed" >> $GITHUB_STEP_SUMMARY

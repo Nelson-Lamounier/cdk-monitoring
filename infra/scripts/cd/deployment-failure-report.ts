@@ -45,7 +45,7 @@ import {
     SSMClient,
     SendCommandCommand,
 } from '@aws-sdk/client-ssm';
-import { emitAnnotation, writeSummary } from '@repo/script-utils/github.js';
+import { emitAnnotation, maskSecret, writeSummary } from '@repo/script-utils/github.js';
 import logger from '@repo/script-utils/logger.js';
 
 // =============================================================================
@@ -249,6 +249,9 @@ async function collectK8sDiagnostics(): Promise<string> {
             }),
         );
         instanceId = response.Parameter?.Value ?? '';
+        if (instanceId) {
+            maskSecret(instanceId);
+        }
     } catch {
         logger.warn('Could not resolve instance ID from SSM — skipping K8s diagnostics');
     }
@@ -353,7 +356,7 @@ async function collectBootLogs(): Promise<string> {
             lines.push('```');
         } else {
             lines.push(
-                `_No boot log events found (log group: ${logGroup})_`,
+                '_No boot log events found in the last 15 minutes_',
             );
         }
     } catch (err) {
@@ -361,7 +364,7 @@ async function collectBootLogs(): Promise<string> {
             `Could not fetch boot logs: ${(err as Error).message}`,
         );
         lines.push(
-            `_Could not fetch boot logs from ${logGroup}_`,
+            '_Could not fetch boot logs — check CloudWatch_',
         );
     }
 

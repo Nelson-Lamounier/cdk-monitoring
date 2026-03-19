@@ -147,7 +147,7 @@ jobs:
               --type String \
               --overwrite \
               --region "$REGION"
-            echo "[OK] Wrote ${SSM_PREFIX}/allow-ipv4"
+            echo "[OK] IPv4 allowlist written to SSM"
           else
             echo "[SKIP] ALLOW_IPV4 not set — skipping"
           fi
@@ -159,7 +159,7 @@ jobs:
               --type String \
               --overwrite \
               --region "$REGION"
-            echo "[OK] Wrote ${SSM_PREFIX}/allow-ipv6"
+            echo "[OK] IPv6 allowlist written to SSM"
           else
             echo "[SKIP] ALLOW_IPV6 not set — skipping"
           fi

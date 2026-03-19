@@ -191,19 +191,38 @@ jobs:
           # Only export env vars that the calling workflow actually provides.
           # This keeps the environment clean for stacks that don't need them
           # (e.g. Shared doesn't need DOMAIN_NAME, VERIFICATION_SECRET, etc.).
+
+          # ── Mask infrastructure identifiers (from inputs/vars, NOT auto-masked) ──
+          # Values from secrets.* are already auto-masked by GitHub Actions runner.
+          # These are from inputs.* or vars.* and must be explicitly masked.
+          [[ -n "$DOMAIN_NAME"            ]] && echo "::add-mask::$DOMAIN_NAME"
+          [[ -n "$HOSTED_ZONE_ID"         ]] && echo "::add-mask::$HOSTED_ZONE_ID"
+          [[ -n "$CROSS_ACCOUNT_ROLE_ARN" ]] && echo "::add-mask::$CROSS_ACCOUNT_ROLE_ARN"
+          [[ -n "$ROOT_ACCOUNT"           ]] && echo "::add-mask::$ROOT_ACCOUNT"
+          [[ -n "$MONITOR_DOMAIN_NAME"    ]] && echo "::add-mask::$MONITOR_DOMAIN_NAME"
+          [[ -n "$NOTIFICATION_EMAIL"     ]] && echo "::add-mask::$NOTIFICATION_EMAIL"
+          [[ -n "$SES_FROM_EMAIL"         ]] && echo "::add-mask::$SES_FROM_EMAIL"
+
+          # ── Write infrastructure identifiers (masked above, safe to echo) ──
           [[ -n "$DOMAIN_NAME"            ]] && echo "DOMAIN_NAME=$DOMAIN_NAME"                       >> $GITHUB_ENV
           [[ -n "$HOSTED_ZONE_ID"         ]] && echo "HOSTED_ZONE_ID=$HOSTED_ZONE_ID"                 >> $GITHUB_ENV
           [[ -n "$CROSS_ACCOUNT_ROLE_ARN" ]] && echo "CROSS_ACCOUNT_ROLE_ARN=$CROSS_ACCOUNT_ROLE_ARN" >> $GITHUB_ENV
           [[ -n "$NOTIFICATION_EMAIL"     ]] && echo "NOTIFICATION_EMAIL=$NOTIFICATION_EMAIL"         >> $GITHUB_ENV
           [[ -n "$SES_FROM_EMAIL"         ]] && echo "SES_FROM_EMAIL=$SES_FROM_EMAIL"                 >> $GITHUB_ENV
-          [[ -n "$VERIFICATION_SECRET"      ]] && echo "VERIFICATION_SECRET=$VERIFICATION_SECRET"           >> $GITHUB_ENV
-          [[ -n "$VERIFICATION_BASE_URL"    ]] && echo "VERIFICATION_BASE_URL=$VERIFICATION_BASE_URL"       >> $GITHUB_ENV
-          [[ -n "$GRAFANA_ADMIN_PASSWORD"   ]] && echo "GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD"     >> $GITHUB_ENV
-          [[ -n "$MONITOR_DOMAIN_NAME"      ]] && echo "MONITOR_DOMAIN_NAME=$MONITOR_DOMAIN_NAME"           >> $GITHUB_ENV
-          [[ -n "$ALLOW_IPV4"                ]] && echo "ALLOW_IPV4=$ALLOW_IPV4"                             >> $GITHUB_ENV
-          [[ -n "$ALLOW_IPV6"                ]] && echo "ALLOW_IPV6=$ALLOW_IPV6"                             >> $GITHUB_ENV
-          [[ -n "$ROOT_ACCOUNT"              ]] && echo "ROOT_ACCOUNT=$ROOT_ACCOUNT"                         >> $GITHUB_ENV
-          [[ -n "$RESTRICT_ACCESS"           ]] && echo "RESTRICT_ACCESS=$RESTRICT_ACCESS"                   >> $GITHUB_ENV
+          [[ -n "$VERIFICATION_BASE_URL"  ]] && echo "VERIFICATION_BASE_URL=$VERIFICATION_BASE_URL"   >> $GITHUB_ENV
+          [[ -n "$MONITOR_DOMAIN_NAME"    ]] && echo "MONITOR_DOMAIN_NAME=$MONITOR_DOMAIN_NAME"       >> $GITHUB_ENV
+          [[ -n "$ROOT_ACCOUNT"           ]] && echo "ROOT_ACCOUNT=$ROOT_ACCOUNT"                     >> $GITHUB_ENV
+          [[ -n "$RESTRICT_ACCESS"        ]] && echo "RESTRICT_ACCESS=$RESTRICT_ACCESS"               >> $GITHUB_ENV
+
+          # ── Write secrets without stdout exposure (defence-in-depth) ──
+          # GitHub auto-masks secrets.* values, but printf >> FILE writes
+          # directly to the file without flowing through stdout/stderr,
+          # which the runner captures. Unlike echo, printf with redirection
+          # does not appear in workflow logs.
+          [[ -n "$VERIFICATION_SECRET"    ]] && printf '%s\n' "VERIFICATION_SECRET=$VERIFICATION_SECRET"     >> "$GITHUB_ENV"
+          [[ -n "$GRAFANA_ADMIN_PASSWORD" ]] && printf '%s\n' "GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD" >> "$GITHUB_ENV"
+          [[ -n "$ALLOW_IPV4"             ]] && printf '%s\n' "ALLOW_IPV4=$ALLOW_IPV4"                       >> "$GITHUB_ENV"
+          [[ -n "$ALLOW_IPV6"             ]] && printf '%s\n' "ALLOW_IPV6=$ALLOW_IPV6"                       >> "$GITHUB_ENV"
           echo "✓ Scoped config applied"
         env:
           DOMAIN_NAME: ${{ inputs.domain-name }}

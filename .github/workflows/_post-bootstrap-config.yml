@@ -177,8 +177,10 @@ jobs:
           MAX_ATTEMPTS=20
           INTERVAL=30
 
+          # Mask Secrets Manager name to avoid exposing naming convention
+          echo "::add-mask::$SECRET_NAME"
+
           echo "Polling Secrets Manager for ArgoCD CI token..."
-          echo "  Secret: ${SECRET_NAME}"
           echo "  Max wait: $(( MAX_ATTEMPTS * INTERVAL ))s"
           echo ""
 
@@ -248,6 +250,9 @@ jobs:
             --region "$REGION" 2>/dev/null || echo "")
 
           if [ -n "$INSTANCE_ID" ]; then
+            # Mask instance ID to prevent infrastructure enumeration
+            echo "::add-mask::$INSTANCE_ID"
+
             echo "### K8s Pod Status (non-Running)" >> $GITHUB_STEP_SUMMARY
             CMD_ID=$(aws ssm send-command \
               --instance-ids "$INSTANCE_ID" \

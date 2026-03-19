@@ -194,6 +194,9 @@ jobs:
             exit 1
           fi
 
+          # Mask ECR URL (contains AWS account ID)
+          echo "::add-mask::$ECR_URL"
+
           npx tsx frontend-ops/push-to-ecr.ts \
             --env "${{ inputs.environment }}" \
             --tag "${{ inputs.image-tag }}" \
@@ -203,6 +206,7 @@ jobs:
             --skip-sync \
             --region "${{ env.AWS_REGION }}"
 
+          echo "::add-mask::${ECR_URL}:${{ inputs.image-tag }}"
           echo "image-uri=${ECR_URL}:${{ inputs.image-tag }}" >> $GITHUB_OUTPUT
 
       # ----------------------------------------------------------------
@@ -238,9 +242,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### ECR" >> $GITHUB_STEP_SUMMARY
           echo "- **Tag**: ${{ inputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **URI**: ${{ steps.push-ecr.outputs.image-uri }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ✅ Pushed to ECR" >> $GITHUB_STEP_SUMMARY
           if [ "${{ inputs.push-to-dockerhub }}" = "true" ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Docker Hub" >> $GITHUB_STEP_SUMMARY
-            echo "- **Pull**: \`docker pull lamounierdev/nextjs-application:latest\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Status**: ✅ Pushed to Docker Hub" >> $GITHUB_STEP_SUMMARY
           fi

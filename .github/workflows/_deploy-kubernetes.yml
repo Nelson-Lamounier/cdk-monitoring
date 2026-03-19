@@ -232,10 +232,15 @@ jobs:
             exit 1
           fi
 
+          # ── Mask infrastructure identifiers before output ──
+          echo "::add-mask::$DOMAIN"
+          echo "::add-mask::$HZ_ID"
+          echo "::add-mask::$ROLE_ARN"
+
           echo "domain-name=$DOMAIN" >> $GITHUB_OUTPUT
           echo "hosted-zone-id=$HZ_ID" >> $GITHUB_OUTPUT
           echo "cross-account-role-arn=$ROLE_ARN" >> $GITHUB_OUTPUT
-          echo "[OK] Edge config: $DOMAIN (Zone: $HZ_ID)"
+          echo "[OK] Edge config resolved"
 
       - name: Synthesize & Determine Stack Names
         id: synth

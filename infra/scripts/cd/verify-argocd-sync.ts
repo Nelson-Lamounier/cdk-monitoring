@@ -300,7 +300,8 @@ async function resolveControlPlaneInstance(): Promise<string | undefined> {
     return undefined;
   }
 
-  logger.info(`Control plane instance: ${instanceId}`);
+  maskSecret(instanceId);
+  logger.info('Control plane instance resolved');
   return instanceId;
 }
 
@@ -477,7 +478,6 @@ async function waitForSync(
 
   console.log('## ArgoCD Sync Verification (via SSM)');
   console.log('');
-  console.log(`Instance: ${instanceId}`);
   console.log(`Expected Applications: ${EXPECTED_APPS.join(', ')}`);
   console.log(`Poll interval: ${pollInterval}s, max polls: ${maxPolls}`);
   console.log('');
@@ -555,7 +555,7 @@ async function waitForSync(
 
       for (const app of EXPECTED_APPS) {
         const wave = waveMap[app] || '3';
-        const argoLink = `[View](https://ops.nelsonlamounier.com/argocd/applications/argocd/${app})`;
+        const argoLink = `[View](ArgoCD UI)`;
         writeSummary(`| ${wave} | ${app} | ✅ Synced | ✅ Healthy | ${argoLink} |`);
       }
 
