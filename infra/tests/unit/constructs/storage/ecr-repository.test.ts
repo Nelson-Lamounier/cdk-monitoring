@@ -8,8 +8,8 @@
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { EcrRepositoryConstruct, EcrRepositoryConstructProps } from '../../../../lib/constructs/storage/ecr-repository';
 import { Environment } from '../../../../lib/config';
+import { EcrRepositoryConstruct, EcrRepositoryConstructProps } from '../../../../lib/constructs/storage/ecr-repository';
 
 /**
  * Helper to create ECR construct for testing

@@ -17,10 +17,10 @@
  * Cost: Free (first 2 budgets/account). SNS: negligible.
  */
 
-import * as cdk from 'aws-cdk-lib/core';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 

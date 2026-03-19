@@ -16,9 +16,9 @@ import {
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import { SharedVpcStack } from '../../shared/vpc-stack';
-import { SecurityBaselineStack } from '../../stacks/shared/security-baseline-stack';
-import { FinOpsStack } from '../../stacks/shared/finops-stack';
 import { CrossplaneStack } from '../../stacks/shared/crossplane-stack';
+import { FinOpsStack } from '../../stacks/shared/finops-stack';
+import { SecurityBaselineStack } from '../../stacks/shared/security-baseline-stack';
 import { stackId, flatName } from '../../utilities/naming';
 
 /**

@@ -52,13 +52,13 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
+import { Environment } from '../../config/environments';
+import { MonitoringWorkerConfig } from '../../config/kubernetes';
 import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
 } from '../../constructs/index';
-import { Environment } from '../../config/environments';
-import { MonitoringWorkerConfig } from '../../config/kubernetes';
 
 // =============================================================================
 // PROPS

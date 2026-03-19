@@ -10,9 +10,10 @@
  * not reusable constructs (same pattern as NextJsIamRolesStack).
  */
 
+import { NagSuppressions } from 'cdk-nag';
+
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cdk from 'aws-cdk-lib/core';
-import { NagSuppressions } from 'cdk-nag';
 
 import { Construct } from 'constructs';
 

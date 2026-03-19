@@ -50,10 +50,6 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import { Construct } from "constructs";
 
 import { applyCommonSuppressions } from "../../aspects/cdk-nag-aspect";
-import { SsmParameterStoreConstruct } from "../../constructs/ssm";
-import {
-  S3BucketConstruct,
-} from "../../constructs/storage";
 import {
   Environment,
   isProductionEnvironment,
@@ -67,6 +63,10 @@ import { getNextJsConfigs } from "../../config/nextjs";
 import {
   nextjsResourceNames,
 } from "../../config/nextjs";
+import { SsmParameterStoreConstruct } from "../../constructs/ssm";
+import {
+  S3BucketConstruct,
+} from "../../constructs/storage";
 
 // =============================================================================
 // STACK PROPS

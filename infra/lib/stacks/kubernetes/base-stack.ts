@@ -52,9 +52,6 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
-import { SecurityGroupConstruct, SsmParameterStoreConstruct } from '../../constructs';
-import { NetworkLoadBalancerConstruct } from '../../constructs/networking';
-import { S3BucketConstruct } from '../../constructs/storage';
 import { Environment } from '../../config/environments';
 import {
     K8sConfigs,
@@ -62,6 +59,9 @@ import {
     TRAEFIK_HTTPS_PORT,
 } from '../../config/kubernetes';
 import { adminSsmPaths, k8sSsmPaths } from '../../config/ssm-paths';
+import { SecurityGroupConstruct, SsmParameterStoreConstruct } from '../../constructs';
+import { NetworkLoadBalancerConstruct } from '../../constructs/networking';
+import { S3BucketConstruct } from '../../constructs/storage';
 
 // =============================================================================
 // PROPS

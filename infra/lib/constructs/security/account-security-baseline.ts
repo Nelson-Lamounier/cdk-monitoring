@@ -21,12 +21,12 @@
  * ```
  */
 
-import * as guardduty from 'aws-cdk-lib/aws-guardduty';
 import * as accessanalyzer from 'aws-cdk-lib/aws-accessanalyzer';
+import * as guardduty from 'aws-cdk-lib/aws-guardduty';
 import * as securityhub from 'aws-cdk-lib/aws-securityhub';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
-import * as cdk from 'aws-cdk-lib/core';
+
 
 import { Construct } from 'constructs';
 

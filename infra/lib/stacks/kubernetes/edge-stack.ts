@@ -58,10 +58,6 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
-import { LambdaFunctionConstruct } from '../../constructs/compute';
-import { CloudFrontConstruct } from '../../constructs/networking/cloudfront';
-import { AcmCertificateDnsValidationConstruct } from '../../constructs/security/acm-certificate';
-import { buildWafRules } from '../../constructs/security/waf-rules';
 import { Environment } from '../../config/environments';
 import {
     getNextJsConfigs,
@@ -70,6 +66,10 @@ import {
     CLOUDFRONT_ERROR_RESPONSES,
 } from '../../config/nextjs';
 import { nextjsSsmPaths } from '../../config/ssm-paths';
+import { LambdaFunctionConstruct } from '../../constructs/compute';
+import { CloudFrontConstruct } from '../../constructs/networking/cloudfront';
+import { AcmCertificateDnsValidationConstruct } from '../../constructs/security/acm-certificate';
+import { buildWafRules } from '../../constructs/security/waf-rules';
 
 // =============================================================================
 // STACK PROPS

@@ -20,9 +20,9 @@
  * ```
  */
 
-import * as cdk from 'aws-cdk-lib/core';
 import * as budgets from 'aws-cdk-lib/aws-budgets';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 

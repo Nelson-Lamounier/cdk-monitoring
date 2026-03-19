@@ -59,13 +59,13 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
+import { Environment } from '../../config/environments';
+import type { ArgocdWorkerConfig } from '../../config/kubernetes/index';
 import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
 } from '../../constructs/index';
-import { Environment } from '../../config/environments';
-import type { ArgocdWorkerConfig } from '../../config/kubernetes/index';
 
 // =============================================================================
 // PROPS

@@ -47,6 +47,8 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
+import { Environment, shortEnv } from '../../config/environments';
+import { NextJsK8sConfig } from '../../config/nextjs';
 import {
     AutoScalingGroupConstruct,
     // @deprecated — EipFailoverConstruct replaced by NLB health-check failover.
@@ -55,8 +57,6 @@ import {
     LaunchTemplateConstruct,
     UserDataBuilder,
 } from '../../constructs/index';
-import { Environment, shortEnv } from '../../config/environments';
-import { NextJsK8sConfig } from '../../config/nextjs';
 
 // =============================================================================
 // PROPS

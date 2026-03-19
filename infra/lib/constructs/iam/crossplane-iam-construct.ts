@@ -28,11 +28,13 @@
  * ```
  */
 
-import * as cdk from 'aws-cdk-lib/core';
+import { NagSuppressions } from 'cdk-nag';
+
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as cdk from 'aws-cdk-lib/core';
 
-import { NagSuppressions } from 'cdk-nag';
+
 import { Construct } from 'constructs';
 
 import type { Environment } from '../../config/environments';
