@@ -27,6 +27,8 @@ export interface AgentLambdaAllocation {
     readonly memoryMb: number;
     /** Lambda timeout in seconds (agent loops may take longer than typical handlers) */
     readonly timeoutSeconds: number;
+    /** Reserved concurrent executions (caps parallel Bedrock agent calls) */
+    readonly reservedConcurrency: number;
 }
 
 /**
@@ -65,6 +67,7 @@ export const SELF_HEALING_ALLOCATIONS: Record<Environment, SelfHealingAllocation
         agentLambda: {
             memoryMb: 512,
             timeoutSeconds: 120,  // 2 minutes — sufficient for 3–4 tool calls
+            reservedConcurrency: 1, // Strict cap — one agent at a time in dev
         },
         gateway: {
             throttlingRateLimit: 5,
@@ -77,6 +80,7 @@ export const SELF_HEALING_ALLOCATIONS: Record<Environment, SelfHealingAllocation
         agentLambda: {
             memoryMb: 1024,
             timeoutSeconds: 180,  // 3 minutes
+            reservedConcurrency: 2,
         },
         gateway: {
             throttlingRateLimit: 10,
@@ -89,6 +93,7 @@ export const SELF_HEALING_ALLOCATIONS: Record<Environment, SelfHealingAllocation
         agentLambda: {
             memoryMb: 1024,
             timeoutSeconds: 300,  // 5 minutes — allows complex multi-tool remediation
+            reservedConcurrency: 2,
         },
         gateway: {
             throttlingRateLimit: 20,

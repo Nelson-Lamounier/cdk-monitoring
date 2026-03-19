@@ -66,6 +66,8 @@ export interface AiContentStackProps extends cdk.StackProps {
     readonly lambdaMemoryMb: number;
     /** Lambda timeout in seconds */
     readonly lambdaTimeoutSeconds: number;
+    /** Reserved concurrent executions for cost control */
+    readonly lambdaReservedConcurrency?: number;
     /** CloudWatch log retention */
     readonly logRetention: logs.RetentionDays;
     /** Removal policy for stateful resources */
@@ -271,6 +273,10 @@ export class AiContentStack extends cdk.Stack {
             deadLetterQueue: this.publisherDlq,
             deadLetterQueueEnabled: true,
             retryAttempts: 2,
+            // FinOps: cap parallel Bedrock invocations
+            ...(props.lambdaReservedConcurrency !== undefined
+                ? { reservedConcurrentExecutions: props.lambdaReservedConcurrency }
+                : {}),
         });
 
         // CDK-Nag suppression: NODEJS_22_X is the latest Node.js LTS runtime;

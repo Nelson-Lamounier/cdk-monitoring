@@ -18,6 +18,7 @@ import * as path from 'path';
 
 import { NagSuppressions } from 'cdk-nag';
 
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -59,6 +60,10 @@ export interface SelfHealingAgentStackProps extends cdk.StackProps {
     readonly alarmNamePrefix: string;
     /** DLQ message retention in days */
     readonly dlqRetentionDays: number;
+    /** Reserved concurrent executions for cost control */
+    readonly reservedConcurrency?: number;
+    /** Maximum tokens per hour before alarm fires (FinOps guardrail) */
+    readonly tokenBudgetPerHour?: number;
 }
 
 /**
@@ -138,6 +143,68 @@ export class SelfHealingAgentStack extends cdk.Stack {
             deadLetterQueue: this.agentDlq,
             deadLetterQueueEnabled: true,
             retryAttempts: 2,
+            // FinOps: cap parallel Bedrock agent invocations
+            ...(props.reservedConcurrency !== undefined
+                ? { reservedConcurrentExecutions: props.reservedConcurrency }
+                : {}),
+        });
+
+        // =================================================================
+        // CloudWatch Metric Filters — Token Usage Tracking
+        //
+        // Extracts inputTokens and outputTokens from the structured JSON
+        // logs emitted by the handler. Publishes to custom CloudWatch
+        // metrics for FinOps visibility and alarming.
+        // =================================================================
+        const metricNamespace = `${namePrefix}/SelfHealing`;
+
+        new logs.MetricFilter(this, 'InputTokensMetric', {
+            logGroup,
+            filterPattern: logs.FilterPattern.exists('$.inputTokens'),
+            metricNamespace,
+            metricName: 'InputTokens',
+            metricValue: '$.inputTokens',
+            defaultValue: 0,
+        });
+
+        new logs.MetricFilter(this, 'OutputTokensMetric', {
+            logGroup,
+            filterPattern: logs.FilterPattern.exists('$.outputTokens'),
+            metricNamespace,
+            metricName: 'OutputTokens',
+            metricValue: '$.outputTokens',
+            defaultValue: 0,
+        });
+
+        // FinOps alarm: total tokens exceeds budget in a 1-hour window
+        const tokenBudget = props.tokenBudgetPerHour ?? 100_000;
+
+        new cloudwatch.Alarm(this, 'TokenBudgetAlarm', {
+            alarmName: `${namePrefix}-agent-token-budget`,
+            alarmDescription:
+                `Self-healing agent consumed >${tokenBudget} input tokens in 1 hour. ` +
+                'Investigate for runaway agent loops or unexpected alarm storms.',
+            metric: new cloudwatch.MathExpression({
+                expression: 'inputTokens + outputTokens',
+                usingMetrics: {
+                    inputTokens: new cloudwatch.Metric({
+                        namespace: metricNamespace,
+                        metricName: 'InputTokens',
+                        statistic: 'Sum',
+                        period: cdk.Duration.hours(1),
+                    }),
+                    outputTokens: new cloudwatch.Metric({
+                        namespace: metricNamespace,
+                        metricName: 'OutputTokens',
+                        statistic: 'Sum',
+                        period: cdk.Duration.hours(1),
+                    }),
+                },
+            }),
+            threshold: tokenBudget,
+            evaluationPeriods: 1,
+            comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
         });
 
         // CDK-Nag suppression: NODEJS_22_X is the latest Node.js LTS runtime

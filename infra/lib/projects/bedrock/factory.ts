@@ -170,6 +170,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 thinkingBudgetTokens: contentAllocs.model.thinkingBudgetTokens,
                 lambdaMemoryMb: contentAllocs.lambda.memoryMb,
                 lambdaTimeoutSeconds: contentAllocs.lambda.timeoutSeconds,
+                lambdaReservedConcurrency: contentAllocs.lambda.reservedConcurrency,
                 logRetention: contentConfigs.logRetention,
                 removalPolicy: contentConfigs.removalPolicy,
                 env,

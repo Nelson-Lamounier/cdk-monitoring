@@ -26,6 +26,8 @@ export interface ContentLambdaAllocation {
     readonly memoryMb: number;
     /** Lambda timeout in seconds */
     readonly timeoutSeconds: number;
+    /** Reserved concurrent executions (caps parallel Bedrock calls) */
+    readonly reservedConcurrency: number;
 }
 
 /**
@@ -57,6 +59,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
         lambda: {
             memoryMb: 512,
             timeoutSeconds: 300,
+            reservedConcurrency: 2,
         },
         model: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',
@@ -69,6 +72,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
         lambda: {
             memoryMb: 1024,
             timeoutSeconds: 300,
+            reservedConcurrency: 3,
         },
         model: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',
@@ -81,6 +85,7 @@ export const CONTENT_ALLOCATIONS: Record<Environment, ContentAllocations> = {
         lambda: {
             memoryMb: 1024,
             timeoutSeconds: 300,
+            reservedConcurrency: 5,
         },
         model: {
             foundationModel: 'eu.anthropic.claude-sonnet-4-6',

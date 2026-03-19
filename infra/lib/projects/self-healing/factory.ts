@@ -114,6 +114,7 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
                 gatewayUrl: gatewayStack.gatewayUrl,
                 alarmNamePrefix: configs.alarmNamePrefix,
                 dlqRetentionDays: allocs.dlqRetentionDays,
+                reservedConcurrency: allocs.agentLambda.reservedConcurrency,
                 env,
             }
         );
