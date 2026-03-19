@@ -149,9 +149,9 @@ describe('isDuplicate', () => {
 // =============================================================================
 
 describe('getDefaultTools', () => {
-    it('should return three default tools', () => {
+    it('should return two default tools', () => {
         const tools = getDefaultTools();
-        expect(tools).toHaveLength(3);
+        expect(tools).toHaveLength(2);
     });
 
     it('should include diagnose_alarm tool', () => {
@@ -160,14 +160,6 @@ describe('getDefaultTools', () => {
 
         expect(diagnose).toBeDefined();
         expect(diagnose?.description).toContain('Analyse');
-    });
-
-    it('should include eip_failover tool', () => {
-        const tools = getDefaultTools();
-        const eip = tools.find(t => t.name === 'eip_failover');
-
-        expect(eip).toBeDefined();
-        expect(eip?.description).toContain('Elastic IP');
     });
 
     it('should include ebs_detach tool', () => {
@@ -197,7 +189,7 @@ describe('buildToolConfig', () => {
         const config = buildToolConfig(tools);
 
         expect(config.tools).toBeDefined();
-        expect(config.tools).toHaveLength(3);
+        expect(config.tools).toHaveLength(2);
     });
 
     it('should produce toolSpec entries with correct names', () => {
@@ -208,7 +200,6 @@ describe('buildToolConfig', () => {
         );
 
         expect(names).toContain('diagnose_alarm');
-        expect(names).toContain('eip_failover');
         expect(names).toContain('ebs_detach');
     });
 

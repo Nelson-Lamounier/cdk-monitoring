@@ -569,6 +569,55 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@aws-sdk/client-cloudwatch@npm:^3.1012.0":
+  version: 3.1012.0
+  resolution: "@aws-sdk/client-cloudwatch@npm:3.1012.0"
+  dependencies:
+    "@aws-crypto/sha256-browser": "npm:5.2.0"
+    "@aws-crypto/sha256-js": "npm:5.2.0"
+    "@aws-sdk/core": "npm:^3.973.21"
+    "@aws-sdk/credential-provider-node": "npm:^3.972.22"
+    "@aws-sdk/middleware-host-header": "npm:^3.972.8"
+    "@aws-sdk/middleware-logger": "npm:^3.972.8"
+    "@aws-sdk/middleware-recursion-detection": "npm:^3.972.8"
+    "@aws-sdk/middleware-user-agent": "npm:^3.972.22"
+    "@aws-sdk/region-config-resolver": "npm:^3.972.8"
+    "@aws-sdk/types": "npm:^3.973.6"
+    "@aws-sdk/util-endpoints": "npm:^3.996.5"
+    "@aws-sdk/util-user-agent-browser": "npm:^3.972.8"
+    "@aws-sdk/util-user-agent-node": "npm:^3.973.8"
+    "@smithy/config-resolver": "npm:^4.4.11"
+    "@smithy/core": "npm:^3.23.12"
+    "@smithy/fetch-http-handler": "npm:^5.3.15"
+    "@smithy/hash-node": "npm:^4.2.12"
+    "@smithy/invalid-dependency": "npm:^4.2.12"
+    "@smithy/middleware-compression": "npm:^4.3.41"
+    "@smithy/middleware-content-length": "npm:^4.2.12"
+    "@smithy/middleware-endpoint": "npm:^4.4.26"
+    "@smithy/middleware-retry": "npm:^4.4.43"
+    "@smithy/middleware-serde": "npm:^4.2.15"
+    "@smithy/middleware-stack": "npm:^4.2.12"
+    "@smithy/node-config-provider": "npm:^4.3.12"
+    "@smithy/node-http-handler": "npm:^4.5.0"
+    "@smithy/protocol-http": "npm:^5.3.12"
+    "@smithy/smithy-client": "npm:^4.12.6"
+    "@smithy/types": "npm:^4.13.1"
+    "@smithy/url-parser": "npm:^4.2.12"
+    "@smithy/util-base64": "npm:^4.3.2"
+    "@smithy/util-body-length-browser": "npm:^4.2.2"
+    "@smithy/util-body-length-node": "npm:^4.2.3"
+    "@smithy/util-defaults-mode-browser": "npm:^4.3.42"
+    "@smithy/util-defaults-mode-node": "npm:^4.2.45"
+    "@smithy/util-endpoints": "npm:^3.3.3"
+    "@smithy/util-middleware": "npm:^4.2.12"
+    "@smithy/util-retry": "npm:^4.2.12"
+    "@smithy/util-utf8": "npm:^4.2.2"
+    "@smithy/util-waiter": "npm:^4.2.13"
+    tslib: "npm:^2.6.2"
+  checksum: 10c0/26125bb951a0afa31f6b8f8d810e33a04c226509d4d75c4d32ccf08eb53d15c72667963190fd559284ee26837f88e87d8570b02bbe8f5a5d96b22929522b2372
+  languageName: node
+  linkType: hard
+
 "@aws-sdk/client-cognito-identity@npm:3.1010.0":
   version: 3.1010.0
   resolution: "@aws-sdk/client-cognito-identity@npm:3.1010.0"
@@ -5401,6 +5450,24 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@smithy/middleware-compression@npm:^4.3.41":
+  version: 4.3.41
+  resolution: "@smithy/middleware-compression@npm:4.3.41"
+  dependencies:
+    "@smithy/core": "npm:^3.23.12"
+    "@smithy/is-array-buffer": "npm:^4.2.2"
+    "@smithy/node-config-provider": "npm:^4.3.12"
+    "@smithy/protocol-http": "npm:^5.3.12"
+    "@smithy/types": "npm:^4.13.1"
+    "@smithy/util-config-provider": "npm:^4.2.2"
+    "@smithy/util-middleware": "npm:^4.2.12"
+    "@smithy/util-utf8": "npm:^4.2.2"
+    fflate: "npm:0.8.1"
+    tslib: "npm:^2.6.2"
+  checksum: 10c0/d1c90e636efbe5d4216bff2b60a7d04a8fb201ecd71ea10b585c1c3cd56f3aa05e1f041034b3316570447288ec4edd3956b39425bf4b4fb470de1f76f3fa5ad8
+  languageName: node
+  linkType: hard
+
 "@smithy/middleware-content-length@npm:^4.2.12":
   version: 4.2.12
   resolution: "@smithy/middleware-content-length@npm:4.2.12"
@@ -7283,6 +7350,7 @@ __metadata:
     "@aws-sdk/client-auto-scaling": "npm:^3.1001.0"
     "@aws-sdk/client-cloudformation": "npm:^3.1001.0"
     "@aws-sdk/client-cloudfront": "npm:^3.1001.0"
+    "@aws-sdk/client-cloudwatch": "npm:^3.1012.0"
     "@aws-sdk/client-cloudwatch-logs": "npm:^3.1001.0"
     "@aws-sdk/client-dynamodb": "npm:^3.1001.0"
     "@aws-sdk/client-ec2": "npm:^3.1001.0"
@@ -8696,6 +8764,13 @@ __metadata:
     picomatch:
       optional: true
   checksum: 10c0/e345083c4306b3aed6cb8ec551e26c36bab5c511e99ea4576a16750ddc8d3240e63826cc624f5ae17ad4dc82e68a253213b60d556c11bfad064b7607847ed07f
+  languageName: node
+  linkType: hard
+
+"fflate@npm:0.8.1":
+  version: 0.8.1
+  resolution: "fflate@npm:0.8.1"
+  checksum: 10c0/c8e8e118738cdbbe7b38d0afebd9166539ce71bbc42cc78e497b58b173f7b7d2efc80f6ed77199283c3665e2e606e56a9f5019a32ceb4ffe5a6fa680dfd9648b
   languageName: node
   linkType: hard
 

@@ -38,8 +38,6 @@ import { stackId, flatName } from '../../utilities/naming';
 export interface SelfHealingFactoryContext extends ProjectFactoryContext {
     /** Override foundation model from config */
     foundationModel?: string;
-    /** Override tool Lambda ARNs (defaults to empty — configured at deploy time) */
-    toolLambdaArns?: string[];
 }
 
 /**
@@ -71,12 +69,12 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
 
         // Context overrides > typed config defaults
         const foundationModel = context.foundationModel ?? configs.foundationModel;
-        const toolLambdaArns = context.toolLambdaArns ?? [];
 
         // =================================================================
         // Stack 1: Gateway (AgentCore Gateway — MCP tool server)
         //
-        // Registers existing Lambda functions as MCP-compatible tools.
+        // Creates tool Lambda functions (diagnose-alarm, ebs-detach)
+        // and registers them with the Gateway as MCP targets.
         // Must be created before the Agent stack.
         // =================================================================
         const gatewayStack = new SelfHealingGatewayStack(
@@ -86,7 +84,6 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
                 namePrefix,
                 logRetention: configs.logRetention,
                 removalPolicy: configs.removalPolicy,
-                toolLambdaArns,
                 throttlingRateLimit: allocs.gateway.throttlingRateLimit,
                 throttlingBurstLimit: allocs.gateway.throttlingBurstLimit,
                 env,

@@ -380,17 +380,6 @@ function getDefaultTools(): AgentTool[] {
             },
         },
         {
-            name: 'eip_failover',
-            description: 'Migrate an Elastic IP from a terminated instance to a new instance',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    instanceId: { type: 'string', description: 'The new EC2 instance ID to receive the EIP' },
-                },
-                required: ['instanceId'],
-            },
-        },
-        {
             name: 'ebs_detach',
             description: 'Detach an EBS volume from a terminated or unhealthy instance',
             inputSchema: {

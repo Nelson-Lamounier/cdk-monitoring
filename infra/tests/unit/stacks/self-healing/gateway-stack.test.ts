@@ -6,7 +6,9 @@
  * - AgentCore Gateway resource (AWS::BedrockAgentCore::Gateway)
  * - Auto-provisioned IAM role (Bedrock trust)
  * - Cognito User Pool for M2M auth
- * - CloudWatch log group with correct name and retention
+ * - Tool Lambda functions (diagnose-alarm, ebs-detach)
+ * - GatewayTarget registrations
+ * - CloudWatch log groups with correct names and retention
  * - SSM parameters for gateway-url and gateway-id
  * - Stack outputs (URL, ID, ARN)
  * - Stack properties exposure
@@ -28,11 +30,6 @@ import {
 
 const NAME_PREFIX = 'self-healing-development';
 
-const TOOL_LAMBDA_ARNS = [
-    'arn:aws:lambda:eu-west-1:123456789012:function:eip-failover',
-    'arn:aws:lambda:eu-west-1:123456789012:function:ebs-detach',
-];
-
 /**
  * Helper to create SelfHealingGatewayStack with sensible defaults.
  */
@@ -48,7 +45,6 @@ function createGatewayStack(
             namePrefix: NAME_PREFIX,
             logRetention: logs.RetentionDays.ONE_WEEK,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
-            toolLambdaArns: TOOL_LAMBDA_ARNS,
             throttlingRateLimit: 5,
             throttlingBurstLimit: 10,
             env: TEST_ENV_EU,
@@ -90,6 +86,57 @@ describe('SelfHealingGatewayStack', () => {
     });
 
     // =========================================================================
+    // Tool Lambda Functions
+    // =========================================================================
+    describe('Tool Lambda Functions', () => {
+        const { template } = createGatewayStack();
+
+        it('should create the diagnose-alarm Lambda function', () => {
+            template.hasResourceProperties('AWS::Lambda::Function', {
+                FunctionName: `${NAME_PREFIX}-tool-diagnose-alarm`,
+                Runtime: 'nodejs22.x',
+            });
+        });
+
+        it('should create the ebs-detach Lambda function', () => {
+            template.hasResourceProperties('AWS::Lambda::Function', {
+                FunctionName: `${NAME_PREFIX}-tool-ebs-detach`,
+                Runtime: 'nodejs22.x',
+            });
+        });
+
+        it('should enable X-Ray tracing on tool Lambdas', () => {
+            template.hasResourceProperties('AWS::Lambda::Function', {
+                FunctionName: `${NAME_PREFIX}-tool-diagnose-alarm`,
+                TracingConfig: { Mode: 'Active' },
+            });
+        });
+    });
+
+    // =========================================================================
+    // Gateway Targets (tool registrations)
+    // =========================================================================
+    describe('Gateway Targets', () => {
+        const { template } = createGatewayStack();
+
+        it('should register 2 Gateway targets', () => {
+            template.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 2);
+        });
+
+        it('should register the diagnose-alarm target', () => {
+            template.hasResourceProperties('AWS::BedrockAgentCore::GatewayTarget', {
+                Name: 'diagnose-alarm',
+            });
+        });
+
+        it('should register the ebs-detach target', () => {
+            template.hasResourceProperties('AWS::BedrockAgentCore::GatewayTarget', {
+                Name: 'ebs-detach',
+            });
+        });
+    });
+
+    // =========================================================================
     // IAM Role (auto-created by L2)
     // =========================================================================
     describe('Gateway IAM Role', () => {
@@ -104,6 +151,46 @@ describe('SelfHealingGatewayStack', () => {
                             Principal: Match.objectLike({
                                 Service: 'bedrock-agentcore.amazonaws.com',
                             }),
+                        }),
+                    ]),
+                },
+            });
+        });
+    });
+
+    // =========================================================================
+    // IAM Policies for Tool Lambdas
+    // =========================================================================
+    describe('Tool Lambda IAM Policies', () => {
+        const { template } = createGatewayStack();
+
+        it('should grant CloudWatch read access to diagnose-alarm', () => {
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: {
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: Match.arrayWith([
+                                'cloudwatch:DescribeAlarms',
+                                'cloudwatch:GetMetricData',
+                            ]),
+                            Effect: 'Allow',
+                        }),
+                    ]),
+                },
+            });
+        });
+
+        it('should grant EC2 permissions to ebs-detach', () => {
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: {
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: Match.arrayWith([
+                                'ec2:DescribeVolumes',
+                                'ec2:DescribeInstances',
+                                'ec2:DetachVolume',
+                            ]),
+                            Effect: 'Allow',
                         }),
                     ]),
                 },
@@ -127,7 +214,7 @@ describe('SelfHealingGatewayStack', () => {
     });
 
     // =========================================================================
-    // CloudWatch Log Group
+    // CloudWatch Log Groups
     // =========================================================================
     describe('CloudWatch Logging', () => {
         const { template } = createGatewayStack();
@@ -136,6 +223,15 @@ describe('SelfHealingGatewayStack', () => {
             template.hasResourceProperties('AWS::Logs::LogGroup', {
                 LogGroupName: `/aws/agentcore/${NAME_PREFIX}-gateway`,
                 RetentionInDays: 7,
+            });
+        });
+
+        it('should create log groups for tool Lambdas', () => {
+            template.hasResourceProperties('AWS::Logs::LogGroup', {
+                LogGroupName: `/aws/lambda/${NAME_PREFIX}-tool-diagnose-alarm`,
+            });
+            template.hasResourceProperties('AWS::Logs::LogGroup', {
+                LogGroupName: `/aws/lambda/${NAME_PREFIX}-tool-ebs-detach`,
             });
         });
     });
@@ -194,18 +290,6 @@ describe('SelfHealingGatewayStack', () => {
 
         it('should expose gatewayId', () => {
             expect(stack.gatewayId).toBeDefined();
-        });
-    });
-
-    // =========================================================================
-    // Edge Cases
-    // =========================================================================
-    describe('Edge Cases', () => {
-        it('should handle empty tool Lambda ARNs without error', () => {
-            const { template } = createGatewayStack({ toolLambdaArns: [] });
-
-            // Gateway should still be created without targets
-            template.resourceCountIs('AWS::BedrockAgentCore::Gateway', 1);
         });
     });
 });
