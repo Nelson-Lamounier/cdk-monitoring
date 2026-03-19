@@ -8,6 +8,7 @@
     "infra",
     "bedrock-publisher",
     "packages/script-utils",
+    "packages/cdk-governance-aspects",
     "kubernetes-app",
     "mcp-infra-server",
     "mcp-portfolio-docs"

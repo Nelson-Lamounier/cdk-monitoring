@@ -407,6 +407,28 @@ security-scan *ARGS:
     checkov --directory infra/cdk.out --framework cloudformation --compact --quiet \
       -o cli -o json --output-file-path security-reports {{ARGS}}
 
+# Run Snyk security scan (open-source deps + IaC)
+# Requires SNYK_TOKEN environment variable (set in GitHub Secrets or local env).
+# Free tier: unlimited tests for open-source projects, 300 IaC tests/month.
+# Usage: just security-snyk
+[group('quality')]
+security-snyk *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v snyk &> /dev/null; then
+      echo "→ Installing Snyk CLI…"
+      npm install -g snyk
+    fi
+    echo "=== Snyk Open-Source (Dependencies) ==="
+    snyk test --all-projects --severity-threshold=high {{ARGS}} || true
+    echo ""
+    echo "=== Snyk IaC (CloudFormation Templates) ==="
+    if [ -d "infra/cdk.out" ]; then
+      snyk iac test infra/cdk.out --severity-threshold=high {{ARGS}} || true
+    else
+      echo "⚠ infra/cdk.out/ not found. Run 'just synth <project> <env>' first."
+    fi
+
 # =============================================================================
 # KUBERNETES
 # =============================================================================

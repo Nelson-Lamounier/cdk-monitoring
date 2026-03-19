@@ -8,6 +8,7 @@
 #
 # Recipe mapping (CI step → justfile recipe):
 #   - Security Audit    → just audit
+#   - Snyk Scan         → just security-snyk
 #   - ESLint            → just lint
 #   - Type Check        → just typecheck
 #   - Build             → just build
@@ -422,16 +423,43 @@ jobs:
 
 
   # ============================================================================
+  # Snyk Security Scan (Open-Source Deps + IaC)
+  # ============================================================================
+  snyk-scan:
+    name: Snyk Security Scan
+    needs: [setup, detect-changes]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    # Run when source or dependencies change
+    if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.ci-config == 'true'
+    # Advisory — findings do not block the pipeline
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Run Snyk Scans
+        run: just security-snyk
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+  # ============================================================================
   # NOTE: IaC Security Scanning Strategy
   # ============================================================================
-  # Security scanning (Checkov) is performed ONLY in deployment pipelines, not CI.
-  # This design choice provides:
-  #   1. Faster CI feedback (~2-3 min saved per run)
-  #   2. Environment-specific security policies (dev=non-blocking, prod=blocking)
-  #   3. cdk-nag already runs during development (CDK Aspect)
+  # Full IaC scanning (Checkov) runs in deployment pipelines, not CI.
+  # Snyk runs in CI for open-source dependency and lightweight IaC scanning.
   #
   # Security gates:
-  #   - LOCAL: cdk-nag aspect provides real-time feedback
+  #   - CI:     Snyk (open-source deps + IaC) — advisory, non-blocking
+  #   - LOCAL:  cdk-nag aspect provides real-time feedback
   #   - DEPLOY: Checkov runs with environment-specific policies
   #     • Development: Non-blocking (warnings only)
   #     • Staging: Blocking on HIGH/CRITICAL
@@ -507,6 +535,7 @@ jobs:
       - detect-changes
       - lint-workflows
       - audit
+      - snyk-scan
       - lint
       - deps-check
       - typecheck
@@ -544,12 +573,16 @@ jobs:
           echo "- Frontend Ops Tests: ${{ needs.test-frontend-ops.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
+          echo "### Security" >> $GITHUB_STEP_SUMMARY
+          echo "- Snyk Scan: ${{ needs.snyk-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           echo "### Build & Validation" >> $GITHUB_STEP_SUMMARY
           echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- CDK Validation: ${{ needs.validate-cdk.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Helm Validation: ${{ needs.validate-helm.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "ℹ️ IaC Security Scan runs in deployment pipelines (not CI)" >> $GITHUB_STEP_SUMMARY
+          echo "ℹ️ Full IaC Security Scan (Checkov) runs in deployment pipelines" >> $GITHUB_STEP_SUMMARY
 
           # Fail if ANY upstream job failed (skipped jobs are acceptable)
           FAILED_JOBS=""
@@ -564,6 +597,7 @@ jobs:
             "build:${{ needs.build.result }}" \
             "validate-cdk:${{ needs.validate-cdk.result }}" \
             "validate-helm:${{ needs.validate-helm.result }}"; do
+            # Note: snyk-scan excluded from failure checks (continue-on-error: true)
             JOB_NAME="${job_result%%:*}"
             JOB_STATUS="${job_result##*:}"
             if [[ "$JOB_STATUS" == "failure" ]]; then

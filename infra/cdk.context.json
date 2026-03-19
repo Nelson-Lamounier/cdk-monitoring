@@ -56,6 +56,5 @@
       }
     ]
   },
-  "ssm:account=771826808455:parameterName=/k8s/development/security-group-id:region=eu-west-1": "sg-03685810192a97ef3",
-  "ssm:account=771826808455:parameterName=/admin/allowed-ips:region=eu-west-1": "37.228.224.56/32,2a02:8084:26c3:5a80:d464:2ff7:b13e:9c03/128"
+  "ssm:account=771826808455:parameterName=/k8s/development/security-group-id:region=eu-west-1": "sg-03685810192a97ef3"
 }

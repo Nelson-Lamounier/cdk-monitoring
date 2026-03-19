@@ -39,11 +39,13 @@ export interface CrossAccountDnsRoleStackProps extends cdk.StackProps {
     readonly roleName?: string;
 
     /**
-     * External ID for additional security (optional)
-     * Target accounts must provide this when assuming the role
+     * External ID for cross-account assume-role security.
+     * Target accounts must provide this when assuming the role.
+     * Enforces a `sts:ExternalId` condition on the trust policy
+     * to prevent confused-deputy attacks (SNYK-CC-TF-118).
      * @example 'acm-dns-validation'
      */
-    readonly externalId?: string;
+    readonly externalId: string;
 
     /**
      * Resource name prefix
@@ -96,6 +98,13 @@ export class CrossAccountDnsRoleStack extends cdk.Stack {
             throw new Error('trustedAccountIds is required and must contain at least one account ID');
         }
 
+        if (!props.externalId || props.externalId.trim().length === 0) {
+            throw new Error(
+                'externalId is required — the DNS validation role must enforce a ' +
+                'sts:ExternalId condition to prevent confused-deputy attacks (SNYK-CC-TF-118)',
+            );
+        }
+
         // =================================================================
         // CONFIGURATION
         // =================================================================
@@ -119,18 +128,18 @@ export class CrossAccountDnsRoleStack extends cdk.Stack {
             maxSessionDuration: cdk.Duration.hours(1),
         });
 
-        // Add external ID condition if provided
-        if (props.externalId) {
-            const cfnRole = this.role.node.defaultChild as iam.CfnRole;
-            cfnRole.addPropertyOverride(
-                'AssumeRolePolicyDocument.Statement.0.Condition',
-                {
-                    StringEquals: {
-                        'sts:ExternalId': props.externalId,
-                    },
+        // Enforce sts:ExternalId condition (SNYK-CC-TF-118)
+        // Prevents confused-deputy attacks by requiring callers to present
+        // a shared identifier when assuming this cross-account role.
+        const cfnRole = this.role.node.defaultChild as iam.CfnRole;
+        cfnRole.addPropertyOverride(
+            'AssumeRolePolicyDocument.Statement.0.Condition',
+            {
+                StringEquals: {
+                    'sts:ExternalId': props.externalId,
                 },
-            );
-        }
+            },
+        );
 
         this.roleArn = this.role.roleArn;
 

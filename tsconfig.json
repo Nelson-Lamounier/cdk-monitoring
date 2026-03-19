@@ -13,6 +13,6 @@
   "references": [
     { "path": "infra" },
     { "path": "bedrock-publisher" },
-    // { "path": "mcp-k8s-server" }
+    { "path": "packages/cdk-governance-aspects" }
   ]
 }
