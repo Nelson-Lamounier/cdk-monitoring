@@ -25,7 +25,7 @@ import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import { Construct } from 'constructs';
 
 import type { Environment } from '../../config/environments';
-import { BudgetConstruct } from '../../common/finops/budget-construct';
+import { BudgetConstruct } from '../../constructs/finops/budget-construct';
 
 // =========================================================================
 // PROPS

@@ -26,7 +26,7 @@ import * as cdk from 'aws-cdk-lib/core';
 import { Construct } from 'constructs';
 
 import type { Environment } from '../../config/environments';
-import { CrossplaneIamConstruct } from '../../common/iam/crossplane-iam-construct';
+import { CrossplaneIamConstruct } from '../../constructs/iam/crossplane-iam-construct';
 
 // =========================================================================
 // PROPS

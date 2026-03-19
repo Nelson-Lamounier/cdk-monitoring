@@ -8,7 +8,7 @@
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { EcrRepositoryConstruct, EcrRepositoryConstructProps } from '../../../../lib/common/storage/ecr-repository';
+import { EcrRepositoryConstruct, EcrRepositoryConstructProps } from '../../../../lib/constructs/storage/ecr-repository';
 import { Environment } from '../../../../lib/config';
 
 /**

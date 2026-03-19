@@ -48,7 +48,7 @@ import {
     LaunchTemplateConstruct,
     SsmStateManagerConstruct,
     UserDataBuilder,
-} from '../../common/index';
+} from '../../constructs/index';
 import { Environment } from '../../config/environments';
 import { K8sConfigs, MONITORING_APP_TAG } from '../../config/kubernetes';
 

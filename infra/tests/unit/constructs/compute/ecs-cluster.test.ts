@@ -16,7 +16,7 @@ import {
     EcsClusterConstruct,
     EcsClusterConstructProps,
     EcsCapacityType,
-} from '../../../../lib/common/compute/constructs/ecs/ecs-cluster';
+} from '../../../../lib/constructs/compute/constructs/ecs/ecs-cluster';
 
 const TEST_ENV = {
     account: '123456789012',

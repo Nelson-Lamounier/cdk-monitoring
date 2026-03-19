@@ -21,7 +21,7 @@ import { NagSuppressions } from 'cdk-nag';
 import { Construct } from 'constructs';
 
 import type { Environment } from '../../config/environments';
-import { AccountSecurityBaselineConstruct } from '../../common/security/account-security-baseline';
+import { AccountSecurityBaselineConstruct } from '../../constructs/security/account-security-baseline';
 
 // =========================================================================
 // PROPS

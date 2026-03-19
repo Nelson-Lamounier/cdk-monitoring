@@ -63,7 +63,7 @@ import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
-} from '../../common/index';
+} from '../../constructs/index';
 import { Environment } from '../../config/environments';
 import type { ArgocdWorkerConfig } from '../../config/kubernetes/index';
 

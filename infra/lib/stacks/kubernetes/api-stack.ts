@@ -43,9 +43,9 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
-import { LambdaFunctionConstruct } from '../../common/compute/constructs/lambda-function';
-import { ApiGatewayConstruct } from '../../common/networking/api/api-gateway';
-import { buildWafRules } from '../../common/security/waf-rules';
+import { LambdaFunctionConstruct } from '../../constructs/compute/constructs/lambda-function';
+import { ApiGatewayConstruct } from '../../constructs/networking/api/api-gateway';
+import { buildWafRules } from '../../constructs/security/waf-rules';
 import {
     Environment,
 } from '../../config/environments';

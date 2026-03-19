@@ -43,8 +43,8 @@ import { Construct } from 'constructs';
 
 import {
     GoldenAmiImageConstruct,
-} from '../../common/compute/constructs/golden-ami-image';
-import { buildGoldenAmiComponent } from '../../common/compute/utils/build-golden-ami-component';
+} from '../../constructs/compute/constructs/golden-ami-image';
+import { buildGoldenAmiComponent } from '../../constructs/compute/utils/build-golden-ami-component';
 import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
 

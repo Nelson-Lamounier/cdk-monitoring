@@ -52,9 +52,9 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
-import { SecurityGroupConstruct, SsmParameterStoreConstruct } from '../../common';
-import { NetworkLoadBalancerConstruct } from '../../common/networking';
-import { S3BucketConstruct } from '../../common/storage';
+import { SecurityGroupConstruct, SsmParameterStoreConstruct } from '../../constructs';
+import { NetworkLoadBalancerConstruct } from '../../constructs/networking';
+import { S3BucketConstruct } from '../../constructs/storage';
 import { Environment } from '../../config/environments';
 import {
     K8sConfigs,

@@ -14,7 +14,7 @@ import {
     EcsTaskDefinitionConstruct,
     EcsTaskDefinitionConstructProps,
     EcsLaunchType,
-} from '../../../../lib/common/compute/constructs/ecs/ecs-task-definition';
+} from '../../../../lib/constructs/compute/constructs/ecs/ecs-task-definition';
 
 const TEST_ENV = {
     account: '123456789012',

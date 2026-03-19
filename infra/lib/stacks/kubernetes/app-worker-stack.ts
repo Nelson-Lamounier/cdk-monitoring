@@ -54,7 +54,7 @@ import {
     // EipFailoverConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
-} from '../../common/index';
+} from '../../constructs/index';
 import { Environment, shortEnv } from '../../config/environments';
 import { NextJsK8sConfig } from '../../config/nextjs';
 

@@ -56,7 +56,7 @@ import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
-} from '../../common/index';
+} from '../../constructs/index';
 import { Environment } from '../../config/environments';
 import { MonitoringWorkerConfig } from '../../config/kubernetes';
 

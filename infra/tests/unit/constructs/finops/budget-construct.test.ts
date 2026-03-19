@@ -14,7 +14,7 @@ import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cdk from 'aws-cdk-lib/core';
 import * as sns from 'aws-cdk-lib/aws-sns';
 
-import { BudgetConstruct } from '../../../../lib/common/finops/budget-construct';
+import { BudgetConstruct } from '../../../../lib/constructs/finops/budget-construct';
 import { createTestApp } from '../../../fixtures';
 
 // =============================================================================
