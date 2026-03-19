@@ -200,6 +200,7 @@ jobs:
           [[ -n "$CROSS_ACCOUNT_ROLE_ARN" ]] && echo "::add-mask::$CROSS_ACCOUNT_ROLE_ARN"
           [[ -n "$ROOT_ACCOUNT"           ]] && echo "::add-mask::$ROOT_ACCOUNT"
           [[ -n "$MONITOR_DOMAIN_NAME"    ]] && echo "::add-mask::$MONITOR_DOMAIN_NAME"
+          [[ -n "$TRUSTED_ACCOUNT_IDS"   ]] && echo "::add-mask::$TRUSTED_ACCOUNT_IDS"
           [[ -n "$NOTIFICATION_EMAIL"     ]] && echo "::add-mask::$NOTIFICATION_EMAIL"
           [[ -n "$SES_FROM_EMAIL"         ]] && echo "::add-mask::$SES_FROM_EMAIL"
 
@@ -213,6 +214,7 @@ jobs:
           [[ -n "$MONITOR_DOMAIN_NAME"    ]] && echo "MONITOR_DOMAIN_NAME=$MONITOR_DOMAIN_NAME"       >> $GITHUB_ENV
           [[ -n "$ROOT_ACCOUNT"           ]] && echo "ROOT_ACCOUNT=$ROOT_ACCOUNT"                     >> $GITHUB_ENV
           [[ -n "$RESTRICT_ACCESS"        ]] && echo "RESTRICT_ACCESS=$RESTRICT_ACCESS"               >> $GITHUB_ENV
+          [[ -n "$TRUSTED_ACCOUNT_IDS"   ]] && echo "TRUSTED_ACCOUNT_IDS=$TRUSTED_ACCOUNT_IDS"       >> $GITHUB_ENV
 
           # ── Write secrets without stdout exposure (defence-in-depth) ──
           # GitHub auto-masks secrets.* values, but printf >> FILE writes
@@ -238,6 +240,7 @@ jobs:
           ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
           ROOT_ACCOUNT: ${{ inputs.root-account-id }}
           RESTRICT_ACCESS: ${{ inputs.restrict-access }}
+          TRUSTED_ACCOUNT_IDS: ${{ vars.AWS_ACCOUNT_ID }}
 
       - name: Deploy CDK Stack
         id: deploy-stack
