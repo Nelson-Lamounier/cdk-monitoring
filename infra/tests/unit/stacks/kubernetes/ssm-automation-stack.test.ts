@@ -368,10 +368,10 @@ describe('K8sSsmAutomationStack', () => {
         });
 
         it('should create custom resources for SSM parameter cleanup', () => {
-            // 7 SSM parameters + 1 log group + 1 SNS topic = 9 custom resources
+            // 7 SSM parameters + 2 log groups + 1 SNS topic = 10 custom resources
             // Plus the 1 custom resource from the Provider framework itself
             // We verify at least the Custom::AWS resources exist
-            template.resourceCountIs('AWS::CloudFormation::CustomResource', 9);
+            template.resourceCountIs('AWS::CloudFormation::CustomResource', 10);
         });
 
         it('should grant the cleanup Lambda logs:DeleteLogGroup permission', () => {

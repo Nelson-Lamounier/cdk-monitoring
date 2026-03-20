@@ -417,6 +417,10 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         const orchestratorLogGroupName = `/aws/vendedlogs/states/${prefix}-bootstrap-orchestrator`;
         cleanup.addLogGroup(orchestratorLogGroupName, orchestrator.stateMachine);
 
+        // Register router Lambda log group for cleanup
+        const routerLogGroupName = `/aws/lambda/${prefix}-bootstrap-router`;
+        cleanup.addLogGroup(routerLogGroupName, orchestrator.routerFunction);
+
         // =====================================================================
         // CloudWatch Alarm — Step Functions Execution Failures
         // =====================================================================

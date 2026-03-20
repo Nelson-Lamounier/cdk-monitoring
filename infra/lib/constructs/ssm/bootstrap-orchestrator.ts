@@ -87,10 +87,17 @@ export class BootstrapOrchestratorConstruct extends Construct {
         // Router Lambda — reads ASG tags, resolves SSM doc names
         // =====================================================================
 
+        const routerLogGroup = new logs.LogGroup(this, 'RouterLogs', {
+            logGroupName: `/aws/lambda/${props.prefix}-bootstrap-router`,
+            retention: logs.RetentionDays.THREE_DAYS,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+        });
+
         this.routerFunction = new lambda.Function(this, 'RouterFn', {
             functionName: `${props.prefix}-bootstrap-router`,
             runtime: lambda.Runtime.PYTHON_3_13,
             handler: 'index.handler',
+            logGroup: routerLogGroup,
             code: lambda.Code.fromInline(`
 import logging, boto3
 
