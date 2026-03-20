@@ -158,6 +158,12 @@ ci-synth-validate:
     fi
     echo "✓ CDK synthesis validation complete (all projects)"
 
+# CI pipeline setup: validate account ID, resolve edge config, mask secrets
+# Called by: .github/workflows/_deploy-kubernetes.yml → setup job
+[group('ci')]
+ci-pipeline-setup:
+    npx tsx infra/scripts/ci/pipeline-setup.ts
+
 # CI synth: synthesize + output stack names (e.g., just ci-synth kubernetes development)
 # Used by deployment pipelines to get ordered stack names for targeted deploys.
 # Called by: .github/workflows/_deploy-kubernetes.yml

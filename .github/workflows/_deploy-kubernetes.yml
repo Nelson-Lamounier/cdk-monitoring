@@ -136,7 +136,7 @@ jobs:
     environment: ${{ inputs.environment }}
     outputs:
       commit-sha: ${{ github.sha }}
-      commit-short-sha: ${{ steps.commit-info.outputs.short_sha }}
+      commit-short-sha: ${{ steps.pipeline-setup.outputs.short-sha }}
       node-version: ${{ steps.setup-tools.outputs.node-version }}
       # Stack names from synthesize-ci.ts (11-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
@@ -155,34 +155,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Record Commit Information
-        id: commit-info
-        run: echo "short_sha=$(printf '%.8s' "$GITHUB_SHA")" >> $GITHUB_OUTPUT
-
       - name: Setup Environment and Dependencies
         id: setup-tools
         uses: ./.github/actions/setup-node-yarn
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Validate AWS Account ID
-        id: account-id
-        env:
-          ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-        run: |
-          if [ -z "$ACCOUNT_ID" ]; then
-            echo "ERROR: AWS_ACCOUNT_ID variable not configured"
-            exit 1
-          fi
-          if ! expr "$ACCOUNT_ID" : '^[0-9]\{12\}$' > /dev/null; then
-            echo "ERROR: Invalid AWS account ID format"
-            exit 1
-          fi
-          echo "::add-mask::$ACCOUNT_ID"
-          echo "[OK] AWS Account ID validated"
-
       - name: Build TypeScript
         run: just build
+
+      - name: Pipeline Setup (validate, resolve, mask)
+        id: pipeline-setup
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          INPUT_DOMAIN: ${{ inputs.domain-name }}
+          INPUT_HZ_ID: ${{ inputs.hosted-zone-id }}
+          INPUT_ROLE_ARN: ${{ inputs.cross-account-role-arn }}
+          VARS_DOMAIN: ${{ vars.DOMAIN_NAME }}
+          VARS_HZ_ID: ${{ vars.HOSTED_ZONE_ID }}
+          VARS_ROLE_ARN: ${{ vars.DNS_VALIDATION_ROLE }}
+        run: just ci-pipeline-setup
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
@@ -191,50 +183,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Resolve Edge Configuration
-        id: resolve-edge
-        env:
-          INPUT_DOMAIN: ${{ inputs.domain-name }}
-          INPUT_HZ_ID: ${{ inputs.hosted-zone-id }}
-          INPUT_ROLE_ARN: ${{ inputs.cross-account-role-arn }}
-          VARS_DOMAIN: ${{ vars.DOMAIN_NAME }}
-          VARS_HZ_ID: ${{ vars.HOSTED_ZONE_ID }}
-          VARS_ROLE_ARN: ${{ vars.DNS_VALIDATION_ROLE }}
-        run: |
-          # Domain: input > vars.DOMAIN_NAME
-          DOMAIN="${INPUT_DOMAIN:-$VARS_DOMAIN}"
-          if [ -z "$DOMAIN" ]; then
-            echo "ERROR: No domain name. Set DOMAIN_NAME in environment"
-            exit 1
-          fi
-
-          # Hosted Zone: input > vars.HOSTED_ZONE_ID
-          HZ_ID="${INPUT_HZ_ID:-$VARS_HZ_ID}"
-          if [ -z "$HZ_ID" ]; then
-            echo "ERROR: No hosted zone ID. Set HOSTED_ZONE_ID in environment"
-            exit 1
-          fi
-
-          # Cross-account role: input > vars.DNS_VALIDATION_ROLE
-          ROLE_ARN="${INPUT_ROLE_ARN:-$VARS_ROLE_ARN}"
-          if [ -z "$ROLE_ARN" ]; then
-            echo "ERROR: No cross-account role. Set DNS_VALIDATION_ROLE in environment"
-            exit 1
-          fi
-
-          # ── Mask infrastructure identifiers before output ──
-          echo "::add-mask::$DOMAIN"
-          echo "::add-mask::$HZ_ID"
-          echo "::add-mask::$ROLE_ARN"
-
-          echo "[OK] Edge config resolved"
-
       - name: Synthesize & Determine Stack Names
         id: synth
         env:
-          DOMAIN_NAME: ${{ steps.resolve-edge.outputs.domain-name }}
-          HOSTED_ZONE_ID: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
-          CROSS_ACCOUNT_ROLE_ARN: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
+          DOMAIN_NAME: ${{ steps.pipeline-setup.outputs.domain-name }}
+          HOSTED_ZONE_ID: ${{ steps.pipeline-setup.outputs.hosted-zone-id }}
+          CROSS_ACCOUNT_ROLE_ARN: ${{ steps.pipeline-setup.outputs.cross-account-role-arn }}
           NOTIFICATION_EMAIL: ${{ vars.NOTIFICATION_EMAIL }}
           SES_FROM_EMAIL: ${{ vars.SES_FROM_EMAIL }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
