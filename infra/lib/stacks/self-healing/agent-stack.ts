@@ -319,8 +319,9 @@ export class SelfHealingAgentStack extends cdk.Stack {
         // =================================================================
         // EventBridge Rule — CloudWatch Alarm → Agent
         //
-        // Triggers on ALL CloudWatch alarms entering ALARM state.
-        // Solo-developer setup — no prefix scoping needed.
+        // Triggers on CloudWatch alarms entering ALARM state, EXCLUDING
+        // the agent's own alarms (e.g. token budget) to prevent a
+        // self-referential feedback loop.
         // =================================================================
         const alarmRule = new events.Rule(this, 'AlarmTriggerRule', {
             ruleName: `${namePrefix}-alarm-trigger`,
@@ -332,6 +333,9 @@ export class SelfHealingAgentStack extends cdk.Stack {
                     state: {
                         value: ['ALARM'],
                     },
+                    alarmName: [{
+                        'anything-but': { prefix: `${namePrefix}-agent` },
+                    }],
                 },
             },
         });

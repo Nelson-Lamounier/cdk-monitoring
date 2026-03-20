@@ -34,9 +34,11 @@ import { Construct } from 'constructs';
 import { Environment } from '../../config/environments';
 import {
     InfrastructureDashboard,
+    OperationsDashboard,
 } from '../../constructs/observability';
 import type {
     DashboardLambdaConfig,
+    OpsDashboardSelfHealingConfig,
 } from '../../constructs/observability';
 
 // =============================================================================
@@ -84,6 +86,12 @@ export interface KubernetesObservabilityStackProps extends cdk.StackProps {
      * Pass this value via SSM or leave undefined to use the NLB name only.
      */
     readonly nlbFullName?: string;
+
+    /**
+     * Self-healing pipeline Lambda configuration.
+     * When provided, the Operations Dashboard includes agent + tool metrics.
+     */
+    readonly selfHealingConfig?: OpsDashboardSelfHealingConfig;
 }
 
 // =============================================================================
@@ -168,7 +176,30 @@ export class KubernetesObservabilityStack extends cdk.Stack {
 
         new cdk.CfnOutput(this, 'DashboardUrl', {
             value: `https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=${this.dashboard.dashboardName}`,
-            description: 'Direct link to the CloudWatch Dashboard',
+            description: 'Direct link to the Infrastructure Dashboard',
+        });
+
+        // =================================================================
+        // Operations Dashboard — Deployment Execution Traceability
+        //
+        // Separate dashboard for runtime visibility: AMI builds, SSM
+        // bootstrap, drift enforcement, and self-healing pipeline.
+        // =================================================================
+        const opsDashboard = new OperationsDashboard(this, 'OpsDashboard', {
+            namePrefix,
+            region: this.region,
+            ssmPrefix,
+            selfHealing: props.selfHealingConfig,
+        });
+
+        new cdk.CfnOutput(this, 'OpsDashboardName', {
+            value: opsDashboard.dashboardName,
+            description: 'CloudWatch Operations Dashboard name',
+        });
+
+        new cdk.CfnOutput(this, 'OpsDashboardUrl', {
+            value: `https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=${opsDashboard.dashboardName}`,
+            description: 'Direct link to the Operations Dashboard',
         });
     }
 }

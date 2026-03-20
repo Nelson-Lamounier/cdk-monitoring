@@ -25,7 +25,7 @@
  * ```
  */
 
-import { Environment } from './environments';
+import { Environment, shortEnv } from './environments';
 
 // =============================================================================
 // PREFIX BUILDERS
@@ -479,9 +479,15 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
 // SELF-HEALING SSM PATHS
 // =============================================================================
 
-/** Self-Healing SSM prefix: /self-healing/{environment} */
+/**
+ * Self-Healing SSM prefix: /self-healing-{env}/
+ *
+ * Uses the `flatName` convention (e.g. `self-healing-dev`) to match
+ * the `namePrefix` used by the Gateway and Agent stacks when publishing
+ * SSM parameters.
+ */
 export function selfHealingSsmPrefix(environment: Environment): string {
-    return `/self-healing/${environment}`;
+    return `/self-healing-${shortEnv(environment)}`;
 }
 
 /**
@@ -490,17 +496,24 @@ export function selfHealingSsmPrefix(environment: Environment): string {
  * Published by GatewayStack and AgentStack for cross-stack discovery.
  */
 export interface SelfHealingSsmPaths {
-    /** The prefix itself: /self-healing/{environment} */
+    /** The prefix itself: /self-healing-{env} */
     readonly prefix: string;
+
+    // --- Gateway (published by GatewayStack) ---
     /** AgentCore Gateway endpoint URL */
     readonly gatewayUrl: string;
     /** AgentCore Gateway ID */
     readonly gatewayId: string;
+
+    // --- Agent (published by AgentStack) ---
     /** Strands Agent Lambda function ARN */
     readonly agentLambdaArn: string;
     /** Strands Agent Lambda function name */
     readonly agentLambdaName: string;
-    /** Wildcard path for IAM: /self-healing/{environment}/* */
+    /** Agent Dead Letter Queue URL */
+    readonly agentDlqUrl: string;
+
+    /** Wildcard path for IAM: /self-healing-{env}/* */
     readonly wildcard: string;
 }
 
@@ -516,6 +529,7 @@ export function selfHealingSsmPaths(environment: Environment): SelfHealingSsmPat
         gatewayId: `${prefix}/gateway-id`,
         agentLambdaArn: `${prefix}/agent-lambda-arn`,
         agentLambdaName: `${prefix}/agent-lambda-name`,
+        agentDlqUrl: `${prefix}/agent-dlq-url`,
         wildcard: `${prefix}/*`,
     };
 }

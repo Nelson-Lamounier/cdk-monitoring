@@ -523,6 +523,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // from SSM — fully decoupled from compute lifecycle.
         // Cost: $3.00/month.
         // =================================================================
+        const selfHealingPrefix = flatName('self-healing', '', environment);
+
         const observabilityStack = new KubernetesObservabilityStack(
             scope,
             stackId(this.namespace, 'Observability', environment),
@@ -538,6 +540,14 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                         label: 'Bootstrap Router',
                     },
                 ],
+                selfHealingConfig: {
+                    agentFunctionName: `${selfHealingPrefix}-agent`,
+                    toolFunctions: [
+                        { functionName: `${selfHealingPrefix}-tool-diagnose-alarm`, label: 'Diagnose Alarm' },
+                        { functionName: `${selfHealingPrefix}-tool-ebs-detach`, label: 'EBS Detach' },
+                        { functionName: `${selfHealingPrefix}-tool-analyse-cluster-health`, label: 'Analyse Cluster' },
+                    ],
+                },
             },
         );
         observabilityStack.addDependency(baseStack);

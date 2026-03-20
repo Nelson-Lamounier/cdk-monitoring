@@ -17,3 +17,10 @@ export type {
     DashboardLambdaConfig,
     DashboardCloudFrontConfig,
 } from './cloudwatch-dashboard';
+export {
+    OperationsDashboard,
+} from './operations-dashboard';
+export type {
+    OperationsDashboardProps,
+    OpsDashboardSelfHealingConfig,
+} from './operations-dashboard';
