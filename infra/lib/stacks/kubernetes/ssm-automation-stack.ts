@@ -52,6 +52,9 @@ import {
 import {
     BootstrapOrchestratorConstruct,
 } from '../../constructs/ssm/bootstrap-orchestrator';
+import {
+    ResourceCleanupProvider,
+} from '../../constructs/ssm/resource-cleanup-provider';
 
 // =============================================================================
 // PROPS
@@ -162,6 +165,17 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         super(scope, id, props);
 
         const prefix = props.namePrefix ?? 'k8s';
+
+        // =====================================================================
+        // Resource Cleanup — pre-emptive orphan deletion
+        //
+        // Resources with hardcoded physical names become orphans after
+        // CloudFormation UPDATE_ROLLBACK_COMPLETE. This provider runs a
+        // cleanup Lambda before each CREATE, deleting any pre-existing
+        // resource so the deployment always succeeds.
+        // =====================================================================
+
+        const cleanup = new ResourceCleanupProvider(this, 'ResourceCleanup');
 
         // =====================================================================
         // IAM Role — Automation Execution
@@ -339,47 +353,54 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         // without needing cross-stack references.
         // =====================================================================
 
-        new ssm.StringParameter(this, 'ControlPlaneDocNameParam', {
+        const cpDocParam = new ssm.StringParameter(this, 'ControlPlaneDocNameParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/control-plane-doc-name`,
             stringValue: cpDoc.documentName,
             description: 'SSM Automation document name for control plane bootstrap',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/control-plane-doc-name`, cpDocParam);
 
-        new ssm.StringParameter(this, 'AppWorkerDocNameParam', {
+        const appWorkerDocParam = new ssm.StringParameter(this, 'AppWorkerDocNameParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/app-worker-doc-name`,
             stringValue: appWorkerDoc.documentName,
             description: 'SSM Automation document name for app-worker node bootstrap',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/app-worker-doc-name`, appWorkerDocParam);
 
-        new ssm.StringParameter(this, 'MonWorkerDocNameParam', {
+        const monWorkerDocParam = new ssm.StringParameter(this, 'MonWorkerDocNameParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/mon-worker-doc-name`,
             stringValue: monWorkerDoc.documentName,
             description: 'SSM Automation document name for mon-worker node bootstrap',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/mon-worker-doc-name`, monWorkerDocParam);
 
-        new ssm.StringParameter(this, 'ArgocdWorkerDocNameParam', {
+        const argocdWorkerDocParam = new ssm.StringParameter(this, 'ArgocdWorkerDocNameParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/argocd-worker-doc-name`,
             stringValue: argocdWorkerDoc.documentName,
             description: 'SSM Automation document name for argocd-worker node bootstrap',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/argocd-worker-doc-name`, argocdWorkerDocParam);
 
-        new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
+        const nextjsDocParam = new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
             parameterName: `${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`,
             stringValue: nextjsDoc.documentName,
             description: 'SSM Automation document name for Next.js secrets deployment',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`, nextjsDocParam);
 
-        new ssm.StringParameter(this, 'MonitoringSecretsDocNameParam', {
+        const monDocParam = new ssm.StringParameter(this, 'MonitoringSecretsDocNameParam', {
             parameterName: `${props.ssmPrefix}/deploy/monitoring-secrets-doc-name`,
             stringValue: monitoringDoc.documentName,
             description: 'SSM Automation document name for monitoring secrets deployment',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/monitoring-secrets-doc-name`, monDocParam);
 
-        new ssm.StringParameter(this, 'AutomationRoleArnParam', {
+        const roleArnParam = new ssm.StringParameter(this, 'AutomationRoleArnParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/automation-role-arn`,
             stringValue: automationRole.roleArn,
             description: 'IAM role ARN for SSM Automation execution',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/automation-role-arn`, roleArnParam);
 
         // =====================================================================
         // Step Functions Orchestrator — EventBridge → State Machine → SSM
@@ -392,15 +413,23 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             scriptsBucketName: props.scriptsBucketName,
         });
 
+        // Register orchestrator log group for cleanup
+        const orchestratorLogGroupName = `/aws/vendedlogs/states/${prefix}-bootstrap-orchestrator`;
+        cleanup.addLogGroup(orchestratorLogGroupName, orchestrator.stateMachine);
+
         // =====================================================================
         // CloudWatch Alarm — Step Functions Execution Failures
         // =====================================================================
 
-        new BootstrapAlarmConstruct(this, 'BootstrapAlarm', {
+        const alarm = new BootstrapAlarmConstruct(this, 'BootstrapAlarm', {
             prefix,
             stateMachine: orchestrator.stateMachine,
             notificationEmail: props.notificationEmail,
         });
+
+        // Register alarm SNS topic for cleanup
+        const alarmTopicName = `${prefix}-bootstrap-alarm`;
+        cleanup.addSnsTopic(alarmTopicName, alarm.topic);
 
         // =====================================================================
         // CDK-Nag Suppressions
@@ -410,6 +439,18 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         NagSuppressions.addResourceSuppressions(orchestrator.routerFunction, [{
             id: 'AwsSolutions-L1',
             reason: 'Python 3.13 is the latest GA Lambda runtime. PYTHON_3_14 is a CDK placeholder for an unreleased version.',
+        }], true);
+
+        // cdk-nag: Cleanup Lambda and Provider framework Lambda
+        NagSuppressions.addResourceSuppressions(cleanup, [{
+            id: 'AwsSolutions-L1',
+            reason: 'Python 3.13 is the latest GA Lambda runtime. Provider framework Lambda runtime is managed by CDK.',
+        }, {
+            id: 'AwsSolutions-IAM5',
+            reason: 'Cleanup Lambda requires wildcard for log group/SSM parameter ARNs as orphaned resource names are dynamic.',
+        }, {
+            id: 'AwsSolutions-IAM4',
+            reason: 'Provider framework uses AWS managed policy for Lambda basic execution — standard CDK pattern.',
         }], true);
     }
 }

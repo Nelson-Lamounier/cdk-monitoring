@@ -353,4 +353,64 @@ describe('K8sSsmAutomationStack', () => {
             expect(stack.monitoringSecretsDocName).toBe('k8s-dev-deploy-monitoring-secrets');
         });
     });
+
+    // =========================================================================
+    // Resource Cleanup Provider — pre-emptive orphan deletion
+    // =========================================================================
+    describe('Resource Cleanup Provider', () => {
+        const { template } = createSsmAutomationStack();
+
+        it('should create the cleanup Lambda function', () => {
+            template.hasResourceProperties('AWS::Lambda::Function', {
+                Runtime: 'python3.13',
+                Description: Match.stringLikeRegexp('cleanup.*orphaned'),
+            });
+        });
+
+        it('should create custom resources for SSM parameter cleanup', () => {
+            // 7 SSM parameters + 1 log group + 1 SNS topic = 9 custom resources
+            // Plus the 1 custom resource from the Provider framework itself
+            // We verify at least the Custom::AWS resources exist
+            template.resourceCountIs('AWS::CloudFormation::CustomResource', 9);
+        });
+
+        it('should grant the cleanup Lambda logs:DeleteLogGroup permission', () => {
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: Match.objectLike({
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: 'logs:DeleteLogGroup',
+                            Sid: 'CleanupLogGroups',
+                        }),
+                    ]),
+                }),
+            });
+        });
+
+        it('should grant the cleanup Lambda ssm:DeleteParameter permission', () => {
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: Match.objectLike({
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: 'ssm:DeleteParameter',
+                            Sid: 'CleanupSsmParameters',
+                        }),
+                    ]),
+                }),
+            });
+        });
+
+        it('should grant the cleanup Lambda sns:DeleteTopic permission', () => {
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: Match.objectLike({
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: 'sns:DeleteTopic',
+                            Sid: 'CleanupSnsTopics',
+                        }),
+                    ]),
+                }),
+            });
+        });
+    });
 });

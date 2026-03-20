@@ -8,6 +8,7 @@
  * - SsmParameterStoreConstruct - Batch-create SSM String Parameters from a typed list
  * - BootstrapOrchestratorConstruct - Step Functions + Lambda + EventBridge orchestrator
  * - BootstrapAlarmConstruct - CloudWatch alarm + SNS for bootstrap failures
+ * - ResourceCleanupProvider - Pre-emptive cleanup of orphaned AWS resources
  */
 
 export * from './ssm-run-command-document';
@@ -15,3 +16,4 @@ export * from './ssm-parameter-store';
 export * from './automation-document';
 export * from './bootstrap-orchestrator';
 export * from './bootstrap-alarm';
+export * from './resource-cleanup-provider';
