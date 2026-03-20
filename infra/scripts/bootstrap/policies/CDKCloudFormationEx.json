@@ -164,7 +164,13 @@
     {
       "Sid": "BedrockAIServices",
       "Effect": "Allow",
-      "Action": ["bedrock:*", "aoss:*"],
+      "Action": ["bedrock:*", "bedrock-agentcore:*", "aoss:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CognitoIdentityServices",
+      "Effect": "Allow",
+      "Action": ["cognito-idp:*", "cognito-identity:*"],
       "Resource": "*"
     },
     {
