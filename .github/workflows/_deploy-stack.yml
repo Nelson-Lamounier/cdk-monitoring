@@ -173,13 +173,11 @@ jobs:
       - name: Resolve AWS Account ID
         id: resolve-account
         run: |
-          # First try input, then fall back to vars
-          ACCOUNT_ID="${{ inputs.aws-account-id }}"
-
-          if [ -z "$ACCOUNT_ID" ]; then
-            echo "Input aws-account-id is empty, trying vars.AWS_ACCOUNT_ID..."
-            ACCOUNT_ID="${{ vars.AWS_ACCOUNT_ID }}"
-          fi
+          # Resolve from input, then fall back to vars.
+          # Values flow through env: to avoid inline ${{ }} expansion,
+          # which would print the raw account ID in the rendered script
+          # header BEFORE ::add-mask:: can take effect.
+          ACCOUNT_ID="${INPUT_ACCOUNT_ID:-$VARS_ACCOUNT_ID}"
 
           if [ -z "$ACCOUNT_ID" ]; then
             echo "ERROR: Could not resolve AWS Account ID from inputs or vars"
@@ -189,6 +187,9 @@ jobs:
           echo "::add-mask::$ACCOUNT_ID"
           echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
           echo "[OK] Resolved AWS Account ID"
+        env:
+          INPUT_ACCOUNT_ID: ${{ inputs.aws-account-id }}
+          VARS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 
       - name: Set Scoped Config
         shell: bash
