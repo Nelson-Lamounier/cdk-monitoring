@@ -86,7 +86,7 @@ jobs:
   # ===========================================================================
   deploy-to-cluster:
     name: Deploy to Kubernetes
-    needs: [build-and-push]
+    needs: [build-and-push, sync-assets]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: development
@@ -109,7 +109,10 @@ jobs:
       - name: Deploy via SSM
         run: |
           IMAGE_URI="${{ needs.build-and-push.outputs.image-uri }}"
-          echo "Deploying image: $IMAGE_URI"
+
+          # Mask image URI (contains ECR URL with AWS account ID)
+          echo "::add-mask::$IMAGE_URI"
+          echo "Deploying image to Kubernetes..."
 
           # Update the SSM parameter with the new image URI so ArgoCD
           # picks it up on next sync, or trigger a direct deployment
@@ -123,7 +126,7 @@ jobs:
           echo "[PASS] Image URI updated in SSM"
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Kubernetes Deployment" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image**: $IMAGE_URI" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: Updated in SSM ✅" >> $GITHUB_STEP_SUMMARY
           echo "- **SSM Parameter Updated**" >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================

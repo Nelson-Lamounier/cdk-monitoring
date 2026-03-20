@@ -55,7 +55,5 @@ jobs:
       environment: development
       cdk-environment: development
       require-approval: never
-      enable-security-scan: true
-      security-scan-blocking: false
       skip-verification: ${{ inputs.skip_verification || false }}
     secrets: inherit

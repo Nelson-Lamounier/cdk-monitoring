@@ -8,6 +8,8 @@
 #
 # Recipe mapping (CI step → justfile recipe):
 #   - Security Audit    → just audit
+#   - Snyk Scan         → just security-snyk
+#   - IaC Security Scan → just ci-security-scan
 #   - ESLint            → just lint
 #   - Type Check        → just typecheck
 #   - Build             → just build
@@ -39,6 +41,7 @@ env:
 
 permissions:
   contents: read
+  security-events: write  # Required for SARIF upload (Checkov → GitHub Security tab)
 
 jobs:
   # ============================================================================
@@ -55,6 +58,7 @@ jobs:
       any-src: ${{ steps.filter.outputs.any-src }}
       any-tests: ${{ steps.filter.outputs.any-tests }}
       k8s-content: ${{ steps.filter.outputs.k8s-content }}
+      frontend-ops: ${{ steps.filter.outputs.frontend-ops }}
       # Computed: should we run all tests?
       run-all: ${{ steps.compute.outputs.run-all }}
 
@@ -89,6 +93,10 @@ jobs:
               - 'kubernetes-app/platform/charts/**/chart/**'
               - 'kubernetes-app/workloads/charts/**/chart/**'
               - 'kubernetes-app/k8s-bootstrap/**'
+            frontend-ops:
+              - 'frontend-ops/**'
+              - '.github/workflows/deploy-frontend.yml'
+              - '.github/workflows/_sync-assets.yml'
 
       - name: Compute Run Flags
         id: compute
@@ -203,7 +211,7 @@ jobs:
           timeout_minutes: 5
           max_attempts: 3
           retry_wait_seconds: 10
-          command: just audit --ignore 1113296 --ignore 1113371 --ignore 1113992 --ignore 1114071 --ignore 1114200
+          command: just audit
 
   lint:
     name: Lint Code
@@ -333,7 +341,33 @@ jobs:
       - name: Run Stack Tests
         run: just test-stacks
 
+  # ============================================================================
+  # Frontend Ops Tests
+  # ============================================================================
+  test-frontend-ops:
+    name: Test Frontend Ops
+    needs: [setup, detect-changes]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    if: |
+      needs.detect-changes.outputs.frontend-ops == 'true' ||
+      needs.detect-changes.outputs.run-all == 'true'
 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      # Runs sync-static-to-s3 unit tests and deploy-frontend workflow validation.
+      # Recipe: justfile → test-frontend-ops → npx jest --config frontend-ops/jest.config.js
+      - name: Run Frontend Ops Tests
+        run: just test-frontend-ops
 
   # ============================================================================
   # NOTE: Snapshot Tests
@@ -391,23 +425,86 @@ jobs:
 
 
   # ============================================================================
-  # NOTE: IaC Security Scanning Strategy
+  # Snyk Security Scan (Open-Source Deps + IaC)
   # ============================================================================
-  # Security scanning (Checkov) is performed ONLY in deployment pipelines, not CI.
-  # This design choice provides:
-  #   1. Faster CI feedback (~2-3 min saved per run)
-  #   2. Environment-specific security policies (dev=non-blocking, prod=blocking)
-  #   3. cdk-nag already runs during development (CDK Aspect)
+  snyk-scan:
+    name: Snyk Security Scan
+    needs: [setup, detect-changes]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    # Run when source or dependencies change
+    if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.ci-config == 'true'
+    # Advisory — findings do not block the pipeline
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Run Snyk Scans
+        run: just security-snyk
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+  # ============================================================================
+  # IaC Security Scan (Checkov — Blocking on CRITICAL/HIGH)
+  #
+  # Runs Checkov against the synthesised CDK templates from validate-cdk.
+  # Uses .checkov/config.yaml for custom rules, skip lists, and severity
+  # thresholds. Uploads SARIF to GitHub Security for inline PR annotations.
   #
   # Security gates:
-  #   - LOCAL: cdk-nag aspect provides real-time feedback
-  #   - DEPLOY: Checkov runs with environment-specific policies
-  #     • Development: Non-blocking (warnings only)
-  #     • Staging: Blocking on HIGH/CRITICAL
-  #     • Production: Blocking on all findings
+  #   - CI:     Checkov (blocks on CRITICAL/HIGH) + Snyk (advisory)
+  #   - LOCAL:  cdk-nag aspect provides real-time feedback
   #
-  # See: .github/workflows/_deploy-kubernetes.yml for deployment security scan
+  # Recipe: justfile → ci-security-scan → scripts/ci/security-scan.ts
   # ============================================================================
+  iac-security-scan:
+    name: IaC Security Scan
+    needs: [setup, build, validate-cdk, detect-changes]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 15
+    if: needs.validate-cdk.result == 'success'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Synthesise CDK Templates
+        run: just ci-synth-validate
+        env:
+          AWS_REGION: eu-west-1
+          NOTIFICATION_EMAIL: ci-validation@placeholder.local
+          SES_FROM_EMAIL: ci-validation@placeholder.local
+          VERIFICATION_SECRET: ci-placeholder-secret
+          ALLOW_IPV4: "203.0.113.0/32"
+          INFRA_VERSION: ${{ github.sha }}
+
+      - name: Run IaC Security Scan
+        id: checkov
+        run: just ci-security-scan
+
+      - name: Upload SARIF to GitHub Security
+        if: always() && hashFiles('security-reports/results_sarif.sarif') != ''
+        uses: github/codeql-action/upload-sarif@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
+        with:
+          sarif_file: security-reports/results_sarif.sarif
+          category: checkov-ci
+        continue-on-error: true
 
   # ============================================================================
   # Helm Chart Validation
@@ -476,10 +573,13 @@ jobs:
       - detect-changes
       - lint-workflows
       - audit
+      - snyk-scan
+      - iac-security-scan
       - lint
       - deps-check
       - typecheck
       - test-stacks
+      - test-frontend-ops
       - build
       - validate-cdk
       - validate-helm
@@ -509,6 +609,12 @@ jobs:
 
           echo "### Tests" >> $GITHUB_STEP_SUMMARY
           echo "- Stack Tests: ${{ needs.test-stacks.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Frontend Ops Tests: ${{ needs.test-frontend-ops.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Security" >> $GITHUB_STEP_SUMMARY
+          echo "- Snyk Scan: ${{ needs.snyk-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- IaC Security Scan: ${{ needs.iac-security-scan.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Build & Validation" >> $GITHUB_STEP_SUMMARY
@@ -516,7 +622,6 @@ jobs:
           echo "- CDK Validation: ${{ needs.validate-cdk.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Helm Validation: ${{ needs.validate-helm.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "ℹ️ IaC Security Scan runs in deployment pipelines (not CI)" >> $GITHUB_STEP_SUMMARY
 
           # Fail if ANY upstream job failed (skipped jobs are acceptable)
           FAILED_JOBS=""
@@ -527,9 +632,12 @@ jobs:
             "deps-check:${{ needs.deps-check.result }}" \
             "typecheck:${{ needs.typecheck.result }}" \
             "test-stacks:${{ needs.test-stacks.result }}" \
+            "test-frontend-ops:${{ needs.test-frontend-ops.result }}" \
+            "iac-security-scan:${{ needs.iac-security-scan.result }}" \
             "build:${{ needs.build.result }}" \
             "validate-cdk:${{ needs.validate-cdk.result }}" \
             "validate-helm:${{ needs.validate-helm.result }}"; do
+            # Note: snyk-scan excluded from failure checks (continue-on-error: true)
             JOB_NAME="${job_result%%:*}"
             JOB_STATUS="${job_result##*:}"
             if [[ "$JOB_STATUS" == "failure" ]]; then
