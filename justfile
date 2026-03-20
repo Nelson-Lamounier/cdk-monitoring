@@ -122,7 +122,7 @@ ci-synth-validate:
     echo "==========================================="
     echo "Validating K8s Project (dev)"
     echo "==========================================="
-    if npx cdk synth -c project=kubernetes -c environment=dev --no-lookups --quiet; then
+    if npx cdk synth -c project=kubernetes -c environment=dev -c adminAllowedIps=NONE --no-lookups --quiet; then
       echo "✓ K8s synth passed"
     else
       echo "✗ K8s synth FAILED"

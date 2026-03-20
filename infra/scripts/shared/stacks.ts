@@ -225,8 +225,22 @@ registerProject({
   description:
     'Self-managed kubeadm Kubernetes cluster for unified workloads (requires Shared VPC)',
   stacks: k8sStacks,
-  cdkContext: (env) => ({
-    project: 'kubernetes',
-    environment: env,
-  }),
+  cdkContext: (env) => {
+    const context: Record<string, string> = {
+      project: 'kubernetes',
+      environment: env,
+    };
+
+    // Bridge ALLOW_IPV4 / ALLOW_IPV6 env vars (set by GitHub Actions from
+    // environment secrets) into the CDK context parameter that base-stack.ts
+    // reads via tryGetContext('adminAllowedIps').
+    const ipParts = [process.env.ALLOW_IPV4, process.env.ALLOW_IPV6].filter(
+      Boolean,
+    );
+    if (ipParts.length > 0) {
+      context.adminAllowedIps = ipParts.join(',');
+    }
+
+    return context;
+  },
 });

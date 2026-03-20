@@ -46,7 +46,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
+
 import * as cdk from 'aws-cdk-lib/core';
 import * as cr from 'aws-cdk-lib/custom-resources';
 
@@ -58,7 +58,7 @@ import {
     TRAEFIK_HTTP_PORT,
     TRAEFIK_HTTPS_PORT,
 } from '../../config/kubernetes';
-import { adminSsmPaths, k8sSsmPaths } from '../../config/ssm-paths';
+import { k8sSsmPaths } from '../../config/ssm-paths';
 import { SecurityGroupConstruct, SsmParameterStoreConstruct } from '../../constructs';
 import { NetworkLoadBalancerConstruct } from '../../constructs/networking';
 import { S3BucketConstruct } from '../../constructs/storage';
@@ -263,14 +263,11 @@ export class KubernetesBaseStack extends cdk.Stack {
             'HTTP from CloudFront origin-facing IPs',
         );
 
-        // Admin IPs → Traefik HTTPS (sourced from SSM at synth time)
-        const adminPaths = adminSsmPaths();
-        const adminIpsRaw = ssm.StringParameter.valueFromLookup(this, adminPaths.allowedIps);
+        // Admin IPs → Traefik HTTPS (sourced from CDK context -c adminAllowedIps=...)
+        // CI synth-validate passes a dummy; real deploys resolve from SSM before synth.
+        const adminIpsRaw = this.node.tryGetContext('adminAllowedIps') as string | undefined;
 
-        const isResolved = !cdk.Token.isUnresolved(adminIpsRaw)
-            && !adminIpsRaw.startsWith('dummy-value-for-');
-
-        if (isResolved) {
+        if (adminIpsRaw && adminIpsRaw !== 'NONE') {
             const adminIps = adminIpsRaw.split(',').map((ip) => ip.trim()).filter(Boolean);
 
             /**
