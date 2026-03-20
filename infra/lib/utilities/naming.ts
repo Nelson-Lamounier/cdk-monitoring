@@ -43,6 +43,7 @@ export const STACK_REGISTRY = {
         appIam: 'AppIam',
         api: 'Api',
         edge: 'Edge',
+        observability: 'Observability',
     },
     org: {
         dnsRole: 'DnsRole',

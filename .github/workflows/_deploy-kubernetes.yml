@@ -39,6 +39,7 @@
 #   2c. Golden AMI       (Bake containerd + kubeadm into AMI)
 #   2d. SSM Automation   (SSM Automation documents + IAM role) [parallel with 2c]
 #   2e. API              (API Gateway + Lambda) [parallel with 2, depends on 1]
+#   2f. Observability    (CloudWatch dashboard) [parallel with 2c/2d, depends on 2b]
 #   3.  Compute          (Control Plane EC2 + ASG)
 #   3b. AppWorker        (Application worker node)
 #   3c. MonitoringWorker (Monitoring worker node)
@@ -138,7 +139,7 @@ jobs:
       commit-sha: ${{ github.sha }}
       commit-short-sha: ${{ steps.pipeline-setup.outputs.short-sha }}
       node-version: ${{ steps.setup-tools.outputs.node-version }}
-      # Stack names from synthesize-ci.ts (11-stack architecture)
+      # Stack names from synthesize-ci.ts (12-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
       goldenami-stack: ${{ steps.synth.outputs.goldenAmi }}
@@ -150,6 +151,7 @@ jobs:
       appiam-stack: ${{ steps.synth.outputs.appIam }}
       api-stack: ${{ steps.synth.outputs.api }}
       edge-stack: ${{ steps.synth.outputs.edge }}
+      observability-stack: ${{ steps.synth.outputs.observability }}
 
     steps:
       - name: Checkout
@@ -915,6 +917,31 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Deploy Observability Stack (2f) — CloudWatch Pre-Deployment Dashboard
+  #
+  # Runs in parallel with Golden AMI, SSM Automation, and API stacks.
+  # Depends only on Base stack (SSM parameters must exist).
+  # Cost: $3.00/month — all metrics are standard AWS service metrics.
+  # ===========================================================================
+  deploy-observability:
+    name: Deploy Observability
+    needs: [setup, deploy-base, verify-base-stack]
+    if: >-
+      always()
+      && needs.deploy-base.result == 'success'
+      && needs.verify-base-stack.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.observability-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
   # K8s Manifest Deployment — ArgoCD (GitOps)
   #
   # Application manifests are deployed by ArgoCD running
@@ -947,6 +974,7 @@ jobs:
         deploy-argocd-worker,
         deploy-api,
         deploy-edge,
+        deploy-observability,
       ]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -961,6 +989,7 @@ jobs:
         || needs.deploy-argocd-worker.result == 'failure'
         || needs.deploy-api.result == 'failure'
         || needs.deploy-edge.result == 'failure'
+        || needs.deploy-observability.result == 'failure'
       )
       && inputs.cdk-environment != 'development'
 
@@ -1023,6 +1052,7 @@ jobs:
       - deploy-argocd-worker
       - deploy-api
       - deploy-edge
+      - deploy-observability
       - deployment-failure-alert
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1091,6 +1121,7 @@ jobs:
           DEPLOY_ARGOCD_WORKER_RESULT: ${{ needs.deploy-argocd-worker.result || 'skipped' }}
           DEPLOY_API_RESULT: ${{ needs.deploy-api.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
+          DEPLOY_OBSERVABILITY_RESULT: ${{ needs.deploy-observability.result || 'skipped' }}
           VERIFY_RESULT: "moved-to-ssm-pipeline"
           SMOKE_TESTS_RESULT: "moved-to-ssm-pipeline"
           ALERT_RESULT: ${{ needs.deployment-failure-alert.result || 'skipped' }}

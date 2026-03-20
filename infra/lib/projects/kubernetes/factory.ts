@@ -5,7 +5,7 @@
  * Creates shared Kubernetes infrastructure hosting both monitoring and
  * application workloads on a kubeadm Kubernetes cluster.
  *
- * Stack Architecture (11 stacks):
+ * Stack Architecture (12 stacks):
  *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
  *   2. Kubernetes-Base: VPC, Security Group, KMS, EBS, Elastic IP
  *   2b. Kubernetes-GoldenAmi: EC2 Image Builder pipeline (bakes Golden AMI)
@@ -17,6 +17,7 @@
  *   4. Kubernetes-AppIam: Application-tier IAM grants (DynamoDB, S3, Secrets)
  *   5. Kubernetes-API: API Gateway + Lambda (email subscriptions)
  *   6. Kubernetes-Edge: ACM + WAF + CloudFront (us-east-1)
+ *   7. Kubernetes-Observability: CloudWatch pre-deployment dashboard
  *
  * Workload isolation is enforced at the Kubernetes layer via Namespaces,
  * NetworkPolicies, ResourceQuotas, and PriorityClasses.
@@ -53,6 +54,7 @@ import {
     KubernetesMonitoringWorkerStack,
     KubernetesAppWorkerStack,
     KubernetesArgocdWorkerStack,
+    KubernetesObservabilityStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId, flatName } from '../../utilities/naming';
@@ -513,9 +515,38 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stacks.push(edgeStack);
         stackMap.edge = edgeStack;
 
+        // =================================================================
+        // Stack 7: OBSERVABILITY STACK (CloudWatch Dashboard)
+        //
+        // Pre-deployment dashboard providing infrastructure visibility
+        // before Grafana/Prometheus are operational. Reads all references
+        // from SSM — fully decoupled from compute lifecycle.
+        // Cost: $3.00/month.
+        // =================================================================
+        const observabilityStack = new KubernetesObservabilityStack(
+            scope,
+            stackId(this.namespace, 'Observability', environment),
+            {
+                env,
+                targetEnvironment: environment,
+                namePrefix,
+                ssmPrefix,
+                stateMachineName: `${namePrefix}-bootstrap-orchestrator`,
+                lambdaFunctions: [
+                    {
+                        functionName: `${namePrefix}-bootstrap-router`,
+                        label: 'Bootstrap Router',
+                    },
+                ],
+            },
+        );
+        observabilityStack.addDependency(baseStack);
+        stacks.push(observabilityStack);
+        stackMap.observability = observabilityStack;
+
         cdk.Annotations.of(scope).addInfo(
             `K8s factory created ${stacks.length} stacks for ${environment}: ` +
-            `Data → Base → Compute → Edge (domain: ${edgeConfig.domainName ?? 'not configured'})`,
+            `Data → Base → Compute → Edge → Observability (domain: ${edgeConfig.domainName ?? 'not configured'})`,
         );
 
         return {

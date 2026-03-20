@@ -110,8 +110,8 @@ registerProject({
 });
 
 // =============================================================================
-// K8S PROJECT (kubeadm Kubernetes Cluster — 10-Stack Architecture)
-// Synth outputs all 10 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→Compute→Workers→AppIam→Edge.
+// K8S PROJECT (kubeadm Kubernetes Cluster — 12-Stack Architecture)
+// Synth outputs all 12 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→Compute→Workers→AppIam→Edge→Observability.
 // API stack is deployed separately from core infrastructure.
 // Bootstrap/app manifests synced by independent S3 sync pipelines.
 // =============================================================================
@@ -208,6 +208,14 @@ const k8sStacks: StackConfig[] = [
       'CloudFront distribution with ACM certificate and WAF (us-east-1)',
     dependsOn: ['controlPlane'],
     region: 'us-east-1',
+  },
+  {
+    id: 'observability',
+    name: 'Observability Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'observability', env),
+    description:
+      'CloudWatch pre-deployment dashboard for infrastructure monitoring',
+    dependsOn: ['base'],
   },
 ];
 

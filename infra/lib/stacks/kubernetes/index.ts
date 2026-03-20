@@ -21,3 +21,5 @@ export { KubernetesDataStack } from './data-stack';
 export type { KubernetesDataStackProps } from './data-stack';
 export { NextJsApiStack } from './api-stack';
 export type { NextJsApiStackProps } from './api-stack';
+export { KubernetesObservabilityStack } from './observability-stack';
+export type { KubernetesObservabilityStackProps } from './observability-stack';

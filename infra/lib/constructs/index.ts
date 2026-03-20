@@ -26,3 +26,6 @@ export * from './ssm';
 
 // FinOps constructs (Budgets, Cost Governance)
 export * from './finops';
+
+// Observability constructs (CloudWatch Dashboards)
+export * from './observability';
