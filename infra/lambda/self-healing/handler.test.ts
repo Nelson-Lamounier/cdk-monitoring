@@ -148,9 +148,9 @@ describe('isDuplicate', () => {
 // =============================================================================
 
 describe('getDefaultTools', () => {
-    it('should return two default tools', () => {
+    it('should return four default tools', () => {
         const tools = getDefaultTools();
-        expect(tools).toHaveLength(2);
+        expect(tools).toHaveLength(4);
     });
 
     it('should include diagnose_alarm tool', () => {
@@ -176,6 +176,22 @@ describe('getDefaultTools', () => {
             expect(tool.inputSchema).toHaveProperty('properties');
         }
     });
+
+    it('should include check_node_health tool', () => {
+        const tools = getDefaultTools();
+        const nodeHealth = tools.find(t => t.name === 'check_node_health');
+
+        expect(nodeHealth).toBeDefined();
+        expect(nodeHealth?.description).toContain('Kubernetes');
+    });
+
+    it('should include analyse_cluster_health tool', () => {
+        const tools = getDefaultTools();
+        const clusterHealth = tools.find(t => t.name === 'analyse_cluster_health');
+
+        expect(clusterHealth).toBeDefined();
+        expect(clusterHealth?.description).toContain('K8sGPT');
+    });
 });
 
 // =============================================================================
@@ -188,7 +204,7 @@ describe('buildToolConfig', () => {
         const config = buildToolConfig(tools);
 
         expect(config.tools).toBeDefined();
-        expect(config.tools).toHaveLength(2);
+        expect(config.tools).toHaveLength(4);
     });
 
     it('should produce toolSpec entries with correct names', () => {

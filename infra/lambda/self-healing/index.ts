@@ -525,6 +525,31 @@ function getDefaultTools(): AgentTool[] {
                 required: ['volumeId'],
             },
         },
+        {
+            name: 'check_node_health',
+            description: 'Check whether Kubernetes worker nodes have joined the cluster and are in Ready state via SSM on the control plane',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    nodeNameFilter: { type: 'string', description: 'Optional substring filter for node names' },
+                },
+            },
+        },
+        {
+            name: 'analyse_cluster_health',
+            description: 'Analyse Kubernetes cluster health using K8sGPT. Diagnoses workload issues such as failing pods, misconfigured services, and unhealthy deployments. Falls back to kubectl if K8sGPT is not installed.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    namespace: { type: 'string', description: 'Optional namespace to analyse (e.g. "argocd", "cert-manager")' },
+                    filters: {
+                        type: 'array',
+                        description: 'Optional K8sGPT analyser filters (e.g. ["Pod", "Service"])',
+                        items: { type: 'string' },
+                    },
+                },
+            },
+        },
     ];
 }
 

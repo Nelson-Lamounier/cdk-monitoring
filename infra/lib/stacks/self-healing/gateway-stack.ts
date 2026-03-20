@@ -208,6 +208,100 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         }));
 
         // =================================================================
+        // Tool Lambda 3: Check Node Health
+        //
+        // Runs `kubectl get nodes -o json` on the control plane node via
+        // SSM SendCommand and returns a structured node health report.
+        // Enables the agent to verify worker nodes joined the cluster.
+        // =================================================================
+        const checkNodeHealthFn = new lambdaNode.NodejsFunction(this, 'CheckNodeHealthFunction', {
+            functionName: `${namePrefix}-tool-check-node-health`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'self-healing', 'tools', 'check-node-health', 'index.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.seconds(60),
+            logGroup: new logs.LogGroup(this, 'CheckNodeHealthLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-tool-check-node-health`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            tracing: lambda.Tracing.ACTIVE,
+            description: `MCP tool: check K8s node health via SSM for ${namePrefix}`,
+            bundling: {
+                minify: true,
+                sourceMap: true,
+                externalModules: ['@aws-sdk/*'],
+            },
+        });
+
+        // Grant EC2 read access (resolve control plane instance by tag)
+        checkNodeHealthFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'DescribeInstances',
+            effect: iam.Effect.ALLOW,
+            actions: ['ec2:DescribeInstances'],
+            resources: ['*'],
+        }));
+
+        // Grant SSM SendCommand + GetCommandInvocation (run kubectl on CP node)
+        checkNodeHealthFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SsmSendCommand',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:SendCommand',
+                'ssm:GetCommandInvocation',
+            ],
+            resources: ['*'],
+        }));
+
+        // =================================================================
+        // Tool Lambda 4: Analyse Cluster Health (K8sGPT)
+        //
+        // Runs K8sGPT on the control plane via SSM to diagnose workload
+        // issues (failing pods, misconfigured services, etc.).
+        // Falls back to kubectl if K8sGPT is not installed.
+        // =================================================================
+        const analyseClusterHealthFn = new lambdaNode.NodejsFunction(this, 'AnalyseClusterHealthFunction', {
+            functionName: `${namePrefix}-tool-analyse-cluster-health`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'self-healing', 'tools', 'analyse-cluster-health', 'index.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.seconds(90),
+            logGroup: new logs.LogGroup(this, 'AnalyseClusterHealthLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-tool-analyse-cluster-health`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            tracing: lambda.Tracing.ACTIVE,
+            description: `MCP tool: K8sGPT cluster health analysis for ${namePrefix}`,
+            bundling: {
+                minify: true,
+                sourceMap: true,
+                externalModules: ['@aws-sdk/*'],
+            },
+        });
+
+        // Grant EC2 read access (resolve control plane instance by tag)
+        analyseClusterHealthFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'DescribeInstances',
+            effect: iam.Effect.ALLOW,
+            actions: ['ec2:DescribeInstances'],
+            resources: ['*'],
+        }));
+
+        // Grant SSM SendCommand + GetCommandInvocation (run k8sgpt/kubectl on CP node)
+        analyseClusterHealthFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SsmSendCommand',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:SendCommand',
+                'ssm:GetCommandInvocation',
+            ],
+            resources: ['*'],
+        }));
+
+        // =================================================================
         // Register Tools with AgentCore Gateway
         //
         // Each tool is registered via addLambdaTarget() with an inline
@@ -281,6 +375,78 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             }]),
         });
 
+        this.gateway.addLambdaTarget('CheckNodeHealthTarget', {
+            gatewayTargetName: 'check-node-health',
+            description: 'Check Kubernetes node health via SSM on the control plane',
+            lambdaFunction: checkNodeHealthFn,
+            toolSchema: ToolSchema.fromInline([{
+                name: 'check_node_health',
+                description: 'Check whether Kubernetes worker nodes have joined the cluster and are in Ready state. Runs kubectl on the control plane node via SSM.',
+                inputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        nodeNameFilter: {
+                            type: SchemaDefinitionType.STRING,
+                            description: 'Optional substring filter for node names (e.g. "worker" or "app")',
+                        },
+                    },
+                },
+                outputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        controlPlaneInstanceId: { type: SchemaDefinitionType.STRING, description: 'EC2 instance used for the check' },
+                        totalNodes: { type: SchemaDefinitionType.NUMBER, description: 'Total number of nodes' },
+                        readyNodes: { type: SchemaDefinitionType.NUMBER, description: 'Number of Ready nodes' },
+                        notReadyNodes: { type: SchemaDefinitionType.NUMBER, description: 'Number of NotReady nodes' },
+                        nodes: {
+                            type: SchemaDefinitionType.ARRAY,
+                            description: 'Per-node health details',
+                            items: { type: SchemaDefinitionType.OBJECT },
+                        },
+                    },
+                },
+            }]),
+        });
+
+        this.gateway.addLambdaTarget('AnalyseClusterHealthTarget', {
+            gatewayTargetName: 'analyse-cluster-health',
+            description: 'Analyse Kubernetes cluster health using K8sGPT diagnostics',
+            lambdaFunction: analyseClusterHealthFn,
+            toolSchema: ToolSchema.fromInline([{
+                name: 'analyse_cluster_health',
+                description: 'Analyse Kubernetes cluster health using K8sGPT. Diagnoses workload issues such as failing pods, misconfigured services, and unhealthy deployments. Falls back to kubectl if K8sGPT is not installed.',
+                inputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        namespace: {
+                            type: SchemaDefinitionType.STRING,
+                            description: 'Optional namespace to analyse (e.g. "argocd", "cert-manager"). Omit for cluster-wide analysis.',
+                        },
+                        filters: {
+                            type: SchemaDefinitionType.ARRAY,
+                            description: 'Optional K8sGPT analyser filters (e.g. ["Pod", "Service", "Ingress"])',
+                            items: { type: SchemaDefinitionType.STRING },
+                        },
+                    },
+                },
+                outputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        controlPlaneInstanceId: { type: SchemaDefinitionType.STRING, description: 'EC2 instance used' },
+                        healthy: { type: SchemaDefinitionType.BOOLEAN, description: 'True if no issues found' },
+                        totalIssues: { type: SchemaDefinitionType.NUMBER, description: 'Total issues found' },
+                        criticalIssues: { type: SchemaDefinitionType.NUMBER, description: 'Critical workload issues' },
+                        analysisMethod: { type: SchemaDefinitionType.STRING, description: 'k8sgpt or kubectl-fallback' },
+                        issues: {
+                            type: SchemaDefinitionType.ARRAY,
+                            description: 'Per-issue diagnostics',
+                            items: { type: SchemaDefinitionType.OBJECT },
+                        },
+                    },
+                },
+            }]),
+        });
+
         // =================================================================
         // CDK-Nag Suppressions
         // =================================================================
@@ -319,6 +485,30 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             [{
                 id: 'AwsSolutions-IAM5',
                 reason: 'EC2 DetachVolume and DescribeVolumes require wildcard — volumes and instances are dynamic',
+            }, {
+                id: 'AwsSolutions-L1',
+                reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
+            }],
+            true,
+        );
+
+        NagSuppressions.addResourceSuppressions(
+            checkNodeHealthFn,
+            [{
+                id: 'AwsSolutions-IAM5',
+                reason: 'EC2 DescribeInstances and SSM SendCommand require wildcard — instance IDs are dynamic (resolved by tag at runtime)',
+            }, {
+                id: 'AwsSolutions-L1',
+                reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
+            }],
+            true,
+        );
+
+        NagSuppressions.addResourceSuppressions(
+            analyseClusterHealthFn,
+            [{
+                id: 'AwsSolutions-IAM5',
+                reason: 'EC2 DescribeInstances and SSM SendCommand require wildcard — instance IDs are dynamic (resolved by tag at runtime)',
             }, {
                 id: 'AwsSolutions-L1',
                 reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
