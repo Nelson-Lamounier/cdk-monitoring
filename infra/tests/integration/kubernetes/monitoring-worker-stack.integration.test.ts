@@ -191,9 +191,6 @@ async function findMonitoringWorkerInstance(): Promise<{
         }
 
         if (attempt < maxAttempts) {
-            console.log(
-                `[Retry ${attempt}/${maxAttempts}] No running monitoring-worker instance yet — retrying in ${backoffMs / 1000}s`,
-            );
             await new Promise((r) => setTimeout(r, backoffMs));
         }
     }

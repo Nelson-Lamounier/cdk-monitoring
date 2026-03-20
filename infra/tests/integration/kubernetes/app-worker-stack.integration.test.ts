@@ -179,9 +179,6 @@ async function findAppWorkerInstance(): Promise<{
         }
 
         if (attempt < maxAttempts) {
-            console.log(
-                `[Retry ${attempt}/${maxAttempts}] No running app-worker instance yet — retrying in ${backoffMs / 1000}s`,
-            );
             await new Promise((r) => setTimeout(r, backoffMs));
         }
     }

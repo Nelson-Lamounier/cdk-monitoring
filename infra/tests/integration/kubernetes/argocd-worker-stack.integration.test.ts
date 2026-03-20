@@ -208,11 +208,6 @@ async function waitForTargetRegistration(
         }
 
         if (attempt < maxAttempts) {
-             
-            console.log(
-                `[Retry ${attempt}/${maxAttempts}] Instance ${expectedId} not yet in target group — ` +
-                `current targets: [${targetIds.join(', ')}]. Retrying in ${backoffMs / 1000}s`,
-            );
             await new Promise((r) => setTimeout(r, backoffMs));
         }
     }
@@ -267,9 +262,6 @@ async function findArgocdWorkerInstance(): Promise<{
         }
 
         if (attempt < maxAttempts) {
-            console.log(
-                `[Retry ${attempt}/${maxAttempts}] No running argocd-worker instance yet — retrying in ${backoffMs / 1000}s`,
-            );
             await new Promise((r) => setTimeout(r, backoffMs));
         }
     }

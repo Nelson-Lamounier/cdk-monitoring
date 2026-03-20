@@ -173,9 +173,6 @@ async function findControlPlaneInstance(): Promise<{
         }
 
         if (attempt < maxAttempts) {
-            console.log(
-                `[Retry ${attempt}/${maxAttempts}] No running control-plane instance yet — retrying in ${backoffMs / 1000}s`,
-            );
             await new Promise((r) => setTimeout(r, backoffMs));
         }
     }
