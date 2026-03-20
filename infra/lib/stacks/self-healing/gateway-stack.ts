@@ -277,6 +277,9 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             }, {
                 id: 'AwsSolutions-COG2',
                 reason: 'MFA not applicable for M2M client credentials flow — no end-user authentication involved',
+            }, {
+                id: 'AwsSolutions-COG3',
+                reason: 'AdvancedSecurityMode not applicable for M2M client credentials flow — no end-user passwords to protect from compromise',
             }],
             true,
         );
