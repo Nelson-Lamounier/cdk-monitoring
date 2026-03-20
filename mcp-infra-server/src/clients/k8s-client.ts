@@ -1,7 +1,11 @@
 /**
- * @fileoverview Kubernetes client factory.
+ * @fileoverview Kubernetes client factory with lazy-reload support.
  * Initialises `@kubernetes/client-node` with kubeconfig auto-detection
  * and exposes typed API group clients for use across tool handlers.
+ *
+ * The {@link createLazyK8sClients} factory returns a proxy that transparently
+ * re-reads the kubeconfig file from disk when it changes, ensuring that
+ * MCP tools always use fresh credentials without requiring a server restart.
  *
  * The client respects:
  * - `KUBECONFIG` environment variable
@@ -12,6 +16,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { statSync } from 'node:fs';
 
 /**
  * Container for all Kubernetes API clients used by the MCP server.
@@ -78,6 +83,93 @@ export function createK8sClients(kubeconfigPath?: string): K8sClients {
     kubeConfig: kc,
     objectApi,
   };
+}
+
+/**
+ * Creates a lazy-reloading K8s client proxy.
+ *
+ * On each property access, the proxy checks whether the kubeconfig file has been
+ * modified since the last load (via `mtime`). If the file has changed, it reloads
+ * all clients automatically. This ensures the MCP server always uses fresh
+ * credentials after `~/.kube/config` is updated, without requiring a restart.
+ *
+ * If no explicit path is provided, resolves the kubeconfig path from `KUBECONFIG`
+ * env var or defaults to `~/.kube/config`.
+ *
+ * @param kubeconfigPath - Optional explicit path to a kubeconfig file.
+ * @returns A `K8sClients` proxy that transparently reloads on file changes.
+ *
+ * @example
+ * ```typescript
+ * // In index.ts — drop-in replacement for createK8sClients()
+ * const k8sClients = createLazyK8sClients(process.env.KUBECONFIG);
+ *
+ * // Tools use it identically — reloads happen transparently
+ * registerListNamespaces(server, k8sClients);
+ * ```
+ */
+export function createLazyK8sClients(kubeconfigPath?: string): K8sClients {
+  const resolvedPath = resolveKubeconfigPath(kubeconfigPath);
+
+  let cachedClients = createK8sClients(kubeconfigPath);
+  let lastMtimeMs = getFileMtimeMs(resolvedPath);
+
+  /**
+   * Checks if the kubeconfig has changed and reloads clients if necessary.
+   * Designed to be called on every property access — the `mtime` stat is
+   * a fast syscall (~0.01ms) with negligible performance impact.
+   */
+  const maybeReload = (): void => {
+    if (!resolvedPath) return;
+
+    const currentMtime = getFileMtimeMs(resolvedPath);
+    if (currentMtime !== null && currentMtime !== lastMtimeMs) {
+      process.stderr.write(
+        `[k8s-client] Kubeconfig changed on disk — reloading clients.\n`,
+      );
+      cachedClients = createK8sClients(kubeconfigPath);
+      lastMtimeMs = currentMtime;
+    }
+  };
+
+  // Return a Proxy that intercepts property access and reloads if needed
+  return new Proxy(cachedClients, {
+    get(_target: K8sClients, prop: string | symbol): unknown {
+      maybeReload();
+      return cachedClients[prop as keyof K8sClients];
+    },
+  });
+}
+
+/**
+ * Resolves the kubeconfig file path in the same order as `@kubernetes/client-node`.
+ *
+ * @param explicitPath - An explicitly provided path, if any.
+ * @returns The resolved file path, or `null` if running in-cluster (no file).
+ */
+function resolveKubeconfigPath(explicitPath?: string): string | null {
+  if (explicitPath) return explicitPath;
+
+  const envPath = process.env.KUBECONFIG;
+  if (envPath) return envPath;
+
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+  return home ? `${home}/.kube/config` : null;
+}
+
+/**
+ * Gets the modification time of a file in milliseconds.
+ *
+ * @param filePath - Absolute path to the file.
+ * @returns The mtime in ms, or `null` if the file doesn't exist or can't be stat'd.
+ */
+function getFileMtimeMs(filePath: string | null): number | null {
+  if (!filePath) return null;
+  try {
+    return statSync(filePath).mtimeMs;
+  } catch {
+    return null;
+  }
 }
 
 /**

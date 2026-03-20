@@ -10,6 +10,10 @@
  * The server initialises both client factories and registers all 19 tools,
  * providing a unified diagnostic surface via stdio.
  *
+ * K8s clients are lazy-loaded: the server automatically re-reads the kubeconfig
+ * from disk when the file changes, so credentials are always fresh without
+ * requiring a server restart.
+ *
  * @example Start the server:
  * ```bash
  * node dist/index.js
@@ -20,7 +24,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createK8sClients } from './clients/k8s-client.js';
+import { createLazyK8sClients } from './clients/k8s-client.js';
 import { createAwsClients } from './clients/aws-client.js';
 
 // K8s tools
@@ -70,9 +74,9 @@ const TOTAL_TOOLS = K8S_TOOL_COUNT + AWS_TOOL_COUNT;
  * @throws Error if the kubeconfig cannot be loaded or the K8s API is unreachable.
  */
 async function main(): Promise<void> {
-  // Initialise Kubernetes clients
+  // Initialise Kubernetes clients (lazy-reload: re-reads kubeconfig when the file changes)
   const kubeconfigPath = process.env.KUBECONFIG;
-  const k8sClients = createK8sClients(kubeconfigPath);
+  const k8sClients = createLazyK8sClients(kubeconfigPath);
 
   // Initialise AWS clients
   const awsClients = createAwsClients();

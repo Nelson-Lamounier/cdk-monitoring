@@ -882,7 +882,47 @@ k8s-tunnel-auto env="development" region="eu-west-1" profile="dev-account":
       --parameters '{"portNumber":["6443"],"localPortNumber":["6443"]}' \
       --region {{region}} --profile {{profile}}
 
-# Diagnose K8s cluster issues with AI explanations via Bedrock (Claude Sonnet 4)
+# Fetch kubeconfig from SSM and write to ~/.kube/config
+# The control plane bootstrap stores a tunnel-ready kubeconfig in SSM
+# after every kubeadm init (server address rewritten to 127.0.0.1:6443).
+# Usage: just k8s-fetch-kubeconfig
+[group('k8s')]
+k8s-fetch-kubeconfig env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_PATH="/k8s/{{env}}/kubeconfig"
+    echo "→ Fetching kubeconfig from SSM: ${SSM_PATH}"
+    KUBECONFIG_CONTENT=$(aws ssm get-parameter \
+      --name "${SSM_PATH}" \
+      --with-decryption \
+      --query "Parameter.Value" --output text \
+      --region {{region}} --profile {{profile}} 2>/dev/null || echo "")
+    if [ -z "$KUBECONFIG_CONTENT" ]; then
+      echo "✗ SSM parameter ${SSM_PATH} not found."
+      echo "  The control plane bootstrap publishes this after kubeadm init."
+      echo "  If the cluster was just rebuilt, wait for the bootstrap to complete."
+      exit 1
+    fi
+    KUBE_DIR="$HOME/.kube"
+    mkdir -p "$KUBE_DIR"
+    if [ -f "$KUBE_DIR/config" ]; then
+      BACKUP="$KUBE_DIR/config.backup.$(date +%Y%m%d%H%M%S)"
+      cp "$KUBE_DIR/config" "$BACKUP"
+      echo "→ Backed up existing config → $BACKUP"
+    fi
+    echo "$KUBECONFIG_CONTENT" > "$KUBE_DIR/config"
+    chmod 600 "$KUBE_DIR/config"
+    echo "✓ Kubeconfig written to $KUBE_DIR/config"
+    echo ""
+    echo "→ Validating connectivity (requires active SSM tunnel)…"
+    if kubectl get nodes 2>/dev/null; then
+      echo ""
+      echo "✓ Cluster access restored successfully"
+    else
+      echo ""
+      echo "⚠ kubectl failed — ensure the SSM tunnel is active:"
+      echo "  just k8s-tunnel-auto"
+    fi
 # Requires: active SSM tunnel (just k8s-tunnel-auto), k8sgpt CLI, Bedrock auth configured
 # Setup: k8sgpt auth add --backend amazonbedrock --model eu.anthropic.claude-sonnet-4-20250514-v1:0 --providerRegion eu-central-1
 [group('k8s')]

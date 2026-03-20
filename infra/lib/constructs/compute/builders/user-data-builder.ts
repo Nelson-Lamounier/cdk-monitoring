@@ -628,7 +628,7 @@ systemctl start containerd
 echo "containerd started"
 
 # Build apiserver cert SANs
-CERT_SANS="--apiserver-cert-extra-sans=$PRIVATE_IP"
+CERT_SANS="--apiserver-cert-extra-sans=127.0.0.1,$PRIVATE_IP"
 if [ -n "$PUBLIC_IP" ]; then
     CERT_SANS="$CERT_SANS,$PUBLIC_IP"
 fi
