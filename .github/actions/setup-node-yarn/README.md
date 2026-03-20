@@ -209,7 +209,6 @@ If wrong Yarn version is used:
 ## Related Actions
 
 - `setup-cdk-deployment` - Builds on this action with AWS credential setup
-- `deploy-cdk-stack` - Uses this action indirectly via setup-cdk-deployment
 
 ## Version History
 

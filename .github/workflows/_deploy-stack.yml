@@ -153,8 +153,8 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     environment: ${{ inputs.github-environment || inputs.environment }}
     outputs:
-      status: ${{ steps.deploy-stack.outputs.deployment-status }}
-      outputs: ${{ steps.deploy-stack.outputs.stack-outputs }}
+      status: ${{ steps.deploy.outputs.status }}
+      outputs: ${{ steps.finalize.outputs.stack_outputs }}
 
     steps:
       - name: Checkout
@@ -174,7 +174,7 @@ jobs:
         id: resolve-account
         run: |
           # Resolve from input, then fall back to vars.
-          # Values flow through env: to avoid inline ${{ }} expansion,
+          # Values flow through env: to avoid inline expression expansion,
           # which would print the raw account ID in the rendered script
           # header BEFORE ::add-mask:: can take effect.
           ACCOUNT_ID="${INPUT_ACCOUNT_ID:-$VARS_ACCOUNT_ID}"
@@ -248,19 +248,96 @@ jobs:
           RESTRICT_ACCESS: ${{ inputs.restrict-access }}
           TRUSTED_ACCOUNT_IDS: ${{ vars.DEV_ACCOUNT_ID }}
 
-      - name: Deploy CDK Stack
-        id: deploy-stack
-        uses: ./.github/actions/deploy-cdk-stack
-        with:
-          stack-name: ${{ inputs.stack-name }}
-          project: ${{ inputs.project }}
-          environment: ${{ inputs.environment }}
-          aws-account-id: ${{ steps.resolve-account.outputs.account_id }}
-          aws-region: ${{ inputs.aws-region }}
-          require-approval: ${{ inputs.require-approval }}
-          verify-bootstrap: ${{ inputs.verify-bootstrap }}
-          outputs-directory: ${{ inputs.outputs-directory }}
-          additional-args: ${{ inputs.additional-args }}
+      # ── Pre-flight Checks ──
+      - name: Pre-flight Checks
+        shell: bash
+        run: |
+          BOOTSTRAP_FLAG=""
+          if [ "$VERIFY_BOOTSTRAP" = "true" ]; then
+            BOOTSTRAP_FLAG="--verify-bootstrap"
+          fi
+          just ci-preflight "$STACK_NAME" \
+            --project "$PROJECT" \
+            --environment "$ENVIRONMENT" \
+            --region "$AWS_REGION" \
+            --account-id "$AWS_ACCOUNT_ID" \
+            --require-approval "$REQUIRE_APPROVAL" \
+            $BOOTSTRAP_FLAG
+        env:
+          STACK_NAME: ${{ inputs.stack-name }}
+          PROJECT: ${{ inputs.project }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          AWS_REGION: ${{ inputs.aws-region }}
+          AWS_ACCOUNT_ID: ${{ steps.resolve-account.outputs.account_id }}
+          REQUIRE_APPROVAL: ${{ inputs.require-approval }}
+          VERIFY_BOOTSTRAP: ${{ inputs.verify-bootstrap }}
 
+      # ── Rescue orphaned CloudFormation resources ──
+      - name: Rescue Orphaned Resources
+        shell: bash
+        continue-on-error: true
+        run: |
+          just ci-cfn-rescue "$STACK_NAME" "$PROJECT" \
+            "$ENVIRONMENT" --region "$AWS_REGION"
+        env:
+          STACK_NAME: ${{ inputs.stack-name }}
+          PROJECT: ${{ inputs.project }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          AWS_REGION: ${{ inputs.aws-region }}
 
+      # ── Deploy the CDK stack ──
+      - name: Deploy Stack
+        id: deploy
+        shell: bash
+        run: |
+          just ci-deploy "$STACK_NAME" "$PROJECT" "$CDK_ENVIRONMENT" \
+            --require-approval "$REQUIRE_APPROVAL" \
+            $ADDITIONAL_ARGS
+        env:
+          STACK_NAME: ${{ inputs.stack-name }}
+          PROJECT: ${{ inputs.project }}
+          CDK_ENVIRONMENT: ${{ inputs.environment }}
+          AWS_ACCOUNT_ID: ${{ steps.resolve-account.outputs.account_id }}
+          AWS_REGION: ${{ inputs.aws-region }}
+          REQUIRE_APPROVAL: ${{ inputs.require-approval }}
+          ADDITIONAL_ARGS: ${{ inputs.additional-args }}
+          LOG_LEVEL: info
 
+      # ── Diagnose failures (only runs on deploy failure) ──
+      - name: Diagnose CloudFormation Failure
+        if: failure() && steps.deploy.outputs.status != 'success'
+        shell: bash
+        continue-on-error: true
+        run: |
+          just ci-diagnose "$STACK_NAME" --region "$AWS_REGION"
+        env:
+          STACK_NAME: ${{ inputs.stack-name }}
+          AWS_REGION: ${{ inputs.aws-region }}
+
+      # ── Finalize deployment and capture outputs ──
+      - name: Finalize Deployment
+        id: finalize
+        if: always()
+        shell: bash
+        run: |
+          OUTPUTS_DIR_FLAG=""
+          if [ -n "$OUTPUTS_DIRECTORY" ]; then
+            OUTPUTS_DIR_FLAG="--outputs-dir $OUTPUTS_DIRECTORY"
+          fi
+          just ci-finalize-deployment "$STACK_NAME" \
+            --deploy-status "$DEPLOY_STATUS" \
+            --environment "$ENVIRONMENT" \
+            --region "$AWS_REGION" \
+            --account-id "$AWS_ACCOUNT_ID" \
+            --deploy-duration "$DEPLOY_DURATION" \
+            $OUTPUTS_DIR_FLAG
+        env:
+          STACK_NAME: ${{ inputs.stack-name }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          AWS_REGION: ${{ inputs.aws-region }}
+          AWS_ACCOUNT_ID: ${{ steps.resolve-account.outputs.account_id }}
+          OUTPUTS_DIRECTORY: ${{ inputs.outputs-directory }}
+          DEPLOY_STATUS: ${{ steps.deploy.outputs.status || 'unknown' }}
+          DEPLOY_DURATION: ${{ steps.deploy.outputs.duration || '0' }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          LOG_LEVEL: info

@@ -3,8 +3,8 @@
  * CDK Deploy Script
  *
  * Deploys a single CDK stack with provenance tags, output capture,
- * and GitHub Actions integration. Replaces the inline bash in
- * deploy-cdk-stack/action.yml for consistency with other TS scripts.
+ * and GitHub Actions integration. Called by the `just ci-deploy`
+ * recipe from `_deploy-stack.yml`.
  *
  * Usage:
  *   npx tsx scripts/deployment/deploy.ts <stack-name> <project> <environment>
