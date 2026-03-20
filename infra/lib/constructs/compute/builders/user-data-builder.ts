@@ -1,37 +1,54 @@
 /**
  * @format
- * User Data Script Builder
+ * User Data Script Builder — Slim Trigger Layer
  *
  * Fluent interface for constructing EC2 user data scripts.
  * Operates directly on a CDK `ec2.UserData` object so that CDK Tokens
  * (e.g. `props.volumeId`, `this.stackName`) resolve correctly via
  * CloudFormation's `Fn::Join`.
  *
- * ## Generic Methods (use in any project)
+ * ## Architecture Role
+ * This builder implements Layer 2 of the 3-layer bootstrap architecture:
+ *   - **Layer 1 — Golden AMI:** Pre-bakes binaries (Docker, containerd, kubeadm, Helm, Calico)
+ *   - **Layer 2 — User Data (THIS):** Infrastructure readiness stub (EBS attach, cfn-signal)
+ *   - **Layer 3 — SSM Automation:** All K8s readiness logic (kubeadm init/join, CNI, ArgoCD)
+ *
+ * User Data intentionally does NOT perform K8s cluster operations. Those are
+ * handled by the idempotent Python orchestrator (`boot/steps/*.py`) triggered
+ * via SSM Automation from the CI pipeline.
+ *
+ * ## Available Methods
  * - `updateSystem()` - Run system package updates
- * - `installDocker()` - Install Docker and Docker Compose
- * - `installAwsCli()` - Install AWS CLI v2
  * - `attachEbsVolume()` - Attach and mount an EBS volume
  * - `sendCfnSignal()` - Send CloudFormation signal for ASG validation
  * - `triggerSsmConfiguration()` - Fire SSM Run Command (fire-and-forget)
  * - `addCustomScript()` - Add any custom script section
  * - `addCompletionMarker()` - Add final success banner
  *
- * ## Kubernetes (kubeadm) Methods
- * - `initKubeadmCluster()` - Initialize kubeadm control plane
- * - `joinKubeadmCluster()` - Join a node to an existing kubeadm cluster
- * - `configureKubeconfig()` - Set up kubectl access
- *
  * ## Monitoring-Specific Methods
  * - `downloadAndStartMonitoringStack()` - Download monitoring stack from S3 and start it
+ *
+ * @example Kubernetes project usage (slim trigger)
+ * ```typescript
+ * const userData = ec2.UserData.forLinux();
+ * userData.addCommands('set -euxo pipefail', '', 'exec > >(tee /var/log/user-data.log) 2>&1');
+ * new UserDataBuilder(userData, { skipPreamble: true })
+ *     .addCustomScript(`
+ *         export STACK_NAME="${this.stackName}"
+ *         export AWS_REGION="${this.region}"
+ *         # Persist env vars for SSM Automation
+ *         cat > /etc/profile.d/k8s-env.sh << 'ENVEOF'
+ *         ...
+ *         ENVEOF
+ *         /opt/aws/bin/cfn-signal --success true ...
+ *     `);
+ * ```
  *
  * @example Monitoring project usage
  * ```typescript
  * const userData = ec2.UserData.forLinux();
  * new UserDataBuilder(userData)
  *     .updateSystem()
- *     .installDocker()
- *     .installAwsCli()
  *     .attachEbsVolume({ volumeId: props.volumeId, mountPoint: '/data' })
  *     .sendCfnSignal({ stackName: stack.stackName, asgLogicalId })
  *     .triggerSsmConfiguration({
@@ -39,19 +56,6 @@
  *         region: stack.region,
  *         fireAndForget: true,
  *     })
- *     .addCompletionMarker();
- * ```
- *
- * @example Other project usage
- * ```typescript
- * const userData = ec2.UserData.forLinux();
- * new UserDataBuilder(userData)
- *     .updateSystem()
- *     .installDocker()
- *     .addCustomScript(`
- *         docker pull my-registry/nextjs-app:latest
- *         docker run -d -p 3000:3000 my-registry/nextjs-app:latest
- *     `)
  *     .addCompletionMarker();
  * ```
  */
@@ -139,65 +143,7 @@ export interface UserDataBuilderOptions {
     skipPreamble?: boolean;
 }
 
-/**
- * Configuration for kubeadm cluster initialization.
- * Used by `initKubeadmCluster()` method.
- */
-export interface KubeadmInitConfig {
-    /** Kubernetes version (e.g., '1.35.1') @default '1.35.1' */
-    kubernetesVersion?: string;
-    /** Kubernetes data directory (etcd, kubelet) @default '/data/kubernetes' */
-    dataDir?: string;
-    /** Pod network CIDR for Calico CNI @default '192.168.0.0/16' */
-    podNetworkCidr?: string;
-    /** Service subnet CIDR @default '10.96.0.0/12' */
-    serviceSubnet?: string;
-    /** SSM parameter prefix for storing cluster info @default '/k8s/development' */
-    ssmPrefix?: string;
-}
 
-/**
- * Configuration for downloading and deploying k8s manifests from S3.
- * Used by `deployK8sManifests()` method.
- */
-export interface K8sManifestsS3Config {
-    /** S3 bucket name containing the k8s scripts/manifests */
-    readonly s3BucketName: string;
-    /** S3 key prefix for the k8s directory @default 'k8s' */
-    readonly s3KeyPrefix?: string;
-    /** Local directory to store manifests @default '/data/k8s' */
-    readonly manifestsDir?: string;
-    /** SSM prefix for resolving secrets @default '/k8s/development' */
-    readonly ssmPrefix?: string;
-    /** AWS region @default 'eu-west-1' */
-    readonly region?: string;
-}
-
-/**
- * Configuration for kubeadm join (worker node).
- * Used by `joinKubeadmCluster()` method.
- *
- * The worker joins an existing kubeadm cluster using the bootstrap
- * token and CA certificate hash published to SSM by the control plane.
- */
-export interface KubeadmJoinConfig {
-    /** Control plane endpoint (e.g., '10.0.0.10:6443') */
-    readonly controlPlaneEndpoint: string;
-    /** SSM parameter path where the join token is stored */
-    readonly tokenSsmPath: string;
-    /** SSM parameter path where the CA certificate hash is stored */
-    readonly caHashSsmPath: string;
-    /** Kubernetes node label for workload isolation (e.g., 'role=application') */
-    readonly nodeLabel: string;
-    /** Kubernetes node taint for workload isolation (e.g., 'role=application:NoSchedule'). Omit for Hybrid-HA. */
-    readonly nodeTaint?: string;
-    /** AWS region for SSM lookups @default 'eu-west-1' */
-    readonly region?: string;
-    /** Maximum kubeadm join attempts (each re-fetches token from SSM) @default 10 */
-    readonly joinMaxRetries?: number;
-    /** Seconds between retry attempts @default 30 */
-    readonly joinRetryIntervalSeconds?: number;
-}
 
 // =============================================================================
 // USER DATA BUILDER CLASS
@@ -262,64 +208,7 @@ dnf update -y`);
         return this;
     }
 
-    /**
-     * Install Docker and Docker Compose.
-     *
-     * @param composeVersion - Docker Compose version to install
-     * @remarks Generic - can be used by any project.
-     * @returns this - for method chaining
-     */
-    installDocker(composeVersion = 'v2.24.0'): this {
-        this.userData.addCommands(`
-# Install Docker
-dnf install -y docker
-systemctl start docker
-systemctl enable docker
-usermod -aG docker ec2-user
 
-# Detect architecture for multi-arch support (x86_64 / aarch64 Graviton)
-COMPOSE_ARCH=$(uname -m)
-
-# Install Docker Compose v2 plugin (preferred: 'docker compose' syntax)
-DOCKER_COMPOSE_VERSION="${composeVersion}"
-mkdir -p /usr/local/lib/docker/cli-plugins
-curl -SL "https://github.com/docker/compose/releases/download/\${DOCKER_COMPOSE_VERSION}/docker-compose-linux-\${COMPOSE_ARCH}" \\
-  -o /usr/local/lib/docker/cli-plugins/docker-compose
-chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-
-# Also install v1 standalone binary for backward compatibility
-cp /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
-ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
-
-# Verify installation
-echo "Docker Compose plugin: $(docker compose version 2>/dev/null || echo 'NOT AVAILABLE')"
-echo "Docker Compose standalone: $(docker-compose --version 2>/dev/null || echo 'NOT AVAILABLE')"`);
-        return this;
-    }
-
-    /**
-     * Install AWS CLI v2 (if not already installed).
-     *
-     * @remarks Generic - can be used by any project.
-     * @returns this - for method chaining
-     */
-    installAwsCli(): this {
-        this.userData.addCommands(`
-# Install AWS CLI v2
-if ! command -v aws &> /dev/null; then
-    echo "Installing AWS CLI v2..."
-    # Detect architecture for multi-arch support
-    CLI_ARCH=$(uname -m)
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-\${CLI_ARCH}.zip" -o "/tmp/awscliv2.zip"
-    unzip -q /tmp/awscliv2.zip -d /tmp
-    /tmp/aws/install
-    rm -rf /tmp/aws /tmp/awscliv2.zip
-    echo "AWS CLI installed: $(aws --version)"
-else
-    echo "AWS CLI already installed: $(aws --version)"
-fi`);
-        return this;
-    }
 
     /**
      * Attach and mount an EBS volume.
@@ -579,395 +468,7 @@ echo "=============================================="`);
         return this;
     }
 
-    // =========================================================================
-    // KUBERNETES (kubeadm) METHODS
-    // =========================================================================
 
-    /**
-     * Initialize a kubeadm Kubernetes control plane.
-     *
-     * Runs `kubeadm init` to bootstrap the control plane with:
-     * - Configurable Kubernetes version
-     * - Pod network CIDR (for Calico)
-     * - Service subnet CIDR
-     * - TLS SAN (Elastic IP for external kubectl access)
-     *
-     * Also publishes the join token and CA certificate hash to SSM
-     * so worker nodes can join the cluster.
-     *
-     * @param config - kubeadm init configuration
-     * @remarks **k8s project** - For other projects, use `addCustomScript()`.
-     * @returns this - for method chaining
-     */
-    initKubeadmCluster(config: KubeadmInitConfig = {}): this {
-        const kubernetesVersion = config.kubernetesVersion ?? '1.35.1';
-        const dataDir = config.dataDir ?? '/data/kubernetes';
-        const podNetworkCidr = config.podNetworkCidr ?? '192.168.0.0/16';
-        const serviceSubnet = config.serviceSubnet ?? '10.96.0.0/12';
-        const ssmPrefix = config.ssmPrefix ?? '/k8s/development';
-
-        this.userData.addCommands(`
-# =============================================================================
-# Initialize kubeadm Kubernetes Control Plane
-# =============================================================================
-
-echo "=== Initializing kubeadm cluster (v${kubernetesVersion}) ==="
-
-# Ensure data directory exists on persistent volume
-mkdir -p ${dataDir}
-
-# Get instance metadata via IMDSv2 (always fetch fresh token to avoid TTL expiration)
-IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4 || echo "")
-PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
-INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
-
-# Start containerd (required before kubeadm init)
-systemctl start containerd
-echo "containerd started"
-
-# Build apiserver cert SANs
-CERT_SANS="--apiserver-cert-extra-sans=127.0.0.1,$PRIVATE_IP"
-if [ -n "$PUBLIC_IP" ]; then
-    CERT_SANS="$CERT_SANS,$PUBLIC_IP"
-fi
-
-# Run kubeadm init
-echo "Running kubeadm init..."
-kubeadm init \\
-    --kubernetes-version="${kubernetesVersion}" \\
-    --pod-network-cidr="${podNetworkCidr}" \\
-    --service-cidr="${serviceSubnet}" \\
-    --control-plane-endpoint="$PRIVATE_IP:6443" \\
-    $CERT_SANS \\
-    --upload-certs \\
-    2>&1 | tee /tmp/kubeadm-init.log
-
-if [ \${PIPESTATUS[0]} -ne 0 ]; then
-    echo "ERROR: kubeadm init failed"
-    cat /tmp/kubeadm-init.log
-    exit 1
-fi
-
-# Set up kubeconfig for root (immediate use)
-export KUBECONFIG=/etc/kubernetes/admin.conf
-mkdir -p /root/.kube
-cp -f /etc/kubernetes/admin.conf /root/.kube/config
-chmod 600 /root/.kube/config
-
-# Wait for control plane components to be ready
-echo "Waiting for control plane to be ready..."
-for i in {1..90}; do
-    if kubectl get nodes &>/dev/null; then
-        echo "Control plane is ready (waited \${i} seconds)"
-        break
-    fi
-    if [ $i -eq 90 ]; then
-        echo "WARNING: Control plane did not become ready in 90s"
-    fi
-    sleep 1
-done
-
-# Remove control plane taint so pods can schedule on this node
-# (needed during bootstrap before worker nodes join)
-kubectl taint nodes --all node-role.kubernetes.io/control-plane- 2>/dev/null || true
-
-# Generate and publish join token + CA hash to SSM for worker nodes
-SSM_PREFIX="${ssmPrefix}"
-JOIN_TOKEN=$(kubeadm token create --ttl 24h)
-CA_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | \\
-    openssl rsa -pubin -outform der 2>/dev/null | \\
-    openssl dgst -sha256 -hex | awk '{print $2}')
-
-aws ssm put-parameter \\
-    --name "$SSM_PREFIX/join-token" \\
-    --value "$JOIN_TOKEN" \\
-    --type "SecureString" \\
-    --overwrite \\
-    --region "$REGION" || echo "WARNING: Failed to store join-token in SSM"
-
-aws ssm put-parameter \\
-    --name "$SSM_PREFIX/ca-hash" \\
-    --value "sha256:$CA_HASH" \\
-    --type "String" \\
-    --overwrite \\
-    --region "$REGION" || echo "WARNING: Failed to store ca-hash in SSM"
-
-aws ssm put-parameter \\
-    --name "$SSM_PREFIX/control-plane-endpoint" \\
-    --value "$PRIVATE_IP:6443" \\
-    --type "String" \\
-    --overwrite \\
-    --region "$REGION" || echo "WARNING: Failed to store control-plane-endpoint in SSM"
-
-# Store instance info in SSM for CI/CD access
-aws ssm put-parameter \\
-    --name "$SSM_PREFIX/instance-id" \\
-    --value "$INSTANCE_ID" \\
-    --type "String" \\
-    --overwrite \\
-    --region "$REGION" || echo "WARNING: Failed to store instance-id in SSM"
-
-if [ -n "$PUBLIC_IP" ]; then
-    aws ssm put-parameter \\
-        --name "$SSM_PREFIX/elastic-ip" \\
-        --value "$PUBLIC_IP" \\
-        --type "String" \\
-        --overwrite \\
-        --region "$REGION" || echo "WARNING: Failed to store elastic-ip in SSM"
-fi
-
-echo "kubeadm cluster initialized successfully"
-echo "Kubernetes version: $(kubectl version --short 2>/dev/null || kubectl version)"
-echo "Node status:"
-kubectl get nodes -o wide`);
-        return this;
-    }
-
-    /**
-     * Join a worker node to an existing kubeadm cluster.
-     *
-     * Retrieves the join token and CA certificate hash from SSM
-     * (published by the control plane node), then runs `kubeadm join`.
-     * Applies node labels and taints for workload isolation.
-     *
-     * @param config - kubeadm join configuration
-     * @remarks **k8s project** - Requires a running kubeadm control plane.
-     * @returns this - for method chaining
-     */
-    joinKubeadmCluster(config: KubeadmJoinConfig): this {
-        const region = config.region ?? 'eu-west-1';
-        const maxRetries = config.joinMaxRetries ?? 10;
-        const retryInterval = config.joinRetryIntervalSeconds ?? 30;
-
-        this.userData.addCommands(`
-# =============================================================================
-# Join kubeadm Cluster (Worker Node) — with retry
-#
-# Re-fetches the join token from SSM on each attempt. This handles the
-# race condition where the control plane signals CloudFormation SUCCESS
-# before kubeadm init completes and publishes fresh tokens.
-# =============================================================================
-
-echo "=== Joining kubeadm cluster as worker node ==="
-echo "Join config: max_retries=${maxRetries}, retry_interval=${retryInterval}s"
-
-# Get instance metadata via IMDSv2 (always fetch fresh token to avoid TTL expiration)
-IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
-
-echo "Instance: $INSTANCE_ID, Private IP: $PRIVATE_IP"
-
-# Start containerd
-systemctl start containerd
-echo "containerd started"
-
-# Configure kubelet with node labels BEFORE joining
-# kubeadm join does NOT support --node-labels; labels must be set via kubelet extra args
-echo "Configuring kubelet with node label: ${config.nodeLabel}"
-echo "KUBELET_EXTRA_ARGS=--node-labels=${config.nodeLabel}" > /etc/sysconfig/kubelet
-echo "Kubelet extra args configured"
-
-# Retry loop: re-fetch token + join on each attempt
-JOIN_SUCCESS=false
-for ATTEMPT in $(seq 1 ${maxRetries}); do
-    echo ""
-    echo "=== kubeadm join attempt \${ATTEMPT}/${maxRetries} ==="
-
-    # Retrieve join token from SSM (re-fetch each attempt — token may be refreshed by CP)
-    echo "Retrieving join token from SSM: ${config.tokenSsmPath}"
-    JOIN_TOKEN=$(aws ssm get-parameter \\
-        --name "${config.tokenSsmPath}" \\
-        --with-decryption \\
-        --query "Parameter.Value" \\
-        --output text \\
-        --region "${region}" 2>/dev/null || echo "")
-
-    if [ -z "$JOIN_TOKEN" ]; then
-        echo "WARNING: Join token not available in SSM (attempt \${ATTEMPT}/${maxRetries})"
-        echo "Control plane may still be initializing..."
-        if [ \${ATTEMPT} -lt ${maxRetries} ]; then
-            echo "Sleeping ${retryInterval}s before retry..."
-            sleep ${retryInterval}
-            continue
-        fi
-        echo "ERROR: Join token never became available after ${maxRetries} attempts"
-        exit 1
-    fi
-    echo "Join token retrieved successfully"
-
-    # Retrieve CA certificate hash from SSM
-    echo "Retrieving CA hash from SSM: ${config.caHashSsmPath}"
-    CA_HASH=$(aws ssm get-parameter \\
-        --name "${config.caHashSsmPath}" \\
-        --query "Parameter.Value" \\
-        --output text \\
-        --region "${region}" 2>/dev/null || echo "")
-
-    if [ -z "$CA_HASH" ]; then
-        echo "WARNING: CA hash not available in SSM (attempt \${ATTEMPT}/${maxRetries})"
-        if [ \${ATTEMPT} -lt ${maxRetries} ]; then
-            echo "Sleeping ${retryInterval}s before retry..."
-            sleep ${retryInterval}
-            continue
-        fi
-        echo "ERROR: CA hash never became available after ${maxRetries} attempts"
-        exit 1
-    fi
-    echo "CA hash retrieved successfully"
-
-    # Attempt kubeadm join
-    echo "Running kubeadm join..."
-    kubeadm join "${config.controlPlaneEndpoint}" \\
-        --token "$JOIN_TOKEN" \\
-        --discovery-token-ca-cert-hash "$CA_HASH" \\
-        2>&1 | tee /tmp/kubeadm-join.log
-
-    if [ \${PIPESTATUS[0]} -eq 0 ]; then
-        echo "kubeadm join succeeded on attempt \${ATTEMPT}"
-        JOIN_SUCCESS=true
-        break
-    fi
-
-    echo "WARNING: kubeadm join failed on attempt \${ATTEMPT}/${maxRetries}"
-    cat /tmp/kubeadm-join.log
-
-    # Reset kubeadm state before retrying (required for re-join)
-    if [ \${ATTEMPT} -lt ${maxRetries} ]; then
-        echo "Running kubeadm reset before retry..."
-        kubeadm reset -f 2>/dev/null || true
-        echo "Sleeping ${retryInterval}s before retry..."
-        sleep ${retryInterval}
-    fi
-done
-
-if [ "$JOIN_SUCCESS" != "true" ]; then
-    echo "ERROR: kubeadm join failed after ${maxRetries} attempts"
-    echo "Last join log:"
-    cat /tmp/kubeadm-join.log 2>/dev/null || true
-    exit 1
-fi
-
-# Wait for kubelet to be active
-echo "Waiting for kubelet to become active..."
-for i in {1..60}; do
-    if systemctl is-active --quiet kubelet; then
-        echo "kubelet is active (waited \${i} seconds)"
-        break
-    fi
-    if [ $i -eq 60 ]; then
-        echo "WARNING: kubelet did not become active in 60s"
-        journalctl -u kubelet --no-pager -n 20
-    fi
-    sleep 1
-done
-
-echo "Worker node joined cluster successfully"
-echo "kubelet version: $(kubelet --version)"
-echo "Service status: $(systemctl is-active kubelet)"`);
-        return this;
-    }
-
-
-    /**
-     * Configure kubectl access for ec2-user and root.
-     *
-     * Sets up KUBECONFIG environment variable and copies the kubeconfig
-     * to standard locations for both root and ec2-user.
-     *
-     * @remarks **k8s project** - Requires kubeadm cluster initialized.
-     * @returns this - for method chaining
-     */
-    configureKubeconfig(): this {
-        this.userData.addCommands(`
-# =============================================================================
-# Configure kubectl Access
-# =============================================================================
-
-echo "=== Configuring kubectl access ==="
-
-KUBECONFIG_SRC="/etc/kubernetes/admin.conf"
-
-# Set up for root
-mkdir -p /root/.kube
-cp -f $KUBECONFIG_SRC /root/.kube/config
-chmod 600 /root/.kube/config
-
-# Set up for ec2-user
-mkdir -p /home/ec2-user/.kube
-cp -f $KUBECONFIG_SRC /home/ec2-user/.kube/config
-chown ec2-user:ec2-user /home/ec2-user/.kube/config
-chmod 600 /home/ec2-user/.kube/config
-
-# Set up for ssm-user (SSM Session Manager default user)
-mkdir -p /home/ssm-user/.kube
-cp -f $KUBECONFIG_SRC /home/ssm-user/.kube/config
-chown ssm-user:ssm-user /home/ssm-user/.kube/config
-chmod 600 /home/ssm-user/.kube/config
-
-# Add KUBECONFIG to shell profiles for both users
-echo "export KUBECONFIG=$KUBECONFIG_SRC" > /etc/profile.d/kubernetes.sh
-chmod 644 /etc/profile.d/kubernetes.sh
-
-# Verify kubectl works
-export KUBECONFIG=$KUBECONFIG_SRC
-echo "kubectl configured. Cluster info:"
-kubectl cluster-info
-kubectl get namespaces`);
-        return this;
-    }
-
-    /**
-     * Download k8s manifests from S3 and deploy to the cluster.
-     *
-     * Downloads the k8s bundle from S3 (synced via CDK BucketDeployment)
-     * and delegates to `deploy-manifests.sh` for secret resolution,
-     * manifest application, and SSM endpoint registration.
-     *
-     * This keeps UserData slim — all k8s logic lives in the deploy
-     * script which can also be triggered via SSM Run Command from CI/CD.
-     *
-     * @param config - S3 bucket and manifest configuration
-     * @remarks **k8s project** - Requires kubectl to be configured.
-     * @returns this - for method chaining
-     */
-    deployK8sManifests(config: K8sManifestsS3Config): this {
-        const s3KeyPrefix = config.s3KeyPrefix ?? 'k8s';
-        const manifestsDir = config.manifestsDir ?? '/data/k8s';
-        const region = config.region ?? 'eu-west-1';
-        const ssmPrefix = config.ssmPrefix ?? '/k8s/development';
-
-        this.userData.addCommands(`
-# =============================================================================
-# Deploy k8s Monitoring Manifests (first boot)
-# Downloads bundle from S3, then delegates to deploy-manifests.sh
-# Subsequent deployments are triggered via SSM Run Command from CI/CD
-# =============================================================================
-
-echo "=== Downloading k8s manifests from S3 ==="
-K8S_DIR="${manifestsDir}"
-mkdir -p $K8S_DIR
-
-aws s3 sync s3://${config.s3BucketName}/${s3KeyPrefix}/ $K8S_DIR/ --region ${region}
-echo "k8s bundle downloaded to $K8S_DIR"
-
-# Restore execute permissions lost during S3 sync
-find $K8S_DIR -name '*.sh' -exec chmod +x {} +
-
-# Run the deploy script (handles secrets, kubectl apply, SSM endpoints)
-export KUBECONFIG=/etc/kubernetes/admin.conf
-export SSM_PREFIX="${ssmPrefix}"
-export AWS_REGION="${region}"
-export CHART_DIR="$K8S_DIR/monitoring/chart"
-
-echo "Running deploy-manifests.sh..."
-$K8S_DIR/monitoring/deploy-manifests.sh
-
-echo "=== k8s first-boot deployment complete ==="`);
-        return this;
-    }
 
 
     // =========================================================================
@@ -1243,122 +744,4 @@ while true; do
 done`);
     }
 
-    // =====================================================================
-    // STATIC FACTORY METHODS
-    // =====================================================================
-
-    /**
-     * Build a "light" user data script for the hybrid bootstrap strategy.
-     *
-     * Layer 2 of the 4-layer architecture:
-     * - Layer 1: Golden AMI (pre-baked Docker, AWS CLI, kubeadm toolchain, Calico)
-     * - **Layer 2: Light User Data (THIS)** — EBS attach, EIP, kubeadm start, cfn-signal
-     * - Layer 3: SSM State Manager (post-boot config, CNI, manifests)
-     * - Layer 4: SSM Documents (on-demand runbooks)
-     *
-     * This method creates a minimal script that:
-     * 1. Attaches and mounts the EBS data volume
-     * 2. Associates the Elastic IP for stable CloudFront origin
-     * 3. Starts kubeadm (toolchain pre-installed in Golden AMI)
-     * 4. Sends cfn-signal to the ASG
-     *
-     * Total boot time target: ~2 minutes (vs ~10-15 min with full user-data)
-     *
-     * @param config - Configuration for the light user data
-     * @returns Configured ec2.UserData object
-     */
-    static buildLightUserData(config: {
-        /** EBS volume attachment config */
-        ebsVolume: EbsVolumeConfig;
-        /** Elastic IP allocation ID */
-        eipAllocationId: string;
-        /** CloudFormation stack name (CDK Token) */
-        stackName: string;
-        /** ASG logical ID for cfn-signal (CDK Token) */
-        asgLogicalId: string;
-        /** kubeadm configuration */
-        k3s: {
-            /** Kubernetes version */
-            channel: string;
-            /** Kubernetes data directory */
-            dataDir: string;
-            /** Whether to disable Flannel (for Calico) */
-            disableFlannel: boolean;
-        };
-        /** AWS region */
-        region: string;
-    }): ec2.UserData {
-        const userData = ec2.UserData.forLinux();
-        const builder = new UserDataBuilder(userData);
-
-        // Step 1: Attach EBS volume (critical for Kubernetes data persistence)
-        builder.attachEbsVolume(config.ebsVolume);
-
-        // Step 2: Associate Elastic IP for stable CloudFront origin
-        builder.addCustomScript(`
-# ============================================================
-# LIGHT USER DATA — Layer 2 (Hybrid Bootstrap)
-# Golden AMI provides: Docker, AWS CLI, kubeadm toolchain, Calico manifests
-# This script only does: EBS + EIP + kubeadm start + cfn-signal
-# ============================================================
-
-# --- Associate Elastic IP ---
-echo "=== Associating Elastic IP ==="
-INSTANCE_ID=$(ec2-metadata -i | cut -d' ' -f2)
-aws ec2 associate-address \\
-    --instance-id "$INSTANCE_ID" \\
-    --allocation-id "${config.eipAllocationId}" \\
-    --allow-reassociation \\
-    --region ${config.region}
-echo "✓ Elastic IP associated"
-`);
-
-        // Step 3: Start kubeadm (toolchain pre-installed in Golden AMI)
-        const flannelFlags = config.k3s.disableFlannel
-            ? '--flannel-backend=none --disable-network-policy'
-            : '';
-
-        builder.addCustomScript(`
-# --- Start k3s (binary pre-installed in Golden AMI) ---
-echo "=== Starting k3s ==="
-if ! systemctl is-active --quiet k3s; then
-    # k3s binary is installed but service may not be configured yet
-    INSTALL_K3S_SKIP_DOWNLOAD=true \\
-    INSTALL_K3S_CHANNEL=${config.k3s.channel} \\
-    K3S_DATA_DIR=${config.k3s.dataDir} \\
-    /usr/local/bin/k3s-install.sh server \\
-        --data-dir ${config.k3s.dataDir} \\
-        ${flannelFlags} \\
-        --write-kubeconfig-mode 644
-
-    # Wait for k3s to be ready (max 120s)
-    echo "Waiting for k3s API server..."
-    WAIT_COUNT=0
-    until kubectl get nodes &>/dev/null; do
-        sleep 5
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-        if [ $WAIT_COUNT -ge 24 ]; then
-            echo "ERROR: k3s not ready after 120s"
-            break
-        fi
-    done
-    echo "✓ k3s started"
-else
-    echo "✓ k3s already running"
-fi
-`);
-
-        // Step 4: Send cfn-signal (success or failure)
-        builder.sendCfnSignal({
-            stackName: config.stackName,
-            asgLogicalId: config.asgLogicalId,
-            region: config.region,
-        });
-
-        builder.addCompletionMarker();
-
-        return userData;
-    }
 }
-
-

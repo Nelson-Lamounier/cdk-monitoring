@@ -14,8 +14,10 @@ import {
     isDuplicate,
     getDefaultTools,
     buildToolConfig,
+    sanitiseAlarmKey,
+    buildPreviousSessionContext,
 } from './index';
-import type { AlarmEvent } from './index';
+import type { AlarmEvent, SessionRecord } from './index';
 
 // =============================================================================
 // Test Constants
@@ -222,5 +224,75 @@ describe('buildToolConfig', () => {
         const config = buildToolConfig([]);
 
         expect(config.tools).toHaveLength(0);
+    });
+});
+
+// =============================================================================
+// sanitiseAlarmKey
+// =============================================================================
+
+describe('sanitiseAlarmKey', () => {
+    it('should lowercase and replace special characters with hyphens', () => {
+        expect(sanitiseAlarmKey('My-Alarm/Name:Test')).toBe('my-alarm-name-test');
+    });
+
+    it('should collapse multiple hyphens', () => {
+        expect(sanitiseAlarmKey('k8s--dev--cpu')).toBe('k8s-dev-cpu');
+    });
+
+    it('should strip leading and trailing hyphens', () => {
+        expect(sanitiseAlarmKey('-alarm-test-')).toBe('alarm-test');
+    });
+
+    it('should handle simple alarm names unchanged', () => {
+        expect(sanitiseAlarmKey('cpu-high')).toBe('cpu-high');
+    });
+});
+
+// =============================================================================
+// buildPreviousSessionContext
+// =============================================================================
+
+describe('buildPreviousSessionContext', () => {
+    const SESSION: SessionRecord = {
+        alarmName: 'cpu-high',
+        timestamp: '2026-03-20T16:00:00.000Z',
+        correlationId: 'sh-123-abc',
+        prompt: 'A CloudWatch Alarm has fired.',
+        toolsCalled: ['diagnose_alarm', 'check_node_health'],
+        result: 'Remediation complete: node replaced and healthy.',
+        dryRun: false,
+    };
+
+    it('should include the previous attempt header', () => {
+        const context = buildPreviousSessionContext(SESSION);
+
+        expect(context).toContain('PREVIOUS REMEDIATION ATTEMPT');
+    });
+
+    it('should include the timestamp and correlation ID', () => {
+        const context = buildPreviousSessionContext(SESSION);
+
+        expect(context).toContain('2026-03-20T16:00:00.000Z');
+        expect(context).toContain('sh-123-abc');
+    });
+
+    it('should list tools called', () => {
+        const context = buildPreviousSessionContext(SESSION);
+
+        expect(context).toContain('diagnose_alarm, check_node_health');
+    });
+
+    it('should include the previous result', () => {
+        const context = buildPreviousSessionContext(SESSION);
+
+        expect(context).toContain('Remediation complete');
+    });
+
+    it('should show "none" when no tools were called', () => {
+        const noToolsSession: SessionRecord = { ...SESSION, toolsCalled: [] };
+        const context = buildPreviousSessionContext(noToolsSession);
+
+        expect(context).toContain('Tools called: none');
     });
 });

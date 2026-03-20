@@ -17,6 +17,7 @@
  * - Calico CNI manifests (pre-downloaded)
  * - aws-cfn-bootstrap (cfn-signal)
  * - Helm
+ * - K8sGPT (AI-powered Kubernetes diagnostics)
  * - Python + boto3 + pyyaml (for bootstrap scripts)
  *
  * @example
@@ -62,7 +63,7 @@ export function buildGoldenAmiComponent(input: GoldenAmiComponentInput): string 
 
     return `
 name: GoldenAmiInstall
-description: Install containerd, kubeadm, kubelet, kubectl, and Calico manifests
+description: Install containerd, kubeadm, kubelet, kubectl, Calico manifests, and K8sGPT
 schemaVersion: 1.0
 
 phases:
@@ -293,6 +294,24 @@ phases:
               helm version --short
               echo "Helm installed"
 
+      - name: InstallK8sGPT
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              source /etc/environment
+              # Install K8sGPT — AI-powered Kubernetes diagnostics tool.
+              # Used by the self-healing pipeline's analyse-cluster-health Lambda
+              # via SSM SendCommand to assess workload health after remediation.
+              K8SGPT_VERSION="${imageConfig.bakedVersions.k8sgpt}"
+              curl -fsSL "https://github.com/k8sgpt-ai/k8sgpt/releases/download/v\${K8SGPT_VERSION}/k8sgpt_\${K8SGPT_VERSION}_linux_\${ARCH}.tar.gz" \\
+                -o /tmp/k8sgpt.tar.gz
+              tar -C /usr/local/bin -xzf /tmp/k8sgpt.tar.gz k8sgpt
+              chmod +x /usr/local/bin/k8sgpt
+              rm /tmp/k8sgpt.tar.gz
+              k8sgpt version
+              echo "K8sGPT \${K8SGPT_VERSION} installed"
+
       - name: InstallPythonDependencies
         action: ExecuteBash
         inputs:
@@ -334,6 +353,7 @@ phases:
             - python3 -c "import yaml; print('pyyaml available')"
             - test -f /usr/local/bin/ecr-credential-provider
             - test -f /etc/kubernetes/image-credential-provider-config.yaml
+            - k8sgpt version
             - echo "All kubeadm components verified"
 `;
 }

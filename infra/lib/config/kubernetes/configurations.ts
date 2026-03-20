@@ -151,6 +151,12 @@ export interface K8sImageConfig {
          * The credential provider plugin API is stable and version-independent.
          */
         readonly ecrCredentialProvider: string;
+        /**
+         * K8sGPT version (without 'v' prefix, e.g. '0.4.29').
+         * AI-powered Kubernetes diagnostics tool used by the self-healing
+         * pipeline's analyse-cluster-health Lambda via SSM SendCommand.
+         */
+        readonly k8sgpt: string;
     };
 }
 
@@ -428,6 +434,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
                 ecrCredentialProvider: 'v1.31.0',
+                k8sgpt: '0.4.29',
             },
         },
         ssm: {
@@ -510,6 +517,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
                 ecrCredentialProvider: 'v1.31.0',
+                k8sgpt: '0.4.29',
             },
         },
         ssm: {
@@ -590,6 +598,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
                 ecrCredentialProvider: 'v1.31.0',
+                k8sgpt: '0.4.29',
             },
         },
         ssm: {

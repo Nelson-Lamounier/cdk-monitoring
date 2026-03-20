@@ -53,6 +53,9 @@ import {
     BootstrapOrchestratorConstruct,
 } from '../../constructs/ssm/bootstrap-orchestrator';
 import {
+    NodeDriftEnforcementConstruct,
+} from '../../constructs/ssm/node-drift-enforcement';
+import {
     ResourceCleanupProvider,
 } from '../../constructs/ssm/resource-cleanup-provider';
 
@@ -434,6 +437,19 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         // Register alarm SNS topic for cleanup
         const alarmTopicName = `${prefix}-bootstrap-alarm`;
         cleanup.addSnsTopic(alarmTopicName, alarm.topic);
+
+        // =====================================================================
+        // Node Drift Enforcement — SSM State Manager Association
+        //
+        // Continuously enforces OS-level K8s prerequisites (kernel modules,
+        // sysctl parameters, containerd/kubelet service state) across all
+        // compute nodes. Runs every 30 minutes via State Manager.
+        // =====================================================================
+
+        new NodeDriftEnforcementConstruct(this, 'DriftEnforcement', {
+            prefix,
+            targetEnvironment: props.targetEnvironment,
+        });
 
         // =====================================================================
         // CDK-Nag Suppressions

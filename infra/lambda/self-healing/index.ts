@@ -41,6 +41,12 @@ import {
     CognitoIdentityProviderClient,
     DescribeUserPoolClientCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import {
+    S3Client,
+    GetObjectCommand,
+    PutObjectCommand,
+    ListObjectsV2Command,
+} from '@aws-sdk/client-s3';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 
 // =============================================================================
@@ -61,6 +67,9 @@ const COGNITO_SCOPES = process.env.COGNITO_SCOPES ?? '';
 /** SNS topic ARN for remediation report notifications */
 const SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN ?? '';
 
+/** S3 bucket for conversation session memory */
+const MEMORY_BUCKET = process.env.MEMORY_BUCKET ?? '';
+
 /** Maximum agentic loop iterations to prevent runaway execution */
 const MAX_ITERATIONS = 10;
 
@@ -73,6 +82,7 @@ const TOKEN_REFRESH_BUFFER_S = 60;
 const bedrock = new BedrockRuntimeClient({});
 const cognito = new CognitoIdentityProviderClient({});
 const snsClient = new SNSClient({});
+const s3Client = new S3Client({});
 
 /** Cached OAuth2 access token */
 let cachedToken = '';
@@ -123,6 +133,22 @@ interface McpToolsListResponse {
 interface AgentResult {
     readonly statusCode: number;
     readonly body: string;
+}
+
+/**
+ * Session record stored in S3 for conversation memory.
+ *
+ * Captures a compact summary of each agent invocation so that
+ * subsequent retries can reference what was previously attempted.
+ */
+interface SessionRecord {
+    readonly alarmName: string;
+    readonly timestamp: string;
+    readonly correlationId: string;
+    readonly prompt: string;
+    readonly toolsCalled: string[];
+    readonly result: string;
+    readonly dryRun: boolean;
 }
 
 // =============================================================================
@@ -588,9 +614,9 @@ function buildToolConfig(tools: AgentTool[]): ToolConfiguration {
  *
  * @param prompt - The natural language prompt built from the event
  * @param tools - Discovered or default tool definitions
- * @returns The agent's final text response
+ * @returns Object with the agent's final text response and tools called
  */
-async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<string> {
+async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<{ text: string; toolsCalled: string[] }> {
     const toolConfig = buildToolConfig(tools);
     const systemPrompt: SystemContentBlock[] = [{ text: SYSTEM_PROMPT }];
 
@@ -602,6 +628,7 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<string>
     ];
 
     let totalToolCalls = 0;
+    const toolNamesCalled: string[] = [];
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
         const iterationStart = Date.now();
@@ -644,6 +671,7 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<string>
                 const toolInput = (toolUse.input ?? {}) as Record<string, unknown>;
 
                 totalToolCalls++;
+                toolNamesCalled.push(toolName);
                 const toolStart = Date.now();
 
                 log('INFO', `Invoking tool: ${toolName}`, {
@@ -690,11 +718,14 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<string>
             totalToolCalls,
         });
 
-        return textBlocks.map(b => b.text).join('\n');
+        return { text: textBlocks.map(b => b.text).join('\n'), toolsCalled: [...new Set(toolNamesCalled)] };
     }
 
     log('WARN', 'Agent reached maximum iterations', { MAX_ITERATIONS, totalToolCalls });
-    return `Agent reached maximum iterations (${MAX_ITERATIONS}) without completing.`;
+    return {
+        text: `Agent reached maximum iterations (${MAX_ITERATIONS}) without completing.`,
+        toolsCalled: [...new Set(toolNamesCalled)],
+    };
 }
 
 // =============================================================================
@@ -772,6 +803,139 @@ async function publishReport(payload: ReportPayload): Promise<void> {
 }
 
 // =============================================================================
+// S3 — Conversation Session Memory
+// =============================================================================
+
+/**
+ * Sanitise an alarm name for use as an S3 key prefix.
+ *
+ * Replaces characters that are awkward in S3 keys (spaces, slashes,
+ * colons) with hyphens and lowercases the result.
+ *
+ * @param alarmName - Raw CloudWatch alarm name
+ * @returns Sanitised string safe for S3 key use
+ */
+function sanitiseAlarmKey(alarmName: string): string {
+    return alarmName
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+}
+
+/**
+ * Load the most recent session record for a given alarm.
+ *
+ * Lists objects under `sessions/{sanitisedAlarmName}/` and retrieves
+ * the lexicographically last key (ISO timestamps sort naturally).
+ *
+ * @param alarmName - The CloudWatch alarm name
+ * @returns The most recent session record, or undefined if none exists
+ */
+async function loadPreviousSession(alarmName: string): Promise<SessionRecord | undefined> {
+    if (!MEMORY_BUCKET) return undefined;
+
+    const prefix = `sessions/${sanitiseAlarmKey(alarmName)}/`;
+
+    try {
+        const listResult = await s3Client.send(new ListObjectsV2Command({
+            Bucket: MEMORY_BUCKET,
+            Prefix: prefix,
+            MaxKeys: 10,
+        }));
+
+        const contents = listResult.Contents ?? [];
+        if (contents.length === 0) {
+            log('INFO', 'No previous sessions found', { alarmName, prefix });
+            return undefined;
+        }
+
+        // Sort descending by key (ISO timestamps sort lexicographically)
+        contents.sort((a, b) => (b.Key ?? '').localeCompare(a.Key ?? ''));
+        const latestKey = contents[0].Key;
+        if (!latestKey) return undefined;
+
+        const getResult = await s3Client.send(new GetObjectCommand({
+            Bucket: MEMORY_BUCKET,
+            Key: latestKey,
+        }));
+
+        const body = await getResult.Body?.transformToString();
+        if (!body) return undefined;
+
+        const record = JSON.parse(body) as SessionRecord;
+        log('INFO', 'Loaded previous session', {
+            alarmName,
+            previousTimestamp: record.timestamp,
+            previousCorrelationId: record.correlationId,
+            toolsUsed: record.toolsCalled,
+        });
+
+        return record;
+    } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log('WARN', 'Failed to load previous session', { alarmName, error });
+        return undefined;
+    }
+}
+
+/**
+ * Save a session record to S3 after agent completion.
+ *
+ * Key format: `sessions/{sanitisedAlarmName}/{ISO-timestamp}.json`
+ *
+ * @param record - Session data to persist
+ */
+async function saveSession(record: SessionRecord): Promise<void> {
+    if (!MEMORY_BUCKET) return;
+
+    const key = `sessions/${sanitiseAlarmKey(record.alarmName)}/${record.timestamp}.json`;
+
+    try {
+        await s3Client.send(new PutObjectCommand({
+            Bucket: MEMORY_BUCKET,
+            Key: key,
+            ContentType: 'application/json',
+            Body: JSON.stringify(record, null, 2),
+        }));
+
+        log('INFO', 'Session saved to S3', { key, alarmName: record.alarmName });
+    } catch (err) {
+        // Non-fatal — log but don't fail the handler
+        const error = err instanceof Error ? err.message : String(err);
+        log('WARN', 'Failed to save session to S3', { key, error });
+    }
+}
+
+/**
+ * Build a prompt supplement from a previous session record.
+ *
+ * Inserted into the agent prompt so the model is aware of prior
+ * remediation attempts and can avoid repeating the same actions.
+ *
+ * @param session - The previous session record
+ * @returns A formatted string block for prompt injection
+ */
+function buildPreviousSessionContext(session: SessionRecord): string {
+    const toolsList = session.toolsCalled.length > 0
+        ? session.toolsCalled.join(', ')
+        : 'none';
+
+    return [
+        '',
+        '─── PREVIOUS REMEDIATION ATTEMPT (do NOT repeat the same actions) ───',
+        `Time: ${session.timestamp}`,
+        `Correlation ID: ${session.correlationId}`,
+        `Mode: ${session.dryRun ? 'DRY RUN' : 'LIVE'}`,
+        `Tools called: ${toolsList}`,
+        `Outcome:`,
+        session.result.slice(0, 2000),
+        '───────────────────────────────────────────────────────────────────────',
+        '',
+    ].join('\n');
+}
+
+// =============================================================================
 // Lambda Handler
 // =============================================================================
 
@@ -816,13 +980,33 @@ export async function handler(event: AlarmEvent): Promise<AgentResult> {
         // Discover available tools
         const tools = await discoverTools();
 
-        const prompt = buildPrompt(event);
-        log('INFO', 'Prompt built', { promptLength: prompt.length });
+        // Load previous session for this alarm (if any)
+        const previousSession = await loadPreviousSession(alarmName);
 
-        const result = await runAgentLoop(prompt, tools);
+        let prompt = buildPrompt(event);
+        if (previousSession) {
+            prompt += buildPreviousSessionContext(previousSession);
+            log('INFO', 'Prompt enriched with previous session context', {
+                previousTimestamp: previousSession.timestamp,
+            });
+        }
+        log('INFO', 'Prompt built', { promptLength: prompt.length, hasPreviousSession: !!previousSession });
+
+        const loopResult = await runAgentLoop(prompt, tools);
         const durationMs = Date.now() - handlerStart;
 
-        log('INFO', 'Agent completed successfully', { durationMs, alarmName });
+        log('INFO', 'Agent completed successfully', { durationMs, alarmName, toolsCalled: loopResult.toolsCalled });
+
+        // Save session record to S3 for future retries
+        await saveSession({
+            alarmName,
+            timestamp: new Date().toISOString(),
+            correlationId,
+            prompt,
+            toolsCalled: loopResult.toolsCalled,
+            result: loopResult.text,
+            dryRun: DRY_RUN,
+        });
 
         // Publish remediation report to SNS for operator visibility
         await publishReport({
@@ -831,14 +1015,14 @@ export async function handler(event: AlarmEvent): Promise<AgentResult> {
             dryRun: DRY_RUN,
             durationMs,
             correlationId,
-            report: result,
+            report: loopResult.text,
         });
 
         return {
             statusCode: 200,
             body: JSON.stringify({
                 dryRun: DRY_RUN,
-                result,
+                result: loopResult.text,
                 source: event.source ?? 'unknown',
                 alarmName,
                 durationMs,
@@ -878,5 +1062,5 @@ export async function handler(event: AlarmEvent): Promise<AgentResult> {
 // Exported for testing
 // =============================================================================
 
-export { buildPrompt, isDuplicate, getDefaultTools, buildToolConfig };
-export type { AlarmEvent, AgentTool, AgentResult };
+export { buildPrompt, isDuplicate, getDefaultTools, buildToolConfig, sanitiseAlarmKey, buildPreviousSessionContext };
+export type { AlarmEvent, AgentTool, AgentResult, SessionRecord };

@@ -25,6 +25,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -71,6 +72,8 @@ export interface SelfHealingAgentStackProps extends cdk.StackProps {
     readonly cognitoScopes: string;
     /** Email address for SNS remediation report notifications */
     readonly notificationEmail?: string;
+    /** Retention in days for S3 session memory objects */
+    readonly memoryRetentionDays?: number;
 }
 
 /**
@@ -90,6 +93,9 @@ export class SelfHealingAgentStack extends cdk.Stack {
 
     /** SNS topic for remediation report notifications */
     public readonly reportsTopic: sns.Topic;
+
+    /** S3 bucket for conversation session memory */
+    public readonly memoryBucket: s3.Bucket;
 
     constructor(scope: Construct, id: string, props: SelfHealingAgentStackProps) {
         super(scope, id, props);
@@ -137,6 +143,29 @@ export class SelfHealingAgentStack extends cdk.Stack {
         }
 
         // =================================================================
+        // S3 — Conversation Session Memory
+        //
+        // Stores session records (prompt, tools called, outcome) keyed by
+        // alarm name. On retry, the agent loads the most recent session to
+        // avoid repeating the same remediation.
+        // =================================================================
+        const memoryRetentionDays = props.memoryRetentionDays ?? 30;
+
+        this.memoryBucket = new s3.Bucket(this, 'MemoryBucket', {
+            bucketName: `${namePrefix}-agent-memory-${this.account}-${this.region}`,
+            encryption: s3.BucketEncryption.S3_MANAGED,
+            blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+            enforceSSL: true,
+            removalPolicy: props.removalPolicy,
+            autoDeleteObjects: props.removalPolicy === cdk.RemovalPolicy.DESTROY,
+            lifecycleRules: [{
+                id: 'expire-old-sessions',
+                expiration: cdk.Duration.days(memoryRetentionDays),
+                enabled: true,
+            }],
+        });
+
+        // =================================================================
         // Lambda — Self-Healing Agent (Bedrock ConverseCommand)
         //
         // TypeScript function using the Bedrock ConverseCommand API
@@ -162,6 +191,7 @@ export class SelfHealingAgentStack extends cdk.Stack {
                 COGNITO_CLIENT_ID: props.cognitoClientId,
                 COGNITO_SCOPES: props.cognitoScopes,
                 SNS_TOPIC_ARN: this.reportsTopic.topicArn,
+                MEMORY_BUCKET: this.memoryBucket.bucketName,
             },
             description: `Self-healing remediation agent for ${namePrefix}`,
             bundling: {
@@ -337,6 +367,18 @@ export class SelfHealingAgentStack extends cdk.Stack {
         // Grant Lambda permission to publish to SNS
         this.reportsTopic.grantPublish(this.agentFunction);
 
+        // Grant Lambda read/write access to session memory
+        this.memoryBucket.grantReadWrite(this.agentFunction);
+
+        NagSuppressions.addResourceSuppressions(
+            this.memoryBucket,
+            [{
+                id: 'AwsSolutions-S1',
+                reason: 'Session memory bucket — internal agent data only, server access logging not required',
+            }],
+            true,
+        );
+
         // =================================================================
         // SSM Parameter Exports
         // =================================================================
@@ -382,6 +424,11 @@ export class SelfHealingAgentStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'DryRunEnabled', {
             value: props.enableDryRun ? 'true' : 'false',
             description: 'Whether the agent is in dry-run mode',
+        });
+
+        new cdk.CfnOutput(this, 'MemoryBucketName', {
+            value: this.memoryBucket.bucketName,
+            description: 'S3 bucket for agent conversation memory',
         });
 
         new cdk.CfnOutput(this, 'ReportsTopicArn', {
