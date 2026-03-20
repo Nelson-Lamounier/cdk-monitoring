@@ -195,6 +195,13 @@ ci-drift *ARGS:
 ci-log-audit *ARGS:
     npx tsx infra/scripts/ci/log-group-audit.ts {{ARGS}}
 
+# CI security scan: run Checkov against synthesised CDK templates
+# Blocks on CRITICAL/HIGH findings. Use --soft-fail for advisory mode.
+# Called by: .github/workflows/ci.yml → iac-security-scan job
+[group('ci')]
+ci-security-scan *ARGS:
+    npx tsx infra/scripts/ci/security-scan.ts {{ARGS}}
+
 
 
 # CI diagnose: diagnose a failed CloudFormation stack deployment

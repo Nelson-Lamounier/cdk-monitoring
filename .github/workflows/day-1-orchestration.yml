@@ -80,8 +80,6 @@ jobs:
     outputs:
       cdk-environment: ${{ steps.resolve.outputs.cdk-environment }}
       require-approval: ${{ steps.resolve.outputs.require-approval }}
-      enable-security-scan: ${{ steps.resolve.outputs.enable-security-scan }}
-      security-scan-blocking: ${{ steps.resolve.outputs.security-scan-blocking }}
       shared-stack-name: ${{ steps.resolve.outputs.shared-stack-name }}
       security-stack-name: ${{ steps.resolve.outputs.security-stack-name }}
       finops-stack-name: ${{ steps.resolve.outputs.finops-stack-name }}
@@ -103,8 +101,6 @@ jobs:
             development)
               echo "cdk-environment=development" >> $GITHUB_OUTPUT
               echo "require-approval=never" >> $GITHUB_OUTPUT
-              echo "enable-security-scan=true" >> $GITHUB_OUTPUT
-              echo "security-scan-blocking=false" >> $GITHUB_OUTPUT
               echo "shared-stack-name=Shared-Infra-development" >> $GITHUB_OUTPUT
               echo "security-stack-name=Shared-SecurityBaseline-development" >> $GITHUB_OUTPUT
               echo "finops-stack-name=Shared-FinOps-development" >> $GITHUB_OUTPUT
@@ -196,8 +192,6 @@ jobs:
       environment: ${{ inputs.environment }}
       cdk-environment: ${{ needs.gate.outputs.cdk-environment }}
       require-approval: ${{ needs.gate.outputs.require-approval }}
-      enable-security-scan: ${{ fromJSON(needs.gate.outputs.enable-security-scan) }}
-      security-scan-blocking: ${{ fromJSON(needs.gate.outputs.security-scan-blocking) }}
       skip-verification: ${{ inputs.skip-verification }}
     secrets: inherit
 

@@ -139,11 +139,7 @@ cdk-monitoring/
 │   ├── config.yaml             # Checkov configuration
 │   └── custom_checks/          # 33 custom Python security checks (26 files)
 ├── .github/workflows/          # 19 GitHub Actions workflows
-│   ├── ci.yml                  #   CI pipeline (lint, test, synth, security scan)
-│   ├── _deploy-monitoring.yml  #   Reusable: monitoring deployment
-│   ├── _deploy-nextjs.yml      #   Reusable: Next.js deployment
-│   ├── _deploy-stack.yml       #   Reusable: generic stack deployment
-│   ├── _iac-security-scan.yml  #   Reusable: Checkov security scan
+│   ├── ci.yml                  #   CI pipeline (lint, test, synth, Checkov IaC scan)
 │   ├── _smoke-tests-nextjs.yml #   Reusable: post-deploy smoke tests
 │   ├── _verify-stack.yml       #   Reusable: CloudFormation status verification
 │   ├── deploy-*-dev.yml        #   Environment-specific triggers
@@ -309,11 +305,10 @@ The `.checkov/custom_checks/` directory contains 33 Python check classes across 
 
 | Workflow                      | Type     | Purpose                                  |
 | :---------------------------- | :------- | :--------------------------------------- |
-| `ci.yml`                      | Trigger  | Lint, test, synth, security scan on PR   |
+| `ci.yml`                      | Trigger  | Lint, test, synth, Checkov IaC scan      |
 | `_deploy-monitoring.yml`      | Reusable | Monitoring project deployment            |
 | `_deploy-nextjs.yml`          | Reusable | Next.js project deployment (6 stacks)    |
 | `_deploy-stack.yml`           | Reusable | Generic single-stack deployment          |
-| `_iac-security-scan.yml`      | Reusable | Checkov scan with SARIF upload           |
 | `_smoke-tests-nextjs.yml`     | Reusable | Post-deploy smoke tests (9 checks)       |
 | `_verify-stack.yml`           | Reusable | CloudFormation status verification       |
 | `deploy-*-{dev,staging,prod}` | Trigger  | Environment-specific deployment triggers |
