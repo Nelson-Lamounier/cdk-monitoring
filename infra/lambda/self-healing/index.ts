@@ -41,6 +41,7 @@ import {
     CognitoIdentityProviderClient,
     DescribeUserPoolClientCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 
 // =============================================================================
 // Configuration
@@ -57,6 +58,9 @@ const COGNITO_USER_POOL_ID = process.env.COGNITO_USER_POOL_ID ?? '';
 const COGNITO_CLIENT_ID = process.env.COGNITO_CLIENT_ID ?? '';
 const COGNITO_SCOPES = process.env.COGNITO_SCOPES ?? '';
 
+/** SNS topic ARN for remediation report notifications */
+const SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN ?? '';
+
 /** Maximum agentic loop iterations to prevent runaway execution */
 const MAX_ITERATIONS = 10;
 
@@ -68,6 +72,7 @@ const TOKEN_REFRESH_BUFFER_S = 60;
 
 const bedrock = new BedrockRuntimeClient({});
 const cognito = new CognitoIdentityProviderClient({});
+const snsClient = new SNSClient({});
 
 /** Cached OAuth2 access token */
 let cachedToken = '';
@@ -668,6 +673,80 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<string>
 }
 
 // =============================================================================
+// SNS — Remediation Report Publishing
+// =============================================================================
+
+/**
+ * Report payload published to the SNS topic after each agent invocation.
+ */
+interface ReportPayload {
+    readonly status: 'SUCCESS' | 'ERROR';
+    readonly alarmName: string;
+    readonly dryRun: boolean;
+    readonly durationMs: number;
+    readonly correlationId: string;
+    readonly report: string;
+}
+
+/**
+ * Publish a remediation report to the SNS topic.
+ *
+ * Sends a human-readable email via SNS so operators receive immediate
+ * visibility into every agent invocation. Silently skips if the topic
+ * ARN is not configured.
+ *
+ * @param payload - Structured report data
+ */
+async function publishReport(payload: ReportPayload): Promise<void> {
+    if (!SNS_TOPIC_ARN) {
+        log('WARN', 'No SNS_TOPIC_ARN configured — skipping report notification');
+        return;
+    }
+
+    const mode = payload.dryRun ? '🔍 DRY RUN' : '⚡ LIVE';
+    const icon = payload.status === 'SUCCESS' ? '✅' : '❌';
+
+    const subject = `${icon} Self-Healing ${payload.status}: ${payload.alarmName} [${mode}]`;
+
+    const message = [
+        `${icon} Self-Healing Agent Report`,
+        `${'═'.repeat(50)}`,
+        '',
+        `Alarm:          ${payload.alarmName}`,
+        `Status:         ${payload.status}`,
+        `Mode:           ${mode}`,
+        `Duration:       ${(payload.durationMs / 1000).toFixed(1)}s`,
+        `Correlation ID: ${payload.correlationId}`,
+        '',
+        `${'─'.repeat(50)}`,
+        'REMEDIATION REPORT',
+        `${'─'.repeat(50)}`,
+        '',
+        payload.report,
+        '',
+        `${'─'.repeat(50)}`,
+        `Timestamp: ${new Date().toISOString()}`,
+    ].join('\n');
+
+    try {
+        await snsClient.send(new PublishCommand({
+            TopicArn: SNS_TOPIC_ARN,
+            Subject: subject.slice(0, 100), // SNS subject max 100 chars
+            Message: message,
+        }));
+
+        log('INFO', 'Remediation report published to SNS', {
+            topicArn: SNS_TOPIC_ARN,
+            status: payload.status,
+        });
+    } catch (err) {
+        // Non-fatal — log but don't fail the handler
+        const error = err instanceof Error ? err.message : String(err);
+        log('WARN', 'Failed to publish SNS report', { error });
+    }
+}
+
+// =============================================================================
 // Lambda Handler
 // =============================================================================
 
@@ -720,6 +799,16 @@ export async function handler(event: AlarmEvent): Promise<AgentResult> {
 
         log('INFO', 'Agent completed successfully', { durationMs, alarmName });
 
+        // Publish remediation report to SNS for operator visibility
+        await publishReport({
+            status: 'SUCCESS',
+            alarmName,
+            dryRun: DRY_RUN,
+            durationMs,
+            correlationId,
+            report: result,
+        });
+
         return {
             statusCode: 200,
             body: JSON.stringify({
@@ -736,6 +825,16 @@ export async function handler(event: AlarmEvent): Promise<AgentResult> {
         const durationMs = Date.now() - handlerStart;
 
         log('ERROR', 'Agent execution failed', { error, durationMs, alarmName });
+
+        // Publish error notification to SNS
+        await publishReport({
+            status: 'ERROR',
+            alarmName,
+            dryRun: DRY_RUN,
+            durationMs,
+            correlationId,
+            report: `Agent execution failed: ${error}`,
+        });
 
         return {
             statusCode: 500,

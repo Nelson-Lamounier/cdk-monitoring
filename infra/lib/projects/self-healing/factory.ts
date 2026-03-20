@@ -115,6 +115,7 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
                 cognitoUserPoolId: gatewayStack.userPoolId,
                 cognitoClientId: gatewayStack.userPoolClientId,
                 cognitoScopes: gatewayStack.oauthScopes,
+                notificationEmail: process.env.NOTIFICATION_EMAIL,
                 env,
             }
         );

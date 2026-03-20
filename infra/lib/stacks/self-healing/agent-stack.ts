@@ -25,6 +25,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
@@ -67,6 +69,8 @@ export interface SelfHealingAgentStackProps extends cdk.StackProps {
     readonly cognitoClientId: string;
     /** OAuth2 scope strings (space-separated) for client credentials flow */
     readonly cognitoScopes: string;
+    /** Email address for SNS remediation report notifications */
+    readonly notificationEmail?: string;
 }
 
 /**
@@ -83,6 +87,9 @@ export class SelfHealingAgentStack extends cdk.Stack {
 
     /** Dead Letter Queue for failed agent invocations */
     public readonly agentDlq: sqs.Queue;
+
+    /** SNS topic for remediation report notifications */
+    public readonly reportsTopic: sns.Topic;
 
     constructor(scope: Construct, id: string, props: SelfHealingAgentStackProps) {
         super(scope, id, props);
@@ -113,6 +120,23 @@ export class SelfHealingAgentStack extends cdk.Stack {
         });
 
         // =================================================================
+        // SNS — Remediation Report Notifications
+        //
+        // Publishes the agent's remediation report after each invocation
+        // so the operator receives immediate email visibility.
+        // =================================================================
+        this.reportsTopic = new sns.Topic(this, 'ReportsTopic', {
+            topicName: `${namePrefix}-agent-reports`,
+            displayName: `Self-Healing Agent Reports (${namePrefix})`,
+        });
+
+        if (props.notificationEmail) {
+            this.reportsTopic.addSubscription(
+                new sns_subscriptions.EmailSubscription(props.notificationEmail),
+            );
+        }
+
+        // =================================================================
         // Lambda — Self-Healing Agent (Bedrock ConverseCommand)
         //
         // TypeScript function using the Bedrock ConverseCommand API
@@ -137,6 +161,7 @@ export class SelfHealingAgentStack extends cdk.Stack {
                 COGNITO_USER_POOL_ID: props.cognitoUserPoolId,
                 COGNITO_CLIENT_ID: props.cognitoClientId,
                 COGNITO_SCOPES: props.cognitoScopes,
+                SNS_TOPIC_ARN: this.reportsTopic.topicArn,
             },
             description: `Self-healing remediation agent for ${namePrefix}`,
             bundling: {
@@ -297,6 +322,21 @@ export class SelfHealingAgentStack extends cdk.Stack {
             true,
         );
 
+        NagSuppressions.addResourceSuppressions(
+            this.reportsTopic,
+            [{
+                id: 'AwsSolutions-SNS2',
+                reason: 'Remediation report topic — no sensitive data, default encryption sufficient',
+            }, {
+                id: 'AwsSolutions-SNS3',
+                reason: 'Remediation report topic — enforceSSL not required for email-only delivery',
+            }],
+            true,
+        );
+
+        // Grant Lambda permission to publish to SNS
+        this.reportsTopic.grantPublish(this.agentFunction);
+
         // =================================================================
         // SSM Parameter Exports
         // =================================================================
@@ -342,6 +382,11 @@ export class SelfHealingAgentStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'DryRunEnabled', {
             value: props.enableDryRun ? 'true' : 'false',
             description: 'Whether the agent is in dry-run mode',
+        });
+
+        new cdk.CfnOutput(this, 'ReportsTopicArn', {
+            value: this.reportsTopic.topicArn,
+            description: 'SNS topic ARN for remediation report notifications',
         });
     }
 }
