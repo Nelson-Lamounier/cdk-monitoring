@@ -956,6 +956,41 @@ k8s-diagnose environment="development":
 k8s-diagnose-raw:
     k8sgpt analyze
 
+# Trigger an ad-hoc etcd backup via SSM Run Command
+# Use before: maintenance, upgrades, Crossplane changes, or node recycling
+# Backup → s3://<scripts-bucket>/dr-backups/etcd/<timestamp>.db
+[group('k8s')]
+k8s-etcd-backup env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_PREFIX="/k8s/{{env}}"
+    INSTANCE_ID=$(aws ssm get-parameter \
+      --name "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
+      --region {{region}} --profile {{profile}} \
+      --query 'Parameter.Value' --output text 2>/dev/null || true)
+    if [[ -z "${INSTANCE_ID}" ]]; then
+      echo "✗ Could not resolve control plane instance ID from SSM"
+      exit 1
+    fi
+    echo "Triggering etcd backup on ${INSTANCE_ID}..."
+    COMMAND_ID=$(aws ssm send-command \
+      --instance-ids "${INSTANCE_ID}" \
+      --document-name "AWS-RunShellScript" \
+      --parameters 'commands=["sudo /usr/local/bin/etcd-backup.sh"]' \
+      --region {{region}} --profile {{profile}} \
+      --query 'Command.CommandId' --output text)
+    echo "SSM Command: ${COMMAND_ID}"
+    echo "Waiting for completion..."
+    aws ssm wait command-executed \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "${INSTANCE_ID}" \
+      --region {{region}} --profile {{profile}} 2>/dev/null || true
+    aws ssm get-command-invocation \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "${INSTANCE_ID}" \
+      --region {{region}} --profile {{profile}} \
+      --query '[Status, StandardOutputContent]' --output text
+
 # Build the unified MCP infrastructure server (K8s + AWS diagnostics → dist/)
 [group('mcp')]
 mcp-build:
