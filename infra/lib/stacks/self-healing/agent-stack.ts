@@ -59,6 +59,14 @@ export interface SelfHealingAgentStackProps extends cdk.StackProps {
     readonly reservedConcurrency?: number;
     /** Maximum tokens per hour before alarm fires (FinOps guardrail) */
     readonly tokenBudgetPerHour?: number;
+    /** Cognito OAuth2 token endpoint for client credentials flow */
+    readonly cognitoTokenEndpoint: string;
+    /** Cognito User Pool ID (for retrieving client secret at runtime) */
+    readonly cognitoUserPoolId: string;
+    /** Cognito User Pool Client ID for M2M auth */
+    readonly cognitoClientId: string;
+    /** OAuth2 scope strings (space-separated) for client credentials flow */
+    readonly cognitoScopes: string;
 }
 
 /**
@@ -125,6 +133,10 @@ export class SelfHealingAgentStack extends cdk.Stack {
                 FOUNDATION_MODEL: props.foundationModel,
                 DRY_RUN: props.enableDryRun ? 'true' : 'false',
                 SYSTEM_PROMPT: props.systemPrompt,
+                COGNITO_TOKEN_ENDPOINT: props.cognitoTokenEndpoint,
+                COGNITO_USER_POOL_ID: props.cognitoUserPoolId,
+                COGNITO_CLIENT_ID: props.cognitoClientId,
+                COGNITO_SCOPES: props.cognitoScopes,
             },
             description: `Self-healing remediation agent for ${namePrefix}`,
             bundling: {
@@ -231,6 +243,23 @@ export class SelfHealingAgentStack extends cdk.Stack {
                 `arn:aws:bedrock:*::foundation-model/${baseModelId}`,
             ],
         }));
+
+        // =================================================================
+        // IAM — Cognito Client Secret Retrieval
+        //
+        // The agent retrieves the Cognito User Pool Client secret at runtime
+        // to obtain a JWT via the client credentials flow for Gateway auth.
+        // =================================================================
+        if (props.cognitoUserPoolId) {
+            this.agentFunction.addToRolePolicy(new iam.PolicyStatement({
+                sid: 'DescribeCognitoClient',
+                effect: iam.Effect.ALLOW,
+                actions: ['cognito-idp:DescribeUserPoolClient'],
+                resources: [
+                    `arn:aws:cognito-idp:${this.region}:${this.account}:userpool/${props.cognitoUserPoolId}`,
+                ],
+            }));
+        }
 
         // =================================================================
         // EventBridge Rule — CloudWatch Alarm → Agent

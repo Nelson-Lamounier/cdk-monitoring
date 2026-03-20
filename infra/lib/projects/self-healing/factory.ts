@@ -111,6 +111,10 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
                 gatewayUrl: gatewayStack.gatewayUrl,
                 dlqRetentionDays: allocs.dlqRetentionDays,
                 reservedConcurrency: allocs.agentLambda.reservedConcurrency,
+                cognitoTokenEndpoint: gatewayStack.tokenEndpointUrl,
+                cognitoUserPoolId: gatewayStack.userPoolId,
+                cognitoClientId: gatewayStack.userPoolClientId,
+                cognitoScopes: gatewayStack.oauthScopes,
                 env,
             }
         );

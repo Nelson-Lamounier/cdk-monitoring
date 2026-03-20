@@ -37,6 +37,10 @@ import type {
     ToolResultContentBlock,
     ToolUseBlock,
 } from '@aws-sdk/client-bedrock-runtime';
+import {
+    CognitoIdentityProviderClient,
+    DescribeUserPoolClientCommand,
+} from '@aws-sdk/client-cognito-identity-provider';
 
 // =============================================================================
 // Configuration
@@ -47,13 +51,30 @@ const FOUNDATION_MODEL = process.env.FOUNDATION_MODEL ?? 'eu.anthropic.claude-so
 const DRY_RUN = (process.env.DRY_RUN ?? 'true').toLowerCase() === 'true';
 const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ?? 'You are an infrastructure remediation agent.';
 
+/** Cognito OAuth2 configuration for Gateway M2M auth */
+const COGNITO_TOKEN_ENDPOINT = process.env.COGNITO_TOKEN_ENDPOINT ?? '';
+const COGNITO_USER_POOL_ID = process.env.COGNITO_USER_POOL_ID ?? '';
+const COGNITO_CLIENT_ID = process.env.COGNITO_CLIENT_ID ?? '';
+const COGNITO_SCOPES = process.env.COGNITO_SCOPES ?? '';
+
 /** Maximum agentic loop iterations to prevent runaway execution */
 const MAX_ITERATIONS = 10;
 
 /** Timeout for MCP Gateway HTTP calls (milliseconds) */
 const MCP_TIMEOUT_MS = 10_000;
 
+/** Buffer before token expiry to trigger refresh (seconds) */
+const TOKEN_REFRESH_BUFFER_S = 60;
+
 const bedrock = new BedrockRuntimeClient({});
+const cognito = new CognitoIdentityProviderClient({});
+
+/** Cached OAuth2 access token */
+let cachedToken = '';
+/** Timestamp (epoch seconds) when the cached token expires */
+let tokenExpiresAt = 0;
+/** Cached Cognito client secret (resolved once at cold start) */
+let clientSecret: string | undefined;
 
 // =============================================================================
 // Types
@@ -239,6 +260,104 @@ function buildPrompt(event: AlarmEvent): string {
 }
 
 // =============================================================================
+// OAuth2 Token Acquisition (Cognito Client Credentials Flow)
+// =============================================================================
+
+/**
+ * Cognito OAuth2 token response shape.
+ */
+interface TokenResponse {
+    readonly access_token: string;
+    readonly expires_in: number;
+    readonly token_type: string;
+}
+
+/**
+ * Resolve the Cognito User Pool Client secret at cold start.
+ *
+ * Calls `DescribeUserPoolClient` to retrieve the auto-generated secret.
+ * The result is cached for the lifetime of the Lambda container.
+ *
+ * @returns The client secret string
+ * @throws Error if the secret cannot be retrieved
+ */
+async function resolveClientSecret(): Promise<string> {
+    if (clientSecret) return clientSecret;
+
+    if (!COGNITO_USER_POOL_ID || !COGNITO_CLIENT_ID) {
+        throw new Error('Missing COGNITO_USER_POOL_ID or COGNITO_CLIENT_ID — cannot resolve client secret');
+    }
+
+    const result = await cognito.send(new DescribeUserPoolClientCommand({
+        UserPoolId: COGNITO_USER_POOL_ID,
+        ClientId: COGNITO_CLIENT_ID,
+    }));
+
+    const secret = result.UserPoolClient?.ClientSecret;
+    if (!secret) {
+        throw new Error(`Cognito client ${COGNITO_CLIENT_ID} has no client secret`);
+    }
+
+    clientSecret = secret;
+    return secret;
+}
+
+/**
+ * Obtain a valid OAuth2 access token for the MCP Gateway.
+ *
+ * Uses the Cognito client credentials grant flow. Tokens are cached
+ * and refreshed when they are within {@link TOKEN_REFRESH_BUFFER_S}
+ * seconds of expiry.
+ *
+ * @returns Bearer access token string
+ */
+async function getAccessToken(): Promise<string> {
+    // Return cached token if still valid
+    const now = Math.floor(Date.now() / 1000);
+    if (cachedToken && tokenExpiresAt > now + TOKEN_REFRESH_BUFFER_S) {
+        return cachedToken;
+    }
+
+    if (!COGNITO_TOKEN_ENDPOINT) {
+        log('WARN', 'No COGNITO_TOKEN_ENDPOINT configured — Gateway calls will be unauthenticated');
+        return '';
+    }
+
+    const secret = await resolveClientSecret();
+    const credentials = Buffer.from(`${COGNITO_CLIENT_ID}:${secret}`).toString('base64');
+
+    const body = new URLSearchParams({
+        grant_type: 'client_credentials',
+        scope: COGNITO_SCOPES,
+    });
+
+    const response = await fetch(COGNITO_TOKEN_ENDPOINT, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Authorization: `Basic ${credentials}`,
+        },
+        body: body.toString(),
+    });
+
+    if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`Token request failed (${response.status}): ${errorBody}`);
+    }
+
+    const tokenData = await response.json() as TokenResponse;
+    cachedToken = tokenData.access_token;
+    tokenExpiresAt = now + tokenData.expires_in;
+
+    log('INFO', 'Obtained Cognito access token', {
+        expiresIn: tokenData.expires_in,
+        tokenType: tokenData.token_type,
+    });
+
+    return cachedToken;
+}
+
+// =============================================================================
 // Dynamic Tool Discovery
 // =============================================================================
 
@@ -260,9 +379,15 @@ async function discoverTools(): Promise<AgentTool[]> {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), MCP_TIMEOUT_MS);
 
+        const accessToken = await getAccessToken();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (accessToken) {
+            headers['Authorization'] = `Bearer ${accessToken}`;
+        }
+
         const response = await fetch(GATEWAY_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
                 jsonrpc: '2.0',
                 method: 'tools/list',
@@ -328,9 +453,15 @@ async function invokeTool(toolName: string, toolInput: Record<string, unknown>):
     const timeoutId = setTimeout(() => controller.abort(), MCP_TIMEOUT_MS);
 
     try {
+        const accessToken = await getAccessToken();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (accessToken) {
+            headers['Authorization'] = `Bearer ${accessToken}`;
+        }
+
         const response = await fetch(GATEWAY_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
                 jsonrpc: '2.0',
                 method: 'tools/call',

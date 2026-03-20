@@ -72,6 +72,18 @@ export class SelfHealingGatewayStack extends cdk.Stack {
     /** The Gateway unique identifier */
     public readonly gatewayId: string;
 
+    /** Cognito OAuth2 token endpoint for client credentials flow */
+    public readonly tokenEndpointUrl: string;
+
+    /** Cognito User Pool ID (needed to retrieve client secret at runtime) */
+    public readonly userPoolId: string;
+
+    /** Cognito User Pool Client ID for M2M auth */
+    public readonly userPoolClientId: string;
+
+    /** OAuth2 scope strings for client credentials flow */
+    public readonly oauthScopes: string;
+
     constructor(scope: Construct, id: string, props: SelfHealingGatewayStackProps) {
         super(scope, id, props);
 
@@ -102,6 +114,12 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         // Expose gateway URL and ID — populated by CloudFormation after deploy
         this.gatewayUrl = this.gateway.gatewayUrl ?? `https://${namePrefix}-gateway.bedrock.${this.region}.amazonaws.com`;
         this.gatewayId = this.gateway.gatewayId;
+
+        // Expose Cognito auth details for the Agent Lambda
+        this.tokenEndpointUrl = this.gateway.tokenEndpointUrl ?? '';
+        this.userPoolId = this.gateway.userPool?.userPoolId ?? '';
+        this.userPoolClientId = this.gateway.userPoolClient?.userPoolClientId ?? '';
+        this.oauthScopes = (this.gateway.oauthScopes ?? []).join(' ');
 
         // =================================================================
         // Tool Lambda 1: Diagnose Alarm
