@@ -126,8 +126,7 @@ export class WafWebAclConstruct extends Construct {
 
             if (allowedIps.length > 0) {
                 const ipv4Set = new wafv2.CfnIPSet(this, 'AllowedIpv4Set', {
-                    name: `${envName}-${namePrefix}-allowed-ipv4`,
-                    description: 'IPv4 addresses allowed during pre-launch restricted access',
+                    description: `IPv4 addresses allowed during pre-launch restricted access (${namePrefix})`,
                     scope: props.scope,
                     ipAddressVersion: 'IPV4',
                     addresses: allowedIps,
@@ -139,8 +138,7 @@ export class WafWebAclConstruct extends Construct {
 
             if (allowedIpv6s.length > 0) {
                 const ipv6Set = new wafv2.CfnIPSet(this, 'AllowedIpv6Set', {
-                    name: `${envName}-${namePrefix}-allowed-ipv6`,
-                    description: 'IPv6 addresses allowed during pre-launch restricted access',
+                    description: `IPv6 addresses allowed during pre-launch restricted access (${namePrefix})`,
                     scope: props.scope,
                     ipAddressVersion: 'IPV6',
                     addresses: allowedIpv6s,
@@ -175,7 +173,6 @@ export class WafWebAclConstruct extends Construct {
         // =====================================================================
 
         this.webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
-            name: `${envName}-${namePrefix}-cloudfront-waf`,
             description: `WAF for ${namePrefix} CloudFront distribution - ${envName}`,
             scope: props.scope,
             defaultAction: restrictAccess && hasAllowlist
