@@ -4,7 +4,7 @@
  *
  * Reusable CDK construct that pre-emptively deletes orphaned AWS resources
  * (log groups, SSM parameters, SNS topics) before CloudFormation attempts
- * to CREATE them.
+ * to CREATE or UPDATE them.
  *
  * ## Why This Exists
  *
@@ -20,9 +20,11 @@
  * 1. A single shared Lambda per stack handles all cleanup requests.
  * 2. Each resource to protect gets a `cdk.CustomResource` that runs
  *    **before** the real CDK resource (via `addDependency`).
- * 3. On CloudFormation `Create`: the Lambda deletes the resource if it
- *    exists (handles "not found" gracefully).
- * 4. On `Update`/`Delete`: no-op.
+ * 3. On CloudFormation `Create` or `Update`: the Lambda checks whether
+ *    the resource is an orphan and deletes it if so.
+ * 4. On `Delete`: no-op.
+ * 5. A rotating `DeploymentId` property ensures CloudFormation always
+ *    sends an `Update` event on redeployments.
  *
  * @example
  * ```typescript
@@ -61,11 +63,12 @@ type CleanupResourceType = 'LOG_GROUP' | 'SSM_PARAMETER' | 'SNS_TOPIC';
  * Uses boto3 (built into Lambda runtime) — no bundling required.
  * Each invocation receives a single resource type + name and:
  *
- * 1. Checks if the resource is currently managed by the calling
- *    CloudFormation stack (via `list_stack_resources`).
+ * 1. On `Create` or `Update`: checks if the resource is currently
+ *    managed by the calling CloudFormation stack.
  * 2. If the resource IS managed → **skips** (healthy resource).
  * 3. If the resource is NOT managed → **deletes** (orphan from
  *    a previous failed deployment/rollback).
+ * 4. On `Delete`: no-op (nothing to clean up).
  *
  * This prevents accidental deletion of healthy resources on the
  * first deployment, while still cleaning up orphans after rollbacks.
@@ -84,7 +87,7 @@ cfn_client = boto3.client("cloudformation")
 
 
 def handler(event, context):
-    """Delete orphaned resource on Create; no-op on Update/Delete."""
+    """Delete orphaned resource on Create/Update; no-op on Delete."""
     request_type = event.get("RequestType", "")
     props = event.get("ResourceProperties", {})
     resource_type = props.get("ResourceType", "")
@@ -98,7 +101,8 @@ def handler(event, context):
 
     physical_id = f"cleanup-{resource_type}-{resource_name}"
 
-    if request_type != "Create":
+    # Only run cleanup on Create and Update — skip Delete
+    if request_type == "Delete":
         return {"PhysicalResourceId": physical_id}
 
     # ── Orphan detection ──────────────────────────────────────────
@@ -277,6 +281,7 @@ export class ResourceCleanupProvider extends Construct {
             properties: {
                 ResourceType: 'LOG_GROUP',
                 ResourceName: logGroupName,
+                DeploymentId: Date.now().toString(),
             },
         });
 
@@ -298,6 +303,7 @@ export class ResourceCleanupProvider extends Construct {
             properties: {
                 ResourceType: 'SSM_PARAMETER',
                 ResourceName: parameterName,
+                DeploymentId: Date.now().toString(),
             },
         });
 
@@ -321,6 +327,7 @@ export class ResourceCleanupProvider extends Construct {
             properties: {
                 ResourceType: 'SNS_TOPIC',
                 ResourceName: topicName,
+                DeploymentId: Date.now().toString(),
             },
         });
 
