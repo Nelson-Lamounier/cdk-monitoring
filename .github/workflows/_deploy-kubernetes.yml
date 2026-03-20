@@ -135,14 +135,9 @@ jobs:
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
     outputs:
-      aws-account-id: ${{ steps.account-id.outputs.account_id }}
       commit-sha: ${{ github.sha }}
       commit-short-sha: ${{ steps.commit-info.outputs.short_sha }}
       node-version: ${{ steps.setup-tools.outputs.node-version }}
-      # Resolved edge configuration
-      domain-name: ${{ steps.resolve-edge.outputs.domain-name }}
-      hosted-zone-id: ${{ steps.resolve-edge.outputs.hosted-zone-id }}
-      cross-account-role-arn: ${{ steps.resolve-edge.outputs.cross-account-role-arn }}
       # Stack names from synthesize-ci.ts (11-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
@@ -172,8 +167,9 @@ jobs:
 
       - name: Validate AWS Account ID
         id: account-id
+        env:
+          ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
-          ACCOUNT_ID="${{ vars.AWS_ACCOUNT_ID }}"
           if [ -z "$ACCOUNT_ID" ]; then
             echo "ERROR: AWS_ACCOUNT_ID variable not configured"
             exit 1
@@ -183,7 +179,7 @@ jobs:
             exit 1
           fi
           echo "::add-mask::$ACCOUNT_ID"
-          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "[OK] AWS Account ID validated"
 
       - name: Build TypeScript
         run: just build
@@ -197,28 +193,32 @@ jobs:
 
       - name: Resolve Edge Configuration
         id: resolve-edge
+        env:
+          INPUT_DOMAIN: ${{ inputs.domain-name }}
+          INPUT_HZ_ID: ${{ inputs.hosted-zone-id }}
+          INPUT_ROLE_ARN: ${{ inputs.cross-account-role-arn }}
+          VARS_DOMAIN: ${{ vars.DOMAIN_NAME }}
+          VARS_HZ_ID: ${{ vars.HOSTED_ZONE_ID }}
+          VARS_ROLE_ARN: ${{ vars.DNS_VALIDATION_ROLE }}
         run: |
           # Domain: input > vars.DOMAIN_NAME
-          DOMAIN="${{ inputs.domain-name }}"
-          if [ -z "$DOMAIN" ]; then DOMAIN="${{ vars.DOMAIN_NAME }}"; fi
+          DOMAIN="${INPUT_DOMAIN:-$VARS_DOMAIN}"
           if [ -z "$DOMAIN" ]; then
-            echo "ERROR: No domain name. Set DOMAIN_NAME in environment '${{ inputs.environment }}'"
+            echo "ERROR: No domain name. Set DOMAIN_NAME in environment"
             exit 1
           fi
 
           # Hosted Zone: input > vars.HOSTED_ZONE_ID
-          HZ_ID="${{ inputs.hosted-zone-id }}"
-          if [ -z "$HZ_ID" ]; then HZ_ID="${{ vars.HOSTED_ZONE_ID }}"; fi
+          HZ_ID="${INPUT_HZ_ID:-$VARS_HZ_ID}"
           if [ -z "$HZ_ID" ]; then
-            echo "ERROR: No hosted zone ID. Set HOSTED_ZONE_ID in environment '${{ inputs.environment }}'"
+            echo "ERROR: No hosted zone ID. Set HOSTED_ZONE_ID in environment"
             exit 1
           fi
 
           # Cross-account role: input > vars.DNS_VALIDATION_ROLE
-          ROLE_ARN="${{ inputs.cross-account-role-arn }}"
-          if [ -z "$ROLE_ARN" ]; then ROLE_ARN="${{ vars.DNS_VALIDATION_ROLE }}"; fi
+          ROLE_ARN="${INPUT_ROLE_ARN:-$VARS_ROLE_ARN}"
           if [ -z "$ROLE_ARN" ]; then
-            echo "ERROR: No cross-account role. Set DNS_VALIDATION_ROLE in environment '${{ inputs.environment }}'"
+            echo "ERROR: No cross-account role. Set DNS_VALIDATION_ROLE in environment"
             exit 1
           fi
 
@@ -227,9 +227,6 @@ jobs:
           echo "::add-mask::$HZ_ID"
           echo "::add-mask::$ROLE_ARN"
 
-          echo "domain-name=$DOMAIN" >> $GITHUB_OUTPUT
-          echo "hosted-zone-id=$HZ_ID" >> $GITHUB_OUTPUT
-          echo "cross-account-role-arn=$ROLE_ARN" >> $GITHUB_OUTPUT
           echo "[OK] Edge config resolved"
 
       - name: Synthesize & Determine Stack Names
@@ -383,7 +380,7 @@ jobs:
       stack-name: ${{ needs.setup.outputs.data-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
@@ -449,7 +446,7 @@ jobs:
       stack-name: ${{ needs.setup.outputs.api-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
@@ -513,7 +510,7 @@ jobs:
       stack-name: ${{ needs.setup.outputs.base-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
@@ -582,7 +579,7 @@ jobs:
       stack-name: ${{ needs.setup.outputs.goldenami-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       timeout-minutes: 35
@@ -607,7 +604,7 @@ jobs:
       stack-name: ${{ needs.setup.outputs.ssmautomation-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
@@ -682,13 +679,10 @@ jobs:
       stack-name: ${{ needs.setup.outputs.controlplane-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
-      # cert-manager DNS-01 — CDK writes these to SSM for bootstrap consumption
-      hosted-zone-id: ${{ needs.setup.outputs.hosted-zone-id }}
-      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
     secrets: inherit
 
   # ===========================================================================
@@ -747,12 +741,10 @@ jobs:
       stack-name: ${{ needs.setup.outputs.worker-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
-      # cert-manager DNS-01 — pods may run on the app worker node
-      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
     secrets: inherit
 
   # ===========================================================================
@@ -812,12 +804,10 @@ jobs:
       stack-name: ${{ needs.setup.outputs.monitoring-worker-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
-      # cert-manager DNS-01 — pods may run on the monitoring worker node
-      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
     secrets: inherit
 
   # ===========================================================================
@@ -877,12 +867,10 @@ jobs:
       stack-name: ${{ needs.setup.outputs.argocd-worker-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
-      # cert-manager DNS-01 — pods may run on this worker node
-      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
     secrets: inherit
 
   # ===========================================================================
@@ -943,7 +931,7 @@ jobs:
       stack-name: ${{ needs.setup.outputs.appiam-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
@@ -1006,13 +994,10 @@ jobs:
       stack-name: ${{ needs.setup.outputs.edge-stack }}
       project: kubernetes
       environment: ${{ inputs.environment }}
-      aws-account-id: ${{ needs.setup.outputs.aws-account-id }}
+
       aws-region: ${{ vars.ROUTE53_REGION || 'us-east-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
-      domain-name: ${{ needs.setup.outputs.domain-name }}
-      hosted-zone-id: ${{ needs.setup.outputs.hosted-zone-id }}
-      cross-account-role-arn: ${{ needs.setup.outputs.cross-account-role-arn }}
       restrict-access: ${{ vars.RESTRICT_ACCESS }}
     secrets: inherit
 

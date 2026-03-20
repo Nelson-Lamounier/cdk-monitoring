@@ -24,9 +24,10 @@ on:
         type: string
         default: ""
       aws-account-id:
-        description: "Target AWS account ID"
-        required: true
+        description: "Target AWS account ID (optional — falls back to vars.AWS_ACCOUNT_ID)"
+        required: false
         type: string
+        default: ""
       aws-region:
         description: "AWS region"
         required: false
@@ -233,9 +234,9 @@ jobs:
           [[ -n "$ALLOW_IPV6"             ]] && printf '%s\n' "ALLOW_IPV6=$ALLOW_IPV6"                       >> "$GITHUB_ENV"
           echo "[OK] Scoped config applied"
         env:
-          DOMAIN_NAME: ${{ inputs.domain-name }}
-          HOSTED_ZONE_ID: ${{ inputs.hosted-zone-id }}
-          CROSS_ACCOUNT_ROLE_ARN: ${{ inputs.cross-account-role-arn }}
+          DOMAIN_NAME: ${{ inputs.domain-name || vars.DOMAIN_NAME }}
+          HOSTED_ZONE_ID: ${{ inputs.hosted-zone-id || vars.HOSTED_ZONE_ID }}
+          CROSS_ACCOUNT_ROLE_ARN: ${{ inputs.cross-account-role-arn || vars.DNS_VALIDATION_ROLE }}
           NOTIFICATION_EMAIL: ${{ inputs.notification-email }}
           SES_FROM_EMAIL: ${{ inputs.ses-from-email }}
           VERIFICATION_SECRET: ${{ secrets.VERIFICATION_SECRET }}
