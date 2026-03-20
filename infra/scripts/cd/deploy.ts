@@ -138,13 +138,19 @@ async function main(): Promise<void> {
   });
 
   logger.task('Executing CDK deploy...');
-  logger.debug(`cdk ${cdkArgs.join(' ')}`);
+  logger.verbose(`cdk ${cdkArgs.join(' ')}`);
   logger.blank();
 
-  // Execute deployment with timing
+  // Execute deployment with timing — capture output to prevent
+  // infrastructure identifiers leaking into public workflow logs.
   const startTime = Date.now();
-  const result = await runCdk(cdkArgs);
+  const result = await runCdk(cdkArgs, { captureOutput: true });
   const duration = Math.round((Date.now() - startTime) / 1000);
+
+  // Extract minimal troubleshooting signal from captured output
+  const resourceCount = (result.stdout.match(/UPDATE_COMPLETE|CREATE_COMPLETE/g) ?? []).length;
+  const synthesisMatch = result.stdout.match(/Synthesis time:\s*([\d.]+)s/);
+  const synthesisTime = synthesisMatch ? synthesisMatch[1] : 'unknown';
 
   // Write outputs for GitHub Actions
   if (result.exitCode === 0) {
@@ -152,6 +158,8 @@ async function main(): Promise<void> {
     setOutput('duration', String(duration));
     logger.blank();
     logger.success(`Stack deployment successful (${duration}s)`);
+    logger.keyValue('Synthesis', `${synthesisTime}s`);
+    logger.keyValue('Resources updated', String(resourceCount));
   } else {
     setOutput('status', 'failure');
     setOutput('duration', String(duration));
@@ -159,6 +167,11 @@ async function main(): Promise<void> {
     logger.error(
       `Stack deployment failed (exit code: ${result.exitCode}, duration: ${duration}s)`,
     );
+    // Print stderr for failure diagnostics (CDK error messages, not resource IDs)
+    if (result.stderr) {
+      logger.info('CDK error output:');
+      console.error(result.stderr);
+    }
     process.exit(result.exitCode);
   }
 }

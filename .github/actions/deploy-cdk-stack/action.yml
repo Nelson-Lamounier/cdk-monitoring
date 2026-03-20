@@ -87,6 +87,8 @@ runs:
         CDK_ENVIRONMENT: ${{ inputs.environment }}
         AWS_ACCOUNT_ID: ${{ inputs.aws-account-id }}
         AWS_REGION: ${{ inputs.aws-region }}
+        # Suppress debug/verbose output in public workflow logs
+        LOG_LEVEL: info
 
     - name: Diagnose CloudFormation Failure
       if: failure() && steps.deploy.outputs.status != 'success'
@@ -117,3 +119,5 @@ runs:
           $OUTPUTS_DIR_FLAG
       env:
         GITHUB_WORKSPACE: ${{ github.workspace }}
+        # Suppress debug/verbose output in public workflow logs
+        LOG_LEVEL: info
