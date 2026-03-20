@@ -51,7 +51,7 @@ jobs:
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
       use-container: false # AgentCore L2 may require Docker for asset bundling
-      notification-email: ${{ secrets.NOTIFICATION_EMAIL }}
+      notification-email: ${{ vars.NOTIFICATION_EMAIL }}
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
@@ -76,6 +76,6 @@ jobs:
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
       use-container: false
-      notification-email: ${{ secrets.NOTIFICATION_EMAIL }}
+      notification-email: ${{ vars.NOTIFICATION_EMAIL }}
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
