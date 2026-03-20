@@ -110,3 +110,23 @@ terminationGracePeriodSeconds: 30
 # Labels and annotations
 podLabels: {}
 podAnnotations: {}
+
+# =========================================================================
+# Crossplane — Golden-Path AWS Resources
+#
+# Creates AWS resources via Crossplane XRD Claims.
+# Bucket name in AWS: crossplane-shared-{bucketName}
+# Queue name in AWS:  crossplane-shared-{queueName}
+# =========================================================================
+crossplane:
+  bucket:
+    enabled: true
+    bucketName: "app-assets"
+    retentionDays: 90
+    environment: "development"
+  queue:
+    enabled: true
+    queueName: "event-processor"
+    maxRetries: 3
+    visibilityTimeoutSeconds: 30
+    environment: "development"

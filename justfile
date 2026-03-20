@@ -526,6 +526,27 @@ helm-validate-charts:
     fi
     echo ""
 
+    # --- Golden Path Service chart ---
+    echo "--- Golden Path Service chart ---"
+    if helm lint kubernetes-app/workloads/charts/golden-path-service/chart \
+         -f kubernetes-app/workloads/charts/golden-path-service/chart/values.yaml 2>&1; then
+      echo "  ✓ lint passed"
+    else
+      echo "  ✗ lint FAILED"
+      ERRORS=$((ERRORS + 1))
+    fi
+
+    if helm template golden-path kubernetes-app/workloads/charts/golden-path-service/chart \
+         -f kubernetes-app/workloads/charts/golden-path-service/chart/values.yaml > /dev/null 2>&1; then
+      echo "  ✓ template render passed"
+    else
+      echo "  ✗ template render FAILED"
+      helm template golden-path kubernetes-app/workloads/charts/golden-path-service/chart \
+        -f kubernetes-app/workloads/charts/golden-path-service/chart/values.yaml 2>&1 || true
+      ERRORS=$((ERRORS + 1))
+    fi
+    echo ""
+
     if [ $ERRORS -gt 0 ]; then
       echo "✗ $ERRORS chart validations FAILED"
       exit 1

@@ -1,0 +1,39 @@
+# @format
+# Crossplane Claim: MonitoredQueue — Golden-Path SQS Queue
+#
+# Creates a production-ready SQS queue with DLQ via the XMonitoredQueue XRD.
+#
+# What you get automatically:
+#   - SSE-SQS encryption (server-side)
+#   - Dead-letter queue (auto-created)
+#   - Redrive policy (maxRetries → DLQ)
+#   - Standard tagging schema (managed-by: crossplane)
+#
+# The queue name in AWS will be: crossplane-shared-{{ .Values.crossplane.queue.queueName }}
+# The DLQ name in AWS will be:   crossplane-shared-{{ .Values.crossplane.queue.queueName }}-dlq
+#
+# Prerequisites:
+#   - Crossplane core deployed (sync-wave 4)
+#   - provider-aws-sqs healthy
+#   - crossplane-aws-creds K8s Secret exists
+#   - XMonitoredQueue XRD and Composition installed
+{{- if .Values.crossplane.queue.enabled }}
+apiVersion: platform.nelsonlamounier.com/v1alpha1
+kind: MonitoredQueue
+metadata:
+  name: {{ .Values.crossplane.queue.queueName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: golden-path-service
+    platform.engineering/component: golden-path
+    platform.engineering/resource-type: sqs
+  annotations:
+    kubernetes.io/description: "Crossplane-managed SQS queue with DLQ and encryption"
+spec:
+  parameters:
+    queueName: {{ .Values.crossplane.queue.queueName | quote }}
+    maxRetries: {{ .Values.crossplane.queue.maxRetries }}
+    visibilityTimeoutSeconds: {{ .Values.crossplane.queue.visibilityTimeoutSeconds }}
+    environment: {{ .Values.crossplane.queue.environment | quote }}
+{{- end }}
