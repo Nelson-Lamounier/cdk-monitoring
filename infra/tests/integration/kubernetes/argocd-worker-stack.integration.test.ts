@@ -222,10 +222,18 @@ async function waitForTargetRegistration(
 
 /**
  * Find the running EC2 instance launched by the ArgoCD worker ASG.
- * Uses the Name tag `k8s-dev-argocd-worker` set by AutoScalingGroupConstruct.
+ *
+ * Uses **ASG-based discovery** rather than EC2 tag filters. This is critical
+ * because during instance replacements (Spot interruption, CF update), both
+ * old and new instances briefly share the same `tag:Name` and `running` state.
+ * The EC2 tag filter would match the old instance, whose ID will never appear
+ * in the NLB target group — causing false test failures.
+ *
+ * The ASG always reports the **current active** instance, which is the same
+ * instance Auto Scaling registered with the NLB target groups.
  *
  * Retries up to 5 times with 15s backoff because the ASG instance may
- * still be transitioning to 'running' when this test starts right after
+ * still be transitioning to 'InService' when this test starts right after
  * the CloudFormation deploy completes.
  */
 async function findArgocdWorkerInstance(): Promise<{
@@ -236,29 +244,42 @@ async function findArgocdWorkerInstance(): Promise<{
     const backoffMs = 15_000;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const { Reservations } = await ec2Client.send(
-            new DescribeInstancesCommand({
+        // Step 1: Query the ASG to get the current active instance ID
+        const { AutoScalingGroups } = await autoscalingClient.send(
+            new DescribeAutoScalingGroupsCommand({
                 Filters: [
                     { Name: 'tag:Name', Values: [`${NAME_PREFIX}-argocd-worker`] },
-                    { Name: 'instance-state-name', Values: ['running'] },
                 ],
             }),
         );
 
-        const instances = (Reservations ?? []).flatMap(
-            (r) => r.Instances ?? [],
-        );
+        const asgInstances = (AutoScalingGroups ?? [])
+            .flatMap((asg) => asg.Instances ?? [])
+            .filter((i) => i.LifecycleState === 'InService');
 
-        if (instances.length > 0) {
-            const instance = instances[0];
-            const sgIds = (instance.SecurityGroups ?? [])
-                .map((sg) => sg.GroupId)
-                .filter((id): id is string => !!id);
+        if (asgInstances.length > 0 && asgInstances[0].InstanceId) {
+            const instanceId = asgInstances[0].InstanceId;
 
-            return {
-                instance,
-                securityGroupIds: sgIds,
-            };
+            // Step 2: Describe the specific instance to get full EC2 details
+            const { Reservations } = await ec2Client.send(
+                new DescribeInstancesCommand({ InstanceIds: [instanceId] }),
+            );
+
+            const instances = (Reservations ?? []).flatMap(
+                (r) => r.Instances ?? [],
+            );
+
+            if (instances.length > 0) {
+                const instance = instances[0];
+                const sgIds = (instance.SecurityGroups ?? [])
+                    .map((sg) => sg.GroupId)
+                    .filter((id): id is string => !!id);
+
+                return {
+                    instance,
+                    securityGroupIds: sgIds,
+                };
+            }
         }
 
         if (attempt < maxAttempts) {
@@ -267,7 +288,7 @@ async function findArgocdWorkerInstance(): Promise<{
     }
 
     throw new Error(
-        `No running argocd-worker instance found after ${maxAttempts} attempts (tag:Name = ${NAME_PREFIX}-argocd-worker)`,
+        `No InService argocd-worker instance found in ASG after ${maxAttempts} attempts (tag:Name = ${NAME_PREFIX}-argocd-worker)`,
     );
 }
 
