@@ -4,6 +4,7 @@
  *
  * Tests for K8sSsmAutomationStack:
  * - SSM Automation Documents (control plane, app-worker, mon-worker, argocd-worker, nextjs secrets, monitoring secrets)
+ * - SSM Command Document (node drift enforcement)
  * - IAM Role for automation execution
  * - SSM Parameters for document discovery
  * - Step configuration and ordering
@@ -60,8 +61,8 @@ describe('K8sSsmAutomationStack', () => {
     describe('SSM Automation Documents', () => {
         const { template } = createSsmAutomationStack();
 
-        it('should create 6 SSM Automation documents', () => {
-            template.resourceCountIs('AWS::SSM::Document', 6);
+        it('should create 7 SSM documents (6 Automation + 1 Command for drift enforcement)', () => {
+            template.resourceCountIs('AWS::SSM::Document', 7);
         });
 
         it('should create a control plane automation document', () => {

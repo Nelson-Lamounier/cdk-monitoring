@@ -63,12 +63,15 @@ type CleanupResourceType = 'LOG_GROUP' | 'SSM_PARAMETER' | 'SNS_TOPIC';
  * Uses boto3 (built into Lambda runtime) — no bundling required.
  * Each invocation receives a single resource type + name and:
  *
- * 1. On `Create` or `Update`: checks if the resource is currently
- *    managed by the calling CloudFormation stack.
+ * 1. On `Create`: checks if the resource is currently managed by
+ *    the calling CloudFormation stack.
  * 2. If the resource IS managed → **skips** (healthy resource).
  * 3. If the resource is NOT managed → **deletes** (orphan from
  *    a previous failed deployment/rollback).
- * 4. On `Delete`: no-op (nothing to clean up).
+ * 4. On `Update` or `Delete`: no-op. Updates are skipped because
+ *    CloudFormation's `ListStackResources` is not a consistent
+ *    snapshot during in-flight updates — the old resource may
+ *    briefly disappear, causing false orphan classification.
  *
  * This prevents accidental deletion of healthy resources on the
  * first deployment, while still cleaning up orphans after rollbacks.
@@ -101,8 +104,12 @@ def handler(event, context):
 
     physical_id = f"cleanup-{resource_type}-{resource_name}"
 
-    # Only run cleanup on Create and Update — skip Delete
-    if request_type == "Delete":
+    # Only run cleanup on Create — skip Update and Delete.
+    # UPDATE is excluded because CloudFormation's ListStackResources
+    # is not a consistent snapshot during in-flight updates: the old
+    # resource may briefly disappear, causing _is_managed_by_stack()
+    # to return False and the Lambda to delete a healthy resource.
+    if request_type in ("Update", "Delete"):
         return {"PhysicalResourceId": physical_id}
 
     # ── Orphan detection ──────────────────────────────────────────
