@@ -76,7 +76,6 @@ jobs:
   #
   # Context values passed to CDK:
   #   hostedZoneIds  — The Route 53 hosted zone ID(s) the role can modify.
-  #   externalId     — STS external ID for additional assume-role security.
   #
   # Delegates to the reusable _deploy-stack.yml workflow for:
   #   - AWS credential configuration (OIDC)
@@ -98,7 +97,6 @@ jobs:
       root-account-id: ${{ vars.ROOT_ACCOUNT_ID }}     # Passed as ROOT_ACCOUNT env var to CDK
       additional-args: >-
         --context hostedZoneIds=${{ vars.HOSTED_ZONE_ID }}
-        --context externalId=acm-dns-validation
       outputs-directory: org-outputs
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}      # OIDC role ARN for root account access

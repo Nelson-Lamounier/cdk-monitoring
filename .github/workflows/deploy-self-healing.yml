@@ -51,6 +51,7 @@ jobs:
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
       use-container: false # AgentCore L2 may require Docker for asset bundling
+      notification-email: ${{ vars.NOTIFICATION_EMAIL }}
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
@@ -75,5 +76,38 @@ jobs:
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
       use-container: false
+      notification-email: ${{ vars.NOTIFICATION_EMAIL }}
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Smoke Test — Post-Deployment Verification
+  #
+  # Runs integration tests against real deployed resources.
+  # Verifies SSM params, Lambda config, EventBridge rules, SQS, SNS, S3.
+  # ===========================================================================
+  smoke-test:
+    name: Smoke Test
+    needs: [deploy-agent]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+      - name: Install Dependencies
+        run: cd infra && yarn install --frozen-lockfile
+
+      - name: Run Smoke Tests
+        run: just ci-integration-test self-healing development
