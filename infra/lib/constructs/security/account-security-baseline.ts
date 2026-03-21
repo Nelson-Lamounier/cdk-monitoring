@@ -22,11 +22,16 @@
  */
 
 import * as accessanalyzer from 'aws-cdk-lib/aws-accessanalyzer';
+import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as guardduty from 'aws-cdk-lib/aws-guardduty';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as securityhub from 'aws-cdk-lib/aws-securityhub';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
-
+import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
@@ -97,8 +102,33 @@ export interface AccountSecurityBaselineProps {
     readonly enableRuntimeMonitoring?: boolean;
 
     /**
+     * Enable CloudTrail management trail.
+     * 1 free management trail per region — no additional cost.
+     * Logs to an S3 bucket with lifecycle expiry.
+     * @default true
+     */
+    readonly enableCloudTrail?: boolean;
+
+    /**
+     * S3 log retention in days for CloudTrail.
+     * Shorter retention reduces storage cost.
+     * @default 90
+     */
+    readonly cloudTrailRetentionDays?: number;
+
+    /**
+     * Enable EventBridge alerts for CloudFormation deployment failures.
+     * Catches UPDATE_ROLLBACK_COMPLETE, UPDATE_ROLLBACK_FAILED,
+     * CREATE_FAILED, UPDATE_FAILED, and DELETE_FAILED events.
+     * Sends notifications to the security SNS topic.
+     * @default true
+     */
+    readonly enableCfnDriftAlerts?: boolean;
+
+    /**
      * Optional email address for security finding notifications.
      * Creates an SNS topic and subscribes this email.
+     * Also used by CloudTrail and drift detection alerts.
      */
     readonly notificationEmail?: string;
 }
@@ -134,6 +164,15 @@ export class AccountSecurityBaselineConstruct extends Construct {
     /** The IAM Access Analyzer (undefined if disabled) */
     public readonly accessAnalyzer?: accessanalyzer.CfnAnalyzer;
 
+    /** The CloudTrail trail (undefined if disabled) */
+    public readonly trail?: cloudtrail.Trail;
+
+    /** The CloudTrail S3 bucket (undefined if CloudTrail disabled) */
+    public readonly trailBucket?: s3.Bucket;
+
+    /** The EventBridge rule for CloudFormation failures (undefined if disabled) */
+    public readonly cfnDriftRule?: events.Rule;
+
     /** The SNS topic for security notifications (undefined if no email provided) */
     public readonly notificationTopic?: sns.Topic;
 
@@ -143,6 +182,9 @@ export class AccountSecurityBaselineConstruct extends Construct {
         const enableGuardDuty = props.enableGuardDuty ?? true;
         const enableSecurityHub = props.enableSecurityHub ?? true;
         const enableAccessAnalyzer = props.enableAccessAnalyzer ?? true;
+        const enableCloudTrail = props.enableCloudTrail ?? true;
+        const enableCfnDriftAlerts = props.enableCfnDriftAlerts ?? true;
+        const cloudTrailRetentionDays = props.cloudTrailRetentionDays ?? 90;
 
         // =================================================================
         // SNS TOPIC (optional — for security finding notifications)
@@ -232,6 +274,91 @@ export class AccountSecurityBaselineConstruct extends Construct {
                     { key: 'Name', value: `${props.namePrefix}-access-analyzer` },
                 ],
             });
+        }
+        // =================================================================
+        // AWS CLOUDTRAIL — Management Events Trail
+        //
+        // 1 free management trail per region. Logs all API calls
+        // (CreateStack, DeleteTopic, RunInstances, etc.) for forensic
+        // audit. S3 bucket uses lifecycle rules to control cost.
+        //
+        // Cost: ~$0.02/month for S3 storage on a small account.
+        // =================================================================
+        if (enableCloudTrail) {
+            this.trailBucket = new s3.Bucket(this, 'CloudTrailBucket', {
+                bucketName: `${props.namePrefix}-cloudtrail-logs`,
+                encryption: s3.BucketEncryption.S3_MANAGED,
+                blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+                enforceSSL: true,
+                removalPolicy: cdk.RemovalPolicy.DESTROY,
+                autoDeleteObjects: true,
+                lifecycleRules: [
+                    {
+                        id: 'ExpireOldLogs',
+                        expiration: cdk.Duration.days(cloudTrailRetentionDays),
+                        enabled: true,
+                    },
+                ],
+            });
+
+            this.trail = new cloudtrail.Trail(this, 'ManagementTrail', {
+                trailName: `${props.namePrefix}-management-trail`,
+                bucket: this.trailBucket,
+                isMultiRegionTrail: false,
+                includeGlobalServiceEvents: true,
+                enableFileValidation: true,
+                sendToCloudWatchLogs: false, // Disabled by default — adds ~$0.50/month
+            });
+        }
+
+        // =================================================================
+        // EVENTBRIDGE — CloudFormation Failure Detection
+        //
+        // Catches CloudFormation stack state changes that indicate
+        // deployment failures. Sends a formatted email via the shared
+        // security SNS topic for immediate visibility.
+        //
+        // Events captured:
+        //   - UPDATE_ROLLBACK_COMPLETE (deployment failed, rolled back)
+        //   - UPDATE_ROLLBACK_FAILED  (stuck — requires manual fix)
+        //   - UPDATE_FAILED           (update could not complete)
+        //   - CREATE_FAILED           (stack creation failed)
+        //   - DELETE_FAILED           (stack deletion failed)
+        //
+        // Cost: Free (default event bus + SNS email).
+        // =================================================================
+        if (enableCfnDriftAlerts && this.notificationTopic) {
+            this.cfnDriftRule = new events.Rule(this, 'CfnFailureRule', {
+                ruleName: `${props.namePrefix}-cfn-failure-alerts`,
+                description: 'Alerts on CloudFormation deployment failures for proactive drift detection',
+                eventPattern: {
+                    source: ['aws.cloudformation'],
+                    detailType: ['CloudFormation Stack Status Change'],
+                    detail: {
+                        'status-details': {
+                            status: [
+                                'UPDATE_ROLLBACK_COMPLETE',
+                                'UPDATE_ROLLBACK_FAILED',
+                                'UPDATE_FAILED',
+                                'CREATE_FAILED',
+                                'DELETE_FAILED',
+                            ],
+                        },
+                    },
+                },
+            });
+
+            this.cfnDriftRule.addTarget(
+                new eventsTargets.SnsTopic(this.notificationTopic, {
+                    message: events.RuleTargetInput.fromText(
+                        `⚠️ CloudFormation Deployment Failure\n\n` +
+                        `Stack: ${events.EventField.fromPath('$.detail.stack-id')}\n` +
+                        `Status: ${events.EventField.fromPath('$.detail.status-details.status')}\n` +
+                        `Time: ${events.EventField.fromPath('$.time')}\n\n` +
+                        `Check the AWS Console for details and remediation steps.`,
+                    ),
+                }),
+            );
         }
     }
 }

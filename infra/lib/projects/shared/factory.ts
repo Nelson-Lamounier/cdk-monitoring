@@ -114,11 +114,14 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
 
         // =================================================================
         // Stack 2: Security Baseline — GuardDuty + Security Hub + Access Analyzer
+        //                               + CloudTrail + CFn Drift Alerts
         //
         // Deployed once per account/region. Minimal-cost defaults:
         //   - GuardDuty: core detection only (no S3/EKS/Malware extras)
         //   - Security Hub: auto-enabled controls, no default standards
         //   - IAM Access Analyzer: account scope (free)
+        //   - CloudTrail: 1 free management trail, S3 with 90-day retention
+        //   - EventBridge: CFn failure alerts → SNS email (free)
         //
         // Cost: ~$3–8/month for a small account.
         // =================================================================

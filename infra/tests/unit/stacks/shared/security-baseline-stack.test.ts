@@ -6,6 +6,8 @@
  * - GuardDuty detector creation with minimal-cost defaults
  * - Security Hub enablement
  * - IAM Access Analyzer (account scope)
+ * - CloudTrail management trail with S3 lifecycle
+ * - EventBridge CloudFormation failure detection
  * - Feature flag toggling
  * - SNS notification topic (optional)
  * - Stack outputs
@@ -207,19 +209,143 @@ describe('SecurityBaselineStack', () => {
     });
 
     // =========================================================================
+    // CloudTrail
+    // =========================================================================
+    describe('CloudTrail', () => {
+        it('should create a CloudTrail trail by default', () => {
+            const { template } = _createSecurityStack();
+
+            template.hasResourceProperties('AWS::CloudTrail::Trail', {
+                TrailName: `${TEST_NAME_PREFIX}-management-trail`,
+                IsMultiRegionTrail: false,
+                IncludeGlobalServiceEvents: true,
+                EnableLogFileValidation: true,
+            });
+        });
+
+        it('should create an S3 bucket for CloudTrail logs', () => {
+            const { template } = _createSecurityStack();
+
+            template.hasResourceProperties('AWS::S3::Bucket', {
+                BucketName: `${TEST_NAME_PREFIX}-cloudtrail-logs`,
+                PublicAccessBlockConfiguration: Match.objectLike({
+                    BlockPublicAcls: true,
+                    BlockPublicPolicy: true,
+                }),
+            });
+        });
+
+        it('should configure S3 lifecycle expiry for CloudTrail logs', () => {
+            const { template } = _createSecurityStack();
+
+            template.hasResourceProperties('AWS::S3::Bucket', {
+                BucketName: `${TEST_NAME_PREFIX}-cloudtrail-logs`,
+                LifecycleConfiguration: Match.objectLike({
+                    Rules: Match.arrayWith([
+                        Match.objectLike({
+                            ExpirationInDays: 90,
+                            Status: 'Enabled',
+                        }),
+                    ]),
+                }),
+            });
+        });
+
+        it('should not create trail when enableCloudTrail is false', () => {
+            const { template } = _createSecurityStack({ enableCloudTrail: false });
+
+            StackAssertions.hasResourceCount(template, 'AWS::CloudTrail::Trail', 0);
+        });
+
+        it('should respect custom retention days', () => {
+            const { template } = _createSecurityStack({ cloudTrailRetentionDays: 30 });
+
+            template.hasResourceProperties('AWS::S3::Bucket', {
+                LifecycleConfiguration: Match.objectLike({
+                    Rules: Match.arrayWith([
+                        Match.objectLike({
+                            ExpirationInDays: 30,
+                        }),
+                    ]),
+                }),
+            });
+        });
+    });
+
+    // =========================================================================
+    // EventBridge — CloudFormation Failure Detection
+    // =========================================================================
+    describe('EventBridge — CloudFormation Failure Detection', () => {
+        it('should create an EventBridge rule when notification email is provided', () => {
+            const { template } = _createSecurityStack({
+                notificationEmail: 'alerts@example.com',
+            });
+
+            template.hasResourceProperties('AWS::Events::Rule', {
+                Name: `${TEST_NAME_PREFIX}-cfn-failure-alerts`,
+                EventPattern: Match.objectLike({
+                    source: ['aws.cloudformation'],
+                    'detail-type': ['CloudFormation Stack Status Change'],
+                }),
+            });
+        });
+
+        it('should filter for CloudFormation failure states', () => {
+            const { template } = _createSecurityStack({
+                notificationEmail: 'alerts@example.com',
+            });
+
+            template.hasResourceProperties('AWS::Events::Rule', {
+                EventPattern: Match.objectLike({
+                    detail: {
+                        'status-details': {
+                            status: [
+                                'UPDATE_ROLLBACK_COMPLETE',
+                                'UPDATE_ROLLBACK_FAILED',
+                                'UPDATE_FAILED',
+                                'CREATE_FAILED',
+                                'DELETE_FAILED',
+                            ],
+                        },
+                    },
+                }),
+            });
+        });
+
+        it('should not create rule when no notification email provided', () => {
+            const { template } = _createSecurityStack();
+
+            StackAssertions.hasResourceCount(template, 'AWS::Events::Rule', 0);
+        });
+
+        it('should not create rule when enableCfnDriftAlerts is false', () => {
+            const { template } = _createSecurityStack({
+                notificationEmail: 'alerts@example.com',
+                enableCfnDriftAlerts: false,
+            });
+
+            StackAssertions.hasResourceCount(template, 'AWS::Events::Rule', 0);
+        });
+    });
+
+    // =========================================================================
     // Feature Flags — All Disabled
     // =========================================================================
     describe('Feature Flags — All Disabled', () => {
-        it('should create empty stack when all services disabled', () => {
+        it('should create minimal stack when all services disabled', () => {
             const { template } = _createSecurityStack({
                 enableGuardDuty: false,
                 enableSecurityHub: false,
                 enableAccessAnalyzer: false,
+                enableCloudTrail: false,
+                enableCfnDriftAlerts: false,
             });
 
             StackAssertions.hasResourceCount(template, 'AWS::GuardDuty::Detector', 0);
             StackAssertions.hasResourceCount(template, 'AWS::SecurityHub::Hub', 0);
             StackAssertions.hasResourceCount(template, 'AWS::AccessAnalyzer::Analyzer', 0);
+            StackAssertions.hasResourceCount(template, 'AWS::CloudTrail::Trail', 0);
+            StackAssertions.hasResourceCount(template, 'AWS::Events::Rule', 0);
         });
     });
 
@@ -242,6 +368,32 @@ describe('SecurityBaselineStack', () => {
                 description: 'IAM Access Analyzer ARN',
             });
         });
+
+        it('should output CloudTrail trail ARN', () => {
+            const { template } = _createSecurityStack();
+
+            StackAssertions.hasOutput(template, 'CloudTrailArn', {
+                description: 'CloudTrail Management Trail ARN',
+            });
+        });
+
+        it('should output CloudTrail S3 bucket name', () => {
+            const { template } = _createSecurityStack();
+
+            StackAssertions.hasOutput(template, 'CloudTrailBucket', {
+                description: 'S3 bucket for CloudTrail logs',
+            });
+        });
+
+        it('should output EventBridge rule ARN when notification email provided', () => {
+            const { template } = _createSecurityStack({
+                notificationEmail: 'alerts@example.com',
+            });
+
+            StackAssertions.hasOutput(template, 'CfnFailureRuleArn', {
+                description: 'EventBridge rule ARN for CloudFormation failure alerts',
+            });
+        });
     });
 
     // =========================================================================
@@ -261,6 +413,13 @@ describe('SecurityBaselineStack', () => {
             expect(stack.baseline.guardDutyDetector).toBeDefined();
             expect(stack.baseline.securityHub).toBeDefined();
             expect(stack.baseline.accessAnalyzer).toBeDefined();
+        });
+
+        it('should expose CloudTrail resources', () => {
+            const { stack } = _createSecurityStack();
+
+            expect(stack.baseline.trail).toBeDefined();
+            expect(stack.baseline.trailBucket).toBeDefined();
         });
     });
 });

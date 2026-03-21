@@ -6,6 +6,8 @@
  *   - Amazon GuardDuty (threat detection)
  *   - AWS Security Hub (compliance aggregation)
  *   - IAM Access Analyzer (external access detection)
+ *   - AWS CloudTrail (management event audit trail)
+ *   - EventBridge (CloudFormation failure detection)
  *
  * Deploy once per account/region. Cost-optimised for solo-developer accounts.
  *
@@ -49,6 +51,15 @@ export interface SecurityBaselineStackProps extends cdk.StackProps {
 
     /** Enable IAM Access Analyzer @default true */
     readonly enableAccessAnalyzer?: boolean;
+
+    /** Enable CloudTrail management trail @default true */
+    readonly enableCloudTrail?: boolean;
+
+    /** Enable EventBridge alerts for CloudFormation failures @default true */
+    readonly enableCfnDriftAlerts?: boolean;
+
+    /** S3 log retention in days for CloudTrail @default 90 */
+    readonly cloudTrailRetentionDays?: number;
 }
 
 // =========================================================================
@@ -62,7 +73,8 @@ export interface SecurityBaselineStackProps extends cdk.StackProps {
  * This stack should be deployed once per account/region and rarely
  * needs updates.
  *
- * Cost: ~$3–8/month for a small account with default settings.
+ * Cost: ~$3–8/month for a small account (security services only).
+ * CloudTrail adds ~$0.02/month for S3 storage.
  */
 export class SecurityBaselineStack extends cdk.Stack {
     /** The security baseline construct */
@@ -85,6 +97,9 @@ export class SecurityBaselineStack extends cdk.Stack {
             enableGuardDuty: props.enableGuardDuty,
             enableSecurityHub: props.enableSecurityHub,
             enableAccessAnalyzer: props.enableAccessAnalyzer,
+            enableCloudTrail: props.enableCloudTrail,
+            enableCfnDriftAlerts: props.enableCfnDriftAlerts,
+            cloudTrailRetentionDays: props.cloudTrailRetentionDays,
         });
 
         // =================================================================
@@ -121,6 +136,43 @@ export class SecurityBaselineStack extends cdk.Stack {
                 description: 'IAM Access Analyzer ARN',
                 value: this.baseline.accessAnalyzer.attrArn,
             });
+        }
+
+        if (this.baseline.trail) {
+            new cdk.CfnOutput(this, 'CloudTrailArn', {
+                description: 'CloudTrail Management Trail ARN',
+                value: this.baseline.trail.trailArn,
+            });
+        }
+
+        if (this.baseline.trailBucket) {
+            new cdk.CfnOutput(this, 'CloudTrailBucket', {
+                description: 'S3 bucket for CloudTrail logs',
+                value: this.baseline.trailBucket.bucketName,
+            });
+        }
+
+        if (this.baseline.cfnDriftRule) {
+            new cdk.CfnOutput(this, 'CfnFailureRuleArn', {
+                description: 'EventBridge rule ARN for CloudFormation failure alerts',
+                value: this.baseline.cfnDriftRule.ruleArn,
+            });
+        }
+
+        // =================================================================
+        // CDK-NAG SUPPRESSIONS
+        // =================================================================
+        if (this.baseline.trailBucket) {
+            NagSuppressions.addResourceSuppressions(
+                this.baseline.trailBucket,
+                [
+                    {
+                        id: 'AwsSolutions-S1',
+                        reason: 'CloudTrail log bucket — server access logging not required for a cost-conscious dev account. Trail integrity validated via log file validation.',
+                    },
+                ],
+                true,
+            );
         }
     }
 }
