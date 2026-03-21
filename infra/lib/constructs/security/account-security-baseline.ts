@@ -26,7 +26,6 @@ import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as guardduty from 'aws-cdk-lib/aws-guardduty';
-import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as securityhub from 'aws-cdk-lib/aws-securityhub';
 import * as sns from 'aws-cdk-lib/aws-sns';

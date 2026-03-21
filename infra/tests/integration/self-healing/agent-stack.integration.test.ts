@@ -38,7 +38,6 @@ import {
 import {
     SNSClient,
     GetTopicAttributesCommand,
-    ListSubscriptionsByTopicCommand,
 } from '@aws-sdk/client-sns';
 import {
     SQSClient,
@@ -217,7 +216,7 @@ describe('SelfHealingPipeline — Post-Deploy Smoke Test', () => {
             'agentDlqUrl',
         ] satisfies Array<keyof SelfHealingSsmPaths>;
 
-        it(`should have at least ${EXPECTED_SSM_PARAM_COUNT} SSM parameters published`, () => {
+        it('should have at least the expected number of SSM parameters published', () => {
             expect(ssmParams.size).toBeGreaterThanOrEqual(EXPECTED_SSM_PARAM_COUNT);
         });
 
@@ -252,21 +251,23 @@ describe('SelfHealingPipeline — Post-Deploy Smoke Test', () => {
             expect(lambdaConfig.FunctionName).toBeTruthy();
         });
 
-        it(`should use ${EXPECTED_RUNTIME} runtime`, () => {
+        it('should use the expected runtime', () => {
             expect(lambdaConfig.Runtime).toBe(EXPECTED_RUNTIME);
         });
 
-        it(`should have reserved concurrency of ${DEV_RESERVED_CONCURRENCY} in development`, async () => {
-            if (CDK_ENV !== Environment.DEVELOPMENT) return;
+        // Dev-only assertions guarded at describe level (Rule 11)
+        const devDescribe = CDK_ENV === Environment.DEVELOPMENT ? describe : describe.skip;
 
-            const functionName = requireParam(ssmParams, SSM_PATHS.agentLambdaName);
-            const resp = await lambda.send(new GetFunctionCommand({ FunctionName: functionName }));
-            expect(resp.Concurrency?.ReservedConcurrentExecutions).toBe(DEV_RESERVED_CONCURRENCY);
-        });
+        devDescribe('Development-specific configuration', () => {
+            it('should have the expected reserved concurrency', async () => {
+                const functionName = requireParam(ssmParams, SSM_PATHS.agentLambdaName);
+                const resp = await lambda.send(new GetFunctionCommand({ FunctionName: functionName }));
+                expect(resp.Concurrency?.ReservedConcurrentExecutions).toBe(DEV_RESERVED_CONCURRENCY);
+            });
 
-        it(`should have a timeout of ${DEV_TIMEOUT_SECONDS}s in development`, () => {
-            if (CDK_ENV !== Environment.DEVELOPMENT) return;
-            expect(lambdaConfig.Timeout).toBe(DEV_TIMEOUT_SECONDS);
+            it('should have the expected timeout', () => {
+                expect(lambdaConfig.Timeout).toBe(DEV_TIMEOUT_SECONDS);
+            });
         });
 
         it('should have a DLQ configured', () => {
@@ -287,9 +288,13 @@ describe('SelfHealingPipeline — Post-Deploy Smoke Test', () => {
             },
         );
 
-        it('should have DRY_RUN set to "true" in development', () => {
-            if (CDK_ENV !== Environment.DEVELOPMENT) return;
-            expect(lambdaEnvVars['DRY_RUN']).toBe('true');
+        // Dev-only assertions guarded at describe level (Rule 11)
+        const devEnvDescribe = CDK_ENV === Environment.DEVELOPMENT ? describe : describe.skip;
+
+        devEnvDescribe('Development-specific environment variables', () => {
+            it('should have DRY_RUN set to "true"', () => {
+                expect(lambdaEnvVars['DRY_RUN']).toBe('true');
+            });
         });
 
         it('should have GATEWAY_URL matching the SSM parameter', () => {
@@ -343,12 +348,18 @@ describe('SelfHealingPipeline — Post-Deploy Smoke Test', () => {
     // =========================================================================
     // SNS — Reports Topic
     // =========================================================================
-    describe('SNS — Remediation Reports Topic', () => {
-        it('should exist and be accessible', async () => {
-            // The Lambda env var SNS_TOPIC_ARN points to the topic
-            const topicArn = lambdaEnvVars['SNS_TOPIC_ARN'];
-            if (!topicArn) return; // Optional — only if notification email is configured
+    // SNS topic is optional — only exists when notification email is configured.
+    // Guard at describe level to avoid conditionals inside it() (Rule 11).
+    const snsDescribe = lambdaEnvVars['SNS_TOPIC_ARN'] ? describe : describe.skip;
 
+    snsDescribe('SNS — Remediation Reports Topic', () => {
+        let topicArn: string;
+
+        beforeAll(() => {
+            topicArn = lambdaEnvVars['SNS_TOPIC_ARN'];
+        });
+
+        it('should exist and be accessible', async () => {
             const { Attributes } = await sns.send(
                 new GetTopicAttributesCommand({ TopicArn: topicArn }),
             );
