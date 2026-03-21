@@ -94,6 +94,9 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
 
         const namePrefix = flatName('shared', '', env);
 
+        // Resolve notification email from context or environment variable
+        const notificationEmail = context.notificationEmail ?? process.env.NOTIFICATION_EMAIL;
+
         cdk.Annotations.of(scope).addInfo(`Creating Shared infrastructure for ${env}`);
 
         // =================================================================
@@ -129,7 +132,7 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
         const securityStack = new SecurityBaselineStack(scope, securityStackName, {
             targetEnvironment: env,
             namePrefix,
-            notificationEmail: context.notificationEmail,
+            notificationEmail,
             enableGuardDuty: context.enableGuardDuty,
             enableSecurityHub: context.enableSecurityHub,
             enableAccessAnalyzer: context.enableAccessAnalyzer,
@@ -154,7 +157,7 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
         const finopsStack = new FinOpsStack(scope, finopsStackName, {
             targetEnvironment: env,
             namePrefix,
-            notificationEmail: context.notificationEmail,
+            notificationEmail,
             budgetConfig: {
                 monthlyLimitUsd: monthlyLimit,
                 thresholds: [50, 80, 100],
