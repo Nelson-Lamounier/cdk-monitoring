@@ -5423,9 +5423,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@portfolio/mcp-infra-diagram@workspace:mcp-infra-diagram":
+"@portfolio/mcp-infra-diagram@workspace:mcp-servers/mcp-infra-diagram":
   version: 0.0.0-use.local
-  resolution: "@portfolio/mcp-infra-diagram@workspace:mcp-infra-diagram"
+  resolution: "@portfolio/mcp-infra-diagram@workspace:mcp-servers/mcp-infra-diagram"
   dependencies:
     "@aws-sdk/client-acm": "npm:^3.1001.0"
     "@aws-sdk/client-auto-scaling": "npm:^3.1001.0"
@@ -5444,9 +5444,9 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@portfolio/mcp-infra-server@workspace:mcp-infra-server":
+"@portfolio/mcp-infra-server@workspace:mcp-servers/mcp-infra-server":
   version: 0.0.0-use.local
-  resolution: "@portfolio/mcp-infra-server@workspace:mcp-infra-server"
+  resolution: "@portfolio/mcp-infra-server@workspace:mcp-servers/mcp-infra-server"
   dependencies:
     "@aws-sdk/client-dynamodb": "npm:^3.1001.0"
     "@aws-sdk/client-ses": "npm:^3.1001.0"
@@ -5468,9 +5468,9 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@portfolio/mcp-portfolio-docs@workspace:mcp-portfolio-docs":
+"@portfolio/mcp-portfolio-docs@workspace:mcp-servers/mcp-portfolio-docs":
   version: 0.0.0-use.local
-  resolution: "@portfolio/mcp-portfolio-docs@workspace:mcp-portfolio-docs"
+  resolution: "@portfolio/mcp-portfolio-docs@workspace:mcp-servers/mcp-portfolio-docs"
   dependencies:
     "@modelcontextprotocol/sdk": "npm:^1.12.1"
     "@types/jest": "npm:^29.5.14"

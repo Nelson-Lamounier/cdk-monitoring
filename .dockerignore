@@ -1,0 +1,54 @@
+# =============================================================================
+# Shared .dockerignore — used by all MCP server Docker builds
+# Build context is the monorepo root (docker-compose sends `.` as context)
+# =============================================================================
+
+# VCS & CI
+.git
+.github
+.agents
+
+# CDK / Infra (not needed by MCP servers)
+infra/cdk.out
+infra/dist
+
+# Other workspaces (not needed by MCP image builds)
+kubernetes-app
+frontend-ops
+bedrock-publisher
+
+# Generated content
+security-reports
+articles-draft
+docs
+coverage
+
+# Dependencies (rebuilt inside Docker)
+node_modules
+**/node_modules
+**/dist
+
+# Tests (not needed at runtime)
+**/*.test.ts
+**/*.spec.ts
+
+# IDE & OS
+.idea
+.vscode
+.DS_Store
+*.swp
+*.swo
+
+# Environment & secrets
+.env
+.env.local
+.env.bootstrap
+
+# AI tooling
+.gemini
+.agent
+
+# Misc
+*.log
+*.txt
+__pycache__

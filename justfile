@@ -994,7 +994,49 @@ k8s-etcd-backup env="development" region="eu-west-1" profile="dev-account":
 # Build the unified MCP infrastructure server (K8s + AWS diagnostics → dist/)
 [group('mcp')]
 mcp-build:
-    cd mcp-infra-server && yarn build
+    cd mcp-servers/mcp-infra-server && yarn build
+
+# Build all MCP server Docker images (multi-stage Alpine builds)
+[group('mcp')]
+mcp-docker-build:
+    docker compose -f docker-compose.mcp.yml build
+
+# Build a single MCP server Docker image
+# Usage: just mcp-docker-build-one infra
+#        just mcp-docker-build-one docs
+#        just mcp-docker-build-one diagram
+[group('mcp')]
+mcp-docker-build-one name:
+    docker compose -f docker-compose.mcp.yml build {{name}}
+
+# Verify MCP handshake on all Docker images (initialize → response check)
+[group('mcp')]
+mcp-docker-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.0.1"}}}'
+    ERRORS=0
+    for IMAGE in mcp-infra-server mcp-portfolio-docs mcp-infra-diagram; do
+      echo "--- Testing ${IMAGE} ---"
+      RESPONSE=$(echo "${INIT}" | docker run -i --rm "${IMAGE}:latest" 2>/dev/null | head -1)
+      if echo "${RESPONSE}" | grep -q '"serverInfo"'; then
+        SERVER_NAME=$(echo "${RESPONSE}" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')
+        echo "  ✓ Handshake OK — server: ${SERVER_NAME}"
+      else
+        echo "  ✗ Handshake FAILED"
+        echo "  Response: ${RESPONSE}"
+        ERRORS=$((ERRORS + 1))
+      fi
+    done
+    echo ""
+    if [ $ERRORS -gt 0 ]; then
+      echo "✗ ${ERRORS} handshake(s) FAILED"
+      exit 1
+    fi
+    echo "✓ All MCP servers respond correctly"
+    echo ""
+    echo "=== Image Sizes ==="
+    docker images | head -1 && docker images | grep mcp
 
 # Discover SSM parameters for Next.js or Bedrock stacks
 # Usage: just mcp-ssm-discover /nextjs/development

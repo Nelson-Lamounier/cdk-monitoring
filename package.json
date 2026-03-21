@@ -10,9 +10,9 @@
     "packages/script-utils",
     "packages/cdk-governance-aspects",
     "kubernetes-app",
-    "mcp-infra-server",
-    "mcp-portfolio-docs",
-    "mcp-infra-diagram"
+    "mcp-servers/mcp-infra-server",
+    "mcp-servers/mcp-portfolio-docs",
+    "mcp-servers/mcp-infra-diagram"
   ],
   "resolutions": {
     "markdown-it": ">=14.1.1",
