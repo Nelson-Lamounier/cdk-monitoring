@@ -222,16 +222,14 @@ jobs:
 
 
   # ===========================================================================
-  # Verify SSM Automation — Integration Tests Gate
+  # Verify SSM Automation — Instance Targeting & Health
   #
-  # Runs integration tests that call real AWS APIs to validate that SSM
-  # Automation executions completed successfully. Verifies:
-  #   Phase 1: Step Functions state machine exists, SSM doc params published
-  #   Phase 2: SFN orchestrator execution succeeded, per-role SSM Automation
-  #            documents completed with Success status
+  # Focused integration tests that validate two concerns per bootstrap role:
+  #   1. Instance Targeting: SSM Automation ran on the correct EC2 instance
+  #      (matched by k8s:bootstrap-role tag)
+  #   2. Instance Health: EC2 running, status checks passing, SSM Agent online
   #
-  # Runs in parallel with post-bootstrap-config (secrets deployment is
-  # independent from automation verification).
+  # All assertions pass vacuously when no instances/executions exist yet.
   # ===========================================================================
   verify-ssm-automation:
     name: Verify SSM Automation

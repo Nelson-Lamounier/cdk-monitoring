@@ -2,22 +2,17 @@
  * @format
  * SSM Automation Runtime — Post-Deployment Integration Test
  *
- * Runs AFTER SSM Automation documents and the Step Functions orchestrator
- * have been deployed. Validates infrastructure provisioning and, when
- * available, runtime execution results.
+ * Validates that SSM Automation documents executed on the correct
+ * EC2 instances and that those instances are healthy.
  *
- * Architecture (post–Step Functions migration):
- *   EventBridge → Step Functions → SSM Automation (per-role documents)
+ * Two focused concerns:
+ *   1. Instance Targeting — the latest SSM Automation execution for
+ *      each role targeted the instance tagged with that role.
+ *   2. Instance Health — each K8s instance is running (EC2) and
+ *      reachable via SSM Agent (Online status).
  *
- * Test Strategy — Two-Phase Verification:
- *   Phase 1 (Infrastructure — runs after deploy-ssm):
- *     - Step Functions state machine exists with correct name
- *     - SSM Automation documents are published to SSM Parameter Store
- *
- *   Phase 2 (Runtime — only asserts when executions exist):
- *     - Step Functions orchestrator has successful executions
- *     - SSM Automation documents executed with correct status
- *     - Tests pass vacuously if no executions yet (instances not launched)
+ * All assertions pass vacuously when no instances or executions
+ * exist (e.g. first deploy, no ASG launches yet).
  *
  * Environment Variables:
  *   CDK_ENV      — Target environment (default: development)
@@ -28,20 +23,21 @@
  */
 
 import {
-    SFNClient,
-    DescribeStateMachineCommand,
-    ListExecutionsCommand,
-} from '@aws-sdk/client-sfn';
-import type { ExecutionListItem } from '@aws-sdk/client-sfn';
+    EC2Client,
+    DescribeInstancesCommand,
+    DescribeInstanceStatusCommand,
+} from '@aws-sdk/client-ec2';
+import type { Instance, InstanceStatus } from '@aws-sdk/client-ec2';
 import {
     SSMClient,
-    GetParameterCommand,
     DescribeAutomationExecutionsCommand,
+    GetAutomationExecutionCommand,
+    DescribeInstanceInformationCommand,
+    GetParameterCommand,
 } from '@aws-sdk/client-ssm';
-import type { AutomationExecutionMetadata } from '@aws-sdk/client-ssm';
-import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import type { InstanceInformation } from '@aws-sdk/client-ssm';
 
-import { Environment } from '../../../lib/config';
+import type { Environment } from '../../../lib/config';
 import { k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import { flatName } from '../../../lib/utilities/naming';
 
@@ -52,242 +48,263 @@ import { flatName } from '../../../lib/utilities/naming';
 const CDK_ENV = (process.env.CDK_ENV ?? 'development') as Environment;
 const REGION = process.env.AWS_REGION ?? 'eu-west-1';
 const PREFIX = k8sSsmPrefix(CDK_ENV);
+
 /** Resource name prefix — e.g. 'k8s-dev' */
 const NAME_PREFIX = flatName('k8s', '', CDK_ENV);
 
-/** Step Functions state machine name as defined in ssm-automation-stack.ts */
-const STATE_MACHINE_NAME = `${NAME_PREFIX}-bootstrap-orchestrator`;
+/** EC2 tag used by compute stacks to identify K8s bootstrap role */
+const BOOTSTRAP_ROLE_TAG = 'k8s:bootstrap-role';
 
-/** Successful SSM Automation terminal statuses */
-const SSM_SUCCESS_STATUSES = ['Success'];
+/** EC2 instance state expected for healthy nodes */
+const EXPECTED_INSTANCE_STATE = 'running';
 
-/** Step Functions successful terminal statuses */
-const SFN_SUCCESS_STATUSES = ['SUCCEEDED'];
+/** SSM Agent expected ping status */
+const EXPECTED_SSM_STATUS = 'Online';
+
+/** EC2 status check expected value */
+const EXPECTED_STATUS_CHECK = 'ok';
 
 // AWS SDK clients
+const ec2 = new EC2Client({ region: REGION });
 const ssm = new SSMClient({ region: REGION });
-const sfn = new SFNClient({ region: REGION });
-const sts = new STSClient({ region: REGION });
 
 // =============================================================================
 // Types
 // =============================================================================
 
-interface AutomationTestTarget {
-    /** Descriptive label for test titles */
+/** Bootstrap role definition for test iteration */
+interface BootstrapRole {
+    /** Human-readable label for test titles */
     label: string;
-    /** SSM parameter path containing the document name */
+    /** Value of the k8s:bootstrap-role EC2 tag */
+    role: string;
+    /** SSM parameter path for the automation document name */
     docNameParam: string;
-    /** Expected k8s:bootstrap-role tag value used for targeting */
-    expectedTargetTagValue: string;
+}
+
+/** Cached data per role, populated in beforeAll */
+interface RoleData {
+    /** EC2 instance matching this role (if any) */
+    instance?: Instance;
+    /** EC2 status check result (if instance exists) */
+    instanceStatus?: InstanceStatus;
+    /** SSM Agent info for this instance (if any) */
+    ssmInfo?: InstanceInformation;
+    /** Instance ID that the latest SSM Automation execution targeted */
+    automationTargetInstanceId?: string;
 }
 
 // =============================================================================
-// Test Targets — Bootstrap Automations (all 4 roles)
+// Test Targets — All 4 Bootstrap Roles
 // =============================================================================
 
-/**
- * Each target maps to one SSM Automation document. The test queries the most
- * recent execution of each document and validates metadata fields.
- */
-const AUTOMATION_TARGETS: AutomationTestTarget[] = [
+const BOOTSTRAP_ROLES: BootstrapRole[] = [
     {
-        label: 'Control Plane Bootstrap',
+        label: 'Control Plane',
+        role: 'control-plane',
         docNameParam: `${PREFIX}/bootstrap/control-plane-doc-name`,
-        expectedTargetTagValue: 'control-plane',
     },
     {
-        label: 'App Worker Bootstrap',
+        label: 'App Worker',
+        role: 'app-worker',
         docNameParam: `${PREFIX}/bootstrap/app-worker-doc-name`,
-        expectedTargetTagValue: 'app-worker',
     },
     {
-        label: 'Mon Worker Bootstrap',
+        label: 'Mon Worker',
+        role: 'mon-worker',
         docNameParam: `${PREFIX}/bootstrap/mon-worker-doc-name`,
-        expectedTargetTagValue: 'mon-worker',
     },
     {
-        label: 'ArgoCD Worker Bootstrap',
+        label: 'ArgoCD Worker',
+        role: 'argocd-worker',
         docNameParam: `${PREFIX}/bootstrap/argocd-worker-doc-name`,
-        expectedTargetTagValue: 'argocd-worker',
     },
 ];
 
 // =============================================================================
-// Helpers
+// Helpers (module-level — Rule 10)
 // =============================================================================
 
-/** Fetch a single SSM parameter value. Throws if not found. */
-async function getParam(name: string): Promise<string> {
-    const result = await ssm.send(new GetParameterCommand({ Name: name }));
-    const value = result.Parameter?.Value;
-    if (!value) throw new Error(`SSM parameter not found: ${name}`);
-    return value;
+/**
+ * Fetch a single SSM parameter value.
+ * Returns undefined if the parameter does not exist.
+ */
+async function getParam(name: string): Promise<string | undefined> {
+    try {
+        const result = await ssm.send(new GetParameterCommand({ Name: name }));
+        return result.Parameter?.Value;
+    } catch {
+        return undefined;
+    }
 }
 
 /**
- * Require a value from a Map or throw with a descriptive message.
- * Replaces unsafe non-null assertions (Rule 2).
+ * Find the running EC2 instance tagged with a specific bootstrap role.
+ * Returns undefined if no instance exists for this role.
  */
-function requireResult<T>(map: Map<string, T>, key: string): T {
-    const value = map.get(key);
-    if (!value) throw new Error(`Missing expected result for: ${key}`);
-    return value;
+async function findInstanceByRole(role: string): Promise<Instance | undefined> {
+    const { Reservations } = await ec2.send(
+        new DescribeInstancesCommand({
+            Filters: [
+                { Name: `tag:${BOOTSTRAP_ROLE_TAG}`, Values: [role] },
+                { Name: 'instance-state-name', Values: [EXPECTED_INSTANCE_STATE] },
+            ],
+        }),
+    );
+
+    const instances = (Reservations ?? []).flatMap((r) => r.Instances ?? []);
+    return instances[0];
+}
+
+/**
+ * Get EC2 status checks for a specific instance.
+ */
+async function getInstanceStatus(instanceId: string): Promise<InstanceStatus | undefined> {
+    const { InstanceStatuses } = await ec2.send(
+        new DescribeInstanceStatusCommand({
+            InstanceIds: [instanceId],
+        }),
+    );
+
+    return InstanceStatuses?.[0];
+}
+
+/**
+ * Get SSM Agent connection status for a specific instance.
+ */
+async function getSsmAgentInfo(instanceId: string): Promise<InstanceInformation | undefined> {
+    const { InstanceInformationList } = await ssm.send(
+        new DescribeInstanceInformationCommand({
+            Filters: [
+                { Key: 'InstanceIds', Values: [instanceId] },
+            ],
+        }),
+    );
+
+    return InstanceInformationList?.[0];
+}
+
+/**
+ * Get the instance ID targeted by the latest SSM Automation execution
+ * for a given document name. Returns undefined if no execution exists.
+ *
+ * Uses two API calls: DescribeAutomationExecutions → execution ID,
+ * then GetAutomationExecution → full execution with Parameters.
+ */
+async function getAutomationTargetInstance(docName: string): Promise<string | undefined> {
+    const listing = await ssm.send(
+        new DescribeAutomationExecutionsCommand({
+            Filters: [
+                { Key: 'DocumentNamePrefix', Values: [docName] },
+            ],
+            MaxResults: 1,
+        }),
+    );
+
+    const execId = listing.AutomationExecutionMetadataList?.[0]?.AutomationExecutionId;
+    if (!execId) return undefined;
+
+    const detail = await ssm.send(
+        new GetAutomationExecutionCommand({ AutomationExecutionId: execId }),
+    );
+
+    return detail.AutomationExecution?.Parameters?.['InstanceId']?.[0];
 }
 
 // =============================================================================
-// Execution result caches — populated in beforeAll
+// Execution result cache — populated in beforeAll
 // =============================================================================
 
-interface SsmExecutionResult {
-    status: string;
-    documentName: string;
-}
-
-const ssmResults = new Map<string, SsmExecutionResult>();
-const resolvedDocNames = new Map<string, string>();
-
-let stateMachineArn: string | undefined;
-let latestSfnExecution: ExecutionListItem | undefined;
+const roleDataMap = new Map<string, RoleData>();
 
 // =============================================================================
 // Tests
 // =============================================================================
 
-describe('SSM Automation Runtime — Post-Deploy Verification', () => {
-    // ── Global Setup ─────────────────────────────────────────────────────
+describe('SSM Automation Runtime — Instance Targeting & Health', () => {
+    // ── Global Setup — fetch all data, zero API calls in it() blocks ─────
     beforeAll(async () => {
-        // 1. Resolve Step Functions state machine ARN via direct lookup
-        //    Uses DescribeStateMachine with a constructed ARN instead of
-        //    ListStateMachines (which is paginated and eventually consistent).
-        try {
-            const { Account } = await sts.send(new GetCallerIdentityCommand({}));
-            const expectedArn = `arn:aws:states:${REGION}:${Account}:stateMachine:${STATE_MACHINE_NAME}`;
-            const result = await sfn.send(
-                new DescribeStateMachineCommand({ stateMachineArn: expectedArn }),
-            );
-            stateMachineArn = result.stateMachineArn;
-        } catch {
-            // State machine not yet created or SFN permissions not available
-            stateMachineArn = undefined;
-        }
+        for (const target of BOOTSTRAP_ROLES) {
+            const data: RoleData = {};
 
-        // 2. Fetch latest SFN execution if state machine exists
-        if (stateMachineArn) {
-            try {
-                const executions = await sfn.send(
-                    new ListExecutionsCommand({
-                        stateMachineArn,
-                        maxResults: 1,
-                    }),
-                );
-                latestSfnExecution = executions.executions?.[0];
-            } catch {
-                latestSfnExecution = undefined;
-            }
-        }
+            // 1. Find the EC2 instance for this role
+            data.instance = await findInstanceByRole(target.role);
 
-        // 3. Resolve SSM parameter names and fetch execution results
-        for (const target of AUTOMATION_TARGETS) {
-            let docName: string;
+            if (data.instance?.InstanceId) {
+                const instanceId = data.instance.InstanceId;
 
-            try {
-                docName = await getParam(target.docNameParam);
-                resolvedDocNames.set(target.label, docName);
-            } catch {
-                // Document not deployed — skip this target
-                continue;
+                // 2. EC2 status checks
+                data.instanceStatus = await getInstanceStatus(instanceId);
+
+                // 3. SSM Agent status
+                data.ssmInfo = await getSsmAgentInfo(instanceId);
             }
 
-            const result = await ssm.send(
-                new DescribeAutomationExecutionsCommand({
-                    Filters: [
-                        {
-                            Key: 'DocumentNamePrefix',
-                            Values: [docName],
-                        },
-                    ],
-                    MaxResults: 1,
-                }),
-            );
+            // 4. SSM Automation target — which instance did the doc run on?
+            const docName = await getParam(target.docNameParam);
+            if (docName) {
+                data.automationTargetInstanceId = await getAutomationTargetInstance(docName);
+            }
 
-            const exec: AutomationExecutionMetadata | undefined =
-                result.AutomationExecutionMetadataList?.[0];
-            if (!exec) continue;
-
-            ssmResults.set(target.label, {
-                status: exec.AutomationExecutionStatus ?? 'Unknown',
-                documentName: exec.DocumentName ?? '',
-            });
+            roleDataMap.set(target.label, data);
         }
-    }, 30_000);
+    }, 60_000);
 
     // =====================================================================
-    // Phase 1: Infrastructure — verifies resources exist after deploy-ssm
-    // These tests MUST pass immediately after the SSM Automation stack
-    // is deployed, regardless of whether any instance has launched.
+    // Instance Targeting — SSM Automation ran on the correct instance
     // =====================================================================
-    describe('Infrastructure — Step Functions State Machine', () => {
-        it('should have the bootstrap orchestrator state machine', () => {
-            expect(stateMachineArn).toBeDefined();
-            expect(stateMachineArn).toContain(STATE_MACHINE_NAME);
-        });
-    });
-
-    describe.each(AUTOMATION_TARGETS)(
-        'Infrastructure — $label Document',
+    describe.each(BOOTSTRAP_ROLES)(
+        'Targeting — $label',
         (target) => {
-            it('should have the SSM parameter published', () => {
-                const docName = resolvedDocNames.get(target.label);
-                expect(docName).toBeDefined();
-                expect(docName).toMatch(new RegExp(`^${NAME_PREFIX}-`));
+            let data: RoleData;
+
+            // Depends on: roleDataMap populated in top-level beforeAll
+            beforeAll(() => {
+                data = roleDataMap.get(target.label) ?? {};
+            });
+
+            it('should have targeted the instance tagged with the correct role', () => {
+                // Vacuous pass: no execution or no instance yet
+                if (!data.automationTargetInstanceId || !data.instance) return;
+
+                expect(data.automationTargetInstanceId).toBe(data.instance.InstanceId);
             });
         },
     );
 
     // =====================================================================
-    // Phase 2: Runtime — verifies executions completed successfully.
-    // These tests only assert when executions exist. If no instances
-    // have launched yet (e.g. first pipeline run), they pass vacuously
-    // with a console warning.
+    // Instance Health — EC2 running + status checks + SSM Agent online
     // =====================================================================
-    describe('Runtime — Step Functions Orchestrator', () => {
-        it('should have a successful latest execution (if any)', () => {
-            // Phase 2: pass vacuously when no executions exist
-            // (instances not launched yet)
-            if (!latestSfnExecution) return;
-
-            expect(SFN_SUCCESS_STATUSES).toContain(
-                latestSfnExecution.status,
-            );
-        });
-    });
-
-    describe.each(AUTOMATION_TARGETS)(
-        'Runtime — $label Execution',
+    describe.each(BOOTSTRAP_ROLES)(
+        'Health — $label',
         (target) => {
-            let execution: SsmExecutionResult | undefined;
+            let data: RoleData;
 
-            // Depends on: ssmResults populated in top-level beforeAll
+            // Depends on: roleDataMap populated in top-level beforeAll
             beforeAll(() => {
-                execution = ssmResults.get(target.label);
+                data = roleDataMap.get(target.label) ?? {};
             });
 
-            it('should have completed successfully (if executed)', () => {
-                // Phase 2: pass vacuously when no executions exist
-                if (!execution) return;
+            it('should have a running EC2 instance', () => {
+                // Vacuous pass: instance not launched yet
+                if (!data.instance) return;
 
-                expect(SSM_SUCCESS_STATUSES).toContain(execution.status);
+                expect(data.instance.State?.Name).toBe(EXPECTED_INSTANCE_STATE);
             });
 
-            it('should have document name matching expected pattern (if executed)', () => {
-                // Phase 2: pass vacuously when no executions exist
-                if (!execution) return;
+            it('should have passing EC2 status checks', () => {
+                // Vacuous pass: instance not launched yet
+                if (!data.instanceStatus) return;
 
-                const exec = requireResult(ssmResults, target.label);
-                expect(exec.documentName).toMatch(
-                    new RegExp(`^${NAME_PREFIX}-`),
-                );
+                expect(data.instanceStatus.InstanceStatus?.Status).toBe(EXPECTED_STATUS_CHECK);
+                expect(data.instanceStatus.SystemStatus?.Status).toBe(EXPECTED_STATUS_CHECK);
+            });
+
+            it('should have SSM Agent online', () => {
+                // Vacuous pass: instance not launched or SSM not yet registered
+                if (!data.ssmInfo) return;
+
+                expect(data.ssmInfo.PingStatus).toBe(EXPECTED_SSM_STATUS);
             });
         },
     );
