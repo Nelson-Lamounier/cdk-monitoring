@@ -96,13 +96,6 @@ on:
         type: string
         default: ""
 
-    outputs:
-      control-plane-doc-name:
-        description: "SSM Automation document name for control plane bootstrap"
-        value: ${{ jobs.read-ssm-outputs.outputs.control-plane-doc-name }}
-      worker-doc-name:
-        description: "SSM Automation document name for worker bootstrap"
-        value: ${{ jobs.read-ssm-outputs.outputs.worker-doc-name }}
 
     secrets:
       AWS_OIDC_ROLE:
@@ -179,11 +172,10 @@ jobs:
         run: just ci-pipeline-setup
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
 
       - name: Synthesize & Determine Stack Names
         id: synth
@@ -324,11 +316,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -392,11 +383,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -454,11 +444,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -525,55 +514,6 @@ jobs:
       outputs-directory: "deployment-outputs"
     secrets: inherit
 
-  # ===========================================================================
-  # Read SSM Stack Outputs — extract SSM document names from CloudFormation
-  # ===========================================================================
-  read-ssm-outputs:
-    name: Read SSM Stack Outputs
-    needs: [setup, deploy-ssm]
-    if: needs.deploy-ssm.result == 'success'
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 5
-    environment: ${{ inputs.environment }}
-    outputs:
-      control-plane-doc-name: ${{ steps.extract.outputs.control-plane-doc-name }}
-      worker-doc-name: ${{ steps.extract.outputs.worker-doc-name }}
-
-    steps:
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
-
-      - name: Extract SSM Document Names
-        id: extract
-        run: |
-          STACK_NAME="${{ needs.setup.outputs.ssmautomation-stack }}"
-          REGION="${{ vars.AWS_REGION || 'eu-west-1' }}"
-
-          echo "Reading outputs from stack: $STACK_NAME"
-          OUTPUTS=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --query 'Stacks[0].Outputs' \
-            --output json \
-            --region "$REGION" 2>/dev/null || echo "[]")
-
-          CP_DOC=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="ControlPlaneDocName") | .OutputValue // empty' 2>/dev/null || echo "")
-          WORKER_DOC=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="WorkerDocName") | .OutputValue // empty' 2>/dev/null || echo "")
-
-          echo "control-plane-doc-name=$CP_DOC" >> $GITHUB_OUTPUT
-          echo "worker-doc-name=$WORKER_DOC" >> $GITHUB_OUTPUT
-
-          echo "### SSM Automation Stack Outputs ✅" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Document | Name |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Control Plane | $CP_DOC |" >> $GITHUB_STEP_SUMMARY
-          echo "| Worker | $WORKER_DOC |" >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
   # Deploy Compute Stack — Control Plane EC2 + ASG
@@ -623,11 +563,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -686,11 +625,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -749,11 +687,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -806,11 +743,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Environment and Dependencies
         uses: ./.github/actions/setup-node-yarn
@@ -852,49 +788,6 @@ jobs:
       outputs-directory: "deployment-outputs"
     secrets: inherit
 
-  # ===========================================================================
-  # Verify SSM Automation — Integration Tests Gate
-  #
-  # Runs integration tests that call real AWS APIs to validate that SSM
-  # Automation executions (bootstrap + secrets) completed successfully with
-  # correct tag-based targeting. Verifies AutomationExecutionStatus,
-  # Targets, ResolvedTargets, Outputs, and DocumentName for each document.
-  # ===========================================================================
-  verify-ssm-automation:
-    name: Verify SSM Automation
-    needs: [setup, deploy-ssm]
-    if: always() && needs.deploy-ssm.result == 'success'
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 10
-    environment: ${{ inputs.environment }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
-
-      - name: Setup Environment and Dependencies
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        run: yarn install --immutable
-        working-directory: infra
-
-      - name: Run SSM Automation Integration Tests
-        env:
-          CDK_ENV: ${{ inputs.cdk-environment }}
-          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes/ssm-automation-runtime $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy Edge Stack (5/6) — CloudFront + ACM + WAF (us-east-1)
@@ -1007,7 +900,7 @@ jobs:
         working-directory: ./
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -1100,11 +993,10 @@ jobs:
 
       - name: Configure AWS Credentials
         if: steps.prereqs.outputs.skip != 'true'
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
 
       - name: Audit CloudWatch Log Groups
         if: steps.prereqs.outputs.skip != 'true'

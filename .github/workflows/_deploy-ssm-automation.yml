@@ -260,6 +260,56 @@ jobs:
           --region ${{ vars.AWS_REGION || 'eu-west-1' }}
 
   # ===========================================================================
+  # Verify SSM Automation — Integration Tests Gate
+  #
+  # Runs integration tests that call real AWS APIs to validate that SSM
+  # Automation executions completed successfully. Verifies:
+  #   Phase 1: Step Functions state machine exists, SSM doc params published
+  #   Phase 2: SFN orchestrator execution succeeded, per-role SSM Automation
+  #            documents completed with Success status
+  #
+  # Runs in parallel with post-bootstrap-config (secrets deployment is
+  # independent from automation verification).
+  # ===========================================================================
+  verify-ssm-automation:
+    name: Verify SSM Automation
+    needs: [watch-bootstrap]
+    if: >-
+      always()
+      && (needs.watch-bootstrap.result == 'success' || needs.watch-bootstrap.result == 'skipped')
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run SSM Automation Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes/ssm-automation-runtime $CDK_ENV --verbose
+
+  # ===========================================================================
   # Post-Bootstrap Config — Deploy secrets + verify ArgoCD
   #
   # Calls the reusable _post-bootstrap-config.yml workflow which deploys
@@ -278,3 +328,4 @@ jobs:
       environment: ${{ inputs.environment }}
       cdk-environment: ${{ inputs.cdk-environment }}
     secrets: inherit
+
