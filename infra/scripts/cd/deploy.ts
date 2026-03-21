@@ -31,6 +31,7 @@ import { setOutput } from '@repo/script-utils/github.js';
 import logger from '@repo/script-utils/logger.js';
 
 import { buildCdkArgs, runCdk } from '../shared/exec.js';
+import { getProject, type Environment } from '../shared/stacks.js';
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -124,12 +125,20 @@ async function main(): Promise<void> {
   await mkdir(outputsDir, { recursive: true });
   const outputsFile = `${outputsDir}/stack-outputs.json`;
 
+  // Resolve full CDK context for the project — includes env-var-bridged
+  // values like adminAllowedIps (from ALLOW_IPV4/ALLOW_IPV6) that
+  // base-stack.ts reads via tryGetContext().
+  const projectConfig = getProject(project);
+  const resolvedContext = projectConfig
+    ? { ...projectConfig.cdkContext(environment as Environment), ...extraContext }
+    : { project, environment, ...extraContext };
+
   // Build CDK args
   const cdkArgs = buildCdkArgs({
     command: 'deploy',
     stackNames: [stackName],
     exclusively: true,
-    context: { project, environment, ...extraContext },
+    context: resolvedContext,
     requireApproval,
     method: 'direct',
     progress: 'events',
