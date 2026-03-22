@@ -24,3 +24,9 @@ export type {
     OperationsDashboardProps,
     OpsDashboardSelfHealingConfig,
 } from './operations-dashboard';
+export {
+    BedrockObservabilityConstruct,
+} from './bedrock-observability';
+export type {
+    BedrockObservabilityProps,
+} from './bedrock-observability';

@@ -25,6 +25,7 @@ import { Construct } from 'constructs';
 
 import type { Environment } from '../../config/environments';
 import { AccountSecurityBaselineConstruct } from '../../constructs/security/account-security-baseline';
+import { BedrockObservabilityConstruct } from '../../constructs/observability/bedrock-observability';
 
 // =========================================================================
 // PROPS
@@ -60,6 +61,9 @@ export interface SecurityBaselineStackProps extends cdk.StackProps {
 
     /** S3 log retention in days for CloudTrail @default 90 */
     readonly cloudTrailRetentionDays?: number;
+
+    /** Enable Bedrock model invocation logging @default true */
+    readonly enableBedrockLogging?: boolean;
 }
 
 // =========================================================================
@@ -101,6 +105,23 @@ export class SecurityBaselineStack extends cdk.Stack {
             enableCfnDriftAlerts: props.enableCfnDriftAlerts,
             cloudTrailRetentionDays: props.cloudTrailRetentionDays,
         });
+
+        // =================================================================
+        // BEDROCK MODEL INVOCATION LOGGING
+        //
+        // Account-level setting — enables logging for all Bedrock
+        // invocations (Agents, ConverseCommand, InvokeModel) to
+        // CloudWatch Logs. AWS provides built-in GenAI Observability
+        // dashboards once logging is enabled.
+        //
+        // Cost: ~$0.50/GB ingestion + $0.03/GB/month storage.
+        // With 3-day retention and low invocation volume: < £1/month.
+        // =================================================================
+        if (props.enableBedrockLogging !== false) {
+            new BedrockObservabilityConstruct(this, 'BedrockObservability', {
+                namePrefix: props.namePrefix,
+            });
+        }
 
         // =================================================================
         // CDK-NAG SUPPRESSIONS
@@ -174,5 +195,15 @@ export class SecurityBaselineStack extends cdk.Stack {
                 true,
             );
         }
+
+        // AwsCustomResource singleton Lambda — CDK creates this at the
+        // stack root, outside the construct scope. Suppress L1 because
+        // the runtime version is managed by CDK, not user code.
+        NagSuppressions.addStackSuppressions(this, [
+            {
+                id: 'AwsSolutions-L1',
+                reason: 'AwsCustomResource uses a CDK-managed singleton Lambda — runtime version is set by the CDK framework, not user code',
+            },
+        ]);
     }
 }
