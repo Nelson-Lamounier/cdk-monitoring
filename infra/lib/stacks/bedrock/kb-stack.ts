@@ -127,6 +127,11 @@ export class BedrockKbStack extends cdk.Stack {
             vectorStore: pineconeStore,
         });
 
+        // Grant the KB execution role access to the Pinecone API key secret.
+        // The CDK construct creates the role but does not automatically grant
+        // secretsmanager:GetSecretValue on the Pinecone credentials.
+        pineconeSecret.grantRead(this.knowledgeBase.role);
+
         this.knowledgeBaseId = this.knowledgeBase.knowledgeBaseId;
         this.knowledgeBaseArn = this.knowledgeBase.knowledgeBaseArn;
 
