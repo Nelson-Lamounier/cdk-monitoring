@@ -109,6 +109,12 @@ let allLogContent: string;
 // Helpers
 // =============================================================================
 
+/** Maximum log streams to inspect per log group */
+const MAX_LOG_STREAMS = 5;
+
+/** Maximum events to fetch per log stream */
+const MAX_EVENTS_PER_STREAM = 200;
+
 /** Fetch all Image Builder CloudWatch log content */
 async function fetchCloudWatchBuildLogs(): Promise<string> {
     const parts: string[] = [];
@@ -121,28 +127,33 @@ async function fetchCloudWatchBuildLogs(): Promise<string> {
         for (const lg of logGroups ?? []) {
             if (!lg.logGroupName) continue;
             try {
+                // Fetch multiple streams — Image Builder creates one per
+                // build phase (build, validate, test). Fetching only the
+                // latest stream misses output from earlier phases.
                 const { logStreams } = await logs.send(
                     new DescribeLogStreamsCommand({
                         logGroupName: lg.logGroupName,
                         orderBy: 'LastEventTime',
                         descending: true,
-                        limit: 1,
+                        limit: MAX_LOG_STREAMS,
                     }),
                 );
 
-                const streamName = logStreams?.[0]?.logStreamName;
-                if (!streamName) continue;
+                for (const stream of logStreams ?? []) {
+                    const streamName = stream.logStreamName;
+                    if (!streamName) continue;
 
-                const { events } = await logs.send(
-                    new GetLogEventsCommand({
-                        logGroupName: lg.logGroupName,
-                        logStreamName: streamName,
-                        limit: 200,
-                    }),
-                );
+                    const { events } = await logs.send(
+                        new GetLogEventsCommand({
+                            logGroupName: lg.logGroupName,
+                            logStreamName: streamName,
+                            limit: MAX_EVENTS_PER_STREAM,
+                        }),
+                    );
 
-                for (const event of events ?? []) {
-                    if (event.message) parts.push(event.message);
+                    for (const event of events ?? []) {
+                        if (event.message) parts.push(event.message);
+                    }
                 }
             } catch {
                 // Skip individual log group errors

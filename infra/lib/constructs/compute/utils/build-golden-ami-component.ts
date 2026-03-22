@@ -335,25 +335,25 @@ phases:
         action: ExecuteBash
         inputs:
           commands:
-            - docker --version
-            - aws --version
-            - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a status || echo "CloudWatch Agent installed (not running — config written at boot)"
-            - containerd --version
-            - runc --version
-            - crictl --version
-            - kubeadm version -o short
-            - kubelet --version
-            - kubectl version --client -o yaml | grep gitVersion
-            - test -f /opt/calico/calico.yaml
-            - test -f /etc/containerd/config.toml
-            - test -f /etc/sysctl.d/k8s.conf
-            - test -f /opt/aws/bin/cfn-signal
-            - helm version --short
+            - echo "[validate] docker:" && docker --version
+            - echo "[validate] aws-cli:" && aws --version
+            - echo "[validate] cloudwatch-agent:" && (/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a status || echo "cloudwatch agent binary present (not running — config written at boot)")
+            - echo "[validate] containerd:" && containerd --version
+            - echo "[validate] runc:" && runc --version
+            - echo "[validate] crictl:" && crictl --version
+            - echo "[validate] kubeadm:" && kubeadm version -o short
+            - echo "[validate] kubelet:" && kubelet --version
+            - echo "[validate] kubectl:" && kubectl version --client -o yaml | grep gitVersion
+            - test -f /opt/calico/calico.yaml && echo "[validate] calico.yaml manifest present"
+            - test -f /etc/containerd/config.toml && echo "[validate] containerd config present"
+            - test -f /etc/sysctl.d/k8s.conf && echo "[validate] sysctl k8s config present"
+            - test -f /opt/aws/bin/cfn-signal && echo "[validate] cfn-signal binary present"
+            - echo "[validate] helm:" && helm version --short
             - python3 -c "import boto3; print('boto3', boto3.__version__)"
             - python3 -c "import yaml; print('pyyaml available')"
-            - test -f /usr/local/bin/ecr-credential-provider
-            - test -f /etc/kubernetes/image-credential-provider-config.yaml
-            - k8sgpt version
-            - echo "All kubeadm components verified"
+            - test -f /usr/local/bin/ecr-credential-provider && echo "[validate] ecr-credential-provider binary present"
+            - test -f /etc/kubernetes/image-credential-provider-config.yaml && echo "[validate] credential provider config present"
+            - echo "[validate] k8sgpt:" && k8sgpt version
+            - echo "[validate] All kubeadm components verified"
 `;
 }
