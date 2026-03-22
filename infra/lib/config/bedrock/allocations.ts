@@ -92,7 +92,7 @@ export interface BedrockAllocations {
 export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocations> = {
     [Environment.DEVELOPMENT]: {
         agent: {
-            foundationModel: 'eu.anthropic.claude-3-5-haiku-20241022-v1:0',
+            foundationModel: 'anthropic.claude-3-5-haiku-20241022-v1:0',
             idleSessionTtlInSeconds: 600, // 10 minutes
         },
         knowledgeBase: {
@@ -116,7 +116,7 @@ export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocatio
 
     [Environment.STAGING]: {
         agent: {
-            foundationModel: 'eu.anthropic.claude-3-5-haiku-20241022-v1:0',
+            foundationModel: 'anthropic.claude-3-5-haiku-20241022-v1:0',
             idleSessionTtlInSeconds: 900, // 15 minutes
         },
         knowledgeBase: {
@@ -140,7 +140,7 @@ export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocatio
 
     [Environment.PRODUCTION]: {
         agent: {
-            foundationModel: 'eu.anthropic.claude-3-5-haiku-20241022-v1:0',
+            foundationModel: 'anthropic.claude-3-5-haiku-20241022-v1:0',
             idleSessionTtlInSeconds: 1800, // 30 minutes
         },
         knowledgeBase: {
