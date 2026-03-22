@@ -7,10 +7,14 @@
  * stack so that bootstrap scripts can be updated without re-deploying EC2.
  *
  * Resources Created:
- *   - SSM Automation Document: Control plane bootstrap (1 consolidated step)
- *   - SSM Automation Document: Worker node bootstrap (1 consolidated step)
- *   - SSM Parameter: Document name for discovery by EC2 user data
+ *   - SSM Automation Documents (6): CP, app-worker, mon-worker, argocd-worker,
+ *     nextjs-secrets, monitoring-secrets
+ *   - SSM Parameters: Document name discovery for EC2 user data
  *   - IAM Role: Automation execution role with RunCommand permissions
+ *   - Step Functions: Bootstrap orchestrator state machine
+ *   - Lambda: Thin router for ASG tag resolution
+ *   - EventBridge: Auto-trigger on ASG instance launch
+ *   - CloudWatch Alarm + SNS: Failure notifications
  *
  * Lifecycle:
  *   - Day-1: Deployed by K8s pipeline before Compute stack
@@ -28,22 +32,33 @@
  * ```
  */
 
-import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
+import { NagSuppressions } from 'cdk-nag';
+
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as sns from 'aws-cdk-lib/aws-sns';
-import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
-import { NagSuppressions } from 'cdk-nag';
+import * as sns from 'aws-cdk-lib/aws-sns';
 
 import { Construct } from 'constructs';
 
 import { Environment } from '../../config/environments';
 import { K8sConfigs } from '../../config/kubernetes';
+import {
+    SsmAutomationDocument,
+} from '../../constructs/ssm/automation-document';
+import type { AutomationStep } from '../../constructs/ssm/automation-document';
+import {
+    BootstrapAlarmConstruct,
+} from '../../constructs/ssm/bootstrap-alarm';
+import {
+    BootstrapOrchestratorConstruct,
+} from '../../constructs/ssm/bootstrap-orchestrator';
+import {
+    NodeDriftEnforcementConstruct,
+} from '../../constructs/ssm/node-drift-enforcement';
+import {
+    ResourceCleanupProvider,
+} from '../../constructs/ssm/resource-cleanup-provider';
 
 // =============================================================================
 // PROPS
@@ -77,15 +92,8 @@ export interface K8sSsmAutomationStackProps extends cdk.StackProps {
 }
 
 // =============================================================================
-// CONTROL PLANE STEP DEFINITIONS
+// STEP DEFINITIONS
 // =============================================================================
-
-interface AutomationStep {
-    name: string;
-    scriptPath: string;
-    timeoutSeconds: number;
-    description: string;
-}
 
 const CONTROL_PLANE_STEPS: AutomationStep[] = [
     {
@@ -105,10 +113,6 @@ const WORKER_STEPS: AutomationStep[] = [
     },
 ];
 
-// =============================================================================
-// NEXTJS SECRETS STEP DEFINITION
-// =============================================================================
-
 const NEXTJS_SECRETS_STEPS: AutomationStep[] = [
     {
         name: 'deployNextjsSecrets',
@@ -117,10 +121,6 @@ const NEXTJS_SECRETS_STEPS: AutomationStep[] = [
         description: 'Resolve SSM parameters and create/update nextjs-secrets K8s Secret',
     },
 ];
-
-// =============================================================================
-// MONITORING SECRETS STEP DEFINITION
-// =============================================================================
 
 const MONITORING_SECRETS_STEPS: AutomationStep[] = [
     {
@@ -138,8 +138,10 @@ const MONITORING_SECRETS_STEPS: AutomationStep[] = [
 /**
  * SSM Automation Stack — K8s Bootstrap Orchestration.
  *
- * Creates SSM Automation documents for orchestrating the Kubernetes
- * bootstrap process on control plane and worker nodes.
+ * Composes from reusable constructs:
+ * - {@link SsmAutomationDocument} — SSM Automation documents
+ * - {@link BootstrapOrchestratorConstruct} — Step Functions state machine
+ * - {@link BootstrapAlarmConstruct} — CloudWatch alarm + SNS
  */
 export class K8sSsmAutomationStack extends cdk.Stack {
     /** Control plane SSM Automation document name */
@@ -150,6 +152,9 @@ export class K8sSsmAutomationStack extends cdk.Stack {
 
     /** Monitoring worker SSM Automation document name */
     public readonly monWorkerDocName: string;
+
+    /** ArgoCD worker SSM Automation document name */
+    public readonly argocdWorkerDocName: string;
 
     /** Next.js secrets SSM Automation document name */
     public readonly nextjsSecretsDocName: string;
@@ -164,6 +169,17 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         super(scope, id, props);
 
         const prefix = props.namePrefix ?? 'k8s';
+
+        // =====================================================================
+        // Resource Cleanup — pre-emptive orphan deletion
+        //
+        // Resources with hardcoded physical names become orphans after
+        // CloudFormation UPDATE_ROLLBACK_COMPLETE. This provider runs a
+        // cleanup Lambda before each CREATE, deleting any pre-existing
+        // resource so the deployment always succeeds.
+        // =====================================================================
+
+        const cleanup = new ResourceCleanupProvider(this, 'ResourceCleanup');
 
         // =====================================================================
         // IAM Role — Automation Execution
@@ -253,135 +269,79 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             ],
         }));
 
-        // TODO: SNS alerting (future)
-        // Permission: Publish to SNS topic on step failure
-        // automationRole.addToPolicy(new iam.PolicyStatement({
-        //     sid: 'AllowSnsPublish',
-        //     actions: ['sns:Publish'],
-        //     resources: [alertTopic.topicArn],
-        // }));
 
         this.automationRoleArn = automationRole.roleArn;
 
         // =====================================================================
-        // SSM Automation Document — Control Plane Bootstrap
+        // Common document props
+        // =====================================================================
+        const docBaseProps = {
+            ssmPrefix: props.ssmPrefix,
+            s3Bucket: props.scriptsBucketName,
+            automationRoleArn: automationRole.roleArn,
+        };
+
+        // =====================================================================
+        // SSM Automation Documents — Bootstrap (4)
         // =====================================================================
 
-        const cpDocName = `${prefix}-bootstrap-control-plane`;
-
-        const _cpDocument = new ssm.CfnDocument(this, 'ControlPlaneAutomation', {
-            documentType: 'Automation',
-            name: cpDocName,
-            content: this.buildAutomationContent({
-                description: 'Orchestrates Kubernetes control plane bootstrap (consolidated)',
-                steps: CONTROL_PLANE_STEPS,
-                ssmPrefix: props.ssmPrefix,
-                s3Bucket: props.scriptsBucketName,
-                automationRoleArn: automationRole.roleArn,
-            }),
-            documentFormat: 'JSON',
-            updateMethod: 'NewVersion',
+        const cpDoc = new SsmAutomationDocument(this, 'ControlPlaneAutomation', {
+            documentName: `${prefix}-bootstrap-control-plane`,
+            description: 'Orchestrates Kubernetes control plane bootstrap (consolidated)',
+            documentCategory: 'bootstrap',
+            steps: CONTROL_PLANE_STEPS,
+            ...docBaseProps,
         });
+        this.controlPlaneDocName = cpDoc.documentName;
 
-        this.controlPlaneDocName = cpDocName;
-
-        // =====================================================================
-        // SSM Automation Document — Worker Node Bootstrap
-        // =====================================================================
-
-        const appWorkerDocName = `${prefix}-bootstrap-app-worker`;
-
-        const _appWorkerDocument = new ssm.CfnDocument(this, 'AppWorkerAutomation', {
-            documentType: 'Automation',
-            name: appWorkerDocName,
-            content: this.buildAutomationContent({
-                description: 'Orchestrates Kubernetes app-worker node bootstrap (consolidated)',
-                steps: WORKER_STEPS,
-                ssmPrefix: props.ssmPrefix,
-                s3Bucket: props.scriptsBucketName,
-                automationRoleArn: automationRole.roleArn,
-            }),
-            documentFormat: 'JSON',
-            updateMethod: 'NewVersion',
+        const appWorkerDoc = new SsmAutomationDocument(this, 'AppWorkerAutomation', {
+            documentName: `${prefix}-bootstrap-app-worker`,
+            description: 'Orchestrates Kubernetes app-worker node bootstrap (consolidated)',
+            documentCategory: 'bootstrap',
+            steps: WORKER_STEPS,
+            ...docBaseProps,
         });
+        this.appWorkerDocName = appWorkerDoc.documentName;
 
-        this.appWorkerDocName = appWorkerDocName;
-
-        // =====================================================================
-        // SSM Automation Document — Monitoring Worker Node Bootstrap
-        // =====================================================================
-
-        const monWorkerDocName = `${prefix}-bootstrap-mon-worker`;
-
-        const _monWorkerDocument = new ssm.CfnDocument(this, 'MonWorkerAutomation', {
-            documentType: 'Automation',
-            name: monWorkerDocName,
-            content: this.buildAutomationContent({
-                description: 'Orchestrates Kubernetes mon-worker node bootstrap (consolidated)',
-                steps: WORKER_STEPS,
-                ssmPrefix: props.ssmPrefix,
-                s3Bucket: props.scriptsBucketName,
-                automationRoleArn: automationRole.roleArn,
-            }),
-            documentFormat: 'JSON',
-            updateMethod: 'NewVersion',
+        const monWorkerDoc = new SsmAutomationDocument(this, 'MonWorkerAutomation', {
+            documentName: `${prefix}-bootstrap-mon-worker`,
+            description: 'Orchestrates Kubernetes mon-worker node bootstrap (consolidated)',
+            documentCategory: 'bootstrap',
+            steps: WORKER_STEPS,
+            ...docBaseProps,
         });
+        this.monWorkerDocName = monWorkerDoc.documentName;
 
-        this.monWorkerDocName = monWorkerDocName;
-
-        // =====================================================================
-        // SSM Automation Document — Next.js Secrets Deployment
-        //
-        // Single-step automation that syncs deploy scripts from S3 and runs
-        // deploy.py to create/update the nextjs-secrets K8s Secret.
-        // Triggered by the SSM Automation pipeline after bootstrap completes.
-        // =====================================================================
-
-        const nextjsDocName = `${prefix}-deploy-nextjs-secrets`;
-
-        const _nextjsDocument = new ssm.CfnDocument(this, 'NextjsSecretsAutomation', {
-            documentType: 'Automation',
-            name: nextjsDocName,
-            content: this.buildNextjsSecretsContent({
-                description: 'Deploy Next.js K8s secrets — syncs from S3, resolves SSM parameters, creates Secret',
-                steps: NEXTJS_SECRETS_STEPS,
-                ssmPrefix: props.ssmPrefix,
-                s3Bucket: props.scriptsBucketName,
-                automationRoleArn: automationRole.roleArn,
-            }),
-            documentFormat: 'JSON',
-            updateMethod: 'NewVersion',
+        const argocdWorkerDoc = new SsmAutomationDocument(this, 'ArgocdWorkerAutomation', {
+            documentName: `${prefix}-bootstrap-argocd-worker`,
+            description: 'Orchestrates Kubernetes argocd-worker node bootstrap (consolidated)',
+            documentCategory: 'bootstrap',
+            steps: WORKER_STEPS,
+            ...docBaseProps,
         });
-
-        this.nextjsSecretsDocName = nextjsDocName;
+        this.argocdWorkerDocName = argocdWorkerDoc.documentName;
 
         // =====================================================================
-        // SSM Automation Document — Monitoring Secrets Deployment
-        //
-        // Single-step automation that syncs deploy scripts from S3 and runs
-        // deploy.py to resolve SSM parameters (grafana-admin-password,
-        // github-token), create K8s Secrets, deploy the Helm chart, and
-        // reset the Grafana admin password.
-        // Triggered by the SSM Automation pipeline after bootstrap completes.
+        // SSM Automation Documents — Deploy (2)
         // =====================================================================
 
-        const monitoringDocName = `${prefix}-deploy-monitoring-secrets`;
-
-        const _monitoringDocument = new ssm.CfnDocument(this, 'MonitoringSecretsAutomation', {
-            documentType: 'Automation',
-            name: monitoringDocName,
-            content: this.buildNextjsSecretsContent({
-                description: 'Deploy monitoring K8s secrets — syncs from S3, resolves SSM parameters, deploys Helm chart',
-                steps: MONITORING_SECRETS_STEPS,
-                ssmPrefix: props.ssmPrefix,
-                s3Bucket: props.scriptsBucketName,
-                automationRoleArn: automationRole.roleArn,
-            }),
-            documentFormat: 'JSON',
-            updateMethod: 'NewVersion',
+        const nextjsDoc = new SsmAutomationDocument(this, 'NextjsSecretsAutomation', {
+            documentName: `${prefix}-deploy-nextjs-secrets`,
+            description: 'Deploy Next.js K8s secrets — syncs from S3, resolves SSM parameters, creates Secret',
+            documentCategory: 'deploy',
+            steps: NEXTJS_SECRETS_STEPS,
+            ...docBaseProps,
         });
+        this.nextjsSecretsDocName = nextjsDoc.documentName;
 
-        this.monitoringSecretsDocName = monitoringDocName;
+        const monitoringDoc = new SsmAutomationDocument(this, 'MonitoringSecretsAutomation', {
+            documentName: `${prefix}-deploy-monitoring-secrets`,
+            description: 'Deploy monitoring K8s secrets — syncs from S3, resolves SSM parameters, deploys Helm chart',
+            documentCategory: 'deploy',
+            steps: MONITORING_SECRETS_STEPS,
+            ...docBaseProps,
+        });
+        this.monitoringSecretsDocName = monitoringDoc.documentName;
 
         // =====================================================================
         // SSM Parameters — Document Discovery
@@ -390,434 +350,130 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         // without needing cross-stack references.
         // =====================================================================
 
-        new ssm.StringParameter(this, 'ControlPlaneDocNameParam', {
+        const cpDocParam = new ssm.StringParameter(this, 'ControlPlaneDocNameParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/control-plane-doc-name`,
-            stringValue: cpDocName,
+            stringValue: cpDoc.documentName,
             description: 'SSM Automation document name for control plane bootstrap',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/control-plane-doc-name`, cpDocParam);
 
-        new ssm.StringParameter(this, 'AppWorkerDocNameParam', {
+        const appWorkerDocParam = new ssm.StringParameter(this, 'AppWorkerDocNameParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/app-worker-doc-name`,
-            stringValue: appWorkerDocName,
+            stringValue: appWorkerDoc.documentName,
             description: 'SSM Automation document name for app-worker node bootstrap',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/app-worker-doc-name`, appWorkerDocParam);
 
-        new ssm.StringParameter(this, 'MonWorkerDocNameParam', {
+        const monWorkerDocParam = new ssm.StringParameter(this, 'MonWorkerDocNameParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/mon-worker-doc-name`,
-            stringValue: monWorkerDocName,
+            stringValue: monWorkerDoc.documentName,
             description: 'SSM Automation document name for mon-worker node bootstrap',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/mon-worker-doc-name`, monWorkerDocParam);
 
-        new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
+        const argocdWorkerDocParam = new ssm.StringParameter(this, 'ArgocdWorkerDocNameParam', {
+            parameterName: `${props.ssmPrefix}/bootstrap/argocd-worker-doc-name`,
+            stringValue: argocdWorkerDoc.documentName,
+            description: 'SSM Automation document name for argocd-worker node bootstrap',
+        });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/argocd-worker-doc-name`, argocdWorkerDocParam);
+
+        const nextjsDocParam = new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
             parameterName: `${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`,
-            stringValue: nextjsDocName,
+            stringValue: nextjsDoc.documentName,
             description: 'SSM Automation document name for Next.js secrets deployment',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`, nextjsDocParam);
 
-        new ssm.StringParameter(this, 'MonitoringSecretsDocNameParam', {
+        const monDocParam = new ssm.StringParameter(this, 'MonitoringSecretsDocNameParam', {
             parameterName: `${props.ssmPrefix}/deploy/monitoring-secrets-doc-name`,
-            stringValue: monitoringDocName,
+            stringValue: monitoringDoc.documentName,
             description: 'SSM Automation document name for monitoring secrets deployment',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/monitoring-secrets-doc-name`, monDocParam);
 
-        new ssm.StringParameter(this, 'AutomationRoleArnParam', {
+        const roleArnParam = new ssm.StringParameter(this, 'AutomationRoleArnParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/automation-role-arn`,
             stringValue: automationRole.roleArn,
             description: 'IAM role ARN for SSM Automation execution',
         });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/automation-role-arn`, roleArnParam);
 
         // =====================================================================
-        // Auto-Bootstrap Lambda — EventBridge → SSM Automation
+        // Step Functions Orchestrator — EventBridge → State Machine → SSM
+        // =====================================================================
+
+        const orchestrator = new BootstrapOrchestratorConstruct(this, 'Orchestrator', {
+            prefix,
+            ssmPrefix: props.ssmPrefix,
+            automationRoleArn: automationRole.roleArn,
+            scriptsBucketName: props.scriptsBucketName,
+        });
+
+        // Register orchestrator log group for cleanup
+        const orchestratorLogGroupName = `/aws/vendedlogs/states/${prefix}-bootstrap-orchestrator`;
+        cleanup.addLogGroup(orchestratorLogGroupName, orchestrator.stateMachine);
+
+        // Register router Lambda log group for cleanup
+        const routerLogGroupName = `/aws/lambda/${prefix}-bootstrap-router`;
+        cleanup.addLogGroup(routerLogGroupName, orchestrator.routerFunction);
+
+        // =====================================================================
+        // CloudWatch Alarm — Step Functions Execution Failures
+        // =====================================================================
+
+        const alarm = new BootstrapAlarmConstruct(this, 'BootstrapAlarm', {
+            prefix,
+            stateMachine: orchestrator.stateMachine,
+            notificationEmail: props.notificationEmail,
+        });
+
+        // Permission: Publish to SNS alarm topic on step failure
+        automationRole.addToPolicy(new iam.PolicyStatement({
+            sid: 'AllowSnsPublish',
+            effect: iam.Effect.ALLOW,
+            actions: ['sns:Publish'],
+            resources: [alarm.topic.topicArn],
+        }));
+
+        // Register alarm SNS topic for cleanup
+        const alarmTopicName = `${prefix}-bootstrap-alarm`;
+        cleanup.addSnsTopic(alarmTopicName, alarm.topic);
+
+        // =====================================================================
+        // Node Drift Enforcement — SSM State Manager Association
         //
-        // When an ASG launches a replacement instance, this Lambda:
-        //   1. Reads the ASG's k8s:bootstrap-role tag
-        //   2. Maps role → SSM Automation document
-        //   3. Updates the instance-id SSM parameter
-        //   4. Starts SSM Automation execution
-        //
-        // Non-K8s ASGs are silently ignored (no k8s:bootstrap-role tag).
+        // Continuously enforces OS-level K8s prerequisites (kernel modules,
+        // sysctl parameters, containerd/kubelet service state) across all
+        // compute nodes. Runs every 30 minutes via State Manager.
         // =====================================================================
 
-        const autoBootstrapFn = new lambda.Function(this, 'AutoBootstrapFn', {
-            functionName: `${prefix}-auto-bootstrap`,
-            runtime: lambda.Runtime.PYTHON_3_13,
-            handler: 'index.handler',
-            code: lambda.Code.fromInline(`
-import json, logging, os, boto3
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-asg_client = boto3.client("autoscaling")
-ssm_client = boto3.client("ssm")
-
-# Role → SSM parameter suffix for doc name and instance ID
-ROLE_MAP = {
-    "control-plane": {
-        "doc_param": "bootstrap/control-plane-doc-name",
-        "instance_param": "bootstrap/control-plane-instance-id",
-    },
-    "app-worker": {
-        "doc_param": "bootstrap/app-worker-doc-name",
-        "instance_param": "bootstrap/app-worker-instance-id",
-    },
-    "mon-worker": {
-        "doc_param": "bootstrap/mon-worker-doc-name",
-        "instance_param": "bootstrap/mon-worker-instance-id",
-    },
-}
-
-def handler(event, context):
-    detail = event.get("detail", {})
-    instance_id = detail.get("EC2InstanceId", "")
-    asg_name = detail.get("AutoScalingGroupName", "")
-
-    if not instance_id or not asg_name:
-        logger.info("Missing instance or ASG info, skipping")
-        return {"statusCode": 200}
-
-    logger.info("Instance launched: %s in ASG %s", instance_id, asg_name)
-
-    # Read ASG tags to determine role
-    resp = asg_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
-    groups = resp.get("AutoScalingGroups", [])
-    if not groups:
-        logger.info("ASG %s not found, skipping", asg_name)
-        return {"statusCode": 200}
-
-    tags = {t["Key"]: t["Value"] for t in groups[0].get("Tags", [])}
-    role = tags.get("k8s:bootstrap-role")
-    ssm_prefix = tags.get("k8s:ssm-prefix")
-
-    if not role or not ssm_prefix:
-        logger.info("No k8s:bootstrap-role tag on ASG %s, skipping (not a K8s node)", asg_name)
-        return {"statusCode": 200}
-
-    if role not in ROLE_MAP:
-        logger.warning("Unknown bootstrap role: %s", role)
-        return {"statusCode": 400}
-
-    mapping = ROLE_MAP[role]
-    doc_param_path = f"{ssm_prefix}/{mapping['doc_param']}"
-    instance_param_path = f"{ssm_prefix}/{mapping['instance_param']}"
-    bucket_param_path = f"{ssm_prefix}/scripts-bucket"
-
-    # Update instance ID in SSM
-    ssm_client.put_parameter(
-        Name=instance_param_path,
-        Value=instance_id,
-        Type="String",
-        Overwrite=True,
-    )
-    logger.info("Updated SSM %s = %s", instance_param_path, instance_id)
-
-    # Resolve automation document name and S3 bucket
-    doc_name = ssm_client.get_parameter(Name=doc_param_path)["Parameter"]["Value"]
-    s3_bucket = ssm_client.get_parameter(Name=bucket_param_path)["Parameter"]["Value"]
-    region = os.environ.get("AWS_REGION", "eu-west-1")
-
-    # Start SSM Automation (direct instance targeting)
-    # Pass the instance ID directly from the EventBridge event instead of
-    # using Targets with tag-based resolution, which requires tag:GetResources
-    # permission and also finds terminated instances that retain their tags.
-    result = ssm_client.start_automation_execution(
-        DocumentName=doc_name,
-        Parameters={
-            "InstanceId": [instance_id],
-            "SsmPrefix": [ssm_prefix],
-            "S3Bucket": [s3_bucket],
-            "Region": [region],
-        },
-    )
-
-    exec_id = result.get("AutomationExecutionId", "unknown")
-    logger.info("Started %s automation for %s: %s", role, instance_id, exec_id)
-
-    # Publish execution ID for observability
-    try:
-        exec_param = f"{ssm_prefix}/bootstrap/execution-id" if role == "control-plane" else f"{ssm_prefix}/bootstrap/{role.replace('-', '-')}-execution-id"
-        ssm_client.put_parameter(Name=exec_param, Value=exec_id, Type="String", Overwrite=True)
-    except Exception:
-        logger.warning("Could not publish execution ID (non-fatal)")
-
-    return {"statusCode": 200, "executionId": exec_id}
-`),
-            timeout: cdk.Duration.seconds(60),
-            memorySize: 128,
-            description: 'Auto-triggers SSM Automation bootstrap when an ASG launches a K8s instance',
-        });
-
-        // IAM: Allow Lambda to read ASG tags, manage SSM params, and start automation
-        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'AutoBootstrapDescribeAsg',
-            effect: iam.Effect.ALLOW,
-            actions: ['autoscaling:DescribeAutoScalingGroups'],
-            resources: ['*'],
-        }));
-
-        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'AutoBootstrapSsmParams',
-            effect: iam.Effect.ALLOW,
-            actions: ['ssm:GetParameter', 'ssm:PutParameter'],
-            resources: [
-                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
-            ],
-        }));
-
-        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'AutoBootstrapStartAutomation',
-            effect: iam.Effect.ALLOW,
-            actions: ['ssm:StartAutomationExecution'],
-            resources: [
-                `arn:aws:ssm:${this.region}:${this.account}:automation-definition/*`,
-                `arn:aws:ssm:${this.region}:${this.account}:automation-execution/*`,
-            ],
-        }));
-
-        autoBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'AutoBootstrapPassRole',
-            effect: iam.Effect.ALLOW,
-            actions: ['iam:PassRole'],
-            resources: [automationRole.roleArn],
-        }));
-
-        // EventBridge: trigger on any ASG instance launch
-        new events.Rule(this, 'AutoBootstrapRule', {
-            ruleName: `${prefix}-auto-bootstrap`,
-            description: 'Trigger SSM Automation bootstrap when an ASG launches an instance',
-            eventPattern: {
-                source: ['aws.autoscaling'],
-                detailType: ['EC2 Instance Launch Successful'],
-            },
-            targets: [new targets.LambdaFunction(autoBootstrapFn)],
+        new NodeDriftEnforcementConstruct(this, 'DriftEnforcement', {
+            prefix,
+            targetEnvironment: props.targetEnvironment,
+            ssmPrefix: props.ssmPrefix,
         });
 
         // =====================================================================
-        // CloudWatch Alarm — Auto-Bootstrap Lambda Failures
-        //
-        // Fires when the Lambda encounters any error (permissions, API failures,
-        // unhandled exceptions). Sends notification to SNS topic so failures
-        // are surfaced immediately rather than silently swallowed.
+        // CDK-Nag Suppressions
         // =====================================================================
-
-        const bootstrapAlarmTopic = new sns.Topic(this, 'BootstrapAlarmTopic', {
-            topicName: `${prefix}-bootstrap-alarm`,
-            displayName: `${prefix} Auto-Bootstrap Failure Alarm`,
-            enforceSSL: true,  // AwsSolutions-SNS3: Require SSL for publishers
-        });
-
-        if (props.notificationEmail) {
-            bootstrapAlarmTopic.addSubscription(
-                new sns_subscriptions.EmailSubscription(props.notificationEmail),
-            );
-        }
-
-        const bootstrapAlarm = new cloudwatch.Alarm(this, 'AutoBootstrapErrorAlarm', {
-            alarmName: `${prefix}-auto-bootstrap-errors`,
-            alarmDescription:
-                'Auto-bootstrap Lambda failed — new EC2 instance may not be bootstrapped. ' +
-                'Check CloudWatch Logs for /aws/lambda/' + autoBootstrapFn.functionName,
-            metric: autoBootstrapFn.metricErrors({
-                period: cdk.Duration.minutes(5),
-                statistic: 'Sum',
-            }),
-            threshold: 1,
-            evaluationPeriods: 1,
-            comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-            treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        });
-
-        bootstrapAlarm.addAlarmAction(
-            new cloudwatchActions.SnsAction(bootstrapAlarmTopic),
-        );
 
         // cdk-nag: Python 3.13 is the latest GA runtime
-        NagSuppressions.addResourceSuppressions(autoBootstrapFn, [{
+        NagSuppressions.addResourceSuppressions(orchestrator.routerFunction, [{
             id: 'AwsSolutions-L1',
             reason: 'Python 3.13 is the latest GA Lambda runtime. PYTHON_3_14 is a CDK placeholder for an unreleased version.',
         }], true);
 
-    }
-
-    // =========================================================================
-    // Build SSM Automation Document Content
-    // =========================================================================
-
-    private buildAutomationContent(opts: {
-        description: string;
-        steps: AutomationStep[];
-        ssmPrefix: string;
-        s3Bucket: string;
-        automationRoleArn: string;
-    }): Record<string, unknown> {
-        return {
-            schemaVersion: '0.3',
-            description: opts.description,
-            assumeRole: opts.automationRoleArn,
-            parameters: {
-                InstanceId: {
-                    type: 'String',
-                    description: 'Target EC2 instance ID',
-                },
-                SsmPrefix: {
-                    type: 'String',
-                    description: 'SSM parameter prefix for cluster info',
-                    default: opts.ssmPrefix,
-                },
-                S3Bucket: {
-                    type: 'String',
-                    description: 'S3 bucket containing bootstrap scripts',
-                    default: opts.s3Bucket,
-                },
-                Region: {
-                    type: 'String',
-                    description: 'AWS region',
-                    default: this.region,
-                },
-            },
-            mainSteps: opts.steps.map((step) => ({
-                name: step.name,
-                action: 'aws:runCommand',
-                timeoutSeconds: step.timeoutSeconds,
-                onFailure: 'Abort',
-                // TODO: Add SNS notification on failure
-                // onFailure: 'step:notifyFailure',
-                inputs: {
-                    DocumentName: 'AWS-RunShellScript',
-                    InstanceIds: ['{{ InstanceId }}'],
-                    CloudWatchOutputConfig: {
-                        CloudWatchOutputEnabled: true,
-                        CloudWatchLogGroupName: `/ssm${opts.ssmPrefix}/bootstrap`,
-                    },
-                    Parameters: {
-                        commands: [
-                            `# Step: ${step.name} — ${step.description}`,
-                            ``,
-                            `# Ensure PATH includes all standard binary locations`,
-                            `export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"`,
-                            `set -euo pipefail`,
-                            ``,
-                            `# Always sync latest scripts from S3 (AMI copy may be stale)`,
-                            `STEPS_DIR="/data/k8s-bootstrap/${step.scriptPath.replace(/\/[^/]+$/, '')}"`,
-                            `SCRIPT="/data/k8s-bootstrap/${step.scriptPath}"`,
-                            ``,
-                            `mkdir -p "$STEPS_DIR"`,
-                            `aws s3 sync "s3://{{ S3Bucket }}/k8s-bootstrap/boot/steps/" "$STEPS_DIR/" --region {{ Region }} --quiet`,
-                            ``,
-                            `echo "=== Executing: ${step.name} ==="`,
-                            ``,
-                            `# Source CDK-configured env vars (HOSTED_ZONE_ID, API_DNS_NAME,`,
-                            `# K8S_VERSION, NODE_LABEL, etc.) set by EC2 user-data at boot.`,
-                            `if [ -f /etc/profile.d/k8s-env.sh ]; then`,
-                            `  source /etc/profile.d/k8s-env.sh`,
-                            `fi`,
-                            ``,
-                            `# Override with SSM Automation parameters (takes precedence)`,
-                            `export SSM_PREFIX="{{ SsmPrefix }}"`,
-                            `export AWS_REGION="{{ Region }}"`,
-                            `export S3_BUCKET="{{ S3Bucket }}"`,
-                            `export MOUNT_POINT="/data"`,
-                            `export KUBECONFIG="/etc/kubernetes/admin.conf"`,
-                            ``,
-                            `cd "$STEPS_DIR"`,
-                            `python3 "$SCRIPT" 2>&1`,
-                            `echo "=== Completed: ${step.name} ==="`,
-                        ],
-                        workingDirectory: ['/tmp'],
-                        executionTimeout: [String(step.timeoutSeconds)],
-                    },
-                },
-            })),
-            // Surface RunCommand CommandId in execution metadata Outputs
-            outputs: opts.steps.map((step) => `${step.name}.CommandId`),
-        };
-    }
-
-    // =========================================================================
-    // Build Next.js Secrets Automation Document Content
-    //
-    // Separate from buildAutomationContent because:
-    //   - S3 sync path: app-deploy/nextjs/ (not k8s-bootstrap/boot/steps/)
-    //   - CloudWatch log group: /deploy (not /bootstrap)
-    //   - Requires KUBECONFIG for kubectl access
-    // =========================================================================
-
-    private buildNextjsSecretsContent(opts: {
-        description: string;
-        steps: AutomationStep[];
-        ssmPrefix: string;
-        s3Bucket: string;
-        automationRoleArn: string;
-    }): Record<string, unknown> {
-        return {
-            schemaVersion: '0.3',
-            description: opts.description,
-            assumeRole: opts.automationRoleArn,
-            parameters: {
-                InstanceId: {
-                    type: 'String',
-                    description: 'Target EC2 instance ID',
-                },
-                SsmPrefix: {
-                    type: 'String',
-                    description: 'SSM parameter prefix for cluster info',
-                    default: opts.ssmPrefix,
-                },
-                S3Bucket: {
-                    type: 'String',
-                    description: 'S3 bucket containing deploy scripts',
-                    default: opts.s3Bucket,
-                },
-                Region: {
-                    type: 'String',
-                    description: 'AWS region',
-                    default: this.region,
-                },
-            },
-            mainSteps: opts.steps.map((step) => ({
-                name: step.name,
-                action: 'aws:runCommand',
-                timeoutSeconds: step.timeoutSeconds,
-                onFailure: 'Abort',
-                inputs: {
-                    DocumentName: 'AWS-RunShellScript',
-                    InstanceIds: ['{{ InstanceId }}'],
-                    CloudWatchOutputConfig: {
-                        CloudWatchOutputEnabled: true,
-                        CloudWatchLogGroupName: `/ssm${opts.ssmPrefix}/deploy`,
-                    },
-                    Parameters: {
-                        commands: [
-                            `# Step: ${step.name} — ${step.description}`,
-                            ``,
-                            `# Ensure PATH includes all standard binary locations`,
-                            `export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"`,
-                            `set -euo pipefail`,
-                            ``,
-                            `# Sync deploy scripts from S3`,
-                            `DEPLOY_DIR="/data/${step.scriptPath.replace(/\/[^/]+$/, '')}"`,
-                            `SCRIPT="/data/${step.scriptPath}"`,
-                            ``,
-                            `mkdir -p "$DEPLOY_DIR"`,
-                            `aws s3 sync "s3://{{ S3Bucket }}/${step.scriptPath.replace(/\/[^/]+$/, '')}/" "$DEPLOY_DIR/" --region {{ Region }} --quiet`,
-                            ``,
-                            `echo "=== Executing: ${step.name} ==="`,
-                            `export KUBECONFIG="/etc/kubernetes/admin.conf"`,
-                            `export SSM_PREFIX="{{ SsmPrefix }}"`,
-                            `export AWS_REGION="{{ Region }}"`,
-                            `export S3_BUCKET="{{ S3Bucket }}"`,
-                            ``,
-                            `cd "$DEPLOY_DIR"`,
-                            `python3 "$SCRIPT" 2>&1`,
-                            `echo "=== Completed: ${step.name} ==="`,
-                        ],
-                        workingDirectory: ['/tmp'],
-                        executionTimeout: [String(step.timeoutSeconds)],
-                    },
-                },
-            })),
-            // Surface RunCommand CommandId in execution metadata Outputs
-            outputs: opts.steps.map((step) => `${step.name}.CommandId`),
-        };
+        // cdk-nag: Cleanup Lambda and Provider framework Lambda
+        NagSuppressions.addResourceSuppressions(cleanup, [{
+            id: 'AwsSolutions-L1',
+            reason: 'Python 3.13 is the latest GA Lambda runtime. Provider framework Lambda runtime is managed by CDK.',
+        }, {
+            id: 'AwsSolutions-IAM5',
+            reason: 'Cleanup Lambda requires wildcard for log group/SSM parameter ARNs as orphaned resource names are dynamic.',
+        }, {
+            id: 'AwsSolutions-IAM4',
+            reason: 'Provider framework uses AWS managed policy for Lambda basic execution — standard CDK pattern.',
+        }], true);
     }
 }

@@ -6,8 +6,8 @@
  * CloudFormation stack names / CDK construct IDs.
  */
 
-import { Project } from '../../../lib/config/projects';
 import { shortEnv } from '../../../lib/config/environments';
+import { Project } from '../../../lib/config/projects';
 import {
     stackId,
     getStackId,
@@ -77,7 +77,7 @@ describe('Naming Utilities', () => {
         });
 
         it('should have expected k8s stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.kubernetes)).toStrictEqual(['data', 'base', 'goldenAmi', 'ssmAutomation', 'controlPlane', 'appWorker', 'monitoringWorker', 'appIam', 'api', 'edge']);
+            expect(Object.keys(STACK_REGISTRY.kubernetes)).toStrictEqual(['data', 'base', 'goldenAmi', 'ssmAutomation', 'controlPlane', 'appWorker', 'monitoringWorker', 'argocdWorker', 'appIam', 'api', 'edge', 'observability']);
         });
 
         it('should have expected bedrock stack keys', () => {

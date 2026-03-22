@@ -38,7 +38,6 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import {
   SSMClient,
-  GetParameterCommand,
   SendCommandCommand,
   GetCommandInvocationCommand,
 } from '@aws-sdk/client-ssm';
@@ -121,7 +120,7 @@ function buildArgoCDCurl(curlFlags: string, apiPath: string, extraHeaders: strin
   ].join(' && ');
 }
 
-const ssmPrefix = `/k8s/${environment}`;
+
 
 // =============================================================================
 // Expected ArgoCD Applications
@@ -167,17 +166,7 @@ const ec2 = new EC2Client({
 // Helpers
 // =============================================================================
 
-/** Fetch a single SSM parameter value, returning undefined if missing. */
-async function getParam(name: string): Promise<string | undefined> {
-  try {
-    const result = await ssm.send(new GetParameterCommand({ Name: name }));
-    const value = result.Parameter?.Value;
-    if (value && value !== 'None') return value;
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
+
 
 /** Fetch a secret from Secrets Manager, returning undefined if missing. */
 async function getSecret(secretId: string): Promise<string | undefined> {
@@ -311,7 +300,8 @@ async function resolveControlPlaneInstance(): Promise<string | undefined> {
     return undefined;
   }
 
-  logger.info(`Control plane instance: ${instanceId}`);
+  maskSecret(instanceId);
+  logger.info('Control plane instance resolved');
   return instanceId;
 }
 
@@ -488,7 +478,6 @@ async function waitForSync(
 
   console.log('## ArgoCD Sync Verification (via SSM)');
   console.log('');
-  console.log(`Instance: ${instanceId}`);
   console.log(`Expected Applications: ${EXPECTED_APPS.join(', ')}`);
   console.log(`Poll interval: ${pollInterval}s, max polls: ${maxPolls}`);
   console.log('');
@@ -566,7 +555,7 @@ async function waitForSync(
 
       for (const app of EXPECTED_APPS) {
         const wave = waveMap[app] || '3';
-        const argoLink = `[View](https://ops.nelsonlamounier.com/argocd/applications/argocd/${app})`;
+        const argoLink = `[View](ArgoCD UI)`;
         writeSummary(`| ${wave} | ${app} | ✅ Synced | ✅ Healthy | ${argoLink} |`);
       }
 

@@ -20,7 +20,6 @@ import {
     DescribeLogStreamsCommand,
     type LogGroup,
 } from '@aws-sdk/client-cloudwatch-logs';
-
 import {
     emitAnnotation,
     setOutput,

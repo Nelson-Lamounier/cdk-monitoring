@@ -2,10 +2,18 @@
  * @format
  * AI Publisher — Lambda Handler
  *
- * Implements the "Sync-and-Transform" pattern with the Metadata Brain model:
- *   S3 event (drafts/*.md) → Read .md → Converse API (Claude 4.6)
- *     → Write .mdx to S3 (published/ + content/v{n}/)
- *     → Write AI-enhanced metadata to DynamoDB
+ * Implements two content generation modes:
+ *
+ * 1. **KB-Augmented Mode** (new): Short brief (< 500 chars) uploaded to
+ *    drafts/*.md → Lambda queries Bedrock Knowledge Base (Pinecone) → retrieves
+ *    context → Sonnet writes a fresh MDX article from knowledge.
+ *
+ * 2. **Legacy Transform Mode**: Full .md article uploaded → Sonnet transforms
+ *    it into polished .mdx (backward compatible, no KB query).
+ *
+ * Both modes write output using the Metadata Brain model:
+ *   → S3 (published/ + content/v{n}/)
+ *   → DynamoDB (ARTICLE#slug / METADATA + CONTENT#v{ts})
  *
  * DynamoDB Entity Schema (Metadata Brain):
  *   pk: ARTICLE#<slug>
@@ -17,6 +25,7 @@
  *
  * Features:
  * - Bedrock Converse API with Prompt Caching
+ * - KB-Augmented generation via Bedrock Retrieve API (Pinecone)
  * - Adaptive Thinking with dynamic budget based on content complexity
  * - AI-enhanced metadata (aiSummary, readingTime, technicalConfidence)
  * - Content versioning in S3
@@ -24,6 +33,10 @@
 
 import type { S3Event, S3Handler } from 'aws-lambda';
 
+import {
+    BedrockAgentRuntimeClient,
+    RetrieveCommand,
+} from '@aws-sdk/client-bedrock-agent-runtime';
 import {
     BedrockRuntimeClient,
     ConverseCommand,
@@ -38,16 +51,45 @@ import { BLOG_PERSONA_SYSTEM_PROMPT } from './prompts/blog-persona.js';
 // ENVIRONMENT & CLIENTS
 // =============================================================================
 
-const ASSETS_BUCKET = process.env.ASSETS_BUCKET!;
+/**
+ * Validate and retrieve a required environment variable.
+ *
+ * @param name - The environment variable name
+ * @returns The environment variable value
+ * @throws Error with a descriptive message if the variable is missing
+ */
+function requireEnv(name: string): string {
+    const value = process.env[name];
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${name}`);
+    }
+    return value;
+}
+
+const ASSETS_BUCKET = requireEnv('ASSETS_BUCKET');
 const DRAFT_PREFIX = process.env.DRAFT_PREFIX ?? 'drafts/';
 const PUBLISHED_PREFIX = process.env.PUBLISHED_PREFIX ?? 'published/';
 const CONTENT_PREFIX = process.env.CONTENT_PREFIX ?? 'content/';
-const TABLE_NAME = process.env.TABLE_NAME!;
+const TABLE_NAME = requireEnv('TABLE_NAME');
 const FOUNDATION_MODEL = process.env.FOUNDATION_MODEL ?? 'anthropic.claude-sonnet-4-6';
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS ?? '8192', 10);
 const THINKING_BUDGET_TOKENS = parseInt(process.env.THINKING_BUDGET_TOKENS ?? '16000', 10);
 
+/** Knowledge Base ID for KB-augmented mode (empty = disabled). */
+const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID ?? '';
+
+/** Number of KB passages to retrieve per article brief. */
+const KB_RETRIEVE_COUNT = parseInt(process.env.KB_RETRIEVE_COUNT ?? '10', 10);
+
+/**
+ * Character threshold for brief detection.
+ * Files shorter than this are treated as topic briefs (KB-augmented mode).
+ * Files at or above this length use the legacy full-transform path.
+ */
+const BRIEF_THRESHOLD = 500;
+
 const bedrockClient = new BedrockRuntimeClient({});
+const bedrockAgentClient = new BedrockAgentRuntimeClient({});
 const s3Client = new S3Client({});
 const dynamoClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -223,6 +265,11 @@ export function analyseComplexity(markdown: string): ComplexityAnalysis {
 
 /**
  * Read the raw markdown file from S3
+ *
+ * @param bucket - The S3 bucket name
+ * @param key - The S3 object key
+ * @returns The file contents as a UTF-8 string
+ * @throws Error if the S3 object body is empty or missing
  */
 async function readDraftFromS3(bucket: string, key: string): Promise<string> {
     const response = await s3Client.send(new GetObjectCommand({
@@ -230,7 +277,11 @@ async function readDraftFromS3(bucket: string, key: string): Promise<string> {
         Key: key,
     }));
 
-    return await response.Body!.transformToString('utf-8');
+    if (!response.Body) {
+        throw new Error(`S3 GetObject returned empty body for s3://${bucket}/${key}`);
+    }
+
+    return await response.Body.transformToString('utf-8');
 }
 
 /**
@@ -296,8 +347,9 @@ async function writeMetadataToDynamoDB(
     sourceKey: string,
     publishedKey: string,
     complexity: ComplexityAnalysis,
+    versionTimestamp: string,
 ): Promise<void> {
-    const now = new Date().toISOString();
+    const now = versionTimestamp;
     const pk = `ARTICLE#${slug}`;
     const contentRef = `s3://${ASSETS_BUCKET}/${publishedKey}`;
 
@@ -390,7 +442,7 @@ async function writeMetadataToDynamoDB(
  * Input:  drafts/my-article.md
  * Output: published/my-article.mdx
  */
-function derivePublishedKey(draftKey: string): string {
+export function derivePublishedKey(draftKey: string): string {
     const filename = draftKey
         .replace(DRAFT_PREFIX, '')
         .replace(/\.md$/, '.mdx');
@@ -399,14 +451,20 @@ function derivePublishedKey(draftKey: string): string {
 
 /**
  * Derive the versioned content blob S3 key (Metadata Brain).
- * Input:  drafts/my-article.md, version 1
- * Output: content/v1/my-article.mdx
+ *
+ * Uses ISO timestamp to align with DynamoDB sort key format
+ * (`CONTENT#v_2026-03-17T08:30:00.000Z`) for easier debugging
+ * and cross-reference between S3 and DynamoDB.
+ *
+ * @param draftKey - The source draft S3 key (e.g. `drafts/my-article.md`)
+ * @param isoTimestamp - ISO 8601 timestamp for versioning
+ * @returns The versioned content S3 key (e.g. `content/v_2026-03-17T.../my-article.mdx`)
  */
-function deriveContentKey(draftKey: string, version: number): string {
+export function deriveContentKey(draftKey: string, isoTimestamp: string): string {
     const filename = draftKey
         .replace(DRAFT_PREFIX, '')
         .replace(/\.md$/, '.mdx');
-    return `${CONTENT_PREFIX}v${version}/${filename}`;
+    return `${CONTENT_PREFIX}v_${isoTimestamp}/${filename}`;
 }
 
 /**
@@ -414,7 +472,7 @@ function deriveContentKey(draftKey: string, version: number): string {
  * Input:  drafts/deploying-k8s-on-aws.md
  * Output: deploying-k8s-on-aws
  */
-function deriveSlug(draftKey: string): string {
+export function deriveSlug(draftKey: string): string {
     return draftKey
         .replace(DRAFT_PREFIX, '')
         .replace(/\.md$/, '');
@@ -435,7 +493,7 @@ function deriveSlug(draftKey: string): string {
  *   3. Only escape control characters (U+0000-U+001F) when inside a
  *      string value; structural whitespace is left alone.
  */
-function parseTransformResult(responseText: string): TransformResult {
+export function parseTransformResult(responseText: string): TransformResult {
     // ── Step 1: find the outermost JSON object ──
     const firstBrace = responseText.indexOf('{');
     const lastBrace  = responseText.lastIndexOf('}');
@@ -535,16 +593,149 @@ function parseTransformResult(responseText: string): TransformResult {
     return parsed;
 }
 
+// =============================================================================
+// KB-AUGMENTED RETRIEVAL
+// =============================================================================
+
+/**
+ * Retrieve relevant context from the Bedrock Knowledge Base (Pinecone).
+ *
+ * Queries the KB with the article topic/brief and returns concatenated
+ * passages for injection into the Converse API prompt.
+ *
+ * @param topic - The article topic or brief text to search for
+ * @returns Concatenated KB passages formatted for prompt injection
+ */
+async function retrieveKnowledgeBaseContext(topic: string): Promise<string> {
+    const response = await bedrockAgentClient.send(new RetrieveCommand({
+        knowledgeBaseId: KNOWLEDGE_BASE_ID,
+        retrievalQuery: { text: topic },
+        retrievalConfiguration: {
+            vectorSearchConfiguration: {
+                numberOfResults: KB_RETRIEVE_COUNT,
+            },
+        },
+    }));
+
+    const results = response.retrievalResults ?? [];
+    console.log(`KB retrieval returned ${results.length} passages for topic: "${topic.substring(0, 100)}..."`);
+
+    return results
+        .map((r: { content?: { text?: string } }, i: number) => `[Source ${i + 1}]\n${r.content?.text ?? ''}`)
+        .join('\n\n');
+}
+
+/**
+ * Build the user message for KB-augmented mode.
+ *
+ * Injects retrieved KB context before the article brief, giving Sonnet
+ * the factual evidence it needs to write a complete article from scratch.
+ *
+ * @param brief - The short article brief from the uploaded .md file
+ * @param kbContext - Retrieved passages from the Knowledge Base
+ * @param slug - The article slug derived from the filename
+ * @param complexity - Complexity analysis result
+ * @returns Formatted user message for the Converse API
+ */
+function buildKbAugmentedMessage(
+    brief: string,
+    kbContext: string,
+    slug: string,
+    complexity: ComplexityAnalysis,
+): string {
+    return [
+        `Write a COMPLETE blog article from scratch using the Knowledge Base context below as your primary source material.`,
+        `The article slug is: "${slug}"`,
+        `Today's date is: ${new Date().toISOString().split('T')[0]}`,
+        ``,
+        `## Complexity Assessment`,
+        `This article has been classified as **${complexity.tier}** complexity.`,
+        `Reason: ${complexity.reason}`,
+        ``,
+        `--- BEGIN KNOWLEDGE BASE CONTEXT ---`,
+        kbContext,
+        `--- END KNOWLEDGE BASE CONTEXT ---`,
+        ``,
+        `--- BEGIN ARTICLE BRIEF ---`,
+        brief,
+        `--- END ARTICLE BRIEF ---`,
+        ``,
+        `Use the Knowledge Base context as your factual source. Write a complete, polished MDX blog post following all rules in the system prompt.`,
+        `If the brief mentions specific focus areas, prioritise those KB passages.`,
+        `Do NOT hallucinate details not present in the KB context — note missing information in processingNote.`,
+        ``,
+        `Return ONLY the JSON object as specified in the system prompt. No additional text.`,
+    ].join('\n');
+}
+
+/**
+ * Build the user message for legacy full-transform mode.
+ *
+ * @param markdownContent - The full markdown article to transform
+ * @param slug - The article slug derived from the filename
+ * @param complexity - Complexity analysis result
+ * @returns Formatted user message for the Converse API
+ */
+function buildLegacyTransformMessage(
+    markdownContent: string,
+    slug: string,
+    complexity: ComplexityAnalysis,
+): string {
+    return [
+        `Transform the following raw markdown draft into a polished MDX blog post.`,
+        `The article slug is: "${slug}"`,
+        `Today's date is: ${new Date().toISOString().split('T')[0]}`,
+        ``,
+        `## Complexity Assessment`,
+        `This draft has been classified as **${complexity.tier}** complexity.`,
+        `Reason: ${complexity.reason}`,
+        ``,
+        `### Adaptive Detail Preservation Rules`,
+        complexity.tier === 'HIGH'
+            ? [
+                `- This is a HIGHLY technical article. Preserve ALL code blocks, configs, and CLI commands verbatim.`,
+                `- Maintain every architectural detail, flag, and parameter from the original.`,
+                `- Add explanatory comments to code blocks where the author hasn't provided them.`,
+                `- Expand abbreviated explanations into full technical reasoning.`,
+                `- Include a detailed Prerequisites section.`,
+            ].join('\n')
+            : complexity.tier === 'MID'
+                ? [
+                    `- Preserve all code blocks and commands exactly as written.`,
+                    `- Add brief context around code examples where helpful.`,
+                    `- Balance narrative flow with technical precision.`,
+                ].join('\n')
+                : [
+                    `- Focus on readability and narrative flow.`,
+                    `- Keep code examples but prioritise the storytelling.`,
+                    `- Light-touch editing — polish rather than restructure.`,
+                ].join('\n'),
+        ``,
+        `--- BEGIN DRAFT ---`,
+        markdownContent,
+        `--- END DRAFT ---`,
+        ``,
+        `Return ONLY the JSON object as specified in the system prompt. No additional text.`,
+    ].join('\n');
+}
+
+// =============================================================================
+// BEDROCK CONVERSE API CALL
+// =============================================================================
+
 /**
  * Call Claude 4.6 Sonnet via the Bedrock Converse API with
  * Prompt Caching and Adaptive Thinking.
  *
- * The thinking budget is dynamically scaled based on the
- * complexity analysis of the input markdown.
+ * Accepts a pre-built user message (from either KB-augmented or legacy mode).
+ * The thinking budget is dynamically scaled based on the complexity analysis.
+ *
+ * @param userMessage - The formatted user message (KB-augmented or legacy)
+ * @param complexity - Complexity analysis driving the thinking budget
+ * @returns Parsed transform result with MDX content, metadata, and shot list
  */
 async function transformWithBedrock(
-    markdownContent: string,
-    slug: string,
+    userMessage: string,
     complexity: ComplexityAnalysis,
 ): Promise<TransformResult> {
     const command = new ConverseCommand({
@@ -555,42 +746,7 @@ async function transformWithBedrock(
                 role: 'user',
                 content: [
                     {
-                        text: [
-                            `Transform the following raw markdown draft into a polished MDX blog post.`,
-                            `The article slug is: "${slug}"`,
-                            `Today's date is: ${new Date().toISOString().split('T')[0]}`,
-                            ``,
-                            `## Complexity Assessment`,
-                            `This draft has been classified as **${complexity.tier}** complexity.`,
-                            `Reason: ${complexity.reason}`,
-                            ``,
-                            `### Adaptive Detail Preservation Rules`,
-                            complexity.tier === 'HIGH'
-                                ? [
-                                    `- This is a HIGHLY technical article. Preserve ALL code blocks, configs, and CLI commands verbatim.`,
-                                    `- Maintain every architectural detail, flag, and parameter from the original.`,
-                                    `- Add explanatory comments to code blocks where the author hasn't provided them.`,
-                                    `- Expand abbreviated explanations into full technical reasoning.`,
-                                    `- Include a detailed Prerequisites section.`,
-                                ].join('\n')
-                                : complexity.tier === 'MID'
-                                    ? [
-                                        `- Preserve all code blocks and commands exactly as written.`,
-                                        `- Add brief context around code examples where helpful.`,
-                                        `- Balance narrative flow with technical precision.`,
-                                    ].join('\n')
-                                    : [
-                                        `- Focus on readability and narrative flow.`,
-                                        `- Keep code examples but prioritise the storytelling.`,
-                                        `- Light-touch editing — polish rather than restructure.`,
-                                    ].join('\n'),
-                            ``,
-                            `--- BEGIN DRAFT ---`,
-                            markdownContent,
-                            `--- END DRAFT ---`,
-                            ``,
-                            `Return ONLY the JSON object as specified in the system prompt. No additional text.`,
-                        ].join('\n'),
+                        text: userMessage,
                     },
                 ],
             },
@@ -671,9 +827,14 @@ export function validateMermaidSyntax(mdxContent: string): string[] {
  * S3 event handler for the MD-to-Blog pipeline.
  *
  * Triggered by s3:ObjectCreated on drafts/*.md.
- * Analyses input complexity, scales Adaptive Thinking budget,
- * then transforms each draft via Claude 4.6 and writes results
- * using the Metadata Brain model.
+ *
+ * Supports two modes:
+ * - **KB-Augmented**: Short briefs (< 500 chars) + KNOWLEDGE_BASE_ID set →
+ *   retrieves context from Pinecone, Sonnet writes from knowledge.
+ * - **Legacy Transform**: Full articles → Sonnet transforms into MDX.
+ *
+ * Both modes analyse complexity, scale Adaptive Thinking budget,
+ * and write results using the Metadata Brain model.
  */
 export const handler: S3Handler = async (event: S3Event): Promise<void> => {
     console.log(`Processing ${event.Records.length} S3 event(s)`);
@@ -689,71 +850,60 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
             const markdownContent = await readDraftFromS3(bucket, key);
             console.log(`Read ${markdownContent.length} chars from draft`);
 
-            // 2. Analyse complexity → drives thinking budget
-            const complexity = analyseComplexity(markdownContent);
-            console.log(
-                `Complexity: ${complexity.tier} → ${complexity.budgetTokens} thinking tokens | ${complexity.reason}`,
-            );
+            // 2. Detect mode: KB-augmented brief vs legacy full transform
+            const isKbBrief = markdownContent.length < BRIEF_THRESHOLD && KNOWLEDGE_BASE_ID.length > 0;
+            console.log(`Mode: ${isKbBrief ? 'KB-AUGMENTED' : 'LEGACY-TRANSFORM'} (${markdownContent.length} chars, KB=${KNOWLEDGE_BASE_ID ? 'configured' : 'disabled'})`);
 
-            // 3. Derive output paths
+            // 3. For KB mode, retrieve context; for legacy, use the content directly
+            let contentForComplexity: string;
+            let userMessage: string;
+
+            // 4. Derive output paths (ISO timestamp shared between S3 key and DynamoDB sort key)
             const slug = deriveSlug(key);
             const publishedKey = derivePublishedKey(key);
-            const contentKey = deriveContentKey(key, Date.now());
+            const versionTimestamp = new Date().toISOString();
+            const contentKey = deriveContentKey(key, versionTimestamp);
 
-            // 4. Transform via Bedrock Converse API (budget scales with complexity)
-            console.log(`Invoking ${FOUNDATION_MODEL} with Adaptive Thinking (budget: ${complexity.budgetTokens} tokens)`);
-            const result = await transformWithBedrock(markdownContent, slug, complexity);
-            console.log(`Transform complete: "${result.metadata.title}" (${result.metadata.readingTime} min, confidence: ${result.metadata.technicalConfidence}%, shotList: ${result.shotList.length} items)`);
+            if (isKbBrief) {
+                // KB-Augmented: retrieve context from Pinecone-backed KB
+                console.log(`Retrieving KB context for brief: "${markdownContent.substring(0, 100)}..."`);
+                const kbContext = await retrieveKnowledgeBaseContext(markdownContent);
+                console.log(`KB context retrieved: ${kbContext.length} chars`);
 
-            // 4b. MermaidChart syntax pre-check (warn but don't block)
-            const mermaidWarnings = validateMermaidSyntax(result.content);
-            if (mermaidWarnings.length > 0) {
-                console.warn(`MermaidChart syntax warnings for ${slug}:`, mermaidWarnings);
-            }
+                // Use KB context for complexity analysis (the brief alone is too short)
+                contentForComplexity = kbContext;
 
-            // 4c. Log Director's Shot List
-            if (result.shotList.length > 0) {
-                console.log(`Director's Shot List for ${slug}:`, JSON.stringify(result.shotList, null, 2));
-            }
+                const complexity = analyseComplexity(contentForComplexity);
+                console.log(
+                    `Complexity: ${complexity.tier} → ${complexity.budgetTokens} thinking tokens | ${complexity.reason}`,
+                );
 
-            // 5. Write MDX content to S3 (published/ + content/v1/)
-            await writeContentToS3(ASSETS_BUCKET, publishedKey, contentKey, result.content);
-            console.log(`Content written to s3://${ASSETS_BUCKET}/${publishedKey} + ${contentKey}`);
+                userMessage = buildKbAugmentedMessage(markdownContent, kbContext, slug, complexity);
 
-            // 6. Write AI-enhanced metadata + shotList to DynamoDB (Metadata Brain)
-            await writeMetadataToDynamoDB(
-                result.metadata.slug || slug,
-                result.metadata,
-                result.shotList,
-                key,
-                publishedKey,
-                complexity,
-            );
-            console.log(`Metadata written to ${TABLE_NAME} (pk=ARTICLE#${result.metadata.slug || slug})`);
+                // 5. Transform via Bedrock Converse API
+                console.log(`Invoking ${FOUNDATION_MODEL} in KB-Augmented mode (budget: ${complexity.budgetTokens} tokens)`);
+                const result = await transformWithBedrock(userMessage, complexity);
+                console.log(`Transform complete: "${result.metadata.title}" (${result.metadata.readingTime} min, confidence: ${result.metadata.technicalConfidence}%, shotList: ${result.shotList.length} items)`);
 
-            // 7. On-demand ISR revalidation (opt-in via REVALIDATION_URL env var)
-            //    Tells the Next.js frontend to purge cached pages for this article
-            //    so it's visible immediately without waiting for the ISR interval.
-            const revalidationUrl = process.env.REVALIDATION_URL;
-            const revalidationSecret = process.env.REVALIDATION_SECRET;
-            if (revalidationUrl) {
-                try {
-                    const articleSlug = result.metadata.slug || slug;
-                    const url = new URL(revalidationUrl);
-                    url.searchParams.set('slug', articleSlug);
-                    if (revalidationSecret) {
-                        url.searchParams.set('secret', revalidationSecret);
-                    }
-                    const response = await fetch(url.toString(), { method: 'GET' });
-                    if (response.ok) {
-                        console.log(`ISR revalidation triggered for /blog/${articleSlug}`);
-                    } else {
-                        console.warn(`ISR revalidation returned ${response.status}: ${await response.text()}`);
-                    }
-                } catch (revalError) {
-                    // Non-blocking — article is already published to S3/DynamoDB
-                    console.warn('ISR revalidation failed (non-blocking):', revalError);
-                }
+
+                // Post-processing (shared between both modes)
+                await writePostProcessing(result, slug, key, publishedKey, contentKey, complexity, versionTimestamp);
+            } else {
+                // Legacy Transform: full article → polished MDX
+                const complexity = analyseComplexity(markdownContent);
+                console.log(
+                    `Complexity: ${complexity.tier} → ${complexity.budgetTokens} thinking tokens | ${complexity.reason}`,
+                );
+
+                userMessage = buildLegacyTransformMessage(markdownContent, slug, complexity);
+
+                // 5. Transform via Bedrock Converse API
+                console.log(`Invoking ${FOUNDATION_MODEL} in Legacy-Transform mode (budget: ${complexity.budgetTokens} tokens)`);
+                const result = await transformWithBedrock(userMessage, complexity);
+                console.log(`Transform complete: "${result.metadata.title}" (${result.metadata.readingTime} min, confidence: ${result.metadata.technicalConfidence}%, shotList: ${result.shotList.length} items)`);
+
+                // Post-processing (shared between both modes)
+                await writePostProcessing(result, slug, key, publishedKey, contentKey, complexity, versionTimestamp);
             }
 
         } catch (error) {
@@ -764,3 +914,76 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
 
     console.log('All records processed successfully');
 };
+
+/**
+ * Shared post-processing: validate, write to S3, write metadata, trigger ISR.
+ *
+ * Extracted to avoid code duplication between KB-augmented and legacy modes.
+ *
+ * @param result - The parsed transform result from Bedrock
+ * @param slug - Article slug
+ * @param sourceKey - Original S3 key of the draft
+ * @param publishedKey - S3 key for the published MDX
+ * @param contentKey - S3 key for the versioned content blob
+ * @param complexity - Complexity analysis result
+ * @param versionTimestamp - ISO timestamp for versioning
+ */
+async function writePostProcessing(
+    result: TransformResult,
+    slug: string,
+    sourceKey: string,
+    publishedKey: string,
+    contentKey: string,
+    complexity: ComplexityAnalysis,
+    versionTimestamp: string,
+): Promise<void> {
+    // MermaidChart syntax pre-check (warn but don't block)
+    const mermaidWarnings = validateMermaidSyntax(result.content);
+    if (mermaidWarnings.length > 0) {
+        console.warn(`MermaidChart syntax warnings for ${slug}:`, mermaidWarnings);
+    }
+
+    // Log Director's Shot List
+    if (result.shotList.length > 0) {
+        console.log(`Director's Shot List for ${slug}:`, JSON.stringify(result.shotList, null, 2));
+    }
+
+    // Write MDX content to S3 (published/ + content/v{n}/)
+    await writeContentToS3(ASSETS_BUCKET, publishedKey, contentKey, result.content);
+    console.log(`Content written to s3://${ASSETS_BUCKET}/${publishedKey} + ${contentKey}`);
+
+    // Write AI-enhanced metadata + shotList to DynamoDB (Metadata Brain)
+    await writeMetadataToDynamoDB(
+        result.metadata.slug || slug,
+        result.metadata,
+        result.shotList,
+        sourceKey,
+        publishedKey,
+        complexity,
+        versionTimestamp,
+    );
+    console.log(`Metadata written to ${TABLE_NAME} (pk=ARTICLE#${result.metadata.slug || slug})`);
+
+    // On-demand ISR revalidation (opt-in via REVALIDATION_URL env var)
+    const revalidationUrl = process.env.REVALIDATION_URL;
+    const revalidationSecret = process.env.REVALIDATION_SECRET;
+    if (revalidationUrl) {
+        try {
+            const articleSlug = result.metadata.slug || slug;
+            const url = new URL(revalidationUrl);
+            url.searchParams.set('slug', articleSlug);
+            const headers: Record<string, string> = {};
+            if (revalidationSecret) {
+                headers['x-revalidation-secret'] = revalidationSecret;
+            }
+            const response = await fetch(url.toString(), { method: 'GET', headers });
+            if (response.ok) {
+                console.log(`ISR revalidation triggered for /blog/${articleSlug}`);
+            } else {
+                console.warn(`ISR revalidation returned ${response.status}: ${await response.text()}`);
+            }
+        } catch (revalError) {
+            console.warn('ISR revalidation failed (non-blocking):', revalError);
+        }
+    }
+}

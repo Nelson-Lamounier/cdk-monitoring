@@ -57,6 +57,15 @@ deploy project environment *ARGS:
       --require-approval never \
       {{ARGS}}
 
+# Deploy a single CDK stack (e.g., just deploy-stack ArgocdWorker-development kubernetes development)
+[group('cdk')]
+deploy-stack stack project environment *ARGS:
+    cd infra && npx cdk deploy {{stack}} --exclusively \
+      -c project={{project}} -c environment={{environment}} \
+      --profile $(just _profile {{environment}}) \
+      --require-approval never \
+      {{ARGS}}
+
 # Show diff between local and deployed stacks
 [group('cdk')]
 diff project environment *ARGS:
@@ -113,7 +122,7 @@ ci-synth-validate:
     echo "==========================================="
     echo "Validating K8s Project (dev)"
     echo "==========================================="
-    if npx cdk synth -c project=kubernetes -c environment=dev --no-lookups --quiet; then
+    if npx cdk synth -c project=kubernetes -c environment=dev -c adminAllowedIps=NONE --no-lookups --quiet; then
       echo "✓ K8s synth passed"
     else
       echo "✗ K8s synth FAILED"
@@ -148,6 +157,12 @@ ci-synth-validate:
       exit 1
     fi
     echo "✓ CDK synthesis validation complete (all projects)"
+
+# CI pipeline setup: validate account ID, resolve edge config, mask secrets
+# Called by: .github/workflows/_deploy-kubernetes.yml → setup job
+[group('ci')]
+ci-pipeline-setup:
+    npx tsx infra/scripts/ci/pipeline-setup.ts
 
 # CI synth: synthesize + output stack names (e.g., just ci-synth kubernetes development)
 # Used by deployment pipelines to get ordered stack names for targeted deploys.
@@ -185,6 +200,13 @@ ci-drift *ARGS:
 [group('ci')]
 ci-log-audit *ARGS:
     npx tsx infra/scripts/ci/log-group-audit.ts {{ARGS}}
+
+# CI security scan: run Checkov against synthesised CDK templates
+# Blocks on CRITICAL/HIGH findings. Use --soft-fail for advisory mode.
+# Called by: .github/workflows/ci.yml → iac-security-scan job
+[group('ci')]
+ci-security-scan *ARGS:
+    npx tsx infra/scripts/ci/security-scan.ts {{ARGS}}
 
 
 
@@ -304,13 +326,19 @@ test-file path:
 # Usage: just ci-integration-test kubernetes development
 [group('ci')]
 ci-integration-test project environment *ARGS:
-    cd infra && CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPatterns="tests/integration/{{project}}" {{ARGS}}
+    cd infra && CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPattern="tests/integration/{{project}}" {{ARGS}}
 
 # Run integration tests locally (with AWS profile)
 # Usage: just test-integration kubernetes development
 [group('test')]
 test-integration project environment *ARGS:
-    cd infra && AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPatterns="tests/integration/{{project}}" {{ARGS}}
+    cd infra && AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPattern="tests/integration/{{project}}" {{ARGS}}
+
+# Run frontend-ops tests (sync script + workflow validation)
+# Usage: just test-frontend-ops
+[group('test')]
+test-frontend-ops *ARGS:
+    npx jest --config frontend-ops/jest.config.js {{ARGS}}
 
 # =============================================================================
 # CODE QUALITY
@@ -392,6 +420,28 @@ security-scan *ARGS:
     checkov --directory infra/cdk.out --framework cloudformation --compact --quiet \
       -o cli -o json --output-file-path security-reports {{ARGS}}
 
+# Run Snyk security scan (open-source deps + IaC)
+# Requires SNYK_TOKEN environment variable (set in GitHub Secrets or local env).
+# Free tier: unlimited tests for open-source projects, 300 IaC tests/month.
+# Usage: just security-snyk
+[group('quality')]
+security-snyk *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v snyk &> /dev/null; then
+      echo "→ Installing Snyk CLI…"
+      npm install -g snyk
+    fi
+    echo "=== Snyk Open-Source (Dependencies) ==="
+    snyk test --all-projects --severity-threshold=high {{ARGS}} || true
+    echo ""
+    echo "=== Snyk IaC (CloudFormation Templates) ==="
+    if [ -d "infra/cdk.out" ]; then
+      snyk iac test infra/cdk.out --severity-threshold=high {{ARGS}} || true
+    else
+      echo "⚠ infra/cdk.out/ not found. Run 'just synth <project> <env>' first."
+    fi
+
 # =============================================================================
 # KUBERNETES
 # =============================================================================
@@ -472,6 +522,27 @@ helm-validate-charts:
       echo "  ✗ template render FAILED"
       helm template monitoring-stack kubernetes-app/platform/charts/monitoring/chart \
         -f kubernetes-app/platform/charts/monitoring/chart/values-development.yaml 2>&1 || true
+      ERRORS=$((ERRORS + 1))
+    fi
+    echo ""
+
+    # --- Golden Path Service chart ---
+    echo "--- Golden Path Service chart ---"
+    if helm lint kubernetes-app/workloads/charts/golden-path-service/chart \
+         -f kubernetes-app/workloads/charts/golden-path-service/chart/values.yaml 2>&1; then
+      echo "  ✓ lint passed"
+    else
+      echo "  ✗ lint FAILED"
+      ERRORS=$((ERRORS + 1))
+    fi
+
+    if helm template golden-path kubernetes-app/workloads/charts/golden-path-service/chart \
+         -f kubernetes-app/workloads/charts/golden-path-service/chart/values.yaml > /dev/null 2>&1; then
+      echo "  ✓ template render passed"
+    else
+      echo "  ✗ template render FAILED"
+      helm template golden-path kubernetes-app/workloads/charts/golden-path-service/chart \
+        -f kubernetes-app/workloads/charts/golden-path-service/chart/values.yaml 2>&1 || true
       ERRORS=$((ERRORS + 1))
     fi
     echo ""
@@ -802,6 +873,182 @@ sync-k8s-all environment="development" profile="dev-account":
 [group('ops')]
 ec2-session instance-id profile="dev-account":
     aws ssm start-session --target {{instance-id}} --profile {{profile}}
+
+# Port-forward K8s API server (6443) via SSM tunnel
+# Requires: local ~/.kube/config with server: https://127.0.0.1:6443
+# Usage: just k8s-tunnel i-046a1035c0d593dc7
+[group('k8s')]
+k8s-tunnel instance-id region="eu-west-1" profile="dev-account":
+    aws ssm start-session \
+      --target {{instance-id}} \
+      --document-name AWS-StartPortForwardingSession \
+      --parameters '{"portNumber":["6443"],"localPortNumber":["6443"]}' \
+      --region {{region}} --profile {{profile}}
+
+# Port-forward K8s API server — auto-resolves control plane instance ID from SSM
+# Usage: just k8s-tunnel-auto
+[group('k8s')]
+k8s-tunnel-auto env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    INSTANCE_ID=$(aws ssm get-parameter \
+      --name "/k8s/{{env}}/bootstrap/control-plane-instance-id" \
+      --query "Parameter.Value" --output text \
+      --region {{region}} --profile {{profile}})
+    echo "→ Control plane instance: ${INSTANCE_ID}"
+    echo "→ Opening tunnel to K8s API (port 6443)…"
+    aws ssm start-session \
+      --target "${INSTANCE_ID}" \
+      --document-name AWS-StartPortForwardingSession \
+      --parameters '{"portNumber":["6443"],"localPortNumber":["6443"]}' \
+      --region {{region}} --profile {{profile}}
+
+# Fetch kubeconfig from SSM and write to ~/.kube/config
+# The control plane bootstrap stores a tunnel-ready kubeconfig in SSM
+# after every kubeadm init (server address rewritten to 127.0.0.1:6443).
+# Usage: just k8s-fetch-kubeconfig
+[group('k8s')]
+k8s-fetch-kubeconfig env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_PATH="/k8s/{{env}}/kubeconfig"
+    echo "→ Fetching kubeconfig from SSM: ${SSM_PATH}"
+    KUBECONFIG_CONTENT=$(aws ssm get-parameter \
+      --name "${SSM_PATH}" \
+      --with-decryption \
+      --query "Parameter.Value" --output text \
+      --region {{region}} --profile {{profile}} 2>/dev/null || echo "")
+    if [ -z "$KUBECONFIG_CONTENT" ]; then
+      echo "✗ SSM parameter ${SSM_PATH} not found."
+      echo "  The control plane bootstrap publishes this after kubeadm init."
+      echo "  If the cluster was just rebuilt, wait for the bootstrap to complete."
+      exit 1
+    fi
+    KUBE_DIR="$HOME/.kube"
+    mkdir -p "$KUBE_DIR"
+    if [ -f "$KUBE_DIR/config" ]; then
+      BACKUP="$KUBE_DIR/config.backup.$(date +%Y%m%d%H%M%S)"
+      cp "$KUBE_DIR/config" "$BACKUP"
+      echo "→ Backed up existing config → $BACKUP"
+    fi
+    echo "$KUBECONFIG_CONTENT" > "$KUBE_DIR/config"
+    chmod 600 "$KUBE_DIR/config"
+    echo "✓ Kubeconfig written to $KUBE_DIR/config"
+    echo ""
+    echo "→ Validating connectivity (requires active SSM tunnel)…"
+    if kubectl get nodes 2>/dev/null; then
+      echo ""
+      echo "✓ Cluster access restored successfully"
+    else
+      echo ""
+      echo "⚠ kubectl failed — ensure the SSM tunnel is active:"
+      echo "  just k8s-tunnel-auto"
+    fi
+# Requires: active SSM tunnel (just k8s-tunnel-auto), k8sgpt CLI, Bedrock auth configured
+# Setup: k8sgpt auth add --backend amazonbedrock --model eu.anthropic.claude-sonnet-4-20250514-v1:0 --providerRegion eu-central-1
+[group('k8s')]
+k8s-diagnose environment="development":
+    AWS_PROFILE=$(just _profile {{environment}}) k8sgpt analyze --explain --backend amazonbedrock
+
+# Diagnose K8s cluster issues without AI (free — no Bedrock cost)
+# Requires: active SSM tunnel (just k8s-tunnel-auto), k8sgpt CLI
+[group('k8s')]
+k8s-diagnose-raw:
+    k8sgpt analyze
+
+# Trigger an ad-hoc etcd backup via SSM Run Command
+# Use before: maintenance, upgrades, Crossplane changes, or node recycling
+# Backup → s3://<scripts-bucket>/dr-backups/etcd/<timestamp>.db
+[group('k8s')]
+k8s-etcd-backup env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_PREFIX="/k8s/{{env}}"
+    INSTANCE_ID=$(aws ssm get-parameter \
+      --name "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
+      --region {{region}} --profile {{profile}} \
+      --query 'Parameter.Value' --output text 2>/dev/null || true)
+    if [[ -z "${INSTANCE_ID}" ]]; then
+      echo "✗ Could not resolve control plane instance ID from SSM"
+      exit 1
+    fi
+    echo "Triggering etcd backup on ${INSTANCE_ID}..."
+    COMMAND_ID=$(aws ssm send-command \
+      --instance-ids "${INSTANCE_ID}" \
+      --document-name "AWS-RunShellScript" \
+      --parameters 'commands=["sudo /usr/local/bin/etcd-backup.sh"]' \
+      --region {{region}} --profile {{profile}} \
+      --query 'Command.CommandId' --output text)
+    echo "SSM Command: ${COMMAND_ID}"
+    echo "Waiting for completion..."
+    aws ssm wait command-executed \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "${INSTANCE_ID}" \
+      --region {{region}} --profile {{profile}} 2>/dev/null || true
+    aws ssm get-command-invocation \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "${INSTANCE_ID}" \
+      --region {{region}} --profile {{profile}} \
+      --query '[Status, StandardOutputContent]' --output text
+
+# Build the unified MCP infrastructure server (K8s + AWS diagnostics → dist/)
+[group('mcp')]
+mcp-build:
+    cd mcp-servers/mcp-infra-server && yarn build
+
+# Build all MCP server Docker images (multi-stage Alpine builds)
+[group('mcp')]
+mcp-docker-build:
+    docker compose -f docker-compose.mcp.yml build
+
+# Build a single MCP server Docker image
+# Usage: just mcp-docker-build-one infra
+#        just mcp-docker-build-one docs
+#        just mcp-docker-build-one diagram
+[group('mcp')]
+mcp-docker-build-one name:
+    docker compose -f docker-compose.mcp.yml build {{name}}
+
+# Verify MCP handshake on all Docker images (initialize → response check)
+[group('mcp')]
+mcp-docker-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.0.1"}}}'
+    ERRORS=0
+    for IMAGE in mcp-infra-server mcp-portfolio-docs mcp-infra-diagram; do
+      echo "--- Testing ${IMAGE} ---"
+      RESPONSE=$(echo "${INIT}" | docker run -i --rm "${IMAGE}:latest" 2>/dev/null | head -1)
+      if echo "${RESPONSE}" | grep -q '"serverInfo"'; then
+        SERVER_NAME=$(echo "${RESPONSE}" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')
+        echo "  ✓ Handshake OK — server: ${SERVER_NAME}"
+      else
+        echo "  ✗ Handshake FAILED"
+        echo "  Response: ${RESPONSE}"
+        ERRORS=$((ERRORS + 1))
+      fi
+    done
+    echo ""
+    if [ $ERRORS -gt 0 ]; then
+      echo "✗ ${ERRORS} handshake(s) FAILED"
+      exit 1
+    fi
+    echo "✓ All MCP servers respond correctly"
+    echo ""
+    echo "=== Image Sizes ==="
+    docker images | head -1 && docker images | grep mcp
+
+# Discover SSM parameters for Next.js or Bedrock stacks
+# Usage: just mcp-ssm-discover /nextjs/development
+#        just mcp-ssm-discover /bedrock/development
+[group('mcp')]
+mcp-ssm-discover prefix environment="development":
+    AWS_PROFILE=$(just _profile {{environment}}) aws ssm get-parameters-by-path \
+      --path "{{prefix}}" \
+      --recursive \
+      --query "Parameters[].{Name:Name,Value:Value}" \
+      --output table \
+      --region eu-west-1
 
 # Generate ArgoCD CI bot token and store in Secrets Manager.
 # Run AFTER Pipeline A (deploy-kubernetes) Day-1 completes and ArgoCD pods are Running.

@@ -1,0 +1,63 @@
+# @format
+# Crossplane AWS Provider: S3
+#
+# Installs the Crossplane provider for managing S3 buckets.
+# The provider runs as a Kubernetes controller that watches
+# for S3-related CRDs and reconciles them against AWS.
+#
+# Resource overhead: ~128Mi memory per provider
+# Version pinned for stability — update deliberately.
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-aws-s3
+  labels:
+    platform.engineering/component: infrastructure-abstraction
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-s3:v1.18.0
+  controllerConfigRef:
+    name: crossplane-provider-config
+
+---
+# Crossplane AWS Provider: SQS
+#
+# Installs the Crossplane provider for managing SQS queues.
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-aws-sqs
+  labels:
+    platform.engineering/component: infrastructure-abstraction
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-sqs:v1.18.0
+  controllerConfigRef:
+    name: crossplane-provider-config
+
+---
+# ControllerConfig — Resource limits for provider pods
+#
+# Constrains memory/CPU to fit a t3.medium monitoring node.
+# Both providers share this config to enforce consistent limits.
+apiVersion: pkg.crossplane.io/v1alpha1
+kind: ControllerConfig
+metadata:
+  name: crossplane-provider-config
+  labels:
+    platform.engineering/component: infrastructure-abstraction
+spec:
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 25m
+      memory: 64Mi
+  nodeSelector:
+    workload: monitoring
+  tolerations:
+    - key: workload
+      operator: Equal
+      value: monitoring
+      effect: NoSchedule
+

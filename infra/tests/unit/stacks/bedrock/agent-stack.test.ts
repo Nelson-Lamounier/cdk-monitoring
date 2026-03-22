@@ -70,16 +70,61 @@ describe('BedrockAgentStack', () => {
     // Template assertions
     // -------------------------------------------------------------------------
     describe('Template Assertions', () => {
+        let template: Template;
+
+        beforeAll(() => {
+            template = Template.fromStack(stack);
+        });
+
         it('should create Lambda functions', () => {
-            const template = Template.fromStack(stack);
             // Action Group Lambda only (no more VectorKnowledgeBase custom resource Lambdas)
             template.resourceCountIs('AWS::Lambda::Function', 1);
         });
 
         it('should create SSM parameters for agent outputs', () => {
-            const template = Template.fromStack(stack);
             // agentId, agentArn, agentAliasId (knowledgeBaseId removed)
             template.resourceCountIs('AWS::SSM::Parameter', 3);
+        });
+
+        it('should create SSM parameter for agent ID', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: `/${NAME_PREFIX}/agent-id`,
+            });
+        });
+
+        it('should create SSM parameter for agent ARN', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: `/${NAME_PREFIX}/agent-arn`,
+            });
+        });
+
+        it('should create SSM parameter for agent alias ID', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: `/${NAME_PREFIX}/agent-alias-id`,
+            });
+        });
+    });
+
+    // -------------------------------------------------------------------------
+    // Stack Outputs
+    // -------------------------------------------------------------------------
+    describe('Stack Outputs', () => {
+        let template: Template;
+
+        beforeAll(() => {
+            template = Template.fromStack(stack);
+        });
+
+        it('should output the Agent ID', () => {
+            template.hasOutput('AgentId', {});
+        });
+
+        it('should output the Agent Alias ID', () => {
+            template.hasOutput('AgentAliasId', {});
+        });
+
+        it('should output the Guardrail ID', () => {
+            template.hasOutput('GuardrailId', {});
         });
     });
 });

@@ -37,6 +37,7 @@
 
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -46,14 +47,16 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
+import { Environment, shortEnv } from '../../config/environments';
+import { NextJsK8sConfig } from '../../config/nextjs';
 import {
     AutoScalingGroupConstruct,
-    EipFailoverConstruct,
+    // @deprecated — EipFailoverConstruct replaced by NLB health-check failover.
+    // Kept for reference. See base-stack.ts NLB section.
+    // EipFailoverConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
-} from '../../common/index';
-import { Environment } from '../../config/environments';
-import { NextJsK8sConfig } from '../../config/nextjs';
+} from '../../constructs/index';
 
 // =============================================================================
 // PROPS
@@ -84,6 +87,13 @@ export interface KubernetesAppWorkerStackProps extends cdk.StackProps {
 
     /** Log retention @default ONE_WEEK */
     readonly logRetention?: logs.RetentionDays;
+
+    /**
+     * Cross-account IAM role ARN for Route 53 access.
+     * cert-manager may run on this node and needs to assume this role
+     * to create DNS-01 TXT records in the root account's hosted zone.
+     */
+    readonly crossAccountDnsRoleArn?: string;
 }
 
 // =============================================================================
@@ -138,9 +148,25 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
             this, `${ssmPrefix}/scripts-bucket`,
         );
         const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
-        const eipAllocationId = ssm.StringParameter.valueForStringParameter(
-            this, `${ssmPrefix}/elastic-ip-allocation-id`,
+        const ingressSg = ec2.SecurityGroup.fromSecurityGroupId(
+            this, 'IngressSg',
+            ssm.StringParameter.valueForStringParameter(this, `${ssmPrefix}/ingress-sg-id`),
         );
+
+        // NLB target groups — ASG registers with both for health-check failover
+        const nlbHttpTargetGroupArn = ssm.StringParameter.valueForStringParameter(
+            this, `${ssmPrefix}/nlb-http-target-group-arn`,
+        );
+        const nlbHttpsTargetGroupArn = ssm.StringParameter.valueForStringParameter(
+            this, `${ssmPrefix}/nlb-https-target-group-arn`,
+        );
+        const nlbHttpTg = elbv2.NetworkTargetGroup.fromTargetGroupAttributes(
+            this, 'NlbHttpTg', { targetGroupArn: nlbHttpTargetGroupArn },
+        );
+        const nlbHttpsTg = elbv2.NetworkTargetGroup.fromTargetGroupAttributes(
+            this, 'NlbHttpsTg', { targetGroupArn: nlbHttpsTargetGroupArn },
+        );
+
 
         // =====================================================================
         // User Data — kubeadm join
@@ -158,6 +184,7 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
         // =====================================================================
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup,
+            additionalSecurityGroups: [ingressSg],
             instanceType: workerConfig.instanceType,
             volumeSizeGb: workerConfig.rootVolumeSizeGb,
             detailedMonitoring: workerConfig.detailedMonitoring,
@@ -285,6 +312,52 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
             resources: ['*'],
         }));
 
+        // Grant DynamoDB read-only for Next.js article serving
+        // Table name follows CDK flatName convention: bedrock-{shortEnv}-ai-content
+        const envAbbrev = shortEnv(props.targetEnvironment);
+        const contentTableName = `bedrock-${envAbbrev}-ai-content`;
+        const contentTableArn =
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${contentTableName}`;
+
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'DynamoDBContentReadOnly',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'dynamodb:GetItem',
+                'dynamodb:BatchGetItem',
+                'dynamodb:Query',
+                'dynamodb:Scan',
+            ],
+            resources: [
+                contentTableArn,
+                `${contentTableArn}/index/*`,
+            ],
+        }));
+
+        // Grant S3 read-only for Next.js article MDX content fetching.
+        // Article MDX blobs live in the Bedrock data bucket (bedrock-{env}-kb-data)
+        // at published/*.mdx and content/v{n}/*.mdx prefixes.
+        //
+        // NOTE: The legacy nextjs-article-assets-{env} bucket (from KubernetesDataStack)
+        // is kept for future non-article assets (images, uploads). Article content was
+        // consolidated into the Bedrock AI pipeline — see AiContentStack.
+        // TODO: Decommission legacy bucket once confirmed unused.
+        const contentBucketName = `bedrock-${envAbbrev}-kb-data`;
+        const contentBucketArn = `arn:aws:s3:::${contentBucketName}`;
+
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'S3ContentReadOnly',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                's3:GetObject',
+                's3:ListBucket',
+            ],
+            resources: [
+                contentBucketArn,
+                `${contentBucketArn}/*`,
+            ],
+        }));
+
         // ASG: min=0 allows scaling down to save costs, max=1 for single worker.
         // Scaling policy disabled — Kubernetes owns scaling decisions via HPA.
         // If node-level scaling is needed later, install Cluster Autoscaler.
@@ -379,30 +452,47 @@ echo "SSM Automation will be triggered by the CI pipeline"
         this.logGroup = launchTemplateConstruct.logGroup;
 
         // =====================================================================
-        // EIP Failover — Self-Healing EIP Association
+        // NLB Target Registration
         //
-        // Automatically associates the cluster EIP to this app-worker when
-        // the ASG launches a new instance (or the old one is terminated).
-        // Defense-in-depth:
-        //   1. EventBridge rule scoped to THIS ASG only (asgName filter)
-        //   2. Lambda verifies instance has k8s:bootstrap-role=app-worker tag
+        // Register this ASG with the NLB target groups so the NLB routes
+        // traffic to Traefik on this node. Health checks handle failover.
         // =====================================================================
-        new EipFailoverConstruct(this, 'EipFailover', {
-            eipAllocationId,
-            clusterTagKey: 'k8s:bootstrap-role',
-            clusterTagValue: 'app-worker',
-            namePrefix: workerPrefix,
-            asgName: asgConstruct.autoScalingGroup.autoScalingGroupName,
-        });
+        asgConstruct.autoScalingGroup.attachToNetworkTargetGroup(nlbHttpTg);
+        asgConstruct.autoScalingGroup.attachToNetworkTargetGroup(nlbHttpsTg);
 
-        // Belt-and-suspenders: grant the instance itself EIP association
-        // permission so boot-time scripts can also associate if needed.
-        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'EipAssociation',
-            effect: iam.Effect.ALLOW,
-            actions: ['ec2:AssociateAddress', 'ec2:DescribeAddresses'],
-            resources: ['*'],
-        }));
+        // =====================================================================
+        // @deprecated — EIP Failover (replaced by NLB health-check failover)
+        //
+        // Previously, a Lambda + EventBridge rule automatically shuffled the
+        // cluster EIP between eligible nodes on ASG launch/terminate events.
+        // This is no longer needed — the NLB distributes traffic to healthy
+        // targets via TCP health checks. The EIP is now attached to the NLB
+        // directly (see base-stack.ts SubnetMapping).
+        //
+        // Kept for reference:
+        // new EipFailoverConstruct(this, 'EipFailover', {
+        //     eipAllocationId,
+        //     eligibleRoles: ['app-worker', 'mon-worker'],
+        //     namePrefix: workerPrefix,
+        // });
+        // =====================================================================
+
+        // =====================================================================
+        // cert-manager DNS-01 — Cross-account Route 53 access
+        //
+        // cert-manager pods can be scheduled on any node (including this
+        // worker). For DNS-01 challenges, cert-manager uses the instance
+        // profile to assume the cross-account Route53DnsValidation role
+        // in the root account to create TXT records.
+        // =====================================================================
+        if (props.crossAccountDnsRoleArn) {
+            launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+                sid: 'AssumeRoute53DnsRole',
+                effect: iam.Effect.ALLOW,
+                actions: ['sts:AssumeRole'],
+                resources: [props.crossAccountDnsRoleArn],
+            }));
+        }
 
         // =====================================================================
         // Stack Outputs

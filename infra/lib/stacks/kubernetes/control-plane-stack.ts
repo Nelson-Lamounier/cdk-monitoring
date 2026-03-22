@@ -32,9 +32,6 @@
  * ```
  */
 
-
-import { NagSuppressions } from 'cdk-nag';
-
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -46,14 +43,14 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
+import { Environment } from '../../config/environments';
+import { K8sConfigs, MONITORING_APP_TAG } from '../../config/kubernetes';
 import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
     SsmStateManagerConstruct,
     UserDataBuilder,
-} from '../../common/index';
-import { Environment } from '../../config/environments';
-import { K8sConfigs, MONITORING_APP_TAG } from '../../config/kubernetes';
+} from '../../constructs/index';
 
 // =============================================================================
 // PROPS
@@ -80,6 +77,22 @@ export interface KubernetesControlPlaneStackProps extends cdk.StackProps {
 
     /** SSM parameter prefix for storing cluster info */
     readonly ssmPrefix: string;
+
+    /**
+     * Public Route 53 Hosted Zone ID (e.g., nelsonlamounier.com).
+     * Required for cert-manager DNS-01 challenge — TXT records are
+     * created in this zone to prove domain ownership to Let's Encrypt.
+     * Written to SSM for bootstrap consumption.
+     */
+    readonly publicHostedZoneId?: string;
+
+    /**
+     * Cross-account IAM role ARN for Route 53 access.
+     * cert-manager assumes this role (via the instance profile) to
+     * create ACME DNS-01 TXT records in the root account's hosted zone.
+     * Written to SSM for bootstrap consumption.
+     */
+    readonly crossAccountDnsRoleArn?: string;
 }
 
 // =============================================================================
@@ -126,10 +139,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             this, 'ControlPlaneSg',
             ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/control-plane-sg-id`),
         );
-        const ingressSg = ec2.SecurityGroup.fromSecurityGroupId(
-            this, 'IngressSg',
-            ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/ingress-sg-id`),
-        );
+
         const logGroupKmsKey = kms.Key.fromKeyArn(
             this, 'LogKmsKey',
             ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/kms-key-arn`),
@@ -141,6 +151,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             this, `${props.ssmPrefix}/scripts-bucket`,
         );
         const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
+
 
         const hostedZoneId = ssm.StringParameter.valueForStringParameter(
             this, `${props.ssmPrefix}/hosted-zone-id`,
@@ -156,7 +167,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
 
         const launchTemplateConstruct = new LaunchTemplateConstruct(this, 'LaunchTemplate', {
             securityGroup,
-            additionalSecurityGroups: [controlPlaneSg, ingressSg],
+            additionalSecurityGroups: [controlPlaneSg],
             instanceType: configs.compute.instanceType,
             volumeSizeGb: configs.compute.rootVolumeSizeGb, // Must be >= Golden AMI snapshot size
             detailedMonitoring: configs.compute.detailedMonitoring,
@@ -403,6 +414,41 @@ echo "SSM Automation will be triggered by the CI pipeline"
             ],
         }));
 
+        // =====================================================================
+        // cert-manager DNS-01 — Cross-account Route 53 access
+        //
+        // cert-manager runs on the node using the instance profile. For DNS-01
+        // challenges, it needs to assume the cross-account Route53DnsValidation
+        // role in the root account to create TXT records in the public hosted
+        // zone. The values are written to SSM so the bootstrap script can
+        // template the ClusterIssuer manifest at runtime.
+        // =====================================================================
+        if (props.crossAccountDnsRoleArn) {
+            // Grant the instance role permission to assume the cross-account DNS role
+            this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+                sid: 'AssumeRoute53DnsRole',
+                effect: iam.Effect.ALLOW,
+                actions: ['sts:AssumeRole'],
+                resources: [props.crossAccountDnsRoleArn],
+            }));
+
+            new ssm.StringParameter(this, 'CrossAccountDnsRoleArnParam', {
+                parameterName: `${props.ssmPrefix}/cross-account-dns-role-arn`,
+                stringValue: props.crossAccountDnsRoleArn,
+                description: 'Cross-account IAM role ARN for cert-manager DNS-01 (Route 53)',
+                tier: ssm.ParameterTier.STANDARD,
+            });
+        }
+
+        if (props.publicHostedZoneId) {
+            new ssm.StringParameter(this, 'PublicHostedZoneIdParam', {
+                parameterName: `${props.ssmPrefix}/public-hosted-zone-id`,
+                stringValue: props.publicHostedZoneId,
+                description: 'Public Route 53 Hosted Zone ID for cert-manager DNS-01',
+                tier: ssm.ParameterTier.STANDARD,
+            });
+        }
+
         // Publish instance role ARN to SSM for cross-stack import (AppIamStack)
         new ssm.StringParameter(this, 'InstanceRoleArnParam', {
             parameterName: `${props.ssmPrefix}/instance-role-arn`,
@@ -410,6 +456,7 @@ echo "SSM Automation will be triggered by the CI pipeline"
             description: 'Kubernetes instance role ARN (used by AppIamStack for app-tier grants)',
             tier: ssm.ParameterTier.STANDARD,
         });
+
 
 
 
@@ -515,6 +562,8 @@ function grantMonitoringPermissions(
             'ecr:BatchGetImage',
             'ecr:BatchCheckLayerAvailability',
             'ecr:GetAuthorizationToken',
+            'ecr:ListImages',       // ArgoCD Image Updater — poll for new tags
+            'ecr:DescribeImages',   // ArgoCD Image Updater — resolve tag metadata
         ],
         resources: ['*'],
     }));

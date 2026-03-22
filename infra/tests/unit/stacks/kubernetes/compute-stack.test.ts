@@ -39,6 +39,8 @@ import {
 } from '../../../../lib/stacks/kubernetes/control-plane-stack';
 import {
     TEST_ENV_EU,
+    TEST_VPC_CONTEXT_KEY,
+    TEST_VPC_CONTEXT,
     createTestApp,
     enforceNoInlineS3Buckets,
 } from '../../../fixtures';
@@ -94,6 +96,9 @@ function createComputeStack(
     overrides?: Partial<KubernetesControlPlaneStackProps>,
 ): { stack: KubernetesControlPlaneStack; template: Template; app: cdk.App } {
     const app = createTestApp();
+
+    // Provide VPC context so Vpc.fromLookup() resolves with eu-west-1 AZs
+    app.node.setContext(TEST_VPC_CONTEXT_KEY, TEST_VPC_CONTEXT);
 
     const baseStack = new KubernetesBaseStack(app, 'TestK8sBaseStack', {
         env: TEST_ENV_EU,

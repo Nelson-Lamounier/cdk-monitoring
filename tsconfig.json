@@ -12,6 +12,7 @@
   "files": [],
   "references": [
     { "path": "infra" },
-    { "path": "bedrock-publisher" }
+    { "path": "bedrock-publisher" },
+    { "path": "packages/cdk-governance-aspects" }
   ]
 }

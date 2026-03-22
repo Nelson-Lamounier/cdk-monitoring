@@ -34,7 +34,7 @@ childProcess.spawnSync = function mockedSpawnSync(command, args, options) {
 
 module.exports = {
   testEnvironment: "node",
-  roots: ["<rootDir>/tests"],
+  roots: ["<rootDir>/tests", "<rootDir>/lambda"],
   testMatch: ["**/*.test.ts"],
   testTimeout: 10000,
   verbose: false,
@@ -72,6 +72,19 @@ module.exports = {
     "babel.config.js",
     "/\\.generated-templates/",
   ],
+
+  // ── Coverage Thresholds ──
+  // Enforced when running with --coverage (e.g. `just test-coverage`).
+  // Values set to current coverage floor — raise as tests are added.
+  // Major gaps: dynamodb-table (5%), ecs-service (10%), cloudfront (17%).
+  coverageThreshold: {
+    global: {
+      branches: 28,
+      functions: 44,
+      lines: 67,
+      statements: 67,
+    },
+  },
 
   reporters: ["default"],
   maxWorkers: 1,

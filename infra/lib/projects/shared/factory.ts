@@ -2,12 +2,13 @@
  * @format
  * Shared Project Factory
  *
- * Creates shared infrastructure (VPC) used by multiple projects.
- * This project should be deployed first before other projects.
+ * Creates shared infrastructure (VPC, Security Baseline, FinOps) used by multiple
+ * projects. This project should be deployed first before other projects.
  */
 
 import * as cdk from 'aws-cdk-lib/core';
 
+import type { DeployableEnvironment } from '../../config/environments';
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
 import {
@@ -16,13 +17,59 @@ import {
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import { SharedVpcStack } from '../../shared/vpc-stack';
-import { stackId } from '../../utilities/naming';
+import { CrossplaneStack } from '../../stacks/shared/crossplane-stack';
+import { FinOpsStack } from '../../stacks/shared/finops-stack';
+import { SecurityBaselineStack } from '../../stacks/shared/security-baseline-stack';
+import { stackId, flatName } from '../../utilities/naming';
+
+/**
+ * Environment-specific monthly budget limits in USD.
+ * Conservative defaults — adjust via context or environment variables.
+ */
+const BUDGET_LIMITS: Record<DeployableEnvironment, number> = {
+    [Environment.DEVELOPMENT]: 100,
+    [Environment.STAGING]: 200,
+    [Environment.PRODUCTION]: 500,
+};
+
+/**
+ * Bedrock-specific monthly budget limits in USD.
+ * Scoped to Amazon Bedrock service only — fires earlier than account budget.
+ */
+const BEDROCK_BUDGET_LIMITS: Record<DeployableEnvironment, number> = {
+    [Environment.DEVELOPMENT]: 30,
+    [Environment.STAGING]: 75,
+    [Environment.PRODUCTION]: 150,
+};
+
+/**
+ * Factory context for Shared project.
+ */
+export interface SharedFactoryContext extends ProjectFactoryContext {
+    /** Optional notification email for security findings */
+    readonly notificationEmail?: string;
+
+    /** Enable GuardDuty @default true */
+    readonly enableGuardDuty?: boolean;
+
+    /** Enable Security Hub @default true */
+    readonly enableSecurityHub?: boolean;
+
+    /** Enable IAM Access Analyzer @default true */
+    readonly enableAccessAnalyzer?: boolean;
+
+    /** Optional override for monthly budget limit in USD */
+    readonly monthlyBudgetLimitUsd?: number;
+}
 
 /**
  * Factory for creating shared infrastructure resources.
  *
  * Creates:
  * - VPC stack with public subnets, SSM exports, and flow logs
+ * - Security baseline stack (GuardDuty, Security Hub, Access Analyzer)
+ * - FinOps stack (AWS Budgets with SNS alerting)
+ * - Crossplane stack (IAM credentials for platform engineering)
  *
  * @example
  * ```typescript
@@ -30,7 +77,7 @@ import { stackId } from '../../utilities/naming';
  * const result = factory.createAllStacks(app, context);
  * ```
  */
-export class SharedProjectFactory implements IProjectFactory {
+export class SharedProjectFactory implements IProjectFactory<SharedFactoryContext> {
     public readonly project = Project.SHARED;
     public readonly environment: Environment;
     public readonly namespace: string;
@@ -40,17 +87,23 @@ export class SharedProjectFactory implements IProjectFactory {
         this.namespace = getProjectConfig(Project.SHARED).namespace;
     }
 
-    createAllStacks(scope: cdk.App, context: ProjectFactoryContext): ProjectStackFamily {
+    createAllStacks(scope: cdk.App, context: SharedFactoryContext): ProjectStackFamily {
         const env = context.environment;
+        const stacks: cdk.Stack[] = [];
         const stackMap: Record<string, cdk.Stack> = {};
+
+        const namePrefix = flatName('shared', '', env);
+
+        // Resolve notification email from context or environment variable
+        const notificationEmail = context.notificationEmail ?? process.env.NOTIFICATION_EMAIL;
 
         cdk.Annotations.of(scope).addInfo(`Creating Shared infrastructure for ${env}`);
 
         // =================================================================
-        // Infrastructure Stack - VPC + ECR shared by all projects
+        // Stack 1: Infrastructure — VPC + ECR shared by all projects
         // =================================================================
-        const stackName = stackId(this.namespace, 'Infra', env);
-        const infraStack = new SharedVpcStack(scope, stackName, {
+        const infraStackName = stackId(this.namespace, 'Infra', env);
+        const infraStack = new SharedVpcStack(scope, infraStackName, {
             targetEnvironment: env,
             flowLogConfig: {
                 logGroupName: `/vpc/${this.namespace.toLowerCase()}/${env}/flow-logs`,
@@ -59,16 +112,96 @@ export class SharedProjectFactory implements IProjectFactory {
             env: cdkEnvironment(this.environment),
         });
 
+        stacks.push(infraStack);
         stackMap['infra'] = infraStack;
 
-        cdk.Annotations.of(infraStack).addInfo(
-            `Shared factory created 1 stack (${stackName}). ` +
+        // =================================================================
+        // Stack 2: Security Baseline — GuardDuty + Security Hub + Access Analyzer
+        //                               + CloudTrail + CFn Drift Alerts
+        //
+        // Deployed once per account/region. Minimal-cost defaults:
+        //   - GuardDuty: core detection only (no S3/EKS/Malware extras)
+        //   - Security Hub: auto-enabled controls, no default standards
+        //   - IAM Access Analyzer: account scope (free)
+        //   - CloudTrail: 1 free management trail, S3 with 90-day retention
+        //   - EventBridge: CFn failure alerts → SNS email (free)
+        //
+        // Cost: ~$3–8/month for a small account.
+        // =================================================================
+        const securityStackName = stackId(this.namespace, 'SecurityBaseline', env);
+        const securityStack = new SecurityBaselineStack(scope, securityStackName, {
+            targetEnvironment: env,
+            namePrefix,
+            notificationEmail,
+            enableGuardDuty: context.enableGuardDuty,
+            enableSecurityHub: context.enableSecurityHub,
+            enableAccessAnalyzer: context.enableAccessAnalyzer,
+            env: cdkEnvironment(this.environment),
+            description: `Account security baseline (GuardDuty, Security Hub, Access Analyzer) - ${env}`,
+        });
+
+        stacks.push(securityStack);
+        stackMap['securityBaseline'] = securityStack;
+
+        // =================================================================
+        // Stack 3: FinOps — AWS Budgets with SNS Alerting
+        //
+        // Monthly cost budget with threshold-based alerts.
+        // Alert thresholds: 50% (actual), 80% (actual), 100% (forecasted).
+        //
+        // Cost: Free (first 2 budgets per account).
+        // =================================================================
+        const finopsStackName = stackId(this.namespace, 'FinOps', env);
+        const monthlyLimit = context.monthlyBudgetLimitUsd ?? BUDGET_LIMITS[env as DeployableEnvironment];
+
+        const finopsStack = new FinOpsStack(scope, finopsStackName, {
+            targetEnvironment: env,
+            namePrefix,
+            notificationEmail,
+            budgetConfig: {
+                monthlyLimitUsd: monthlyLimit,
+                thresholds: [50, 80, 100],
+            },
+            // Bedrock-specific budget — per-service cost guardrail
+            bedrockBudgetConfig: {
+                monthlyLimitUsd: BEDROCK_BUDGET_LIMITS[env as DeployableEnvironment],
+                thresholds: [50, 80, 100],
+            },
+            env: cdkEnvironment(this.environment),
+            description: `FinOps cost governance (AWS Budgets, $${monthlyLimit}/mo) - ${env}`,
+        });
+
+        stacks.push(finopsStack);
+        stackMap['finops'] = finopsStack;
+
+        // =================================================================
+        // Stack 4: Crossplane — IAM Credentials for Platform Engineering
+        //
+        // Dedicated IAM user with tightly scoped S3/SQS/KMS permissions.
+        // Credentials stored in Secrets Manager for K8s bootstrap scripts.
+        //
+        // Cost: ~$0.40/month (single Secrets Manager secret).
+        // =================================================================
+        const crossplaneStackName = stackId(this.namespace, 'Crossplane', env);
+        const crossplaneStack = new CrossplaneStack(scope, crossplaneStackName, {
+            targetEnvironment: env,
+            namePrefix,
+            env: cdkEnvironment(this.environment),
+            description: `Crossplane IAM credentials for platform engineering - ${env}`,
+        });
+
+        stacks.push(crossplaneStack);
+        stackMap['crossplane'] = crossplaneStack;
+
+        cdk.Annotations.of(scope).addInfo(
+            `Shared factory created ${stacks.length} stacks. ` +
             `Other projects can reference this VPC using: -c useSharedVpc=Shared`,
         );
 
         return {
-            stacks: [infraStack],
+            stacks,
             stackMap,
         };
     }
 }
+

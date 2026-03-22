@@ -65,3 +65,53 @@ export const MONITORING_PORTS = {
     nodeExporter: 9100,
     ssh: 22,
 } as const;
+
+// =============================================================================
+// VPC Context for Vpc.fromLookup()
+//
+// CDK's default dummy VPC uses AZs like 'dummy1a'/'dummy1b', which causes
+// the NLB construct to fail (it expects 'eu-west-1a'). This context entry
+// provides a realistic VPC with eu-west-1 AZs so the NLB subnet lookup works.
+//
+// Usage: app.node.setContext(TEST_VPC_CONTEXT_KEY, TEST_VPC_CONTEXT);
+// =============================================================================
+
+/**
+ * CDK context key for the shared development VPC lookup.
+ *
+ * Must match the key CDK generates for `Vpc.fromLookup({ vpcName: 'shared-vpc-development' })`
+ * in account 123456789012, region eu-west-1.
+ */
+export const TEST_VPC_CONTEXT_KEY =
+    'vpc-provider:account=123456789012:filter.tag:Name=shared-vpc-development:region=eu-west-1:returnAsymmetricSubnets=true';
+
+/**
+ * Mock VPC context value with eu-west-1a/1b public and private subnets.
+ *
+ * Required by any test that instantiates a stack using `Vpc.fromLookup()`
+ * combined with constructs that select subnets by AZ (e.g. NLB, EBS).
+ */
+export const TEST_VPC_CONTEXT = {
+    vpcId: 'vpc-12345',
+    vpcCidrBlock: '10.0.0.0/16',
+    ownerAccountId: '123456789012',
+    availabilityZones: ['eu-west-1a', 'eu-west-1b'],
+    subnetGroups: [
+        {
+            name: 'Public',
+            type: 'Public',
+            subnets: [
+                { subnetId: 'subnet-pub-1a', cidr: '10.0.1.0/24', availabilityZone: 'eu-west-1a', routeTableId: 'rtb-pub-1a' },
+                { subnetId: 'subnet-pub-1b', cidr: '10.0.2.0/24', availabilityZone: 'eu-west-1b', routeTableId: 'rtb-pub-1b' },
+            ],
+        },
+        {
+            name: 'Private',
+            type: 'Private',
+            subnets: [
+                { subnetId: 'subnet-priv-1a', cidr: '10.0.11.0/24', availabilityZone: 'eu-west-1a', routeTableId: 'rtb-priv-1a' },
+                { subnetId: 'subnet-priv-1b', cidr: '10.0.12.0/24', availabilityZone: 'eu-west-1b', routeTableId: 'rtb-priv-1b' },
+            ],
+        },
+    ],
+} as const;

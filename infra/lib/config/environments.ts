@@ -54,6 +54,7 @@ export enum Environment {
     DEVELOPMENT = 'development',
     STAGING = 'staging',
     PRODUCTION = 'production',
+    MANAGEMENT = 'management',
 }
 
 /**
@@ -64,6 +65,7 @@ const SHORT_TO_FULL: Record<string, Environment> = {
     dev: Environment.DEVELOPMENT,
     staging: Environment.STAGING,
     prod: Environment.PRODUCTION,
+    mgt: Environment.MANAGEMENT,
 };
 
 /**
@@ -71,6 +73,14 @@ const SHORT_TO_FULL: Record<string, Environment> = {
  * Prefer using the Environment enum directly for type safety.
  */
 export type EnvironmentName = `${Environment}`;
+
+/**
+ * Standard deployable environments used by project-level configs.
+ * Excludes MANAGEMENT which is org-specific (root account infrastructure).
+ * Use this in `Record<DeployableEnvironment, T>` for project configs that
+ * only apply to development, staging, and production.
+ */
+export type DeployableEnvironment = Exclude<Environment, Environment.MANAGEMENT>;
 
 // =============================================================================
 // CROSS-PROJECT IDENTITY
@@ -113,6 +123,11 @@ const environments: Record<Environment, EnvironmentConfig> = {
     },
     [Environment.PRODUCTION]: {
         account: '607700977986',
+        region: 'eu-west-1',
+        edgeRegion: 'us-east-1',
+    },
+    [Environment.MANAGEMENT]: {
+        account: fromEnv('ROOT_ACCOUNT') ?? '711387127421',
         region: 'eu-west-1',
         edgeRegion: 'us-east-1',
     },
@@ -169,6 +184,7 @@ const ENV_ABBREVIATIONS: Record<Environment, string> = {
     [Environment.DEVELOPMENT]: 'dev',
     [Environment.STAGING]: 'stg',
     [Environment.PRODUCTION]: 'prd',
+    [Environment.MANAGEMENT]: 'mgt',
 };
 
 export function shortEnv(env: EnvironmentName): string {

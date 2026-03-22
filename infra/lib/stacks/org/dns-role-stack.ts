@@ -10,6 +10,8 @@
  * not reusable constructs (same pattern as NextJsIamRolesStack).
  */
 
+import { NagSuppressions } from 'cdk-nag';
+
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -141,7 +143,7 @@ export class CrossAccountDnsRoleStack extends cdk.Stack {
             (zoneId) => `arn:aws:route53:::hostedzone/${zoneId}`,
         );
 
-        // Allow creating/deleting DNS validation records
+        // Allow creating/deleting DNS validation records (scoped to hosted zones)
         this.role.addToPolicy(
             new iam.PolicyStatement({
                 sid: 'Route53DnsValidation',
@@ -151,6 +153,17 @@ export class CrossAccountDnsRoleStack extends cdk.Stack {
                     'route53:ListResourceRecordSets',
                 ],
                 resources: hostedZoneArns,
+            }),
+        );
+
+        // GetChange uses change/* ARNs, not hostedzone/* ARNs.
+        // cert-manager polls this after creating a TXT record to wait for propagation.
+        this.role.addToPolicy(
+            new iam.PolicyStatement({
+                sid: 'Route53GetChange',
+                effect: iam.Effect.ALLOW,
+                actions: ['route53:GetChange'],
+                resources: ['arn:aws:route53:::change/*'],
             }),
         );
 
@@ -181,5 +194,25 @@ export class CrossAccountDnsRoleStack extends cdk.Stack {
         // =================================================================
         // COMPONENT-SPECIFIC TAGS
         // =================================================================
+
+        // =================================================================
+        // CDK-NAG SUPPRESSIONS
+        // =================================================================
+        // SNYK-CC-TF-118: IAM Role can be assumed by any principal in account.
+        // This is intentional — the DNS validation role uses AccountPrincipal
+        // scoped to explicitly trusted account IDs (dev/staging/prod) so that
+        // any service within those accounts (cert-manager, CDK custom resources,
+        // Lambda, etc.) can perform cross-account ACM DNS validation without
+        // restricting to a specific IAM role or instance profile.
+        NagSuppressions.addResourceSuppressions(this.role, [
+            {
+                id: 'AwsSolutions-IAM4',
+                reason:
+                    'Cross-account DNS role intentionally uses AccountPrincipal ' +
+                    'to allow any trusted-account service to assume it for ACM ' +
+                    'DNS validation. Trust is scoped to explicit account IDs, ' +
+                    'not open to all AWS accounts.',
+            },
+        ]);
     }
 }

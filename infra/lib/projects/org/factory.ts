@@ -96,7 +96,8 @@ export class OrgProjectFactory implements IProjectFactory<OrgFactoryContext> {
         const hostedZoneIdsRaw = context.hostedZoneIds
             ?? scope.node.tryGetContext('hostedZoneIds') as string | undefined;
         const trustedAccountIdsRaw = context.trustedAccountIds
-            ?? scope.node.tryGetContext('trustedAccountIds') as string | undefined;
+            ?? scope.node.tryGetContext('trustedAccountIds') as string | undefined
+            ?? process.env.TRUSTED_ACCOUNT_IDS;
         const externalId = context.externalId
             ?? scope.node.tryGetContext('externalId') as string | undefined;
 

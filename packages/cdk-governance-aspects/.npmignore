@@ -1,0 +1,17 @@
+# Source files (only compiled lib/ is published)
+src/
+test/
+
+# Config files
+tsconfig.json
+jest.config.js
+.eslintrc*
+
+# Development files
+*.test.ts
+*.spec.ts
+.gitignore
+
+# IDE
+.vscode/
+.idea/

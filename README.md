@@ -1,5 +1,11 @@
 # CDK Multi-Project Infrastructure
 
+[![CI](https://github.com/Nelson-Lamounier/cdk-monitoring/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Nelson-Lamounier/cdk-monitoring/actions/workflows/ci.yml)
+[![npm: cdk-governance-aspects](https://img.shields.io/npm/v/@nelsonlamounier/cdk-governance-aspects?label=npm%3A%20cdk-governance-aspects&color=cb3837)](https://www.npmjs.com/package/@nelsonlamounier/cdk-governance-aspects)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![AWS CDK](https://img.shields.io/badge/AWS%20CDK-v2-ff9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/cdk/)
+[![License: Private](https://img.shields.io/badge/Licence-Private-lightgrey)](./LICENSE)
+
 > A production-grade AWS CDK monorepo managing **4 projects**, **12+ stacks**, and **3 environments** through the **Project Factory pattern** — with 33 custom Checkov security rules, CDK-Nag compliance across 4 frameworks, a 1,150-line post-deploy smoke test suite, and automated CI/CD via 19 GitHub Actions workflows.
 
 ---
@@ -133,11 +139,7 @@ cdk-monitoring/
 │   ├── config.yaml             # Checkov configuration
 │   └── custom_checks/          # 33 custom Python security checks (26 files)
 ├── .github/workflows/          # 19 GitHub Actions workflows
-│   ├── ci.yml                  #   CI pipeline (lint, test, synth, security scan)
-│   ├── _deploy-monitoring.yml  #   Reusable: monitoring deployment
-│   ├── _deploy-nextjs.yml      #   Reusable: Next.js deployment
-│   ├── _deploy-stack.yml       #   Reusable: generic stack deployment
-│   ├── _iac-security-scan.yml  #   Reusable: Checkov security scan
+│   ├── ci.yml                  #   CI pipeline (lint, test, synth, Checkov IaC scan)
 │   ├── _smoke-tests-nextjs.yml #   Reusable: post-deploy smoke tests
 │   ├── _verify-stack.yml       #   Reusable: CloudFormation status verification
 │   ├── deploy-*-dev.yml        #   Environment-specific triggers
@@ -303,11 +305,10 @@ The `.checkov/custom_checks/` directory contains 33 Python check classes across 
 
 | Workflow                      | Type     | Purpose                                  |
 | :---------------------------- | :------- | :--------------------------------------- |
-| `ci.yml`                      | Trigger  | Lint, test, synth, security scan on PR   |
+| `ci.yml`                      | Trigger  | Lint, test, synth, Checkov IaC scan      |
 | `_deploy-monitoring.yml`      | Reusable | Monitoring project deployment            |
 | `_deploy-nextjs.yml`          | Reusable | Next.js project deployment (6 stacks)    |
 | `_deploy-stack.yml`           | Reusable | Generic single-stack deployment          |
-| `_iac-security-scan.yml`      | Reusable | Checkov scan with SARIF upload           |
 | `_smoke-tests-nextjs.yml`     | Reusable | Post-deploy smoke tests (9 checks)       |
 | `_verify-stack.yml`           | Reusable | CloudFormation status verification       |
 | `deploy-*-{dev,staging,prod}` | Trigger  | Environment-specific deployment triggers |
@@ -343,6 +344,8 @@ yarn deps:graphs            # Produces 5 SVGs + HTML report in docs/
 
 ## Documentation
 
+> **📚 [Full Documentation Index →](docs/README.md)**
+
 ### TypeDoc API Documentation
 
 ```bash
@@ -352,6 +355,16 @@ yarn docs:compute           # Compute constructs → docs/compute/
 yarn docs:nextjs            # Next.js stack → docs/nextjs/
 yarn docs:serve             # Serve at localhost:3000
 ```
+
+### Documentation by Domain
+
+| Category | Documents | Description |
+|:---------|:---------:|:------------|
+| **Architecture Decisions** | 3 | ADRs: CDK vs Terraform, self-managed K8s vs EKS, MCP for ops |
+| **Kubernetes Operations** | 11 | Troubleshooting guides, deployment pipeline, verification |
+| **Networking & Edge** | 3 | NLB rules, observability, ArgoCD networking |
+| **AI & Content Pipeline** | 4 | Bedrock article generation, MCP integration |
+| **Reference** | 4 | Review reports, CloudWatch paths, frontend API guide |
 
 ### Portfolio Articles
 
@@ -364,17 +377,6 @@ Portfolio articles documenting design decisions and implementation details are i
 | `devsecops-pipeline-checkov-cdk-nag.mdx`      | Security pipeline (33 custom rules) |
 | `automated-testing-verification-strategy.mdx` | 3-layer testing strategy            |
 | `enterprise-cicd-pipeline-github-actions.mdx` | CI/CD pipeline architecture         |
-
-### Operational Documentation
-
-| Document                   | Location                       |
-| :------------------------- | :----------------------------- |
-| Troubleshooting runbooks   | `docs/troubleshooting/`        |
-| DynamoDB schema reference  | `docs/DYNAMODB-SCHEMA.md`      |
-| New service workflow guide | `docs/new-service-workflow.md` |
-| CI/CD configuration guide  | `docs/ci-cd/`                  |
-| GitHub repository config   | `GITHUB-CONFIG.md`             |
-| Makefile reference         | `MAKEFILE.md`                  |
 
 ---
 

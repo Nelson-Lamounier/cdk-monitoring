@@ -16,7 +16,7 @@
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment } from '../environments';
+import { type DeployableEnvironment, Environment } from '../environments';
 
 // =============================================================================
 // ENVIRONMENT VARIABLE HELPER
@@ -150,7 +150,7 @@ export interface MonitoringConfigs {
 /**
  * Monitoring resource configurations by environment
  */
-export const MONITORING_CONFIGS: Record<Environment, MonitoringConfigs> = {
+export const MONITORING_CONFIGS: Record<DeployableEnvironment, MonitoringConfigs> = {
     [Environment.DEVELOPMENT]: {
         // Synth-time context (env var > default)
         trustedCidrs: fromEnvList('ALLOWED_IP_RANGE') ?? ['0.0.0.0/0'],
@@ -247,7 +247,7 @@ export const MONITORING_CONFIGS: Record<Environment, MonitoringConfigs> = {
  * Get Monitoring configurations for an environment
  */
 export function getMonitoringConfigs(env: Environment): MonitoringConfigs {
-    return MONITORING_CONFIGS[env];
+    return MONITORING_CONFIGS[env as DeployableEnvironment];
 }
 
 

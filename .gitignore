@@ -57,3 +57,7 @@ __pycache__/
 
 # Scratch / one-off files
 *.txt
+
+
+.agents/rules/
+.agents/agents/

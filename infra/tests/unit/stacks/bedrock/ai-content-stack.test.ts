@@ -172,6 +172,61 @@ describe('AiContentStack', () => {
     });
 
     // =========================================================================
+    // DynamoDB GSI — gsi1-status-date
+    // =========================================================================
+    describe('DynamoDB GSI', () => {
+        const { template } = createContentStack();
+
+        it('should create GSI1 with gsi1pk as partition key and gsi1sk as sort key', () => {
+            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+                GlobalSecondaryIndexes: Match.arrayWith([
+                    Match.objectLike({
+                        IndexName: 'gsi1-status-date',
+                        KeySchema: Match.arrayWith([
+                            Match.objectLike({ AttributeName: 'gsi1pk', KeyType: 'HASH' }),
+                            Match.objectLike({ AttributeName: 'gsi1sk', KeyType: 'RANGE' }),
+                        ]),
+                    }),
+                ]),
+            });
+        });
+
+        it('should create GSI2 with gsi2pk as partition key and gsi2sk as sort key', () => {
+            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+                GlobalSecondaryIndexes: Match.arrayWith([
+                    Match.objectLike({
+                        IndexName: 'gsi2-tag-date',
+                        KeySchema: Match.arrayWith([
+                            Match.objectLike({ AttributeName: 'gsi2pk', KeyType: 'HASH' }),
+                            Match.objectLike({ AttributeName: 'gsi2sk', KeyType: 'RANGE' }),
+                        ]),
+                    }),
+                ]),
+            });
+        });
+    });
+
+    // =========================================================================
+    // SQS Dead Letter Queue
+    // =========================================================================
+    describe('SQS Dead Letter Queue', () => {
+        const { template } = createContentStack();
+
+        it('should create the publisher DLQ', () => {
+            template.hasResourceProperties('AWS::SQS::Queue', {
+                QueueName: `${NAME_PREFIX}-publisher-dlq`,
+            });
+        });
+
+        it('should enable SQS managed encryption on the DLQ', () => {
+            template.hasResourceProperties('AWS::SQS::Queue', {
+                QueueName: `${NAME_PREFIX}-publisher-dlq`,
+                SqsManagedSseEnabled: true,
+            });
+        });
+    });
+
+    // =========================================================================
     // IAM — Bedrock InvokeModel permission
     // =========================================================================
     describe('IAM Policies', () => {

@@ -15,7 +15,7 @@
  * - Stack Properties (public fields)
  */
 
-import { Template, Match, Capture } from 'aws-cdk-lib/assertions';
+import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Environment } from '../../../../lib/config';
@@ -26,6 +26,8 @@ import {
 } from '../../../../lib/stacks/kubernetes/base-stack';
 import {
     TEST_ENV_EU,
+    TEST_VPC_CONTEXT_KEY,
+    TEST_VPC_CONTEXT,
     createTestApp,
 } from '../../../fixtures';
 
@@ -34,6 +36,8 @@ import {
 // =============================================================================
 
 const TEST_CONFIGS = getK8sConfigs(Environment.DEVELOPMENT);
+
+
 
 /**
  * Helper to create KubernetesBaseStack with sensible defaults.
@@ -44,6 +48,9 @@ function createBaseStack(
     overrides?: Partial<KubernetesBaseStackProps>,
 ): { stack: KubernetesBaseStack; template: Template; app: cdk.App } {
     const app = createTestApp();
+
+    // Provide VPC context so Vpc.fromLookup() resolves with eu-west-1 AZs
+    app.node.setContext(TEST_VPC_CONTEXT_KEY, TEST_VPC_CONTEXT);
 
     const stack = new KubernetesBaseStack(app, 'TestK8sBaseStack', {
         env: TEST_ENV_EU,
@@ -77,8 +84,8 @@ describe('KubernetesBaseStack', () => {
     // Security Groups
     // =========================================================================
     describe('Security Groups', () => {
-        it('should create exactly 4 security groups', () => {
-            template.resourceCountIs('AWS::EC2::SecurityGroup', 4);
+        it('should create exactly 5 security groups (4 custom + 1 NLB)', () => {
+            template.resourceCountIs('AWS::EC2::SecurityGroup', 5);
         });
 
         it('should create cluster base SG with all outbound allowed', () => {
@@ -145,7 +152,7 @@ describe('KubernetesBaseStack', () => {
             });
         });
 
-        it('should create HTTP ingress rule for Let\'s Encrypt on ingress SG', () => {
+        it('should create HTTP ingress rule for NLB health checks on ingress SG', () => {
             template.hasResourceProperties('AWS::EC2::SecurityGroup', {
                 GroupName: 'k8s-dev-k8s-ingress',
                 SecurityGroupIngress: Match.arrayWith([
@@ -153,7 +160,7 @@ describe('KubernetesBaseStack', () => {
                         FromPort: 80,
                         ToPort: 80,
                         IpProtocol: 'tcp',
-                        CidrIp: '0.0.0.0/0',
+                        CidrIp: '10.0.0.0/16',
                     }),
                 ]),
             });
@@ -377,8 +384,8 @@ describe('KubernetesBaseStack', () => {
     // S3 Buckets
     // =========================================================================
     describe('S3 Buckets', () => {
-        it('should create 2 S3 buckets (scripts + access logs)', () => {
-            template.resourceCountIs('AWS::S3::Bucket', 2);
+        it('should create 3 S3 buckets (scripts + access logs + NLB access logs)', () => {
+            template.resourceCountIs('AWS::S3::Bucket', 3);
         });
 
         it('should encrypt all S3 buckets', () => {
@@ -394,8 +401,8 @@ describe('KubernetesBaseStack', () => {
     // SSM Parameters
     // =========================================================================
     describe('SSM Parameters', () => {
-        it('should create 12 SSM parameters for cross-stack discovery', () => {
-            template.resourceCountIs('AWS::SSM::Parameter', 12);
+        it('should create 14 SSM parameters for cross-stack discovery', () => {
+            template.resourceCountIs('AWS::SSM::Parameter', 14);
         });
 
         it('should create SSM parameters under the /k8s/development prefix', () => {
@@ -408,7 +415,7 @@ describe('KubernetesBaseStack', () => {
             const expectedPrefixes = paramNames.filter(
                 (name) => name.startsWith('/k8s/development/'),
             );
-            expect(expectedPrefixes.length).toBe(12);
+            expect(expectedPrefixes).toHaveLength(14);
         });
 
         it('should publish the security group ID to SSM', () => {
@@ -625,9 +632,9 @@ describe('KubernetesBaseStack', () => {
         it('should use the default SG config for all environments', () => {
             // Verify the config is properly loaded
             expect(TEST_CONFIGS.securityGroups.clusterBase.rules.length).toBeGreaterThan(10);
-            expect(TEST_CONFIGS.securityGroups.controlPlane.rules.length).toBe(1);
-            expect(TEST_CONFIGS.securityGroups.monitoring.rules.length).toBe(5);
-            expect(TEST_CONFIGS.securityGroups.ingress.rules.length).toBe(1);
+            expect(TEST_CONFIGS.securityGroups.controlPlane.rules).toHaveLength(1);
+            expect(TEST_CONFIGS.securityGroups.monitoring.rules).toHaveLength(5);
+            expect(TEST_CONFIGS.securityGroups.ingress.rules).toHaveLength(1);
         });
 
         it('should use isProduction=false for development environment', () => {
@@ -640,15 +647,15 @@ describe('KubernetesBaseStack', () => {
     // =========================================================================
     describe('Resource Counts', () => {
         it('should create expected number of core resources', () => {
-            template.resourceCountIs('AWS::EC2::SecurityGroup', 4);
+            template.resourceCountIs('AWS::EC2::SecurityGroup', 5);
             template.resourceCountIs('AWS::EC2::Volume', 1);
             template.resourceCountIs('AWS::EC2::EIP', 1);
             template.resourceCountIs('AWS::KMS::Key', 1);
             template.resourceCountIs('AWS::KMS::Alias', 1);
             template.resourceCountIs('AWS::Route53::HostedZone', 1);
             template.resourceCountIs('AWS::Route53::RecordSet', 1);
-            template.resourceCountIs('AWS::S3::Bucket', 2);
-            template.resourceCountIs('AWS::SSM::Parameter', 12);
+            template.resourceCountIs('AWS::S3::Bucket', 3);
+            template.resourceCountIs('AWS::SSM::Parameter', 14);
             template.resourceCountIs('AWS::DLM::LifecyclePolicy', 1);
         });
     });

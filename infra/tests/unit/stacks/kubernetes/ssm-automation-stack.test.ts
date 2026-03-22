@@ -3,7 +3,8 @@
  * SSM Automation Stack Unit Tests
  *
  * Tests for K8sSsmAutomationStack:
- * - SSM Automation Documents (control plane, worker, nextjs secrets, monitoring secrets)
+ * - SSM Automation Documents (control plane, app-worker, mon-worker, argocd-worker, nextjs secrets, monitoring secrets)
+ * - SSM Command Document (node drift enforcement)
  * - IAM Role for automation execution
  * - SSM Parameters for document discovery
  * - Step configuration and ordering
@@ -60,8 +61,8 @@ describe('K8sSsmAutomationStack', () => {
     describe('SSM Automation Documents', () => {
         const { template } = createSsmAutomationStack();
 
-        it('should create 4 SSM Automation documents', () => {
-            template.resourceCountIs('AWS::SSM::Document', 5);
+        it('should create 7 SSM documents (6 Automation + 1 Command for drift enforcement)', () => {
+            template.resourceCountIs('AWS::SSM::Document', 7);
         });
 
         it('should create a control plane automation document', () => {
@@ -86,6 +87,15 @@ describe('K8sSsmAutomationStack', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 DocumentType: 'Automation',
                 Name: 'k8s-dev-bootstrap-mon-worker',
+                DocumentFormat: 'JSON',
+                UpdateMethod: 'NewVersion',
+            });
+        });
+
+        it('should create an argocd-worker automation document', () => {
+            template.hasResourceProperties('AWS::SSM::Document', {
+                DocumentType: 'Automation',
+                Name: 'k8s-dev-bootstrap-argocd-worker',
                 DocumentFormat: 'JSON',
                 UpdateMethod: 'NewVersion',
             });
@@ -282,6 +292,13 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
+        it('should create SSM parameter for argocd-worker document name', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/k8s/development/bootstrap/argocd-worker-doc-name',
+                Value: 'k8s-dev-bootstrap-argocd-worker',
+            });
+        });
+
         it('should create SSM parameter for automation role ARN', () => {
             template.hasResourceProperties('AWS::SSM::Parameter', {
                 Name: '/k8s/development/bootstrap/automation-role-arn',
@@ -321,6 +338,10 @@ describe('K8sSsmAutomationStack', () => {
             expect(stack.monWorkerDocName).toBe('k8s-dev-bootstrap-mon-worker');
         });
 
+        it('should expose argocdWorkerDocName', () => {
+            expect(stack.argocdWorkerDocName).toBe('k8s-dev-bootstrap-argocd-worker');
+        });
+
         it('should expose automationRoleArn', () => {
             expect(stack.automationRoleArn).toBeTruthy();
         });
@@ -331,6 +352,66 @@ describe('K8sSsmAutomationStack', () => {
 
         it('should expose monitoringSecretsDocName', () => {
             expect(stack.monitoringSecretsDocName).toBe('k8s-dev-deploy-monitoring-secrets');
+        });
+    });
+
+    // =========================================================================
+    // Resource Cleanup Provider — pre-emptive orphan deletion
+    // =========================================================================
+    describe('Resource Cleanup Provider', () => {
+        const { template } = createSsmAutomationStack();
+
+        it('should create the cleanup Lambda function', () => {
+            template.hasResourceProperties('AWS::Lambda::Function', {
+                Runtime: 'python3.13',
+                Description: Match.stringLikeRegexp('cleanup.*orphaned'),
+            });
+        });
+
+        it('should create custom resources for SSM parameter cleanup', () => {
+            // 7 SSM parameters + 2 log groups + 1 SNS topic = 10 custom resources
+            // Plus the 1 custom resource from the Provider framework itself
+            // We verify at least the Custom::AWS resources exist
+            template.resourceCountIs('AWS::CloudFormation::CustomResource', 10);
+        });
+
+        it('should grant the cleanup Lambda logs:DeleteLogGroup permission', () => {
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: Match.objectLike({
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: 'logs:DeleteLogGroup',
+                            Sid: 'CleanupLogGroups',
+                        }),
+                    ]),
+                }),
+            });
+        });
+
+        it('should grant the cleanup Lambda ssm:DeleteParameter permission', () => {
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: Match.objectLike({
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: 'ssm:DeleteParameter',
+                            Sid: 'CleanupSsmParameters',
+                        }),
+                    ]),
+                }),
+            });
+        });
+
+        it('should grant the cleanup Lambda sns:DeleteTopic permission', () => {
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: Match.objectLike({
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: 'sns:DeleteTopic',
+                            Sid: 'CleanupSnsTopics',
+                        }),
+                    ]),
+                }),
+            });
         });
     });
 });

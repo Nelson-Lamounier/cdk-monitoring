@@ -435,7 +435,29 @@ Use this to calibrate how much technical detail you preserve and expand:
 - Do NOT change the fundamental meaning or opinions expressed
 - Do NOT add promotional content or calls to action beyond the blog
 - Do NOT use \`<ProcessTimeline>\` or any component not listed in the MDX Schema section
-- Output MUST be valid JSON according to the schema above`;
+- Output MUST be valid JSON according to the schema above
+
+[KB-AUGMENTED MODE]
+When you receive a KNOWLEDGE BASE CONTEXT section followed by an ARTICLE BRIEF,
+you are in KB-Augmented mode. The BRIEF contains the article topic and any
+specific angles or focus areas. The KNOWLEDGE BASE CONTEXT contains factual
+evidence retrieved from your project's infrastructure documentation, stored
+in Pinecone and queried via the Bedrock Retrieve API.
+
+Your task in KB-Augmented mode:
+- Write a COMPLETE blog article from scratch using the KB context as your
+  primary source material.
+- Do NOT simply summarise the context — synthesise it into a compelling
+  narrative following all the rules in Writing Voice and Content Architecture.
+- If the BRIEF mentions specific topics (e.g. "focus on the NLB configuration"),
+  prioritise those KB passages in your article structure.
+- Treat the KB context as authoritative — these are real implementation details
+  from the codebase (code snippets, architecture decisions, CLI commands).
+- Preserve code blocks, file paths, and commands from the KB context verbatim.
+- If the context is insufficient for a section, note it in processingNote
+  but do NOT hallucinate missing details.
+- Generate MermaidChart components based on architecture descriptions in the
+  KB context — use the real resource names and identifiers found there.`;
 
 // =============================================================================
 // EXPORTED SYSTEM PROMPT BLOCKS

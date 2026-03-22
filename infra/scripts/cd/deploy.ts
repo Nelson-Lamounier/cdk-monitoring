@@ -3,12 +3,13 @@
  * CDK Deploy Script
  *
  * Deploys a single CDK stack with provenance tags, output capture,
- * and GitHub Actions integration. Replaces the inline bash in
- * deploy-cdk-stack/action.yml for consistency with other TS scripts.
+ * and GitHub Actions integration. Called by the `just ci-deploy`
+ * recipe from `_deploy-stack.yml`.
  *
  * Usage:
  *   npx tsx scripts/deployment/deploy.ts <stack-name> <project> <environment>
  *   npx tsx scripts/deployment/deploy.ts K8s-Compute-development k8s development --require-approval never
+ *   npx tsx scripts/deployment/deploy.ts Org-DnsRole-prod org development --context hostedZoneIds='["Z123"]' --context trustedAccountIds='["111"]'
  *
  * Outputs (via $GITHUB_OUTPUT):
  *   status        - deployment result (success|failure)
@@ -30,6 +31,7 @@ import { setOutput } from '@repo/script-utils/github.js';
 import logger from '@repo/script-utils/logger.js';
 
 import { buildCdkArgs, runCdk } from '../shared/exec.js';
+import { getProject, type Environment } from '../shared/stacks.js';
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -42,6 +44,11 @@ const { positionals, values } = parseArgs({
       type: 'string',
       default: 'never',
     },
+    context: {
+      type: 'string',
+      multiple: true,
+      default: [],
+    },
   },
 });
 
@@ -51,9 +58,18 @@ const requireApproval = (values['require-approval'] ?? 'never') as
   | 'broadening'
   | 'any-change';
 
+// Parse --context key=value pairs into a Record for buildCdkArgs
+const extraContext: Record<string, string> = {};
+for (const entry of values.context ?? []) {
+  const eqIdx = entry.indexOf('=');
+  if (eqIdx > 0) {
+    extraContext[entry.slice(0, eqIdx)] = entry.slice(eqIdx + 1);
+  }
+}
+
 if (!stackName || !project || !environment) {
   console.error(
-    'Usage: deploy.ts <stack-name> <project> <environment> [--require-approval never|broadening|any-change]',
+    'Usage: deploy.ts <stack-name> <project> <environment> [--require-approval never] [--context key=value ...]',
   );
   console.error('');
   console.error('Examples:');
@@ -62,6 +78,9 @@ if (!stackName || !project || !environment) {
   );
   console.error(
     '  deploy.ts Bedrock-Compute-production bedrock production --require-approval broadening',
+  );
+  console.error(
+    '  deploy.ts Org-DnsRole-prod org development --context hostedZoneIds=\'["Z123"]\'',
   );
   process.exit(1);
 }
@@ -106,12 +125,20 @@ async function main(): Promise<void> {
   await mkdir(outputsDir, { recursive: true });
   const outputsFile = `${outputsDir}/stack-outputs.json`;
 
+  // Resolve full CDK context for the project — includes env-var-bridged
+  // values like adminAllowedIps (from ALLOW_IPV4/ALLOW_IPV6) that
+  // base-stack.ts reads via tryGetContext().
+  const projectConfig = getProject(project);
+  const resolvedContext = projectConfig
+    ? { ...projectConfig.cdkContext(environment as Environment), ...extraContext }
+    : { project, environment, ...extraContext };
+
   // Build CDK args
   const cdkArgs = buildCdkArgs({
     command: 'deploy',
     stackNames: [stackName],
     exclusively: true,
-    context: { project, environment },
+    context: resolvedContext,
     requireApproval,
     method: 'direct',
     progress: 'events',
@@ -120,13 +147,19 @@ async function main(): Promise<void> {
   });
 
   logger.task('Executing CDK deploy...');
-  logger.debug(`cdk ${cdkArgs.join(' ')}`);
+  logger.verbose(`cdk ${cdkArgs.join(' ')}`);
   logger.blank();
 
-  // Execute deployment with timing
+  // Execute deployment with timing — capture output to prevent
+  // infrastructure identifiers leaking into public workflow logs.
   const startTime = Date.now();
-  const result = await runCdk(cdkArgs);
+  const result = await runCdk(cdkArgs, { captureOutput: true });
   const duration = Math.round((Date.now() - startTime) / 1000);
+
+  // Extract minimal troubleshooting signal from captured output
+  const resourceCount = (result.stdout.match(/UPDATE_COMPLETE|CREATE_COMPLETE/g) ?? []).length;
+  const synthesisMatch = result.stdout.match(/Synthesis time:\s*([\d.]+)s/);
+  const synthesisTime = synthesisMatch ? synthesisMatch[1] : 'unknown';
 
   // Write outputs for GitHub Actions
   if (result.exitCode === 0) {
@@ -134,6 +167,8 @@ async function main(): Promise<void> {
     setOutput('duration', String(duration));
     logger.blank();
     logger.success(`Stack deployment successful (${duration}s)`);
+    logger.keyValue('Synthesis', `${synthesisTime}s`);
+    logger.keyValue('Resources updated', String(resourceCount));
   } else {
     setOutput('status', 'failure');
     setOutput('duration', String(duration));
@@ -141,6 +176,11 @@ async function main(): Promise<void> {
     logger.error(
       `Stack deployment failed (exit code: ${result.exitCode}, duration: ${duration}s)`,
     );
+    // Print stderr for failure diagnostics (CDK error messages, not resource IDs)
+    if (result.stderr) {
+      logger.info('CDK error output:');
+      console.error(result.stderr);
+    }
     process.exit(result.exitCode);
   }
 }

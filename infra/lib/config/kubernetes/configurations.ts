@@ -17,7 +17,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment } from '../environments';
+import { type DeployableEnvironment, Environment } from '../environments';
 
 // =============================================================================
 // KUBERNETES CONSTANTS
@@ -151,6 +151,12 @@ export interface K8sImageConfig {
          * The credential provider plugin API is stable and version-independent.
          */
         readonly ecrCredentialProvider: string;
+        /**
+         * K8sGPT version (without 'v' prefix, e.g. '0.4.29').
+         * AI-powered Kubernetes diagnostics tool used by the self-healing
+         * pipeline's analyse-cluster-health Lambda via SSM SendCommand.
+         */
+        readonly k8sgpt: string;
     };
 }
 
@@ -183,6 +189,33 @@ export interface MonitoringWorkerConfig {
     readonly instanceType: ec2.InstanceType;
     /** Kubernetes node label for workload placement (observability, not exclusive) */
     readonly nodeLabel: string;
+    /** Whether to enable detailed CloudWatch monitoring */
+    readonly detailedMonitoring: boolean;
+    /** Whether to use CloudFormation signals for ASG */
+    readonly useSignals: boolean;
+    /** Timeout for CloudFormation signals in minutes */
+    readonly signalsTimeoutMinutes: number;
+    /** EBS root volume size in GB */
+    readonly rootVolumeSizeGb: number;
+    /** Whether to use EC2 Spot instances for cost optimisation */
+    readonly useSpotInstances: boolean;
+}
+
+/**
+ * ArgoCD worker node configuration
+ *
+ * Dedicated worker node for ArgoCD GitOps controller.
+ * Runs on a Spot instance for cost optimisation.
+ * ArgoCD UI is still accessible via ops.nelsonlamounier.com/argocd
+ * through Traefik ingress on other nodes (Kubernetes service routing).
+ */
+export interface ArgocdWorkerConfig {
+    /** EC2 instance type for the ArgoCD worker */
+    readonly instanceType: ec2.InstanceType;
+    /** Kubernetes node label for workload placement */
+    readonly nodeLabel: string;
+    /** Whether to use EC2 Spot instances for cost savings */
+    readonly useSpotInstances: boolean;
     /** Whether to enable detailed CloudWatch monitoring */
     readonly detailedMonitoring: boolean;
     /** Whether to use CloudFormation signals for ASG */
@@ -281,6 +314,7 @@ export interface K8sConfigs {
     readonly ssm: K8sSsmConfig;
     readonly edge: K8sEdgeConfig;
     readonly monitoringWorker: MonitoringWorkerConfig;
+    readonly argocdWorker: ArgocdWorkerConfig;
     readonly logRetention: logs.RetentionDays;
     readonly isProduction: boolean;
     readonly removalPolicy: cdk.RemovalPolicy;
@@ -349,8 +383,7 @@ const DEFAULT_K8S_SECURITY_GROUPS: K8sSecurityGroupConfig = {
     ingress: {
         allowAllOutbound: false,
         rules: [
-            // Static rules only — CloudFront prefix list + admin IPs added at runtime
-            { port: TRAEFIK_HTTP_PORT, protocol: 'tcp', source: 'anyIpv4', description: 'HTTP from anywhere (LetsEncrypt HTTP-01 + CloudFront origin)' },
+             { port: 80, protocol: 'tcp', source: 'vpcCidr', description: 'HTTP health checks from NLB' },
         ],
     },
 };
@@ -362,7 +395,7 @@ const DEFAULT_K8S_SECURITY_GROUPS: K8sSecurityGroupConfig = {
 /**
  * k8s resource configurations by environment
  */
-export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
+export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
     [Environment.DEVELOPMENT]: {
         cluster: {
             kubernetesVersion: KUBERNETES_VERSION,
@@ -401,6 +434,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
                 ecrCredentialProvider: 'v1.31.0',
+                k8sgpt: '0.4.29',
             },
         },
         ssm: {
@@ -422,8 +456,18 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             baseDomain: 'nelsonlamounier.com',
         },
         monitoringWorker: {
-            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
             nodeLabel: 'workload=monitoring',
+            detailedMonitoring: false,
+            useSignals: true,
+            signalsTimeoutMinutes: 40,
+            rootVolumeSizeGb: 30,
+            useSpotInstances: true,
+        },
+        argocdWorker: {
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            nodeLabel: 'workload=argocd',
+            useSpotInstances: true,
             detailedMonitoring: false,
             useSignals: true,
             signalsTimeoutMinutes: 40,
@@ -473,6 +517,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
                 ecrCredentialProvider: 'v1.31.0',
+                k8sgpt: '0.4.29',
             },
         },
         ssm: {
@@ -494,6 +539,16 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
             nodeLabel: 'workload=monitoring',
+            detailedMonitoring: true,
+            useSignals: true,
+            signalsTimeoutMinutes: 40,
+            rootVolumeSizeGb: 30,
+            useSpotInstances: true,
+        },
+        argocdWorker: {
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            nodeLabel: 'workload=argocd',
+            useSpotInstances: true,
             detailedMonitoring: true,
             useSignals: true,
             signalsTimeoutMinutes: 40,
@@ -543,6 +598,7 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
                 ecrCredentialProvider: 'v1.31.0',
+                k8sgpt: '0.4.29',
             },
         },
         ssm: {
@@ -568,6 +624,16 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
             useSignals: true,
             signalsTimeoutMinutes: 40,
             rootVolumeSizeGb: 30,
+            useSpotInstances: true,
+        },
+        argocdWorker: {
+            instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+            nodeLabel: 'workload=argocd',
+            useSpotInstances: true,
+            detailedMonitoring: true,
+            useSignals: true,
+            signalsTimeoutMinutes: 40,
+            rootVolumeSizeGb: 30,
         },
         logRetention: logs.RetentionDays.THREE_MONTHS,
         isProduction: true,
@@ -584,5 +650,5 @@ export const K8S_CONFIGS: Record<Environment, K8sConfigs> = {
  * Get k8s configurations for an environment
  */
 export function getK8sConfigs(env: Environment): K8sConfigs {
-    return K8S_CONFIGS[env];
+    return K8S_CONFIGS[env as DeployableEnvironment];
 }

@@ -3,9 +3,8 @@
  * Pre-flight Checks Script
  *
  * Validates deployment inputs, verifies AWS credentials, and optionally
- * checks CDK bootstrap status before a stack deployment. Replaces the
- * "Validate Inputs", "Verify AWS Credentials", and "Verify CDK Bootstrap"
- * bash steps in `deploy-cdk-stack/action.yml`.
+ * checks CDK bootstrap status before a stack deployment. Called by
+ * the `just ci-preflight` recipe from `_deploy-stack.yml`.
  *
  * Usage:
  *   npx tsx scripts/deployment/preflight-checks.ts <stack-name> \
@@ -56,7 +55,7 @@ const verifyBootstrap = values['verify-bootstrap']!;
 // ---------------------------------------------------------------------------
 
 /** Allowed deployment target environments. */
-const VALID_ENVIRONMENTS = ['development', 'staging', 'production'];
+const VALID_ENVIRONMENTS = ['development', 'staging', 'production', 'management'];
 
 /** Allowed CDK approval modes. */
 const VALID_APPROVALS = ['never', 'any-change', 'broadening'];

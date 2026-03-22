@@ -12,6 +12,7 @@ Steps (in order):
     2. join_cluster         — Join kubeadm cluster via SSM discovery
     3. install_cw_agent     — CloudWatch Agent for log streaming
     4. associate_eip        — Associate Elastic IP (app-worker only)
+    5. clean_stale_pvs      — Remove stale PVs/PVCs from dead nodes (mon-worker only)
 
 Idempotent: each step uses marker files or existence checks to skip
 if already completed. Safe to re-run on instance replacement.
@@ -162,6 +163,90 @@ def step_validate_ami() -> None:
 # Step 2 — Join kubeadm Cluster
 # =============================================================================
 
+CA_CERT_PATH = "/etc/kubernetes/pki/ca.crt"
+
+
+def _compute_local_ca_hash() -> str:
+    """Compute the SHA-256 hash of the local Kubernetes CA certificate.
+
+    Uses the same openssl pipeline as the control plane's
+    ``_publish_ssm_params()`` to ensure hashes are directly comparable.
+
+    @returns The CA hash in ``sha256:<hex>`` format, or empty string on failure.
+    """
+    ca_hash_cmd = (
+        f"openssl x509 -pubkey -in {CA_CERT_PATH} | "
+        "openssl rsa -pubin -outform der 2>/dev/null | "
+        "openssl dgst -sha256 -hex | awk '{print $2}'"
+    )
+    result = run_cmd(ca_hash_cmd, shell=True, check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        log_warn("Failed to compute local CA hash")
+        return ""
+    return f"sha256:{result.stdout.strip()}"
+
+
+def _check_ca_mismatch() -> bool:
+    """Detect CA certificate mismatch between this worker and the control plane.
+
+    When the control plane is replaced with a new CA (e.g. EBS volume loss),
+    existing workers hold a stale CA in ``/etc/kubernetes/pki/ca.crt``.
+    This function compares the local CA hash against the SSM-published
+    value and, on mismatch, runs ``kubeadm reset`` so the join step can
+    proceed with the new credentials.
+
+    @returns True if a mismatch was detected and reset was performed.
+    """
+    ca_cert = Path(CA_CERT_PATH)
+    kubelet_conf = Path(KUBELET_CONF)
+
+    if not ca_cert.exists():
+        log_info("No local CA cert found — fresh worker, proceeding normally")
+        return False
+
+    if not kubelet_conf.exists():
+        log_info("No kubelet.conf — worker not previously joined, proceeding normally")
+        return False
+
+    local_hash = _compute_local_ca_hash()
+    if not local_hash:
+        log_warn("Could not compute local CA hash — skipping mismatch check")
+        return False
+
+    ssm_hash = ssm_get(f"{SSM_PREFIX}/ca-hash")
+    if not ssm_hash:
+        log_warn("CA hash not available in SSM — skipping mismatch check")
+        return False
+
+    if local_hash == ssm_hash:
+        log_info(f"CA certificate valid — local hash matches SSM ({local_hash[:20]}...)")
+        return False
+
+    # ─── CA MISMATCH DETECTED ───
+    log_warn("=" * 60)
+    log_warn("CA MISMATCH DETECTED")
+    log_warn(f"  Local CA hash:  {local_hash}")
+    log_warn(f"  SSM CA hash:    {ssm_hash}")
+    log_warn("  The control plane was replaced with a new CA certificate.")
+    log_warn("  Running kubeadm reset to prepare for re-join...")
+    log_warn("=" * 60)
+
+    run_cmd(["kubeadm", "reset", "-f"], check=False)
+
+    # Remove kubelet.conf so the StepRunner skip_if guard allows re-join
+    if kubelet_conf.exists():
+        kubelet_conf.unlink()
+        log_info("Removed stale kubelet.conf")
+
+    # Remove stale CA cert so kubeadm join writes the new one
+    if ca_cert.exists():
+        ca_cert.unlink()
+        log_info("Removed stale CA certificate")
+
+    log_info("Worker reset complete — ready to re-join with new CA")
+    return True
+
+
 def _resolve_control_plane_endpoint() -> str:
     """Wait for control plane endpoint to appear in SSM."""
     log_info("Resolving control plane endpoint from SSM...")
@@ -266,7 +351,18 @@ def _wait_for_kubelet() -> None:
 
 
 def step_join_cluster() -> None:
-    """Step 2: Join kubeadm cluster via SSM discovery."""
+    """Step 2: Join kubeadm cluster via SSM discovery.
+
+    Before the idempotency guard, checks for CA certificate mismatch
+    (control plane replaced with a new CA). On mismatch, resets kubeadm
+    and removes kubelet.conf so the join can proceed with new credentials.
+    """
+    # CA mismatch check MUST run before StepRunner's skip_if guard,
+    # because it may need to remove kubelet.conf to allow re-join.
+    ca_reset = _check_ca_mismatch()
+    if ca_reset:
+        log_info("CA mismatch handled — proceeding to re-join cluster")
+
     with StepRunner("join-cluster", skip_if=KUBELET_CONF) as step:
         if step.skipped:
             return
@@ -467,6 +563,212 @@ def step_associate_eip() -> None:
 
 
 # =============================================================================
+# Step 5 — Clean Stale PVs/PVCs (monitoring worker only)
+#
+# When a monitoring worker node is replaced by ASG, the old node is
+# terminated but its local-path PersistentVolumes remain in the cluster,
+# pinned to the dead hostname via nodeAffinity. Pods cannot schedule
+# because the PVs reference a node that no longer exists.
+#
+# This step:
+#   1. Discovers PVs in the 'monitoring' namespace bound to dead nodes
+#   2. Deletes the orphaned PVCs (which releases the PVs)
+#   3. Deletes the Released/Failed PVs
+#
+# ArgoCD or Helm will recreate the PVCs on the next sync, and
+# local-path-provisioner will provision fresh PVs on the new node.
+#
+# Gated to monitoring workers only via NODE_LABEL check.
+# Idempotent: if no stale PVs exist, this step is a no-op.
+# =============================================================================
+
+MONITORING_WORKER_LABEL = "workload=monitoring"
+MONITORING_NAMESPACE = "monitoring"
+STALE_PV_CLEANUP_MARKER = "/tmp/.stale-pv-cleanup-done"
+
+
+def _get_cluster_node_names() -> set[str]:
+    """Get the set of node hostnames currently registered in the cluster."""
+    result = run_cmd(
+        ["kubectl", "get", "nodes", "-o",
+         "jsonpath={.items[*].metadata.name}"],
+        check=False,
+    )
+    if result.returncode != 0:
+        log_warn("Failed to list cluster nodes — skipping stale PV cleanup")
+        return set()
+    return set(result.stdout.strip().split())
+
+
+def _find_stale_pvs(live_nodes: set[str]) -> list[dict[str, str]]:
+    """Find PVs with node affinity pointing to nodes not in the cluster.
+
+    @returns List of dicts with 'pv_name', 'pvc_name', 'pvc_namespace', 'dead_node'.
+    """
+    result = run_cmd(
+        ["kubectl", "get", "pv", "-o", "json"],
+        check=False,
+    )
+    if result.returncode != 0:
+        log_warn("Failed to list PVs — skipping stale PV cleanup")
+        return []
+
+    try:
+        pv_list = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        log_warn("Failed to parse PV list JSON — skipping stale PV cleanup")
+        return []
+
+    stale = []
+    for pv in pv_list.get("items", []):
+        pv_name = pv.get("metadata", {}).get("name", "")
+
+        # Only check PVs bound to the monitoring namespace
+        claim_ref = pv.get("spec", {}).get("claimRef", {})
+        pvc_ns = claim_ref.get("namespace", "")
+        pvc_name = claim_ref.get("name", "")
+        if pvc_ns != MONITORING_NAMESPACE:
+            continue
+
+        # Extract node affinity hostname(s)
+        node_affinity = (
+            pv.get("spec", {})
+            .get("nodeAffinity", {})
+            .get("required", {})
+            .get("nodeSelectorTerms", [])
+        )
+
+        for term in node_affinity:
+            for expr in term.get("matchExpressions", []):
+                if expr.get("key") == "kubernetes.io/hostname":
+                    for hostname in expr.get("values", []):
+                        if hostname not in live_nodes:
+                            stale.append({
+                                "pv_name": pv_name,
+                                "pvc_name": pvc_name,
+                                "pvc_namespace": pvc_ns,
+                                "dead_node": hostname,
+                            })
+
+    return stale
+
+
+def step_clean_stale_pvs() -> None:
+    """Step 5: Clean stale PVs/PVCs pinned to dead nodes (monitoring workers only).
+
+    When a monitoring worker is replaced, local-path PVs retain
+    nodeAffinity to the old (dead) hostname. This blocks pod scheduling
+    until the PVCs are deleted and recreated on the new node.
+    """
+    with StepRunner("clean-stale-pvs", skip_if=STALE_PV_CLEANUP_MARKER) as step:
+        if step.skipped:
+            return
+
+        # Gate: only monitoring workers need PV cleanup
+        if NODE_LABEL != MONITORING_WORKER_LABEL:
+            log_info(
+                f"Skipping stale PV cleanup — NODE_LABEL={NODE_LABEL} "
+                f"(only {MONITORING_WORKER_LABEL} triggers PV cleanup)"
+            )
+            step.details["skipped_reason"] = f"not a monitoring worker (label={NODE_LABEL})"
+            return
+
+        # Wait briefly for the node to be registered in the API
+        log_info("Waiting 10s for node registration before PV cleanup...")
+        time.sleep(10)
+
+        # Set KUBECONFIG so kubectl works from the worker
+        kubeconfig = os.environ.get("KUBECONFIG", "/etc/kubernetes/kubelet.conf")
+        # Workers don't have admin.conf — use the CP endpoint via SSM
+        # to get a kubeconfig. kubectl on workers uses the kubelet cert.
+        # For PV cleanup, we need admin access. Retrieve admin kubeconfig
+        # from the control plane via SSM.
+        admin_kubeconfig_param = f"{SSM_PREFIX}/admin-kubeconfig-b64"
+        admin_kc_b64 = ssm_get(admin_kubeconfig_param)
+        if not admin_kc_b64:
+            # Fallback: try to use kubectl directly (may work if RBAC allows)
+            log_info(
+                "Admin kubeconfig not in SSM — attempting PV cleanup with "
+                "default credentials (may require RBAC for node service account)"
+            )
+        else:
+            import base64
+            admin_kc_path = Path("/tmp/admin-kubeconfig")
+            admin_kc_path.write_text(base64.b64decode(admin_kc_b64).decode())
+            admin_kc_path.chmod(0o600)
+            os.environ["KUBECONFIG"] = str(admin_kc_path)
+            kubeconfig = str(admin_kc_path)
+            log_info("Using admin kubeconfig from SSM for PV cleanup")
+
+        live_nodes = _get_cluster_node_names()
+        if not live_nodes:
+            log_warn("No cluster nodes found — skipping PV cleanup")
+            step.details["skipped_reason"] = "no cluster nodes found"
+            return
+
+        log_info(f"Live cluster nodes: {', '.join(sorted(live_nodes))}")
+        step.details["live_node_count"] = len(live_nodes)
+
+        stale_pvs = _find_stale_pvs(live_nodes)
+        if not stale_pvs:
+            log_info("✓ No stale PVs found — monitoring storage is healthy")
+            step.details["stale_pv_count"] = 0
+            return
+
+        log_warn(f"Found {len(stale_pvs)} stale PV(s) pinned to dead node(s)")
+        step.details["stale_pv_count"] = len(stale_pvs)
+        step.details["stale_pvs"] = stale_pvs
+
+        deleted_pvcs: list[str] = []
+        deleted_pvs: list[str] = []
+
+        for entry in stale_pvs:
+            pvc_name = entry["pvc_name"]
+            pv_name = entry["pv_name"]
+            dead_node = entry["dead_node"]
+            ns = entry["pvc_namespace"]
+
+            log_warn(
+                f"  Stale PV: {pv_name} → PVC: {pvc_name} "
+                f"(pinned to dead node: {dead_node})"
+            )
+
+            # Delete PVC first (this releases the PV)
+            if pvc_name:
+                result = run_cmd(
+                    ["kubectl", "delete", "pvc", pvc_name, "-n", ns,
+                     "--ignore-not-found=true", "--wait=false"],
+                    check=False,
+                )
+                if result.returncode == 0:
+                    log_info(f"  ✓ Deleted PVC: {pvc_name}")
+                    deleted_pvcs.append(pvc_name)
+                else:
+                    log_warn(f"  ✗ Failed to delete PVC: {pvc_name}")
+
+            # Delete the PV
+            result = run_cmd(
+                ["kubectl", "delete", "pv", pv_name,
+                 "--ignore-not-found=true", "--wait=false"],
+                check=False,
+            )
+            if result.returncode == 0:
+                log_info(f"  ✓ Deleted PV: {pv_name}")
+                deleted_pvs.append(pv_name)
+            else:
+                log_warn(f"  ✗ Failed to delete PV: {pv_name}")
+
+        step.details["deleted_pvcs"] = deleted_pvcs
+        step.details["deleted_pvs"] = deleted_pvs
+
+        log_info(
+            f"Stale PV cleanup complete: "
+            f"{len(deleted_pvcs)} PVC(s), {len(deleted_pvs)} PV(s) removed. "
+            f"ArgoCD will recreate them on the next sync."
+        )
+
+
+# =============================================================================
 # Main — Sequential Worker Bootstrap
 # =============================================================================
 
@@ -477,6 +779,7 @@ def main() -> None:
         step_join_cluster,
         step_install_cloudwatch_agent,
         step_associate_eip,
+        step_clean_stale_pvs,
     ]
 
     log_info(f"Worker node bootstrap starting ({len(steps)} steps)")

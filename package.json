@@ -8,12 +8,17 @@
     "infra",
     "bedrock-publisher",
     "packages/script-utils",
-    "kubernetes-app"
+    "packages/cdk-governance-aspects",
+    "kubernetes-app",
+    "mcp-servers/mcp-infra-server",
+    "mcp-servers/mcp-portfolio-docs",
+    "mcp-servers/mcp-infra-diagram"
   ],
   "resolutions": {
     "markdown-it": ">=14.1.1",
     "fast-xml-parser": ">=5.3.6",
-    "tar": ">=7.5.8",
+    "tar": ">=7.5.11",
+    "flatted": ">=3.4.2",
     "picomatch": "^3.0.0"
   },
   "packageManager": "yarn@4.12.0",
@@ -28,6 +33,7 @@
     "@aws-sdk/types": "^3.973.4",
     "@types/mime-types": "^3.0.1",
     "mime-types": "^3.0.2",
+    "motion-plus": "https://api.motion.dev/registry?package=motion-plus&version=latest&token=c544ae526e95bfe4d67b1132808cc8198c8f3f8cba088c9a5ab49b6330faccfd",
     "tsx": "^4.21.0"
   },
   "devDependencies": {

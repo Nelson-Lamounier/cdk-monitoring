@@ -25,6 +25,8 @@ export {
     TEST_CIDRS,
     DEFAULT_VPC_CONFIG,
     MONITORING_PORTS,
+    TEST_VPC_CONTEXT_KEY,
+    TEST_VPC_CONTEXT,
 } from './constants';
 
 // CDK App and Stack helpers

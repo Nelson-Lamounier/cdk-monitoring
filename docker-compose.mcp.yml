@@ -1,0 +1,52 @@
+# =============================================================================
+# MCP Servers — Docker Compose build orchestration
+#
+# Usage:
+#   docker compose -f docker-compose.mcp.yml build          # Build all
+#   docker compose -f docker-compose.mcp.yml build infra    # Build one
+#
+# Each service communicates via stdio (no ports needed).
+# Run interactively: docker run -i --rm mcp-infra-server
+# =============================================================================
+
+services:
+  infra:
+    build:
+      context: .
+      dockerfile: mcp-servers/mcp-infra-server/Dockerfile
+    image: mcp-infra-server:latest
+    stdin_open: true
+    environment:
+      - AWS_REGION=${AWS_REGION:-eu-west-1}
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+      - KUBECONFIG=/root/.kube/config
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
+      - ${HOME}/.aws:/root/.aws:ro
+
+  docs:
+    build:
+      context: .
+      dockerfile: mcp-servers/mcp-portfolio-docs/Dockerfile
+    image: mcp-portfolio-docs:latest
+    stdin_open: true
+    volumes:
+      - .:/workspace:ro
+
+  diagram:
+    build:
+      context: .
+      dockerfile: mcp-servers/mcp-infra-diagram/Dockerfile
+    image: mcp-infra-diagram:latest
+    stdin_open: true
+    environment:
+      - AWS_REGION=${AWS_REGION:-eu-west-1}
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+      - KUBECONFIG=/root/.kube/config
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
+      - ${HOME}/.aws:/root/.aws:ro

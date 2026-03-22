@@ -15,7 +15,7 @@
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment } from '../environments';
+import { type DeployableEnvironment, Environment } from '../environments';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -53,7 +53,7 @@ export interface ContentConfigs {
 // CONFIGURATIONS BY ENVIRONMENT
 // =============================================================================
 
-export const CONTENT_CONFIGS: Record<Environment, ContentConfigs> = {
+export const CONTENT_CONFIGS: Record<DeployableEnvironment, ContentConfigs> = {
     [Environment.DEVELOPMENT]: {
         s3: {
             draftPrefix: 'drafts/',
@@ -99,5 +99,5 @@ export const CONTENT_CONFIGS: Record<Environment, ContentConfigs> = {
  * Get content pipeline configurations for an environment
  */
 export function getContentConfigs(env: Environment): ContentConfigs {
-    return CONTENT_CONFIGS[env];
+    return CONTENT_CONFIGS[env as DeployableEnvironment];
 }

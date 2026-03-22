@@ -9,7 +9,7 @@
  *   e.g. NextJS-Compute-development, ControlPlane-production
  */
 
-import { EnvironmentName } from '../config/environments';
+import { EnvironmentName, shortEnv } from '../config/environments';
 import { Project, getProjectConfig } from '../config/projects';
 
 // =============================================================================
@@ -39,18 +39,25 @@ export const STACK_REGISTRY = {
         controlPlane: 'ControlPlane',
         appWorker: 'AppWorker',
         monitoringWorker: 'MonitoringWorker',
+        argocdWorker: 'ArgocdWorker',
         appIam: 'AppIam',
         api: 'Api',
         edge: 'Edge',
+        observability: 'Observability',
     },
     org: {
         dnsRole: 'DnsRole',
     },
     bedrock: {
         data: 'Data',
+        kb: 'Kb',
         agent: 'Agent',
         api: 'Api',
         content: 'Content',
+    },
+    selfHealing: {
+        gateway: 'Gateway',
+        agent: 'Agent',
     },
 } as const;
 
@@ -102,6 +109,7 @@ const PROJECT_TO_REGISTRY: Record<Project, RegistryProject> = {
     [Project.KUBERNETES]: 'kubernetes',
     [Project.ORG]: 'org',
     [Project.BEDROCK]: 'bedrock',
+    [Project.SELF_HEALING]: 'selfHealing',
 };
 
 /**
@@ -148,7 +156,7 @@ export function getStackId(
 // FLAT RESOURCE NAMING
 // =============================================================================
 
-import { shortEnv } from '../config/environments';
+
 
 /**
  * Generate a flat, semantic resource name using short environment abbreviations.

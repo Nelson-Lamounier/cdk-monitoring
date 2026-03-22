@@ -11,7 +11,7 @@
  *   1. Read the AMI ID from SSM (published by Image Builder)
  *   2. Verify AMI exists and is in 'available' state via EC2 DescribeImages
  *   3. Check AMI tags (KubernetesVersion, Purpose, Component)
- *   4. Fetch Image Builder S3 and CloudWatch build logs
+ *   4. Fetch Image Builder CloudWatch build logs
  *   5. Scan logs for expected package version strings from the validate phase
  *
  * This replaces the previous golden-ami-observer.ts script with a standard
@@ -26,18 +26,9 @@
  */
 
 import {
-    SSMClient,
-    GetParameterCommand,
-} from '@aws-sdk/client-ssm';
-import {
-    EC2Client,
-    DescribeImagesCommand,
-} from '@aws-sdk/client-ec2';
-import {
-    S3Client,
-    ListObjectsV2Command,
-    GetObjectCommand,
-} from '@aws-sdk/client-s3';
+    CloudFormationClient,
+    DescribeStacksCommand,
+} from '@aws-sdk/client-cloudformation';
 import {
     CloudWatchLogsClient,
     DescribeLogGroupsCommand,
@@ -45,15 +36,19 @@ import {
     GetLogEventsCommand,
 } from '@aws-sdk/client-cloudwatch-logs';
 import {
-    CloudFormationClient,
-    DescribeStacksCommand,
-} from '@aws-sdk/client-cloudformation';
+    EC2Client,
+    DescribeImagesCommand,
+} from '@aws-sdk/client-ec2';
+import {
+    SSMClient,
+    GetParameterCommand,
+} from '@aws-sdk/client-ssm';
 
 import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
 import { k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import { stackId, STACK_REGISTRY } from '../../../lib/utilities/naming';
-import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
 // Configuration (config-driven — no hardcoded values)
@@ -100,7 +95,6 @@ const EXPECTED_PACKAGES = [
 
 const ssm = new SSMClient({ region: REGION });
 const ec2 = new EC2Client({ region: REGION });
-const s3 = new S3Client({ region: REGION });
 const cfn = new CloudFormationClient({ region: REGION });
 const logs = new CloudWatchLogsClient({ region: REGION });
 
@@ -115,33 +109,11 @@ let allLogContent: string;
 // Helpers
 // =============================================================================
 
-/** Fetch all S3 build log content from the scripts bucket */
-async function fetchS3BuildLogs(bucket: string, prefix: string): Promise<string> {
-    const parts: string[] = [];
+/** Maximum log streams to inspect per log group */
+const MAX_LOG_STREAMS = 5;
 
-    try {
-        const { Contents } = await s3.send(
-            new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }),
-        );
-
-        for (const obj of Contents ?? []) {
-            if (!obj.Key) continue;
-            try {
-                const { Body } = await s3.send(
-                    new GetObjectCommand({ Bucket: bucket, Key: obj.Key }),
-                );
-                const text = await Body?.transformToString() ?? '';
-                parts.push(text);
-            } catch {
-                // Skip unreadable log files
-            }
-        }
-    } catch {
-        // S3 logs may not be available
-    }
-
-    return parts.join('\n');
-}
+/** Maximum events to fetch per log stream */
+const MAX_EVENTS_PER_STREAM = 200;
 
 /** Fetch all Image Builder CloudWatch log content */
 async function fetchCloudWatchBuildLogs(): Promise<string> {
@@ -155,28 +127,33 @@ async function fetchCloudWatchBuildLogs(): Promise<string> {
         for (const lg of logGroups ?? []) {
             if (!lg.logGroupName) continue;
             try {
+                // Fetch multiple streams — Image Builder creates one per
+                // build phase (build, validate, test). Fetching only the
+                // latest stream misses output from earlier phases.
                 const { logStreams } = await logs.send(
                     new DescribeLogStreamsCommand({
                         logGroupName: lg.logGroupName,
                         orderBy: 'LastEventTime',
                         descending: true,
-                        limit: 1,
+                        limit: MAX_LOG_STREAMS,
                     }),
                 );
 
-                const streamName = logStreams?.[0]?.logStreamName;
-                if (!streamName) continue;
+                for (const stream of logStreams ?? []) {
+                    const streamName = stream.logStreamName;
+                    if (!streamName) continue;
 
-                const { events } = await logs.send(
-                    new GetLogEventsCommand({
-                        logGroupName: lg.logGroupName,
-                        logStreamName: streamName,
-                        limit: 200,
-                    }),
-                );
+                    const { events } = await logs.send(
+                        new GetLogEventsCommand({
+                            logGroupName: lg.logGroupName,
+                            logStreamName: streamName,
+                            limit: MAX_EVENTS_PER_STREAM,
+                        }),
+                    );
 
-                for (const event of events ?? []) {
-                    if (event.message) parts.push(event.message);
+                    for (const event of events ?? []) {
+                        if (event.message) parts.push(event.message);
+                    }
                 }
             } catch {
                 // Skip individual log group errors
@@ -213,23 +190,8 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
         console.log(`[Pre-Flight] AMI SSM path: ${AMI_SSM_PATH}`);
         console.log(`[Pre-Flight] Expected stack name: ${STACK_NAME}`);
 
-        // 2. Collect build logs from S3 and CloudWatch
-        const logParts: string[] = [];
-
-        // Try to resolve S3 log bucket from SSM
-        try {
-            const { Parameter: bucketParam } = await ssm.send(
-                new GetParameterCommand({ Name: `${SSM_PREFIX}/scripts-bucket` }),
-            );
-            if (bucketParam?.Value) {
-                logParts.push(await fetchS3BuildLogs(bucketParam.Value, 'image-builder-logs/'));
-            }
-        } catch {
-            console.log('[Pre-Flight] S3 log bucket not found — skipping S3 logs');
-        }
-
-        logParts.push(await fetchCloudWatchBuildLogs());
-        allLogContent = logParts.join('\n');
+        // 2. Collect build logs from CloudWatch
+        allLogContent = await fetchCloudWatchBuildLogs();
 
         console.log(`[Pre-Flight] Total log content length: ${allLogContent.length} chars`);
     }, 30_000);
@@ -263,46 +225,42 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
     // AMI Metadata
     // =========================================================================
     describe('AMI Metadata', () => {
-        it('should exist and be in available state', async () => {
+        let amiState: string;
+        let tags: Array<{ Key?: string; Value?: string }>;
+        let description: string;
+
+        // Depends on: amiId populated in top-level beforeAll
+        beforeAll(async () => {
             const { Images } = await ec2.send(
                 new DescribeImagesCommand({ ImageIds: [amiId] }),
             );
 
             expect(Images).toBeDefined();
-            expect(Images!.length).toBe(1);
-            expect(Images![0].State).toBe('available');
+            expect(Images!).toHaveLength(1);
+
+            const image = Images![0];
+            amiState = image.State ?? '';
+            tags = image.Tags ?? [];
+            description = image.Description ?? '';
         });
 
-        it('should have the KubernetesVersion tag', async () => {
-            const { Images } = await ec2.send(
-                new DescribeImagesCommand({ ImageIds: [amiId] }),
-            );
+        it('should exist and be in available state', () => {
+            expect(amiState).toBe('available');
+        });
 
-            const tags = Images?.[0]?.Tags ?? [];
+        it('should have the KubernetesVersion tag', () => {
             const k8sTag = tags.find(t => t.Key === 'KubernetesVersion');
-
             expect(k8sTag).toBeDefined();
             expect(k8sTag!.Value).toBe(CONFIGS.cluster.kubernetesVersion);
         });
 
-        it('should have the Purpose tag set to GoldenAMI', async () => {
-            const { Images } = await ec2.send(
-                new DescribeImagesCommand({ ImageIds: [amiId] }),
-            );
-
-            const tags = Images?.[0]?.Tags ?? [];
+        it('should have the Purpose tag set to GoldenAMI', () => {
             const purposeTag = tags.find(t => t.Key === 'Purpose');
-
             expect(purposeTag).toBeDefined();
             expect(purposeTag!.Value).toBe('GoldenAMI');
         });
 
-        it('should have a description containing the name prefix and K8s version', async () => {
-            const { Images } = await ec2.send(
-                new DescribeImagesCommand({ ImageIds: [amiId] }),
-            );
-
-            const description = Images?.[0]?.Description ?? '';
+        it('should have a description containing the name prefix and K8s version', () => {
             expect(description).toContain(CONFIGS.cluster.kubernetesVersion);
         });
     });
@@ -311,11 +269,12 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
     // Package Verification (log-based)
     // =========================================================================
     describe('Package Verification (build logs)', () => {
-        for (const pkg of EXPECTED_PACKAGES) {
-            it(`should have ${pkg.name} verified in build logs`, () => {
-                expect(pkg.pattern.test(allLogContent)).toBe(true);
-            });
-        }
+        it.each(EXPECTED_PACKAGES)(
+            'should have $name verified in build logs',
+            ({ pattern }) => {
+                expect(pattern.test(allLogContent)).toBe(true);
+            },
+        );
     });
 
     // =========================================================================
@@ -328,7 +287,7 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
             );
 
             expect(Stacks).toBeDefined();
-            expect(Stacks!.length).toBe(1);
+            expect(Stacks!).toHaveLength(1);
 
             const status = Stacks![0].StackStatus!;
             expect(status).toMatch(/COMPLETE$/);

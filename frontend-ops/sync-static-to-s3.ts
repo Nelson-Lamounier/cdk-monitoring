@@ -29,6 +29,7 @@ import {
 } from '@aws-sdk/client-cloudfront'
 import { lookup } from 'mime-types'
 import logger from '@repo/script-utils/logger.js'
+import type { AwsConfig } from '@repo/script-utils/aws.js'
 import {
   parseArgs,
   buildAwsConfig,
@@ -226,11 +227,13 @@ async function main(): Promise<void> {
   logger.step(5, totalSteps, 'CloudFront cache invalidation...')
 
   if (skipInvalidation) {
-    console.log(log.yellow('⏩ Skipping CloudFront invalidation (--skip-invalidation)'))
+    logger.warn('Skipping CloudFront invalidation (--skip-invalidation)')
   } else {
     const cfParam = `/nextjs/${config.environment}/cloudfront/distribution-id`
-    console.log(`   Looking up: ${cfParam}`)
-    const distributionId = await getSSMParameter(cfParam, config)
+    // CloudFront edge stack stores SSM parameters in us-east-1 (global service)
+    const cfConfig: AwsConfig = { ...config, region: 'us-east-1' }
+    console.log(`   Looking up: ${cfParam} (us-east-1)`)
+    const distributionId = await getSSMParameter(cfParam, cfConfig)
 
     if (!distributionId) {
       logger.warn(
@@ -251,8 +254,8 @@ async function main(): Promise<void> {
           InvalidationBatch: {
             CallerReference: `sync-${Date.now()}`,
             Paths: {
-              Quantity: 1,
-              Items: ['/_next/static/*'],
+              Quantity: 2,
+              Items: ['/_next/static/*', '/_next/data/*'],
             },
           },
         }),

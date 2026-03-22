@@ -28,7 +28,7 @@ gh workflow run deploy-frontend.yml --ref develop
 gh workflow run deploy-bedrock.yml --ref develop
 
 # --- Organization ---
-gh workflow run deploy-org.yml --ref main
+gh workflow run deploy-org.yml --ref develop -f confirm=DEPLOY-ORG -f stack=dns-role
 
 # --- Day-1 Orchestration ---
 gh workflow run day-1-orchestration.yml --ref develop

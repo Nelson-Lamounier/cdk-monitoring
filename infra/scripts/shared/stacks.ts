@@ -110,8 +110,8 @@ registerProject({
 });
 
 // =============================================================================
-// K8S PROJECT (kubeadm Kubernetes Cluster — 10-Stack Architecture)
-// Synth outputs all 10 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→Compute→Workers→AppIam→Edge.
+// K8S PROJECT (kubeadm Kubernetes Cluster — 12-Stack Architecture)
+// Synth outputs all 12 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→Compute→Workers→AppIam→Edge→Observability.
 // API stack is deployed separately from core infrastructure.
 // Bootstrap/app manifests synced by independent S3 sync pipelines.
 // =============================================================================
@@ -175,6 +175,15 @@ const k8sStacks: StackConfig[] = [
     dependsOn: ['controlPlane'],
   },
   {
+    id: 'argocdWorker',
+    name: 'ArgoCD Worker Stack',
+    getStackName: (env) =>
+      getStackId(Project.KUBERNETES, 'argocdWorker', env),
+    description:
+      'ArgoCD worker node: kubeadm join + role=argocd label/taint (Spot)',
+    dependsOn: ['controlPlane'],
+  },
+  {
     id: 'appIam',
     name: 'App IAM Stack',
     getStackName: (env) => getStackId(Project.KUBERNETES, 'appIam', env),
@@ -200,6 +209,14 @@ const k8sStacks: StackConfig[] = [
     dependsOn: ['controlPlane'],
     region: 'us-east-1',
   },
+  {
+    id: 'observability',
+    name: 'Observability Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'observability', env),
+    description:
+      'CloudWatch pre-deployment dashboard for infrastructure monitoring',
+    dependsOn: ['base'],
+  },
 ];
 
 registerProject({
@@ -208,8 +225,22 @@ registerProject({
   description:
     'Self-managed kubeadm Kubernetes cluster for unified workloads (requires Shared VPC)',
   stacks: k8sStacks,
-  cdkContext: (env) => ({
-    project: 'kubernetes',
-    environment: env,
-  }),
+  cdkContext: (env) => {
+    const context: Record<string, string> = {
+      project: 'kubernetes',
+      environment: env,
+    };
+
+    // Bridge ALLOW_IPV4 / ALLOW_IPV6 env vars (set by GitHub Actions from
+    // environment secrets) into the CDK context parameter that base-stack.ts
+    // reads via tryGetContext('adminAllowedIps').
+    const ipParts = [process.env.ALLOW_IPV4, process.env.ALLOW_IPV6].filter(
+      Boolean,
+    );
+    if (ipParts.length > 0) {
+      context.adminAllowedIps = ipParts.join(',');
+    }
+
+    return context;
+  },
 });

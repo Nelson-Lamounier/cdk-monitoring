@@ -1,0 +1,132 @@
+# @format
+# Golden Path Service — Default Values
+#
+# These values provide production-ready defaults for new services.
+# Developers override in their <service>-values.yaml file.
+#
+# See the README in this directory for usage instructions.
+
+# =========================================================================
+# Application Configuration
+# =========================================================================
+replicaCount: 2
+
+image:
+  repository: ""  # REQUIRED: Set to your ECR image URI
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+# =========================================================================
+# Resource Limits — Sized for t3.medium worker nodes
+# =========================================================================
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# =========================================================================
+# Health Checks — Three-probe model
+# =========================================================================
+healthChecks:
+  startup:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 30  # 30 × 5s = 150s max startup time
+  readiness:
+    path: /healthz
+    periodSeconds: 10
+    failureThreshold: 3
+  liveness:
+    path: /healthz
+    periodSeconds: 15
+    failureThreshold: 3
+
+# =========================================================================
+# Ingress — Traefik IngressRoute
+# =========================================================================
+ingress:
+  enabled: false
+  host: ""  # e.g. "api.nelsonlamounier.com"
+  pathPrefix: "/"
+  entryPoints:
+    - websecure
+  tls:
+    certResolver: letsencrypt
+
+# =========================================================================
+# Network Policy — Default-deny with Traefik allow
+# =========================================================================
+networkPolicy:
+  enabled: true
+
+# =========================================================================
+# Monitoring — Prometheus ServiceMonitor
+# =========================================================================
+serviceMonitor:
+  enabled: false
+  path: /metrics
+  port: http
+  interval: 30s
+
+# =========================================================================
+# Auto-scaling — HPA (CPU-based)
+# =========================================================================
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilisationPercentage: 70
+
+# =========================================================================
+# PodDisruptionBudget
+# =========================================================================
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# =========================================================================
+# Pod Configuration
+# =========================================================================
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Environment variables (passed as envFrom or env)
+env: []
+envFrom: []
+
+# Graceful shutdown
+terminationGracePeriodSeconds: 30
+
+# Labels and annotations
+podLabels: {}
+podAnnotations: {}
+
+# =========================================================================
+# Crossplane — Golden-Path AWS Resources
+#
+# Creates AWS resources via Crossplane XRD Claims.
+# Bucket name in AWS: crossplane-shared-{bucketName}
+# Queue name in AWS:  crossplane-shared-{queueName}
+# =========================================================================
+crossplane:
+  bucket:
+    enabled: true
+    bucketName: "app-assets"
+    retentionDays: 90
+    environment: "development"
+  queue:
+    enabled: true
+    queueName: "event-processor"
+    maxRetries: 3
+    visibilityTimeoutSeconds: 30
+    environment: "development"

@@ -1,0 +1,52 @@
+{
+  "name": "@nelsonlamounier/cdk-governance-aspects",
+  "version": "1.0.0",
+  "description": "CDK Aspects for automated resource tagging and DynamoDB access governance",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.d.ts"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "prepublish": "yarn build && yarn test",
+    "release": "yarn npm publish --access public"
+  },
+  "peerDependencies": {
+    "aws-cdk-lib": "^2.170.0",
+    "constructs": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "aws-cdk-lib": "^2.185.0",
+    "constructs": "^10.4.2",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.3.1",
+    "typescript": "~5.8.2"
+  },
+  "keywords": [
+    "aws-cdk",
+    "cdk",
+    "aspects",
+    "tagging",
+    "governance",
+    "dynamodb",
+    "iam",
+    "finops",
+    "compliance",
+    "infrastructure-as-code"
+  ],
+  "author": "Nelson Lamounier",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nelson-Lamounier/cdk-monitoring",
+    "directory": "packages/cdk-governance-aspects"
+  },
+  "homepage": "https://github.com/Nelson-Lamounier/cdk-monitoring/tree/main/packages/cdk-governance-aspects#readme",
+  "bugs": {
+    "url": "https://github.com/Nelson-Lamounier/cdk-monitoring/issues"
+  }
+}

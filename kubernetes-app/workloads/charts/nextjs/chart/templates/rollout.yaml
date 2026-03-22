@@ -1,3 +1,17 @@
+# ---------------------------------------------------------------
+# Blue/Green Rollout — Argo Rollouts progressive delivery
+#
+# Two full ReplicaSets run side by side:
+#   activeService  → receives production traffic (nextjs)
+#   previewService → receives zero traffic until promoted (nextjs-preview)
+#
+# Pre-promotion analysis queries Prometheus for error rate and
+# P95 latency. If metrics breach thresholds, the rollout pauses
+# and does NOT promote automatically.
+#
+# After manual promotion, the preview becomes active and the old
+# ReplicaSet scales down after scaleDownDelaySeconds.
+# ---------------------------------------------------------------
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
@@ -12,33 +26,20 @@ spec:
     matchLabels:
       {{- include "nextjs.selectorLabels" . | nindent 6 }}
   strategy:
-    canary:
-      # ---------------------------------------------------------------
-      # Canary Strategy — Prometheus-validated progressive delivery
-      #
-      # Traffic flow: 20% → analysis → 50% → analysis → 100%
-      # At each step, an AnalysisRun queries Prometheus for error rate
-      # and P95 latency. If metrics breach thresholds, the rollout
-      # auto-aborts and rolls back to the stable revision.
-      # ---------------------------------------------------------------
-      canaryService: nextjs-canary
-      stableService: nextjs
-      analysis:
+    blueGreen:
+      activeService: nextjs
+      previewService: nextjs-preview
+      autoPromotionEnabled: {{ .Values.rollout.blueGreen.autoPromotionEnabled }}
+      {{- if .Values.rollout.blueGreen.autoPromotionSeconds }}
+      autoPromotionSeconds: {{ .Values.rollout.blueGreen.autoPromotionSeconds }}
+      {{- end }}
+      scaleDownDelaySeconds: {{ .Values.rollout.blueGreen.scaleDownDelaySeconds | default 30 }}
+      prePromotionAnalysis:
         templates:
-          - templateName: nextjs-canary-analysis
-        startingStep: 1  # run analysis from the first pause onward
+          - templateName: nextjs-bluegreen-analysis
         args:
           - name: service-name
             value: "nextjs-frontend"
-      steps:
-        - setWeight: {{ .Values.rollout.steps.firstWeight }}
-        - pause:
-            duration: {{ .Values.rollout.steps.firstPauseDuration }}
-        - setWeight: {{ .Values.rollout.steps.secondWeight }}
-        - pause:
-            duration: {{ .Values.rollout.steps.secondPauseDuration }}
-      maxSurge: {{ .Values.rollout.maxSurge | default "25%" }}
-      maxUnavailable: {{ .Values.rollout.maxUnavailable | default 0 }}
   template:
     metadata:
       labels:
@@ -48,38 +49,6 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       nodeSelector:
         {{- toYaml .Values.nodeSelector | nindent 8 }}
-      {{- if .Values.otel.enabled }}
-      initContainers:
-        # ---------------------------------------------------------------
-        # Wait-for-Tempo — blocks pod start until Tempo OTLP gRPC is reachable.
-        # Prevents OTel SDK from buffering/dropping spans during Tempo restarts.
-        # Uses nc (netcat) TCP check; exits 0 once the port accepts connections.
-        # ---------------------------------------------------------------
-        - name: wait-for-tempo
-          image: busybox:1.37
-          command:
-            - sh
-            - -c
-            - |
-              echo "Waiting for Tempo OTLP endpoint..."
-              until nc -z tempo.monitoring.svc.cluster.local 4317 2>/dev/null; do
-                echo "Tempo not ready — retrying in 5s..."
-                sleep 5
-              done
-              echo "Tempo is reachable — proceeding with app startup"
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              cpu: 10m
-              memory: 16Mi
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 65534
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-      {{- end }}
       containers:
         - name: nextjs
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -102,6 +71,11 @@ spec:
                 name: {{ .Values.secrets.name }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: nextjs-cache
+              mountPath: /app/.next/cache
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             httpGet:
               path: {{ .Values.probes.readiness.path }}
@@ -118,3 +92,8 @@ spec:
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+      volumes:
+        - name: nextjs-cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

@@ -15,7 +15,7 @@
 
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 
-import { Environment } from '../environments';
+import { type DeployableEnvironment, Environment } from '../environments';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -65,7 +65,7 @@ export interface MonitoringAllocations {
 /**
  * Monitoring resource allocations by environment
  */
-export const MONITORING_ALLOCATIONS: Record<Environment, MonitoringAllocations> = {
+export const MONITORING_ALLOCATIONS: Record<DeployableEnvironment, MonitoringAllocations> = {
     [Environment.DEVELOPMENT]: {
         ec2: {
             instanceClass: ec2.InstanceClass.T3,
@@ -132,26 +132,26 @@ export const MONITORING_ALLOCATIONS: Record<Environment, MonitoringAllocations> 
  * Get Monitoring allocations for an environment
  */
 export function getMonitoringAllocations(env: Environment): MonitoringAllocations {
-    return MONITORING_ALLOCATIONS[env];
+    return MONITORING_ALLOCATIONS[env as DeployableEnvironment];
 }
 
 /**
  * Get EC2 allocation for an environment
  */
 export function getEc2Allocation(env: Environment): Ec2Allocation {
-    return MONITORING_ALLOCATIONS[env].ec2;
+    return MONITORING_ALLOCATIONS[env as DeployableEnvironment].ec2;
 }
 
 /**
  * Get EBS allocation for an environment
  */
 export function getEbsAllocation(env: Environment): EbsAllocation {
-    return MONITORING_ALLOCATIONS[env].ebs;
+    return MONITORING_ALLOCATIONS[env as DeployableEnvironment].ebs;
 }
 
 /**
  * Get ASG allocation for an environment
  */
 export function getMonitoringAsgAllocation(env: Environment): MonitoringAsgAllocation {
-    return MONITORING_ALLOCATIONS[env].asg;
+    return MONITORING_ALLOCATIONS[env as DeployableEnvironment].asg;
 }

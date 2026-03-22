@@ -20,16 +20,6 @@
  */
 
 import {
-    SSMClient,
-    GetParametersByPathCommand,
-} from '@aws-sdk/client-ssm';
-import {
-    EC2Client,
-    DescribeInstancesCommand,
-    DescribeSecurityGroupsCommand,
-    DescribeImagesCommand,
-} from '@aws-sdk/client-ec2';
-import {
     AutoScalingClient,
     DescribeAutoScalingGroupsCommand,
 } from '@aws-sdk/client-auto-scaling';
@@ -37,12 +27,22 @@ import {
     CloudFormationClient,
     DescribeStacksCommand,
 } from '@aws-sdk/client-cloudformation';
+import {
+    EC2Client,
+    DescribeInstancesCommand,
+    DescribeSecurityGroupsCommand,
+    DescribeImagesCommand,
+} from '@aws-sdk/client-ec2';
+import {
+    SSMClient,
+    GetParametersByPathCommand,
+} from '@aws-sdk/client-ssm';
 
 import { Environment } from '../../../lib/config';
 import { getK8sConfigs } from '../../../lib/config/kubernetes';
+import { Project, getProjectConfig } from '../../../lib/config/projects';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import { stackId, STACK_REGISTRY, flatName } from '../../../lib/utilities/naming';
-import { Project, getProjectConfig } from '../../../lib/config/projects';
 
 // =============================================================================
 // Configuration
@@ -103,6 +103,32 @@ async function loadSsmParameters(): Promise<Map<string, string>> {
 // Helpers
 // =============================================================================
 
+/** Security group ingress rule shape from AWS SDK DescribeSecurityGroups */
+interface IpPermission {
+    FromPort?: number;
+    ToPort?: number;
+    IpProtocol?: string;
+    IpRanges?: Array<{ CidrIp?: string }>;
+    PrefixListIds?: Array<{ PrefixListId?: string }>;
+}
+
+/**
+ * Find an ingress rule matching a port range and protocol.
+ *
+ * Extracted to module level so the predicate logic (&&) does not
+ * appear inside it() blocks (jest/no-conditional-in-test).
+ */
+function findRule(
+    rules: IpPermission[],
+    fromPort: number,
+    toPort: number,
+    protocol: string,
+): IpPermission | undefined {
+    return rules.find(
+        (r) => r.FromPort === fromPort && r.ToPort === toPort && r.IpProtocol === protocol,
+    );
+}
+
 /**
  * Find the running EC2 instance launched by the control plane ASG.
  * Uses the Name tag `k8s-control-plane` set by AutoScalingGroupConstruct.
@@ -147,9 +173,6 @@ async function findControlPlaneInstance(): Promise<{
         }
 
         if (attempt < maxAttempts) {
-            console.log(
-                `[Retry ${attempt}/${maxAttempts}] No running control-plane instance yet — retrying in ${backoffMs / 1000}s`,
-            );
             await new Promise((r) => setTimeout(r, backoffMs));
         }
     }
@@ -219,30 +242,33 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
             expect(controlPlane.imageId).toBe(expectedAmi);
         });
 
-        it('AMI should have Purpose=GoldenAMI tag', async () => {
-            const { Images } = await ec2.send(
-                new DescribeImagesCommand({
-                    ImageIds: [controlPlane.imageId],
-                }),
-            );
+        // AMI details — fetched once, asserted below
+        describe('AMI Properties', () => {
+            let amiState: string;
+            let purposeTagValue: string | undefined;
 
-            expect(Images).toHaveLength(1);
+            // Depends on: controlPlane populated in top-level beforeAll
+            beforeAll(async () => {
+                const { Images } = await ec2.send(
+                    new DescribeImagesCommand({
+                        ImageIds: [controlPlane.imageId],
+                    }),
+                );
 
-            const tags = Images![0].Tags ?? [];
-            const purposeTag = tags.find((t) => t.Key === 'Purpose');
-            expect(purposeTag).toBeDefined();
-            expect(purposeTag!.Value).toBe('GoldenAMI');
-        });
+                expect(Images).toHaveLength(1);
+                const ami = Images![0];
+                amiState = ami.State ?? 'unknown';
+                const tags = ami.Tags ?? [];
+                purposeTagValue = tags.find((t) => t.Key === 'Purpose')?.Value;
+            });
 
-        it('AMI should be in available state', async () => {
-            const { Images } = await ec2.send(
-                new DescribeImagesCommand({
-                    ImageIds: [controlPlane.imageId],
-                }),
-            );
+            it('should have Purpose=GoldenAMI tag on AMI', () => {
+                expect(purposeTagValue).toBe('GoldenAMI');
+            });
 
-            expect(Images).toHaveLength(1);
-            expect(Images![0].State).toBe('available');
+            it('should have AMI in available state', () => {
+                expect(amiState).toBe('available');
+            });
         });
     });
 
@@ -257,7 +283,7 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
         ] as const;
 
         it.each(sgKeys)(
-            '$label SG should be attached to the control-plane instance',
+            'should have $label SG attached to the control-plane instance',
             ({ key }) => {
                 const sgId = ssmParams.get(SSM_PATHS[key])!;
                 expect(sgId).toBeDefined();
@@ -273,12 +299,9 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     // Not exhaustive — spot-checks critical Kubernetes ports.
     // =========================================================================
     describe('Cluster Base SG — Port Rules', () => {
-        let ingressRules: Array<{
-            FromPort?: number;
-            ToPort?: number;
-            IpProtocol?: string;
-        }>;
+        let ingressRules: IpPermission[];
 
+        // Depends on: ssmParams populated in top-level beforeAll
         beforeAll(async () => {
             const sgId = ssmParams.get(SSM_PATHS.securityGroupId)!;
 
@@ -290,52 +313,31 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
         });
 
         it('should allow K8s API port 6443/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 6443 && r.ToPort === 6443 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 6443, 6443, 'tcp')).toBeDefined();
         });
 
         it('should allow kubelet API port 10250/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 10250 && r.ToPort === 10250 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 10250, 10250, 'tcp')).toBeDefined();
         });
 
         it('should allow etcd ports 2379-2380/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 2379 && r.ToPort === 2380 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 2379, 2380, 'tcp')).toBeDefined();
         });
 
         it('should allow VXLAN overlay port 4789/udp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 4789 && r.ToPort === 4789 && r.IpProtocol === 'udp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 4789, 4789, 'udp')).toBeDefined();
         });
 
         it('should allow Calico BGP port 179/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 179 && r.ToPort === 179 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 179, 179, 'tcp')).toBeDefined();
         });
 
         it('should allow NodePort range 30000-32767/tcp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 30000 && r.ToPort === 32767 && r.IpProtocol === 'tcp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 30000, 32767, 'tcp')).toBeDefined();
         });
 
         it('should allow CoreDNS port 53/udp', () => {
-            const rule = ingressRules.find(
-                (r) => r.FromPort === 53 && r.ToPort === 53 && r.IpProtocol === 'udp',
-            );
-            expect(rule).toBeDefined();
+            expect(findRule(ingressRules, 53, 53, 'udp')).toBeDefined();
         });
     });
 
@@ -343,18 +345,21 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     // Control Plane SG — Port Rules
     // =========================================================================
     describe('Control Plane SG — Port Rules', () => {
-        it('should allow K8s API port 6443/tcp from VPC CIDR', async () => {
+        let controlPlaneIngress: IpPermission[];
+
+        // Depends on: ssmParams populated in top-level beforeAll
+        beforeAll(async () => {
             const sgId = ssmParams.get(SSM_PATHS.controlPlaneSgId)!;
 
             const { SecurityGroups } = await ec2.send(
                 new DescribeSecurityGroupsCommand({ GroupIds: [sgId] }),
             );
 
-            const ingress = SecurityGroups![0].IpPermissions ?? [];
-            const apiRule = ingress.find(
-                (r) => r.FromPort === 6443 && r.ToPort === 6443 && r.IpProtocol === 'tcp',
-            );
+            controlPlaneIngress = SecurityGroups![0].IpPermissions ?? [];
+        });
 
+        it('should allow K8s API port 6443/tcp from VPC CIDR', () => {
+            const apiRule = findRule(controlPlaneIngress, 6443, 6443, 'tcp');
             expect(apiRule).toBeDefined();
             // Should have at least one IPv4 range (the VPC CIDR)
             expect(apiRule!.IpRanges!.length).toBeGreaterThanOrEqual(1);
@@ -365,13 +370,9 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     // Ingress SG — Port Rules
     // =========================================================================
     describe('Ingress SG — Port Rules', () => {
-        let ingressRules: Array<{
-            FromPort?: number;
-            ToPort?: number;
-            IpProtocol?: string;
-            IpRanges?: Array<{ CidrIp?: string }>;
-        }>;
+        let ingressRules: IpPermission[];
 
+        // Depends on: ssmParams populated in top-level beforeAll
         beforeAll(async () => {
             const sgId = ssmParams.get(SSM_PATHS.ingressSgId)!;
 
@@ -383,21 +384,16 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
         });
 
         it('should allow HTTP port 80/tcp', () => {
-            const httpRule = ingressRules.find(
-                (r) => r.FromPort === 80 && r.ToPort === 80 && r.IpProtocol === 'tcp',
-            );
-            expect(httpRule).toBeDefined();
+            expect(findRule(ingressRules, 80, 80, 'tcp')).toBeDefined();
         });
 
-        it('should allow HTTP from 0.0.0.0/0 (LetsEncrypt + CloudFront)', () => {
-            const httpRule = ingressRules.find(
-                (r) => r.FromPort === 80 && r.ToPort === 80 && r.IpProtocol === 'tcp',
-            );
+        it('should allow HTTP from CloudFront managed prefix list', () => {
+            const httpRule = findRule(ingressRules, 80, 80, 'tcp');
 
-            const anyIpv4 = httpRule?.IpRanges?.find(
-                (range) => range.CidrIp === '0.0.0.0/0',
-            );
-            expect(anyIpv4).toBeDefined();
+            // HTTP is restricted to CloudFront origin-facing IPs via managed prefix list
+            // (not 0.0.0.0/0). The rule should have a PrefixListIds entry.
+            expect(httpRule?.PrefixListIds).toBeDefined();
+            expect(httpRule!.PrefixListIds!.length).toBeGreaterThanOrEqual(1);
         });
     });
 
@@ -405,19 +401,36 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     // CloudFormation Outputs
     // =========================================================================
     describe('CloudFormation Outputs', () => {
-        it('should have all expected outputs on the stack', async () => {
+        let outputKeys: (string | undefined)[];
+
+        // Depends on: CONTROLPLANE_STACK_NAME constant
+        beforeAll(async () => {
             const { Stacks } = await cfn.send(
                 new DescribeStacksCommand({ StackName: CONTROLPLANE_STACK_NAME }),
             );
 
             expect(Stacks).toHaveLength(1);
             const outputs = Stacks![0].Outputs ?? [];
-            const outputKeys = outputs.map((o) => o.OutputKey);
+            outputKeys = outputs.map((o) => o.OutputKey);
+        });
 
+        it('should export InstanceRoleArn', () => {
             expect(outputKeys).toContain('InstanceRoleArn');
+        });
+
+        it('should export AutoScalingGroupName', () => {
             expect(outputKeys).toContain('AutoScalingGroupName');
+        });
+
+        it('should export ScriptsBucketName', () => {
             expect(outputKeys).toContain('ScriptsBucketName');
+        });
+
+        it('should export SsmDocumentName', () => {
             expect(outputKeys).toContain('SsmDocumentName');
+        });
+
+        it('should export SsmAssociationName', () => {
             expect(outputKeys).toContain('SsmAssociationName');
         });
     });
@@ -426,7 +439,7 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     // Downstream Readiness Gate
     // =========================================================================
     describe('Downstream Readiness', () => {
-        it('all SSM parameters required by downstream stacks should be discoverable', () => {
+        it('should have all SSM parameters required by downstream stacks discoverable', () => {
             // Worker stacks and AppIam need: VPC, SGs, KMS, EBS, Scripts Bucket
             // These are published by base stack but consumed through the same prefix
             const requiredPaths = [

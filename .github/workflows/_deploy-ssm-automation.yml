@@ -220,29 +220,32 @@ jobs:
         id: trigger
         run: just ci-trigger-bootstrap --environment ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
 
+
   # ===========================================================================
-  # SSM Bootstrap Observer — Monitor SSM Automation Execution (parallel)
+  # Verify SSM Automation — Instance Targeting & Health
   #
-  # Polls step-level progress and streams logs into GitHub Actions.
+  # Focused integration tests that validate two concerns per bootstrap role:
+  #   1. Instance Targeting: SSM Automation ran on the correct EC2 instance
+  #      (matched by k8s:bootstrap-role tag)
+  #   2. Instance Health: EC2 running, status checks passing, SSM Agent online
+  #
+  # All assertions pass vacuously when no instances/executions exist yet.
   # ===========================================================================
-  watch-bootstrap:
-    name: SSM Bootstrap Observer
+  verify-ssm-automation:
+    name: Verify SSM Automation
     needs: [trigger-bootstrap]
-    if: inputs.trigger-bootstrap && needs.trigger-bootstrap.result == 'success'
+    if: >-
+      always()
+      && (needs.trigger-bootstrap.result == 'success' || needs.trigger-bootstrap.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
     environment: ${{ inputs.environment }}
-    continue-on-error: true
 
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Node.js & Install dependencies
-        uses: ./.github/actions/setup-node-yarn
-
-      - name: Build TypeScript
-        run: just build
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
@@ -251,13 +254,20 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
           audience: sts.amazonaws.com
 
-      - name: Stream SSM Bootstrap Logs
-        run: >-
-          just ci-observe-bootstrap
-          --environment ${{ inputs.environment }}
-          --execution-id ${{ needs.trigger-bootstrap.outputs.cp-execution-id }}
-          --cdk-environment ${{ inputs.cdk-environment }}
-          --region ${{ vars.AWS_REGION || 'eu-west-1' }}
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run SSM Automation Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes/ssm-automation-runtime $CDK_ENV --verbose
 
   # ===========================================================================
   # Post-Bootstrap Config — Deploy secrets + verify ArgoCD
@@ -268,13 +278,14 @@ jobs:
   # ===========================================================================
   post-bootstrap-config:
     name: Post-Bootstrap Config
-    needs: [watch-bootstrap]
+    needs: [trigger-bootstrap]
     if: >-
       always()
-      && needs.watch-bootstrap.result == 'success'
+      && needs.trigger-bootstrap.result == 'success'
       && inputs.trigger-bootstrap == true
     uses: ./.github/workflows/_post-bootstrap-config.yml
     with:
       environment: ${{ inputs.environment }}
       cdk-environment: ${{ inputs.cdk-environment }}
     secrets: inherit
+

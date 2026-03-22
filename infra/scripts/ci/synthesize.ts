@@ -41,7 +41,7 @@ const [projectId, environment] = positionals as [string, Environment];
 if (!projectId || !environment) {
   console.error('Usage: synthesize-ci.ts <project> <environment>');
   console.error(`  Projects: ${Object.keys(projectsMap).join(', ')}`);
-  console.error('  Environments: development, staging, production');
+  console.error('  Environments: development, staging, production, management');
   console.error('\n  Synth-time values (domain, secrets, etc.) come from:');
   console.error('    - Typed config files: lib/config/*/configurations.ts');
   console.error('    - Environment variables: bridged via app.ts');

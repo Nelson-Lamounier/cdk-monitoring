@@ -56,7 +56,24 @@
         "iam:RemoveRoleFromInstanceProfile",
         "iam:GetInstanceProfile",
         "iam:ListInstanceProfilesForRole",
-        "iam:ListInstanceProfiles"
+        "iam:ListInstanceProfiles",
+        "iam:CreateUser",
+        "iam:DeleteUser",
+        "iam:GetUser",
+        "iam:TagUser",
+        "iam:UntagUser",
+        "iam:UpdateUser",
+        "iam:ListAccessKeys",
+        "iam:CreateAccessKey",
+        "iam:DeleteAccessKey",
+        "iam:PutUserPolicy",
+        "iam:GetUserPolicy",
+        "iam:DeleteUserPolicy",
+        "iam:ListUserPolicies",
+        "iam:AttachUserPolicy",
+        "iam:DetachUserPolicy",
+        "iam:ListAttachedUserPolicies",
+        "iam:ListGroupsForUser"
       ],
       "Resource": "*"
     },
@@ -147,7 +164,31 @@
     {
       "Sid": "BedrockAIServices",
       "Effect": "Allow",
-      "Action": ["bedrock:*", "aoss:*"],
+      "Action": ["bedrock:*", "bedrock-agentcore:*", "aoss:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CognitoIdentityServices",
+      "Effect": "Allow",
+      "Action": ["cognito-idp:*", "cognito-identity:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "StepFunctionsOrchestration",
+      "Effect": "Allow",
+      "Action": "states:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "SecurityServices",
+      "Effect": "Allow",
+      "Action": ["guardduty:*", "securityhub:*", "access-analyzer:*", "cloudtrail:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "FinOpsServices",
+      "Effect": "Allow",
+      "Action": "budgets:*",
       "Resource": "*"
     },
     {

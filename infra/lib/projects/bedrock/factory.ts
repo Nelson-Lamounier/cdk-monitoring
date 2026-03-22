@@ -2,19 +2,22 @@
  * @format
  * Bedrock Project Factory
  *
- * Creates the Amazon Bedrock Agent infrastructure using a 4-stack architecture:
+ * Creates the Amazon Bedrock Agent infrastructure using a 5-stack architecture:
  * - DataStack: S3 bucket for content pipeline documents
+ * - KbStack: Bedrock Knowledge Base backed by Pinecone
  * - AgentStack: Bedrock Agent, Guardrail, Action Group
  * - ApiStack: API Gateway + Lambda for agent invocation
  * - ContentStack: MD-to-Blog pipeline (S3 event → Lambda → DynamoDB)
  *
  * Stacks created:
  * - Bedrock-Data-{environment}
+ * - Bedrock-Kb-{environment}
  * - Bedrock-Agent-{environment}
  * - Bedrock-Api-{environment}
  * - Bedrock-Content-{environment}
  */
 
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { getBedrockAllocations } from '../../config/bedrock/allocations';
@@ -30,6 +33,7 @@ import {
 } from '../../factories/project-interfaces';
 import {
     BedrockDataStack,
+    BedrockKbStack,
     BedrockAgentStack,
     BedrockApiStack,
     AiContentStack,
@@ -126,6 +130,36 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         agentStack.addDependency(dataStack);
 
         // =================================================================
+        // Stack 2b: Knowledge Base (Pinecone-backed vector store)
+        //
+        // Creates the Bedrock KB that embeds and retrieves repo docs.
+        // Uses Pinecone free tier — zero idle cost.
+        // =================================================================
+        const pineconeSecretArn = secretsmanager.Secret.fromSecretNameV2(
+            scope,
+            `${namePrefix}-PineconeSecret`,
+            configs.knowledgeBase.pineconeSecretName,
+        ).secretArn;
+
+        const kbStack = new BedrockKbStack(
+            scope,
+            stackId(this.namespace, 'Kb', this.environment),
+            {
+                namePrefix,
+                embeddingsModel: allocs.knowledgeBase.embeddingsModel,
+                dataBucketArn: dataStack.dataBucket.bucketArn,
+                pineconeConnectionString: allocs.knowledgeBase.pineconeConnectionString,
+                pineconeCredentialsSecretArn: pineconeSecretArn,
+                pineconeNamespace: allocs.knowledgeBase.pineconeNamespace,
+                kbDescription: configs.knowledgeBase.description,
+                kbInstruction: configs.knowledgeBase.instruction,
+                removalPolicy: configs.removalPolicy,
+                env,
+            }
+        );
+        kbStack.addDependency(dataStack);
+
+        // =================================================================
         // Stack 3: API (API Gateway + Lambda for agent invocation)
         //
         // Serverless frontend. References Agent stack outputs.
@@ -160,7 +194,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
             stackId(this.namespace, 'Content', this.environment),
             {
                 namePrefix,
-                assetsBucketName: `${namePrefix}-kb-data`,
+                assetsBucketName: dataStack.bucketName,
                 draftPrefix: contentConfigs.s3.draftPrefix,
                 publishedPrefix: contentConfigs.s3.publishedPrefix,
                 contentPrefix: contentConfigs.s3.contentPrefix,
@@ -170,14 +204,18 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 thinkingBudgetTokens: contentAllocs.model.thinkingBudgetTokens,
                 lambdaMemoryMb: contentAllocs.lambda.memoryMb,
                 lambdaTimeoutSeconds: contentAllocs.lambda.timeoutSeconds,
+                lambdaReservedConcurrency: contentAllocs.lambda.reservedConcurrency,
                 logRetention: contentConfigs.logRetention,
                 removalPolicy: contentConfigs.removalPolicy,
+                knowledgeBaseId: kbStack.knowledgeBaseId,
+                knowledgeBaseArn: kbStack.knowledgeBaseArn,
                 env,
             }
         );
         contentStack.addDependency(dataStack);
+        contentStack.addDependency(kbStack);
 
-        const stacks: cdk.Stack[] = [dataStack, agentStack, apiStack, contentStack];
+        const stacks: cdk.Stack[] = [dataStack, kbStack, agentStack, apiStack, contentStack];
 
         cdk.Annotations.of(scope).addInfo(
             `Bedrock factory created ${stacks.length} stacks for ${this.environment}`,
@@ -187,6 +225,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
             stacks,
             stackMap: {
                 data: dataStack,
+                kb: kbStack,
                 agent: agentStack,
                 api: apiStack,
                 content: contentStack,

@@ -41,25 +41,26 @@ import { NagSuppressions } from 'cdk-nag';
 
 import * as dlm from 'aws-cdk-lib/aws-dlm';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
-import { SecurityGroupConstruct, SsmParameterStoreConstruct } from '../../common';
-import { S3BucketConstruct } from '../../common/storage';
 import { Environment } from '../../config/environments';
 import {
     K8sConfigs,
     TRAEFIK_HTTP_PORT,
     TRAEFIK_HTTPS_PORT,
 } from '../../config/kubernetes';
-import { adminSsmPaths, k8sSsmPaths } from '../../config/ssm-paths';
+import { k8sSsmPaths } from '../../config/ssm-paths';
+import { SecurityGroupConstruct, SsmParameterStoreConstruct } from '../../constructs';
+import { NetworkLoadBalancerConstruct } from '../../constructs/networking';
+import { S3BucketConstruct } from '../../constructs/storage';
 
 // =============================================================================
 // PROPS
@@ -153,6 +154,15 @@ export class KubernetesBaseStack extends cdk.Stack {
     /** Elastic IP for stable external access */
     public readonly elasticIp: ec2.CfnEIP;
 
+    /** Network Load Balancer — distributes external traffic to Traefik */
+    public readonly nlbConstruct: NetworkLoadBalancerConstruct;
+
+    /** NLB target group for HTTP (port 80) traffic */
+    public readonly nlbHttpTargetGroup: elbv2.NetworkTargetGroup;
+
+    /** NLB target group for HTTPS (port 443) traffic */
+    public readonly nlbHttpsTargetGroup: elbv2.NetworkTargetGroup;
+
     constructor(scope: Construct, id: string, props: KubernetesBaseStackProps) {
         super(scope, id, props);
 
@@ -238,12 +248,12 @@ export class KubernetesBaseStack extends cdk.Stack {
             `/${this.stackName}/AWS679f53fac002430cb0da5b7982bd2287/Resource`,
             [{
                 id: 'AwsSolutions-L1',
-                reason: 'AwsCustomResource singleton Lambda runtime is managed by CDK — deploy-time only, reads prefix list ID',
+                reason: 'AwsCustomResource singleton Lambda runtime is managed by CDK - deploy-time only, reads prefix list ID',
             }],
         );
         NagSuppressions.addResourceSuppressions(cfPrefixListLookup, [{
             id: 'AwsSolutions-IAM5',
-            reason: 'ec2:DescribeManagedPrefixLists requires wildcard resource — read-only API call',
+            reason: 'ec2:DescribeManagedPrefixLists requires wildcard resource - read-only API call',
         }], true);
 
         this.ingressSg.addIngressRule(
@@ -252,15 +262,22 @@ export class KubernetesBaseStack extends cdk.Stack {
             'HTTP from CloudFront origin-facing IPs',
         );
 
-        // Admin IPs → Traefik HTTPS (sourced from SSM at synth time)
-        const adminPaths = adminSsmPaths();
-        const adminIpsRaw = ssm.StringParameter.valueFromLookup(this, adminPaths.allowedIps);
+        // Admin IPs → Traefik HTTPS (sourced from CDK context -c adminAllowedIps=...)
+        // CI synth-validate passes a dummy; real deploys resolve from SSM before synth.
+        const adminIpsRaw = this.node.tryGetContext('adminAllowedIps') as string | undefined;
 
-        const isResolved = !cdk.Token.isUnresolved(adminIpsRaw)
-            && !adminIpsRaw.startsWith('dummy-value-for-');
-
-        if (isResolved) {
+        if (adminIpsRaw && adminIpsRaw !== 'NONE') {
             const adminIps = adminIpsRaw.split(',').map((ip) => ip.trim()).filter(Boolean);
+
+            /**
+             * Sanitise SG rule description to only contain characters from the
+             * AWS-allowed set and stay under the 256-character limit.
+             *
+             * Allowed: a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*
+             * @see https://docs.aws.amazon.com/ec2/latest/APIReference/API_IpPermission.html
+             */
+            const sanitiseDesc = (raw: string): string =>
+                raw.replace(/[^a-zA-Z0-9. _\-:/()#,@[\]+=&;{}!$*]/g, '-').slice(0, 255);
 
             for (const ip of adminIps) {
                 const isIpv6 = ip.includes(':');
@@ -270,7 +287,7 @@ export class KubernetesBaseStack extends cdk.Stack {
                 this.ingressSg.addIngressRule(
                     peer,
                     ec2.Port.tcp(TRAEFIK_HTTPS_PORT),
-                    `HTTPS from admin ${label} (${ip})`,
+                    sanitiseDesc(`HTTPS from admin ${label} (${ip})`),
                 );
             }
         }
@@ -382,6 +399,80 @@ export class KubernetesBaseStack extends cdk.Stack {
         });
 
         // =====================================================================
+        // Network Load Balancer (NLB)
+        //
+        // Replaces the previous EIP-to-instance + Lambda failover model.
+        // The NLB is internet-facing with the cluster EIP attached via
+        // SubnetMapping. Traffic flow:
+        //   CloudFront → NLB:80 → Target Group → Traefik (app-worker/mon-worker)
+        //   Admin      → NLB:443 → Target Group → Traefik (app-worker/mon-worker)
+        //
+        // Benefits over direct EIP:
+        //   - Automatic health-check-based failover (no Lambda needed)
+        //   - Multiple active targets possible
+        //   - Same EIP → no DNS or CloudFront changes
+        //
+        // AZ: Matches EBS volume binding ({region}a) for single-AZ cost
+        // optimisation. NLB is in the same public subnet as the instances.
+        // =====================================================================
+        this.nlbConstruct = new NetworkLoadBalancerConstruct(this, 'Nlb', {
+            vpc: this.vpc,
+            loadBalancerName: `${namePrefix}-nlb`,
+            availabilityZone: `${this.region}a`,
+            eipAllocationId: this.elasticIp.attrAllocationId,
+        });
+
+        // Target groups — downstream ASGs register themselves
+        this.nlbHttpTargetGroup = this.nlbConstruct.createTargetGroup('HttpTg', {
+            targetGroupName: `${namePrefix}-http`,
+            port: TRAEFIK_HTTP_PORT,
+        });
+
+        this.nlbHttpsTargetGroup = this.nlbConstruct.createTargetGroup('HttpsTg', {
+            targetGroupName: `${namePrefix}-https`,
+            port: TRAEFIK_HTTPS_PORT,
+            healthCheckPort: TRAEFIK_HTTP_PORT, // Health check on port 80 (Traefik always listening)
+        });
+
+        // Listeners
+        this.nlbConstruct.addTcpListener('HttpListener', TRAEFIK_HTTP_PORT, this.nlbHttpTargetGroup);
+        this.nlbConstruct.addTcpListener('HttpsListener', TRAEFIK_HTTPS_PORT, this.nlbHttpsTargetGroup);
+
+        // NLB Security Group — CDK auto-creates a default SG that blocks all
+        // traffic. Open inbound (0.0.0.0/0) and outbound (VPC CIDR) for the
+        // listener ports. Fine-grained IP filtering is handled by the Ingress SG.
+        this.nlbConstruct.configureSecurityGroup([TRAEFIK_HTTP_PORT, TRAEFIK_HTTPS_PORT]);
+
+        // =====================================================================
+        // NLB Access Logs
+        //
+        // Per-connection metadata (source IP, target, TLS, bytes) for
+        // troubleshooting. 3-day S3 lifecycle keeps costs below £0.01/month
+        // for a solo developer.
+        // =====================================================================
+        const nlbLogBucket = new S3BucketConstruct(this, 'NlbAccessLogsBucket', {
+            environment: targetEnvironment,
+            config: {
+                bucketName: `${namePrefix}-nlb-access-logs-${this.account}-${this.region}`,
+                purpose: 'nlb-access-logs',
+                encryption: s3.BucketEncryption.S3_MANAGED,
+                removalPolicy: configs.removalPolicy,
+                autoDeleteObjects: !configs.isProduction,
+                lifecycleRules: [{
+                    id: 'DeleteAfter3Days',
+                    expiration: cdk.Duration.days(3),
+                }],
+            },
+        });
+
+        NagSuppressions.addResourceSuppressions(nlbLogBucket.bucket, [{
+            id: 'AwsSolutions-S1',
+            reason: 'NLB access log bucket is a terminal logging destination — cannot log to itself',
+        }]);
+
+        this.nlbConstruct.enableAccessLogs(nlbLogBucket.bucket, 'nlb-access-logs');
+
+        // =====================================================================
         // Route 53 Private Hosted Zone (stable API server DNS)
         //
         // Provides a DNS-based control plane endpoint so that workers
@@ -404,7 +495,7 @@ export class KubernetesBaseStack extends cdk.Stack {
             recordName: K8S_API_DNS_NAME,
             target: route53.RecordTarget.fromIpAddresses('10.0.0.1'),
             ttl: cdk.Duration.seconds(30),
-            comment: 'Kubernetes API server — updated by control plane user-data',
+            comment: 'Kubernetes API server - updated by control plane user-data',
         });
 
         // =====================================================================
@@ -426,7 +517,7 @@ export class KubernetesBaseStack extends cdk.Stack {
 
         NagSuppressions.addResourceSuppressions(accessLogsBucketConstruct.bucket, [{
             id: 'AwsSolutions-S1',
-            reason: 'Access logs bucket cannot log to itself — this is the terminal logging destination',
+            reason: 'Access logs bucket cannot log to itself - this is the terminal logging destination',
         }]);
 
         // =====================================================================
@@ -472,6 +563,8 @@ export class KubernetesBaseStack extends cdk.Stack {
                 [ssmPaths.hostedZoneId]: this.hostedZone.hostedZoneId,
                 [ssmPaths.apiDnsName]: K8S_API_DNS_NAME,
                 [ssmPaths.kmsKeyArn]: this.logGroupKmsKey.keyArn,
+                [ssmPaths.nlbHttpTargetGroupArn]: this.nlbHttpTargetGroup.targetGroupArn,
+                [ssmPaths.nlbHttpsTargetGroupArn]: this.nlbHttpsTargetGroup.targetGroupArn,
             },
         });
 

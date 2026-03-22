@@ -1,0 +1,38 @@
+# @format
+# Crossplane Claim: EncryptedBucket — Golden-Path S3 Bucket
+#
+# Creates a production-ready S3 bucket via the XEncryptedBucket XRD.
+#
+# What you get automatically:
+#   - SSE-S3 encryption (AES256)
+#   - Versioning enabled
+#   - Public access block (all four settings)
+#   - Lifecycle rule (expiry based on retentionDays)
+#   - Standard tagging schema (managed-by: crossplane)
+#
+# The bucket name in AWS will be: crossplane-shared-{{ .Values.crossplane.bucket.bucketName }}
+#
+# Prerequisites:
+#   - Crossplane core deployed (sync-wave 4)
+#   - provider-aws-s3 healthy
+#   - crossplane-aws-creds K8s Secret exists
+#   - XEncryptedBucket XRD and Composition installed
+{{- if .Values.crossplane.bucket.enabled }}
+apiVersion: platform.nelsonlamounier.com/v1alpha1
+kind: EncryptedBucket
+metadata:
+  name: {{ .Values.crossplane.bucket.bucketName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: golden-path-service
+    platform.engineering/component: golden-path
+    platform.engineering/resource-type: s3
+  annotations:
+    kubernetes.io/description: "Crossplane-managed S3 bucket with encryption and lifecycle"
+spec:
+  parameters:
+    bucketName: {{ .Values.crossplane.bucket.bucketName | quote }}
+    retentionDays: {{ .Values.crossplane.bucket.retentionDays }}
+    environment: {{ .Values.crossplane.bucket.environment | quote }}
+{{- end }}

@@ -16,7 +16,7 @@
 
 ## Executive Summary
 
-Traditional documentation suffers from "The Drift Problem" — as code evolves in the DevOps repository, the public-facing blog remains static and rots. This implementation introduces an Agentic Content Supply Chain that treats documentation as an event-driven asset. By leveraging AWS Bedrock (Claude 4.6 Sonnet) and a Producer-Consumer architecture, we decoupled the technical "Intelligence Layer" (cdk-monitoring) from the "Presentation Layer" (Next.js frontend). The result is a self-healing pipeline where a single Git commit triggers an AI-orchestrated transformation, converting raw `.md` technical records into structured, SEO-optimized MDX with automated visual "Director's Notes."
+Traditional documentation suffers from "The Drift Problem" — as code evolves in the DevOps repository, the public-facing blog remains static and rots. This implementation introduces an Agentic Content Supply Chain that treats documentation as an event-driven asset. By leveraging AWS Bedrock (Claude 4.6 Sonnet) and a Producer-Consumer architecture, I decoupled the technical "Intelligence Layer" (cdk-monitoring) from the "Presentation Layer" (Next.js frontend). The result is a self-healing pipeline where a single Git commit triggers an AI-orchestrated transformation, converting raw `.md` technical records into structured, SEO-optimised MDX with automated visual "Director's Notes."
 
 ## Architecture Overview
 
@@ -45,7 +45,7 @@ graph LR
 
 ## The Push-to-Compute Pipeline
 
-Instead of giving Bedrock long-lived credentials to scan the repository, we use a Push-to-Compute model. When a `.md` file is committed to `/articles-draft/`, a GitHub Action triggers:
+Instead of giving Bedrock long-lived credentials to scan the repository, I chose a Push-to-Compute model. When a `.md` file is committed to `/articles-draft/`, a GitHub Action triggers:
 
 ```yaml
 # .github/workflows/publish-article.yml
@@ -73,7 +73,7 @@ The S3 event notification triggers the Publisher Lambda automatically — no pol
 
 ### The Barrier
 
-We initially attempted a Single-Table Design in DynamoDB to store the entire MDX article body inline. However, highly technical DevOps reports — rich with Mermaid diagrams and deep code snippets — frequently neared the 400KB DynamoDB item limit. This created a scalability ceiling and risked "Partial Write" failures for our most valuable content.
+I initially attempted a Single-Table Design in DynamoDB to store the entire MDX article body inline. I was staring at a CloudWatch error at 2 AM, wondering why a single blog post was costing me 48 RCUs, when I realised I was treating DynamoDB like a trash can for prose. Highly technical DevOps reports — rich with Mermaid diagrams and deep code snippets — frequently neared the 400KB DynamoDB item limit. This created a scalability ceiling and risked "Partial Write" failures for the most valuable content.
 
 ### The Resolution: Metadata/Blob Split
 
@@ -130,17 +130,17 @@ await dynamoClient.send(new PutCommand({
 }));
 ```
 
-This Metadata/Blob split reduced our DynamoDB RCUs by approximately 92% and allowed for virtually unlimited article length. S3 serves the content blobs — there is no 400KB ceiling.
+This Metadata/Blob split reduced DynamoDB RCUs by approximately 92% and allowed for virtually unlimited article length. S3 serves the content blobs — there is no 400KB ceiling.
 
 ## Challenge 2: The "Hallucination" of Visual Context
 
 ### The Barrier
 
-When converting raw code to a blog post, the AI often suggested generic cloud icons that did not provide actual value to an engineer. We needed a way for the AI to identify exactly where a human needed to step in with a specific AWS Console screenshot or a custom architecture diagram.
+When converting raw code to a blog post, the AI often suggested generic cloud icons that did not provide actual value to an engineer. I needed a way for the AI to identify exactly where a human needed to step in with a specific AWS Console screenshot or a custom architecture diagram.
 
 ### The Resolution: The Principal Editor & Director's Notes
 
-We implemented a "Principal Editor" persona that acts as both writer AND content director in a single pass. The system prompt instructs Claude to analyse High-Cognitive-Load sections and insert Visual Intent Markers using a `<ImageRequest />` component:
+I implemented a "Principal Editor" persona that acts as both writer AND content director in a single pass. The system prompt instructs Claude to analyse High-Cognitive-Load sections and insert Visual Intent Markers using a `<ImageRequest />` component:
 
 ```typescript
 // blog-persona.ts — Principal Editor Persona
@@ -184,7 +184,7 @@ The `shotList` manifest is stored alongside the metadata in DynamoDB, allowing t
 
 ## Adaptive Thinking: Complexity-Driven Budget
 
-Not every article deserves the same reasoning depth. We implemented an Adaptive Thinking system that analyses the raw markdown and scales Claude's thinking budget accordingly:
+Not every article deserves the same reasoning depth. I implemented an Adaptive Thinking system that analyses the raw markdown and scales Claude's thinking budget accordingly:
 
 ```typescript
 // index.ts — Complexity analysis drives thinking budget
@@ -248,7 +248,14 @@ The `shotList` is cross-validated against inline `<ImageRequest />` tags in the 
 
 ## Infrastructure Stack
 
-The Content stack is deployed as part of the 4-stack Bedrock architecture using CDK:
+The Content stack is deployed as part of the 4-stack Bedrock architecture using CDK. Here are the SSM parameters exported for the Consumer:
+
+- `/bedrock-development/content-table-name` — DynamoDB table name
+- `/bedrock-development/assets-bucket-name` — S3 bucket
+- `/bedrock-development/published-prefix` — S3 prefix for MDX content
+- `/bedrock-development/publisher-function-arn` — Lambda ARN
+
+The S3 event notification is the trigger mechanism — no polling, no cron:
 
 ```typescript
 // ai-content-stack.ts — S3 Event Notification
@@ -262,22 +269,17 @@ assetsBucket.addEventNotification(
 );
 ```
 
-Failed processing events are captured by an SQS Dead Letter Queue, ensuring no content is silently lost:
+Failed processing events are captured by an SQS Dead Letter Queue with SQS-managed encryption, ensuring no content is silently lost:
 
 ```typescript
+// ai-content-stack.ts — Dead Letter Queue
 this.publisherDlq = new sqs.Queue(this, 'PublisherDlq', {
     queueName: `${namePrefix}-publisher-dlq`,
     retentionPeriod: cdk.Duration.days(14),
     enforceSSL: true,
+    encryption: sqs.QueueEncryption.SQS_MANAGED,
 });
 ```
-
-All SSM parameters are exported for the Consumer:
-
-- `/bedrock-development/content-table-name` — DynamoDB table name
-- `/bedrock-development/assets-bucket-name` — S3 bucket
-- `/bedrock-development/published-prefix` — S3 prefix for MDX content
-- `/bedrock-development/publisher-function-arn` — Lambda ARN
 
 ## Results and Impact
 
@@ -296,8 +298,6 @@ All SSM parameters are exported for the Consumer:
 
 2. **AI needs constraints, not freedom.** Without the structured output schema and the Director's Notes system, Claude produces generic prose. The `<ImageRequest />` component with typed metadata (`diagram`, `screenshot`, `hero`) focuses the AI on actionable visual decisions.
 
-3. **Adaptive Thinking prevents waste.** Giving Claude a fixed 16K thinking budget for a 500-word README is like running a V12 in a parking lot. Scaling the budget with content complexity reduced our Bedrock costs by approximately 40% with no quality loss.
+3. **Adaptive Thinking prevents waste.** Giving Claude a fixed 16K thinking budget for a 500-word README is like running a V12 in a parking lot. Scaling the budget with content complexity reduced Bedrock costs by approximately 40% with no quality loss.
 
-4. **Push beats Poll.** The GitHub Action → S3 → Lambda event chain is simpler, cheaper, and more secure than giving Bedrock credentials to scan Git history. The Lambda only sees the file content it needs.
-
-5. **Cross-validate AI output.** The `shotList` count vs inline `<ImageRequest />` tag count check catches subtle generation errors that would otherwise only surface in the frontend.
+4. **Push beats Poll, and cross-validate everything.** The GitHub Action → S3 → Lambda event chain is simpler, cheaper, and more secure than giving Bedrock credentials to scan Git history. The `shotList` count vs inline `<ImageRequest />` tag count check catches subtle generation errors that would otherwise only surface in the frontend.

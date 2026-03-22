@@ -38,6 +38,14 @@ ClientError = None
 k8s_client = None
 k8s_config = None
 
+# CDK flatName() uses shortEnv() abbreviations for resource prefixes.
+# This map mirrors infra/lib/config/environments.ts → shortEnv().
+SHORT_ENV_MAP: dict[str, str] = {
+    "development": "dev",
+    "staging": "stg",
+    "production": "prd",
+}
+
 
 def _load_dependencies() -> None:
     """Import third-party libraries. Called once from main() before real work."""
@@ -159,6 +167,10 @@ def resolve_ssm_secrets(cfg: Config) -> dict[str, str]:
     Resolves frontend application secrets from FRONTEND_SSM_PREFIX and
     the ECR repository URI from SSM_PREFIX.
 
+    For the DynamoDB table name, falls back to the Bedrock SSM path
+    (/bedrock-{env}/content-table-name) if the legacy nextjs path is
+    not found — the table is now consolidated in AiContentStack.
+
     Returns a dict of env_var_name → value for all resolved secrets.
     """
     log.info("=== Step 2: Resolving secrets from SSM ===")
@@ -187,10 +199,45 @@ def resolve_ssm_secrets(cfg: Config) -> dict[str, str]:
             code = exc.response["Error"]["Code"]
             if code == "ParameterNotFound":
                 log.warning("  ⚠ %s: not found in SSM (%s)", env_var, ssm_path)
+
+                # Fallback: DynamoDB table is now in AiContentStack
+                # CDK flatName() abbreviates: development→dev, production→prd
+                # Try /bedrock-{short_env}/content-table-name
+                if env_var == "DYNAMODB_TABLE_NAME":
+                    full_env = cfg.ssm_prefix.rsplit("/", 1)[-1]
+                    short = SHORT_ENV_MAP.get(full_env, full_env)
+                    bedrock_path = f"/bedrock-{short}/content-table-name"
+                    log.info("  → Fallback: trying Bedrock SSM path: %s", bedrock_path)
+                    try:
+                        resp = ssm.get_parameter(Name=bedrock_path, WithDecryption=True)
+                        value = resp["Parameter"]["Value"]
+                        secrets[env_var] = value
+                        log.info("  ✓ %s: resolved from Bedrock SSM path", env_var)
+                    except ClientError as inner_exc:
+                        inner_code = inner_exc.response["Error"]["Code"]
+                        log.warning("  ⚠ %s: Bedrock fallback also failed (%s)", env_var, inner_code)
             else:
                 log.warning("  ⚠ %s: SSM error (%s)", env_var, code)
 
-
+    # Post-resolution override: Article MDX content now lives in the Bedrock
+    # data bucket (bedrock-{env}-kb-data), NOT the legacy nextjs-article-assets-{env}
+    # bucket. The legacy bucket and its SSM parameter still exist for potential
+    # future non-article assets (images, uploads), so we override here rather
+    # than deleting the legacy parameter.
+    # TODO: Remove once legacy bucket is decommissioned.
+    full_env = cfg.ssm_prefix.rsplit("/", 1)[-1]
+    short = SHORT_ENV_MAP.get(full_env, full_env)
+    bedrock_assets_path = f"/bedrock-{short}/assets-bucket-name"
+    try:
+        resp = ssm.get_parameter(Name=bedrock_assets_path, WithDecryption=True)
+        bedrock_value = resp["Parameter"]["Value"]
+        prev = secrets.get("ASSETS_BUCKET_NAME", "<unset>")
+        if prev != bedrock_value:
+            log.info("  → Overriding ASSETS_BUCKET_NAME: %s → %s (Bedrock source of truth)",
+                     prev, bedrock_value)
+            secrets["ASSETS_BUCKET_NAME"] = bedrock_value
+    except ClientError:
+        log.info("  → No Bedrock assets-bucket-name override found; using resolved value")
 
     log.info("")
     return secrets
@@ -220,6 +267,9 @@ def create_k8s_secrets(
         value = secrets.get(env_var, "")
         if value:
             secret_data[env_var] = value
+
+    # AWS_REGION is always needed for SDK calls — inject from config
+    secret_data["AWS_REGION"] = cfg.aws_region
 
     if secret_data:
         _upsert_secret(

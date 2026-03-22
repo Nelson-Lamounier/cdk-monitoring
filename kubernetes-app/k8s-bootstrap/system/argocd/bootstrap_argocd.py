@@ -19,6 +19,7 @@ Steps:
   4b. Create default AppProject (required in ArgoCD v3.x)
   4c. Configure ArgoCD server (rootpath + insecure for Traefik)
   5.  Apply App-of-Apps root application
+  5c. Seed ECR credentials (Day-1 — CronJob hasn't fired yet)
   6.  Wait for ArgoCD server readiness
   7.  Apply ArgoCD ingress (needs Traefik CRDs from ArgoCD sync)
   8.  Install ArgoCD CLI
@@ -512,6 +513,293 @@ def inject_monitoring_helm_params(cfg: Config) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Step 5c: Seed ECR credentials (Day-1 bootstrap)
+# ---------------------------------------------------------------------------
+def seed_ecr_credentials(cfg: Config) -> None:
+    """Create the initial ecr-credentials secret for ArgoCD Image Updater.
+
+    The ecr-token-refresh CronJob (deployed by ArgoCD wave 4) refreshes
+    ECR credentials every 6 hours, but won't fire until its next schedule
+    boundary (up to 6h after creation). ArgoCD Image Updater starts
+    immediately and needs valid ECR credentials from its first poll.
+
+    This step seeds the secret once during bootstrap; the CronJob takes
+    over ongoing rotation from there.
+
+    Credential source: EC2 instance profile (IMDS) — same as the CronJob.
+    """
+    log("=== Step 5c: Seeding ECR Credentials (Day-1) ===")
+
+    ecr_registry = f"771826808455.dkr.ecr.{cfg.aws_region}.amazonaws.com"
+
+    if cfg.dry_run:
+        log(f"  [DRY-RUN] Would seed ecr-credentials secret for {ecr_registry}\n")
+        return
+
+    # 1. Get ECR authorization token via AWS CLI (uses instance profile)
+    result = run(
+        ["aws", "ecr", "get-login-password", "--region", cfg.aws_region],
+        cfg=cfg, check=False, capture=True,
+    )
+    ecr_token = result.stdout.strip() if result.returncode == 0 else ""
+
+    if not ecr_token:
+        log("  ⚠ Failed to get ECR token — Image Updater will 401 until CronJob fires")
+        log("    (ecr-token-refresh CronJob will create the secret on its first run)\n")
+        return
+
+    log("  ✓ ECR authorization token obtained")
+
+    # 2. Build dockerconfigjson and create the K8s secret
+    try:
+        from kubernetes import client, config as k8s_config
+
+        k8s_config.load_kube_config(config_file=cfg.kubeconfig)
+        v1 = client.CoreV1Api()
+
+        # Build the Docker config JSON structure
+        auth_str = base64.b64encode(f"AWS:{ecr_token}".encode()).decode()
+        docker_config = json.dumps({
+            "auths": {
+                ecr_registry: {"auth": auth_str}
+            }
+        })
+        config_b64 = base64.b64encode(docker_config.encode()).decode()
+
+        secret = client.V1Secret(
+            metadata=client.V1ObjectMeta(
+                name="ecr-credentials",
+                namespace="argocd",
+                labels={
+                    "app.kubernetes.io/managed-by": "ecr-token-refresh",
+                    "app.kubernetes.io/part-of": "argocd",
+                },
+            ),
+            data={".dockerconfigjson": config_b64},
+            type="kubernetes.io/dockerconfigjson",
+        )
+
+        try:
+            v1.create_namespaced_secret("argocd", secret)
+            log("  ✓ ecr-credentials secret created (seed)")
+        except client.exceptions.ApiException as e:
+            if e.status == 409:
+                v1.replace_namespaced_secret("ecr-credentials", "argocd", secret)
+                log("  ✓ ecr-credentials secret updated (seed)")
+            else:
+                raise
+
+        log(f"  ✓ Image Updater can now authenticate to {ecr_registry}")
+    except Exception as e:
+        log(f"  ⚠ Failed to seed ecr-credentials: {e}")
+        log("    (ecr-token-refresh CronJob will create the secret on its first run)")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 5d-pre: Restore TLS certificate from SSM (prevents rate-limit exhaustion)
+# ---------------------------------------------------------------------------
+def restore_tls_cert(cfg: Config) -> None:
+    """Restore a previously backed-up TLS certificate from SSM Parameter Store.
+
+    On instance replacement the etcd data is lost, including the TLS Secret
+    that cert-manager previously issued. Without this restore step, cert-manager
+    requests a brand-new certificate from Let's Encrypt, which eventually
+    hits the 5-per-168h rate limit.
+
+    The persist-tls-cert.py script (in k8s-bootstrap/system/cert-manager/) is
+    called with --restore. If an SSM backup exists, the Secret is created
+    *before* cert-manager syncs, so cert-manager sees the Secret already
+    exists and skips issuance.
+    """
+    log("=== Step 5d-pre: Restoring TLS certificate from SSM ===")
+
+    cert_manager_dir = Path(cfg.argocd_dir).parent / "cert-manager"
+    persist_script = cert_manager_dir / "persist-tls-cert.py"
+
+    if not persist_script.exists():
+        log(f"  ⚠ {persist_script} not found — skipping TLS restore")
+        log("    cert-manager will request a new certificate\n")
+        return
+
+    args = [
+        sys.executable, str(persist_script),
+        "--restore",
+        "--secret", "ops-tls-cert",
+        "--namespace", "kube-system",
+    ]
+    if cfg.dry_run:
+        args.append("--dry-run")
+
+    env = {
+        **os.environ,
+        "KUBECONFIG": cfg.kubeconfig,
+        "SSM_PREFIX": cfg.ssm_prefix,
+        "AWS_REGION": cfg.aws_region,
+    }
+
+    result = subprocess.run(args, env=env, check=False)
+
+    if result.returncode == 0:
+        log("  ✓ TLS restore completed\n")
+    else:
+        log("  ⚠ TLS restore failed — cert-manager will request a new certificate\n")
+
+
+# ---------------------------------------------------------------------------
+# Step 5d: Apply cert-manager ClusterIssuer (DNS-01 via Route 53)
+# ---------------------------------------------------------------------------
+def apply_cert_manager_issuer(cfg: Config) -> None:
+    """Apply the cert-manager ClusterIssuer with DNS-01 Route 53 solver.
+
+    Reads the public hosted zone ID and cross-account DNS role ARN from SSM
+    (written by CDK control-plane-stack) and creates the ClusterIssuer
+    manifest inline via kubectl apply.
+
+    This step runs during bootstrap instead of being managed by ArgoCD
+    because the ClusterIssuer contains environment-specific values that
+    can't be templated in Git without a Helm chart or Kustomize overlay.
+
+    DNS-01 was chosen over HTTP-01 because Traefik's hostNetwork:true + EIP
+    causes hairpin NAT failure — cert-manager's self-check can't reach the
+    EIP from inside the cluster.
+    """
+    log("=== Step 5d: Applying cert-manager ClusterIssuer (DNS-01) ===")
+
+    if cfg.dry_run:
+        log("  [DRY-RUN] Would read SSM params and apply ClusterIssuer with DNS-01\n")
+        return
+
+    # Read DNS-01 config from SSM (written by CDK control-plane-stack)
+    public_hz_id: Optional[str] = None
+    dns_role_arn: Optional[str] = None
+
+    try:
+        ssm = get_ssm_client(cfg)
+
+        try:
+            resp = ssm.get_parameter(Name=f"{cfg.ssm_prefix}/public-hosted-zone-id")
+            public_hz_id = resp["Parameter"]["Value"]
+            log(f"  ✓ Public Hosted Zone ID: {public_hz_id}")
+        except Exception as e:
+            log(f"  ⚠ Public Hosted Zone ID not found in SSM — {e}")
+
+        try:
+            resp = ssm.get_parameter(Name=f"{cfg.ssm_prefix}/cross-account-dns-role-arn")
+            dns_role_arn = resp["Parameter"]["Value"]
+            log(f"  ✓ Cross-Account DNS Role: {dns_role_arn}")
+        except Exception as e:
+            log(f"  ⚠ Cross-Account DNS Role ARN not found in SSM — {e}")
+
+    except Exception as e:
+        log(f"  ⚠ Failed to read SSM parameters — {e}")
+
+    if not public_hz_id or not dns_role_arn:
+        log("  ⚠ Missing DNS-01 config — falling back to template file")
+        log("    Ensure CDK deployed with HOSTED_ZONE_ID and CROSS_ACCOUNT_ROLE_ARN env vars")
+        log("    Then re-run bootstrap or apply ClusterIssuer manually\n")
+        return
+
+    # Apply ClusterIssuer with DNS-01 Route 53 solver
+    #
+    # PRODUCTION NOTE — Rate-limit recovery:
+    #   Let's Encrypt enforces 5 certs per exact domain set per 168 hours.
+    #   If the TLS Secret is lost (etcd wipe) and the rate limit is hit,
+    #   switch to the STAGING server temporarily to unblock cert-manager:
+    #
+    #     kubectl patch clusterissuer letsencrypt --type=merge -p \
+    #       '{"spec":{"acme":{"server":"https://acme-staging-v02.api.letsencrypt.org/directory"}}}'
+    #     kubectl delete order,certificaterequest --all -n kube-system
+    #
+    #   Staging certs are NOT browser-trusted but allow cert-manager-config
+    #   to reach Healthy status. Switch back to production after 168h:
+    #
+    #     kubectl patch clusterissuer letsencrypt --type=merge -p \
+    #       '{"spec":{"acme":{"server":"https://acme-v02.api.letsencrypt.org/directory"}}}'
+    #     kubectl delete order,certificaterequest --all -n kube-system
+    #
+    #   The persist-tls-cert.py backup/restore flow prevents this scenario
+    #   by preserving the TLS Secret across redeploys via SSM.
+    #
+    manifest = f"""apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+  annotations:
+    kubernetes.io/description: "Let's Encrypt production issuer via DNS-01 challenge (Route 53)"
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: lamounierleao2025@outlook.com
+    privateKeySecretRef:
+      name: letsencrypt-account-key
+    solvers:
+      - dns01:
+          route53:
+            region: {cfg.aws_region}
+            hostedZoneID: {public_hz_id}
+            role: {dns_role_arn}
+"""
+
+    result = subprocess.run(
+        ["kubectl", "apply", "-f", "-"],
+        input=manifest, text=True, capture_output=True,
+        env={**os.environ, "KUBECONFIG": cfg.kubeconfig},
+    )
+
+    if result.returncode == 0:
+        log("  ✓ ClusterIssuer 'letsencrypt' applied with DNS-01 solver")
+    else:
+        log(f"  ⚠ Failed to apply ClusterIssuer: {result.stderr.strip()}")
+        log("    cert-manager CRDs may not be installed yet — ArgoCD will sync them")
+        log("    Re-run bootstrap after cert-manager is healthy")
+        log("")
+        return
+
+    # Remove ArgoCD tracking annotation so selfHeal doesn't overwrite this resource.
+    # The cert-manager-config Application now syncs from platform/cert-manager-config/
+    # which only contains the Certificate CR — the ClusterIssuer is bootstrap-managed.
+    run(
+        ["kubectl", "annotate", "clusterissuer", "letsencrypt",
+         "argocd.argoproj.io/tracking-id-", "--overwrite"],
+        cfg=cfg, check=False,
+    )
+
+    # Clean up stale cert-manager resources from previous failed attempts.
+    # If the ClusterIssuer previously had invalid config (e.g., unresolved
+    # template placeholders), challenges and orders will be stuck with
+    # finalizers that can't clean up. Removing finalizers + deleting allows
+    # cert-manager to re-issue with the corrected DNS-01 solver.
+    log("  → Cleaning up stale cert-manager resources...")
+    for resource in ("challenge", "order", "certificaterequest"):
+        # First remove finalizers from stuck resources
+        list_result = run(
+            ["kubectl", "get", resource, "-n", "kube-system",
+             "-o", "jsonpath={.items[*].metadata.name}"],
+            cfg=cfg, check=False, capture=True,
+        )
+        if list_result.returncode == 0 and list_result.stdout.strip():
+            for name in list_result.stdout.strip().split():
+                run(
+                    ["kubectl", "patch", resource, name, "-n", "kube-system",
+                     "--type", "merge", "-p", '{"metadata":{"finalizers":null}}'],
+                    cfg=cfg, check=False,
+                )
+            # Now delete them
+            run(
+                ["kubectl", "delete", resource, "--all", "-n", "kube-system",
+                 "--timeout=30s"],
+                cfg=cfg, check=False,
+            )
+            log(f"    ✓ Cleaned up stale {resource}(s)")
+        else:
+            log(f"    - No stale {resource}(s) found")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
 # Step 7: Apply ArgoCD ingress (after ArgoCD is ready and syncing Traefik)
 # ---------------------------------------------------------------------------
 def apply_ingress(cfg: Config) -> None:
@@ -739,8 +1027,33 @@ def create_ci_bot(cfg: Config) -> None:
     else:
         log("  ⚠ Failed to patch argocd-rbac-cm")
 
-    # Wait for ConfigMap pickup
-    time.sleep(5)
+    # Restart argocd-server so it picks up the new ci-bot account from argocd-cm.
+    # Without this restart, the server won't recognize the ci-bot token and the
+    # verify job's health check will fail with HTTP 401.
+    # Note: Step 10 generates the token using --core mode (talks to K8s API
+    # directly), so the token IS valid — but the server must also know about
+    # the account to accept it when the CI pipeline queries the API.
+    log("  → Restarting argocd-server to load ci-bot account...")
+    result = run(
+        ["kubectl", "rollout", "restart", "deployment/argocd-server",
+         "-n", "argocd"],
+        cfg=cfg, check=False,
+    )
+    if result.returncode == 0:
+        log("  ✓ argocd-server restart triggered")
+        # Wait for the new pods to be ready before generating the token
+        result = run(
+            ["kubectl", "rollout", "status", "deployment/argocd-server",
+             "-n", "argocd", f"--timeout={cfg.argo_timeout}s"],
+            cfg=cfg, check=False,
+        )
+        if result.returncode == 0:
+            log("  ✓ argocd-server rollout complete — ci-bot account loaded")
+        else:
+            log(f"  ⚠ argocd-server rollout not ready within {cfg.argo_timeout}s")
+    else:
+        log("  ⚠ Failed to restart argocd-server — token may not work for health check")
+
     log("")
 
 
@@ -798,6 +1111,184 @@ def generate_ci_token(cfg: Config) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Step 10b: Set ArgoCD admin password from SSM Parameter Store
+# ---------------------------------------------------------------------------
+def set_admin_password(cfg: Config) -> None:
+    """Read the ArgoCD admin password from SSM and patch argocd-secret.
+
+    Follows the same pattern as Grafana credentials — the admin password
+    is stored as an SSM SecureString parameter and applied to the cluster
+    during bootstrap.
+
+    Flow:
+      1. Read plaintext password from SSM: {ssm_prefix}/argocd-admin-password
+      2. Hash the password using bcrypt (ArgoCD stores bcrypt hashes)
+      3. Patch the 'argocd-secret' Kubernetes Secret with:
+         - admin.password: bcrypt hash
+         - admin.passwordMtime: current UTC timestamp (triggers ArgoCD refresh)
+      4. Restart argocd-server so it picks up the new password
+
+    If the SSM parameter does not exist, this step is skipped gracefully.
+    The auto-generated password in argocd-initial-admin-secret remains
+    usable as a fallback.
+
+    Prerequisites:
+      - SSM parameter: {ssm_prefix}/argocd-admin-password (SecureString)
+      - IAM: ssm:GetParameter with WithDecryption on the parameter
+      - Python: bcrypt package (installed via requirements.txt)
+
+    Related:
+      - Grafana uses the same SSM -> K8s Secret pattern via deploy.py
+      - ArgoCD password reset guide: docs/troubleshooting/argocd_admin_reset.md
+    """
+    log("=== Step 10b: Setting ArgoCD admin password from SSM ===")
+
+    if cfg.dry_run:
+        log(f"  [DRY-RUN] Would read {cfg.ssm_prefix}/argocd-admin-password from SSM")
+        log("  [DRY-RUN] Would hash with bcrypt and patch argocd-secret\n")
+        return
+
+    # 1. Read the admin password from SSM Parameter Store (SecureString)
+    ssm_path = f"{cfg.ssm_prefix}/argocd-admin-password"
+    log(f"  → Reading admin password from SSM: {ssm_path}")
+
+    try:
+        ssm = get_ssm_client(cfg)
+        resp = ssm.get_parameter(Name=ssm_path, WithDecryption=True)
+        password = resp["Parameter"]["Value"]
+        log("  ✓ Admin password resolved from SSM")
+    except Exception as e:
+        log(f"  ⚠ ArgoCD admin password not found in SSM — {e}")
+        log(f"  ⚠ Store the password at: {ssm_path} (SecureString)")
+        log("  ⚠ The auto-generated password (argocd-initial-admin-secret) remains usable\n")
+        return
+
+    # 2. Hash the password with bcrypt
+    #    ArgoCD stores passwords as bcrypt hashes in argocd-secret.
+    #    The hash format must be $2a$ or $2b$ (OpenBSD bcrypt).
+    try:
+        import bcrypt as bcrypt_lib
+        hashed = bcrypt_lib.hashpw(password.encode(), bcrypt_lib.gensalt()).decode()
+        log("  ✓ Password hashed with bcrypt")
+    except ImportError:
+        log("  ⚠ bcrypt package not installed — cannot hash password")
+        log("  ⚠ Install with: pip3 install bcrypt\n")
+        return
+    except Exception as e:
+        log(f"  ⚠ Failed to hash password — {e}\n")
+        return
+
+    # 3. Patch argocd-secret with the bcrypt hash and a passwordMtime timestamp
+    #    The passwordMtime field triggers ArgoCD to reload the password.
+    #    Without updating this field, the server may continue using the
+    #    cached password until the next full restart.
+    mtime = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    patch = json.dumps({
+        "stringData": {
+            "admin.password": hashed,
+            "admin.passwordMtime": mtime,
+        }
+    })
+
+    result = run(
+        ["kubectl", "-n", "argocd", "patch", "secret", "argocd-secret",
+         "--type", "merge", "-p", patch],
+        cfg=cfg, check=False,
+    )
+
+    if result.returncode == 0:
+        log("  ✓ argocd-secret patched with SSM-managed password")
+    else:
+        log("  ⚠ Failed to patch argocd-secret")
+        log("    Manual fix: see docs/troubleshooting/argocd_admin_reset.md\n")
+        return
+
+    # 4. Restart argocd-server to pick up the new password immediately
+    result = run(
+        ["kubectl", "rollout", "restart", "deployment/argocd-server",
+         "-n", "argocd"],
+        cfg=cfg, check=False,
+    )
+
+    if result.returncode == 0:
+        log("  ✓ argocd-server restarted to load new password")
+    else:
+        log("  ⚠ Failed to restart argocd-server — password will apply on next restart")
+
+    log("")
+
+
+# ---------------------------------------------------------------------------
+# Step 10c: Back up TLS certificate to SSM (for next redeploy)
+# ---------------------------------------------------------------------------
+def backup_tls_cert(cfg: Config) -> None:
+    """Back up the TLS certificate to SSM Parameter Store after bootstrap.
+
+    cert-manager may still be issuing the certificate when this runs.
+    We wait up to 5 minutes for the Secret to appear, then back it up.
+    If the cert isn't ready yet (e.g. rate-limited), we log a warning
+    and skip — the next successful bootstrap will back it up.
+    """
+    log("=== Step 10c: Backing up TLS certificate to SSM ===")
+
+    cert_manager_dir = Path(cfg.argocd_dir).parent / "cert-manager"
+    persist_script = cert_manager_dir / "persist-tls-cert.py"
+
+    if not persist_script.exists():
+        log(f"  ⚠ {persist_script} not found — skipping TLS backup\n")
+        return
+
+    # Wait for the TLS Secret to appear (cert-manager may still be issuing)
+    if not cfg.dry_run:
+        log("  → Waiting for ops-tls-cert Secret to be ready...")
+        max_wait = 10  # attempts × 30s = 5 min
+        secret_ready = False
+        for attempt in range(1, max_wait + 1):
+            check = subprocess.run(
+                ["kubectl", "get", "secret", "ops-tls-cert", "-n", "kube-system",
+                 "-o", "jsonpath={.data.tls\\.crt}"],
+                env={**os.environ, "KUBECONFIG": cfg.kubeconfig},
+                capture_output=True, text=True,
+            )
+            if check.returncode == 0 and check.stdout.strip():
+                log(f"  ✓ TLS Secret ready (attempt {attempt}/{max_wait})")
+                secret_ready = True
+                break
+            if attempt < max_wait:
+                log(f"    Attempt {attempt}/{max_wait} — not ready, waiting 30s...")
+                time.sleep(30)
+
+        if not secret_ready:
+            log("  ⚠ TLS Secret not ready after 5 min — skipping backup")
+            log("    This is expected if cert-manager is rate-limited")
+            log("    The cert will be backed up on the next successful bootstrap\n")
+            return
+
+    args = [
+        sys.executable, str(persist_script),
+        "--backup",
+        "--secret", "ops-tls-cert",
+        "--namespace", "kube-system",
+    ]
+    if cfg.dry_run:
+        args.append("--dry-run")
+
+    env = {
+        **os.environ,
+        "KUBECONFIG": cfg.kubeconfig,
+        "SSM_PREFIX": cfg.ssm_prefix,
+        "AWS_REGION": cfg.aws_region,
+    }
+
+    result = subprocess.run(args, env=env, check=False)
+
+    if result.returncode == 0:
+        log("  ✓ TLS backup completed\n")
+    else:
+        log("  ⚠ TLS backup failed — cert will be re-requested on next redeploy\n")
+
+
+# ---------------------------------------------------------------------------
 # Step 11: Summary
 # ---------------------------------------------------------------------------
 def print_summary(cfg: Config) -> None:
@@ -812,24 +1303,22 @@ def print_summary(cfg: Config) -> None:
     run(["kubectl", "get", "applications", "-n", "argocd"], cfg=cfg, check=False)
     log("")
 
-    # Retrieve initial admin password
-    result = run(
-        ["kubectl", "-n", "argocd", "get", "secret", "argocd-initial-admin-secret",
-         "-o", "jsonpath={.data.password}"],
-        cfg=cfg, check=False, capture=True,
-    )
-
-    if result.returncode == 0 and result.stdout.strip():
-        try:
-            password = base64.b64decode(result.stdout.strip()).decode()
-            log("=== ArgoCD Admin Access ===")
-            log(f"  URL:      https://<eip>/argocd")
-            log(f"  User:     admin")
-            log(f"  Password: {password}")
-            log("")
-            log("  (Change the password after first login)")
-        except Exception:
-            pass
+    # Display ArgoCD admin access info
+    #
+    # The admin password is now managed via SSM Parameter Store
+    # (SecureString) at {ssm_prefix}/argocd-admin-password.
+    # It is applied during Step 10b.
+    #
+    # If SSM was not configured, the auto-generated password in
+    # argocd-initial-admin-secret is still usable.
+    log("=== ArgoCD Admin Access ===")
+    log(f"  URL:  https://<eip>/argocd")
+    log(f"  User: admin")
+    log(f"  Password source: SSM '{cfg.ssm_prefix}/argocd-admin-password'")
+    log("")
+    log("  If SSM parameter is not set, retrieve the auto-generated password:")
+    log("    kubectl -n argocd get secret argocd-initial-admin-secret \\")
+    log('      -o jsonpath="{.data.password}" | base64 -d && echo')
 
     log(f"\n✓ ArgoCD bootstrap complete ({datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')})")
 
@@ -887,6 +1376,15 @@ def main() -> None:
     # Step 5b: Inject SNS topic ARN + admin IP allowlist into monitoring Application
     inject_monitoring_helm_params(cfg)
 
+    # Step 5c: Seed ECR credentials (Day-1 — CronJob hasn't fired yet)
+    seed_ecr_credentials(cfg)
+
+    # Step 5d-pre: Restore TLS cert from SSM (before cert-manager syncs)
+    restore_tls_cert(cfg)
+
+    # Step 5d: Apply cert-manager ClusterIssuer with DNS-01 solver (from SSM)
+    apply_cert_manager_issuer(cfg)
+
     # Step 6: Wait for ArgoCD readiness (must be running before Traefik syncs)
     wait_for_argocd(cfg)
 
@@ -907,6 +1405,12 @@ def main() -> None:
         generate_ci_token(cfg)
     else:
         log("=== Step 9-10: Skipping — ArgoCD CLI not available ===\n")
+
+    # Step 10b: Set admin password from SSM (runs regardless of CLI availability)
+    set_admin_password(cfg)
+
+    # Step 10c: Back up TLS cert to SSM (for next redeploy)
+    backup_tls_cert(cfg)
 
     # Step 11: Summary
     print_summary(cfg)

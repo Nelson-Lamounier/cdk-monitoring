@@ -5,17 +5,19 @@
  * Creates shared Kubernetes infrastructure hosting both monitoring and
  * application workloads on a kubeadm Kubernetes cluster.
  *
- * Stack Architecture (10 stacks):
+ * Stack Architecture (12 stacks):
  *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
  *   2. Kubernetes-Base: VPC, Security Group, KMS, EBS, Elastic IP
  *   2b. Kubernetes-GoldenAmi: EC2 Image Builder pipeline (bakes Golden AMI)
  *   2c. Kubernetes-SsmAutomation: SSM Automation bootstrap documents
  *   3. Kubernetes-ControlPlane: Control plane EC2 (t3.medium), ASG, IAM,
  *   3b. Kubernetes-AppWorker: Application node EC2 (t3.small), ASG, kubeadm join
- *   3c. Kubernetes-MonitoringWorker: Monitoring node EC2 (t3.small), ASG, kubeadm join
+ *   3c. Kubernetes-MonitoringWorker: Monitoring node EC2 (t3.medium), ASG, kubeadm join
+ *   3d. Kubernetes-ArgocdWorker: ArgoCD node EC2 (t3.small Spot), ASG, kubeadm join
  *   4. Kubernetes-AppIam: Application-tier IAM grants (DynamoDB, S3, Secrets)
  *   5. Kubernetes-API: API Gateway + Lambda (email subscriptions)
  *   6. Kubernetes-Edge: ACM + WAF + CloudFront (us-east-1)
+ *   7. Kubernetes-Observability: CloudWatch pre-deployment dashboard
  *
  * Workload isolation is enforced at the Kubernetes layer via Namespaces,
  * NetworkPolicies, ResourceQuotas, and PriorityClasses.
@@ -51,6 +53,8 @@ import {
     KubernetesEdgeStack,
     KubernetesMonitoringWorkerStack,
     KubernetesAppWorkerStack,
+    KubernetesArgocdWorkerStack,
+    KubernetesObservabilityStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId, flatName } from '../../utilities/naming';
@@ -136,6 +140,12 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         const resourceNames = nextjsResourceNames(nextjsNamePrefix, environment);
         const ssmPaths = nextjsSsmPaths(environment, nextjsNamePrefix);
 
+        // Bedrock content table SSM path — DynamoDB was consolidated into
+        // AiContentStack (bedrock project). The API stack discovers the
+        // table name via this SSM parameter instead of the removed nextjs path.
+        const bedrockNamePrefix = flatName('bedrock', '', environment);
+        const bedrockContentTableSsmPath = `/${bedrockNamePrefix}/content-table-name`;
+
         // Edge configuration (context override > Next.js config)
         const edgeConfig = {
             domainName: context.domainName ?? nextjsConfig.domainName,
@@ -209,7 +219,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             stackId(this.namespace, 'Base', environment),
             {
                 env,
-                description: `Kubernetes base infrastructure (VPC, SG, EBS, EIP) — ${environment}`,
+                description: `Kubernetes base infrastructure (VPC, SG, EBS, EIP) - ${environment}`,
                 targetEnvironment: environment,
                 configs,
                 namePrefix,
@@ -240,7 +250,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 stackId(this.namespace, 'GoldenAmi', environment),
                 {
                     env,
-                    description: `Golden AMI Image Builder pipeline — ${environment}`,
+                    description: `Golden AMI Image Builder pipeline - ${environment}`,
                     targetEnvironment: environment,
                     vpcId: sharedVpcId,
                     configs,
@@ -265,7 +275,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             stackId(this.namespace, 'SsmAutomation', environment),
             {
                 env,
-                description: `SSM Automation documents for K8s bootstrap — ${environment}`,
+                description: `SSM Automation documents for K8s bootstrap - ${environment}`,
                 targetEnvironment: environment,
                 configs,
                 namePrefix,
@@ -291,11 +301,15 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 vpcId: sharedVpcId,
                 env,
-                description: `Shared kubeadm Kubernetes cluster (monitoring + application) — ${environment}`,
+                description: `Shared kubeadm Kubernetes cluster (monitoring + application) - ${environment}`,
                 targetEnvironment: environment,
                 configs,
                 namePrefix,
                 ssmPrefix,
+                // cert-manager DNS-01 — pass public hosted zone + cross-account role
+                // so CDK writes them to SSM for bootstrap consumption
+                publicHostedZoneId: edgeConfig.hostedZoneId,
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
             },
         );
         controlPlaneStack.addDependency(baseStack);
@@ -316,11 +330,13 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 vpcId: sharedVpcId,
                 env,
-                description: `Kubernetes worker node for Next.js application — ${environment}`,
+                description: `Kubernetes worker node for Next.js application - ${environment}`,
                 targetEnvironment: environment,
                 workerConfig,
                 controlPlaneSsmPrefix: ssmPrefix,
                 namePrefix,
+                // cert-manager DNS-01 — pods may run on this worker node
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
             },
         );
         workerStack.addDependency(controlPlaneStack);
@@ -340,16 +356,46 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 vpcId: sharedVpcId,
                 env,
-                description: `Kubernetes monitoring worker node — ${environment}`,
+                description: `Kubernetes monitoring worker node - ${environment}`,
                 targetEnvironment: environment,
                 monitoringWorkerConfig: configs.monitoringWorker,
                 controlPlaneSsmPrefix: ssmPrefix,
                 namePrefix,
+                // cert-manager DNS-01 — pods may run on this worker node
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
             },
         );
         monitoringWorkerStack.addDependency(controlPlaneStack);
         stacks.push(monitoringWorkerStack);
         stackMap.monitoringWorker = monitoringWorkerStack;
+
+        // =================================================================
+        // Stack 3d: ARGOCD WORKER STACK (ArgoCD Node — t3.small Spot)
+        //
+        // Dedicated worker node for ArgoCD GitOps controller.
+        // Uses Spot instances for cost optimisation (~70% savings).
+        // ArgoCD UI accessed via: ops.nelsonlamounier.com/argocd
+        //   → NLB → Traefik (monitoring node) → ArgoCD Service → pod
+        // No NLB registration or ingress SG needed.
+        // =================================================================
+        const argocdWorkerStack = new KubernetesArgocdWorkerStack(
+            scope,
+            stackId(this.namespace, 'ArgocdWorker', environment),
+            {
+                vpcId: sharedVpcId,
+                env,
+                description: `Kubernetes ArgoCD worker node (Spot) - ${environment}`,
+                targetEnvironment: environment,
+                argocdWorkerConfig: configs.argocdWorker,
+                controlPlaneSsmPrefix: ssmPrefix,
+                namePrefix,
+                // cert-manager DNS-01 — pods may run on this worker node
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
+            },
+        );
+        argocdWorkerStack.addDependency(controlPlaneStack);
+        stacks.push(argocdWorkerStack);
+        stackMap.argocdWorker = argocdWorkerStack;
 
         // =================================================================
         // Stack 4: APP IAM STACK (Application-Tier Grants)
@@ -365,7 +411,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 controlPlaneStack,
                 env,
-                description: `Application-tier IAM grants for Kubernetes cluster — ${environment}`,
+                description: `Application-tier IAM grants for Kubernetes cluster - ${environment}`,
                 targetEnvironment: environment,
                 configs,
                 ssmPrefix,
@@ -402,7 +448,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 targetEnvironment: environment,
                 projectName: nextjsNamePrefix,
-                tableSsmPath: ssmPaths.dynamodbTableName,
+                tableSsmPath: bedrockContentTableSsmPath,
                 bucketSsmPath: ssmPaths.assetsBucketName,
                 namePrefix: nextjsNamePrefix,
                 // WAF: API traffic is routed through CloudFront edge WAF
@@ -469,9 +515,48 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stacks.push(edgeStack);
         stackMap.edge = edgeStack;
 
+        // =================================================================
+        // Stack 7: OBSERVABILITY STACK (CloudWatch Dashboard)
+        //
+        // Pre-deployment dashboard providing infrastructure visibility
+        // before Grafana/Prometheus are operational. Reads all references
+        // from SSM — fully decoupled from compute lifecycle.
+        // Cost: $3.00/month.
+        // =================================================================
+        const selfHealingPrefix = flatName('self-healing', '', environment);
+
+        const observabilityStack = new KubernetesObservabilityStack(
+            scope,
+            stackId(this.namespace, 'Observability', environment),
+            {
+                env,
+                targetEnvironment: environment,
+                namePrefix,
+                ssmPrefix,
+                stateMachineName: `${namePrefix}-bootstrap-orchestrator`,
+                lambdaFunctions: [
+                    {
+                        functionName: `${namePrefix}-bootstrap-router`,
+                        label: 'Bootstrap Router',
+                    },
+                ],
+                selfHealingConfig: {
+                    agentFunctionName: `${selfHealingPrefix}-agent`,
+                    toolFunctions: [
+                        { functionName: `${selfHealingPrefix}-tool-diagnose-alarm`, label: 'Diagnose Alarm' },
+                        { functionName: `${selfHealingPrefix}-tool-ebs-detach`, label: 'EBS Detach' },
+                        { functionName: `${selfHealingPrefix}-tool-analyse-cluster-health`, label: 'Analyse Cluster' },
+                    ],
+                },
+            },
+        );
+        observabilityStack.addDependency(baseStack);
+        stacks.push(observabilityStack);
+        stackMap.observability = observabilityStack;
+
         cdk.Annotations.of(scope).addInfo(
             `K8s factory created ${stacks.length} stacks for ${environment}: ` +
-            `Data → Base → Compute → Edge (domain: ${edgeConfig.domainName ?? 'not configured'})`,
+            `Data → Base → Compute → Edge → Observability (domain: ${edgeConfig.domainName ?? 'not configured'})`,
         );
 
         return {

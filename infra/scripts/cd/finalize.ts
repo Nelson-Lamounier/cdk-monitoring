@@ -79,11 +79,14 @@ const mode = flags.mode as "stack-outputs" | "pipeline-summary";
 // Shared Helpers
 // =============================================================================
 
-/** Mask all but last 4 chars of account ID */
-function maskAccountId(id: string): string {
-  if (id.length <= 4) return id;
-  return `***${id.slice(-4)}`;
+/** Mask all but last 4 chars of a sensitive string */
+function maskValue(value: string): string {
+  if (value.length <= 4) return '***';
+  return `***${value.slice(-4)}`;
 }
+
+/** @deprecated Use {@link maskValue} — kept as alias for backward compat */
+const maskAccountId = maskValue;
 
 // =============================================================================
 // Mode: stack-outputs
@@ -94,7 +97,7 @@ function sanitiseForFilename(name: string): string {
   return name.replace(/[/:]/g, "-");
 }
 
-/** Emit stack outputs to $GITHUB_OUTPUT */
+/** Emit stack outputs to $GITHUB_OUTPUT (values stay in GHA, not in public logs) */
 function emitGitHubOutputs(outputs: StackOutput[]): void {
   const json = JSON.stringify(outputs);
   setOutput("stack_outputs", json);
@@ -102,8 +105,11 @@ function emitGitHubOutputs(outputs: StackOutput[]): void {
   if (outputs.length > 0) {
     logger.success(`Retrieved ${outputs.length} stack output(s)`);
     logger.blank();
+    // Log only keys — values contain infrastructure identifiers
+    // that must not appear in public workflow logs.
+    // Full values remain accessible in $GITHUB_OUTPUT for downstream steps.
     for (const o of outputs) {
-      logger.keyValue(o.OutputKey, o.OutputValue);
+      logger.keyValue(o.OutputKey, maskValue(o.OutputValue));
     }
   } else {
     logger.info("No stack outputs to emit");
@@ -143,8 +149,10 @@ function buildStackSummary(
       lines.push("");
       lines.push("### Stack Outputs");
       lines.push("");
+      // Mask values in step summary — defence-in-depth on public repos.
+      // Contributors with repo access can see step summaries.
       for (const o of outputs) {
-        lines.push(`- **${o.OutputKey}**: \`${o.OutputValue}\``);
+        lines.push(`- **${o.OutputKey}**: \`${maskValue(o.OutputValue)}\``);
       }
     }
   } else {

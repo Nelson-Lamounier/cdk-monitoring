@@ -41,6 +41,17 @@ module.exports = {
     "/\\.generated-templates/",
   ],
 
+  // ── Coverage Thresholds ──
+  // Enforced when running with --coverage (e.g. `just test-coverage`).
+  coverageThreshold: {
+    global: {
+      branches: 60,
+      functions: 70,
+      lines: 70,
+      statements: 70,
+    },
+  },
+
   reporters: ["default"],
   maxWorkers: 1,
   forceExit: true,

@@ -66,10 +66,16 @@ export interface AiContentStackProps extends cdk.StackProps {
     readonly lambdaMemoryMb: number;
     /** Lambda timeout in seconds */
     readonly lambdaTimeoutSeconds: number;
+    /** Reserved concurrent executions for cost control */
+    readonly lambdaReservedConcurrency?: number;
     /** CloudWatch log retention */
     readonly logRetention: logs.RetentionDays;
     /** Removal policy for stateful resources */
     readonly removalPolicy: cdk.RemovalPolicy;
+    /** Bedrock Knowledge Base ID for KB-augmented article generation (optional) */
+    readonly knowledgeBaseId?: string;
+    /** Bedrock Knowledge Base ARN for IAM permissions (optional) */
+    readonly knowledgeBaseArn?: string;
 }
 
 // =============================================================================
@@ -169,6 +175,19 @@ export class AiContentStack extends cdk.Stack {
                     // ALL projection — frontend listing needs title, tags,
                     // aiSummary, readingTime etc. without separate GetItem calls
                 },
+                {
+                    indexName: 'gsi2-tag-date',
+                    partitionKey: {
+                        name: 'gsi2pk',
+                        type: dynamodb.AttributeType.STRING,
+                    },
+                    sortKey: {
+                        name: 'gsi2sk',
+                        type: dynamodb.AttributeType.STRING,
+                    },
+                    // ALL projection — tag filtering: gsi2pk=TAG#<tag>,
+                    // gsi2sk=<date>#<slug> for reverse-chronological tag pages
+                },
             ],
         });
         this.tableName = this.contentTable.tableName;
@@ -183,6 +202,7 @@ export class AiContentStack extends cdk.Stack {
             queueName: `${namePrefix}-publisher-dlq`,
             retentionPeriod: cdk.Duration.days(14),
             enforceSSL: true,
+            encryption: sqs.QueueEncryption.SQS_MANAGED,
             removalPolicy: props.removalPolicy,
         });
 
@@ -239,6 +259,7 @@ export class AiContentStack extends cdk.Stack {
                 FOUNDATION_MODEL: props.foundationModel,
                 MAX_TOKENS: String(props.maxTokens),
                 THINKING_BUDGET_TOKENS: String(props.thinkingBudgetTokens),
+                ...(props.knowledgeBaseId ? { KNOWLEDGE_BASE_ID: props.knowledgeBaseId } : {}),
             },
             description: `MD-to-Blog publisher using ${props.foundationModel} for ${namePrefix}`,
             logGroup: new logs.LogGroup(this, 'PublisherLogGroup', {
@@ -257,6 +278,10 @@ export class AiContentStack extends cdk.Stack {
             deadLetterQueue: this.publisherDlq,
             deadLetterQueueEnabled: true,
             retryAttempts: 2,
+            // FinOps: cap parallel Bedrock invocations
+            ...(props.lambdaReservedConcurrency !== undefined
+                ? { reservedConcurrentExecutions: props.lambdaReservedConcurrency }
+                : {}),
         });
 
         // CDK-Nag suppression: NODEJS_22_X is the latest Node.js LTS runtime;
@@ -310,6 +335,22 @@ export class AiContentStack extends cdk.Stack {
         // IAM — DynamoDB write access
         // =================================================================
         this.contentTable.grantWriteData(this.publisherFunction);
+
+        // =================================================================
+        // IAM — Bedrock Retrieve permission for KB-augmented mode
+        //
+        // Allows the publisher Lambda to query the Knowledge Base
+        // (Pinecone-backed) for relevant context when generating
+        // articles from short briefs.
+        // =================================================================
+        if (props.knowledgeBaseArn) {
+            this.publisherFunction.addToRolePolicy(new iam.PolicyStatement({
+                sid: 'RetrieveFromKnowledgeBase',
+                effect: iam.Effect.ALLOW,
+                actions: ['bedrock:Retrieve'],
+                resources: [props.knowledgeBaseArn],
+            }));
+        }
 
         // =================================================================
         // S3 Event Notification — Trigger on new drafts

@@ -40,6 +40,7 @@
 
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -51,13 +52,13 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
+import { Environment } from '../../config/environments';
+import { MonitoringWorkerConfig } from '../../config/kubernetes';
 import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
-} from '../../common/index';
-import { Environment } from '../../config/environments';
-import { MonitoringWorkerConfig } from '../../config/kubernetes';
+} from '../../constructs/index';
 
 // =============================================================================
 // PROPS
@@ -91,6 +92,13 @@ export interface KubernetesMonitoringWorkerStackProps extends cdk.StackProps {
 
     /** Log retention @default ONE_WEEK */
     readonly logRetention?: logs.RetentionDays;
+
+    /**
+     * Cross-account IAM role ARN for Route 53 access.
+     * cert-manager may run on this node and needs to assume this role
+     * to create DNS-01 TXT records in the root account's hosted zone.
+     */
+    readonly crossAccountDnsRoleArn?: string;
 }
 
 // =============================================================================
@@ -157,6 +165,20 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
         );
         const scriptsBucket = s3.Bucket.fromBucketName(this, 'ScriptsBucket', scriptsBucketName);
 
+        // NLB target groups — ASG registers with both for health-check failover
+        const nlbHttpTargetGroupArn = ssm.StringParameter.valueForStringParameter(
+            this, `${ssmPrefix}/nlb-http-target-group-arn`,
+        );
+        const nlbHttpsTargetGroupArn = ssm.StringParameter.valueForStringParameter(
+            this, `${ssmPrefix}/nlb-https-target-group-arn`,
+        );
+        const nlbHttpTg = elbv2.NetworkTargetGroup.fromTargetGroupAttributes(
+            this, 'NlbHttpTg', { targetGroupArn: nlbHttpTargetGroupArn },
+        );
+        const nlbHttpsTg = elbv2.NetworkTargetGroup.fromTargetGroupAttributes(
+            this, 'NlbHttpsTg', { targetGroupArn: nlbHttpsTargetGroupArn },
+        );
+
         // =====================================================================
         // User Data — kubeadm join
         //
@@ -187,6 +209,27 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
             // that don't match ENI IPs — AWS drops this traffic unless disabled.
             disableSourceDestCheck: true,
         });
+
+        // =====================================================================
+        // Spot Instance Configuration
+        //
+        // Override the L1 CfnLaunchTemplate to add Spot market options.
+        // CDK's L2 LaunchTemplate doesn't expose instanceMarketOptions,
+        // so we use the escape hatch to set it on the underlying resource.
+        // =====================================================================
+        if (monitoringWorkerConfig.useSpotInstances) {
+            const cfnLaunchTemplate = launchTemplateConstruct.launchTemplate.node
+                .defaultChild as ec2.CfnLaunchTemplate;
+            cfnLaunchTemplate.addPropertyOverride(
+                'LaunchTemplateData.InstanceMarketOptions',
+                {
+                    MarketType: 'spot',
+                    SpotOptions: {
+                        SpotInstanceType: 'one-time',
+                    },
+                },
+            );
+        }
 
         const logGroupName = launchTemplateConstruct.logGroup?.logGroupName
             ?? `/ec2/${workerPrefix}/instances`;
@@ -469,6 +512,32 @@ echo "SSM Automation will be triggered by the CI pipeline"
         this.instanceRole = launchTemplateConstruct.instanceRole;
         this.alertsTopic = alertsTopic;
         this.logGroup = launchTemplateConstruct.logGroup;
+
+        // =====================================================================
+        // cert-manager DNS-01 — Cross-account Route 53 access
+        //
+        // cert-manager pods can be scheduled on any node (including this
+        // worker). For DNS-01 challenges, cert-manager uses the instance
+        // profile to assume the cross-account Route53DnsValidation role
+        // in the root account to create TXT records.
+        // =====================================================================
+        if (props.crossAccountDnsRoleArn) {
+            launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+                sid: 'AssumeRoute53DnsRole',
+                effect: iam.Effect.ALLOW,
+                actions: ['sts:AssumeRole'],
+                resources: [props.crossAccountDnsRoleArn],
+            }));
+        }
+
+        // =====================================================================
+        // NLB Target Registration
+        //
+        // Register this ASG with the NLB target groups so the NLB can route
+        // traffic to Traefik on this node as a failover target.
+        // =====================================================================
+        asgConstruct.autoScalingGroup.attachToNetworkTargetGroup(nlbHttpTg);
+        asgConstruct.autoScalingGroup.attachToNetworkTargetGroup(nlbHttpsTg);
 
         // =====================================================================
         // Stack Outputs

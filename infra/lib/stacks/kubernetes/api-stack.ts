@@ -43,9 +43,6 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
-import { LambdaFunctionConstruct } from '../../common/compute/constructs/lambda-function';
-import { ApiGatewayConstruct } from '../../common/networking/api/api-gateway';
-import { buildWafRules } from '../../common/security/waf-rules';
 import {
     Environment,
 } from '../../config/environments';
@@ -54,6 +51,9 @@ import {
     getNextJsConfigs,
 } from '../../config/nextjs';
 import { nextjsSsmPaths } from '../../config/ssm-paths';
+import { LambdaFunctionConstruct } from '../../constructs/compute/constructs/lambda-function';
+import { ApiGatewayConstruct } from '../../constructs/networking/api/api-gateway';
+import { buildWafRules } from '../../constructs/security/waf-rules';
 
 // =============================================================================
 // STACK PROPS
@@ -70,8 +70,9 @@ export interface NextJsApiStackProps extends cdk.StackProps {
     readonly projectName?: string;
 
     /**
-     * SSM parameter path for DynamoDB table name
-     * @example '/nextjs/development/dynamodb-table-name'
+     * SSM parameter path for DynamoDB table name.
+     * Points to the Bedrock AiContentStack's content table.
+     * @example '/bedrock-dev/content-table-name'
      */
     readonly tableSsmPath: string;
 
@@ -145,7 +146,7 @@ export interface NextJsApiStackProps extends cdk.StackProps {
  * ```typescript
  * const apiStack = new WebappApiStack(app, 'NextJS-ApiStack-dev', {
  *     targetEnvironment: Environment.DEVELOPMENT,
- *     tableSsmPath: '/nextjs/development/dynamodb-table-name',
+ *     tableSsmPath: '/bedrock-dev/content-table-name',
  *     bucketSsmPath: '/nextjs/development/assets-bucket-name',
  *     notificationEmail: 'nelson@example.com',
  *     sesFromEmail: 'noreply@example.com',

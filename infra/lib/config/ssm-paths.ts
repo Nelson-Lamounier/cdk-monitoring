@@ -25,7 +25,7 @@
  * ```
  */
 
-import { Environment } from './environments';
+import { Environment, shortEnv } from './environments';
 
 // =============================================================================
 // PREFIX BUILDERS
@@ -366,6 +366,12 @@ export interface K8sSsmPaths {
     /** KMS key ARN for CloudWatch log group encryption */
     readonly kmsKeyArn: string;
 
+    // --- NLB (Network Load Balancer) ---
+    /** NLB HTTP (port 80) target group ARN */
+    readonly nlbHttpTargetGroupArn: string;
+    /** NLB HTTPS (port 443) target group ARN */
+    readonly nlbHttpsTargetGroupArn: string;
+
     // --- Compute (published by ControlPlane stack at runtime) ---
     /** Kubernetes node EC2 instance ID */
     readonly instanceId: string;
@@ -405,6 +411,10 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
         // Encryption
         kmsKeyArn: `${prefix}/kms-key-arn`,
 
+        // NLB
+        nlbHttpTargetGroupArn: `${prefix}/nlb-http-target-group-arn`,
+        nlbHttpsTargetGroupArn: `${prefix}/nlb-https-target-group-arn`,
+
         // Compute (published by ControlPlane stack)
         instanceId: `${prefix}/instance-id`,
 
@@ -438,6 +448,10 @@ export interface BedrockSsmPaths {
     readonly apiUrl: string;
     /** S3 data bucket name (for Knowledge Base documents) */
     readonly dataBucketName: string;
+    /** AI Content DynamoDB table name (articles, metadata) */
+    readonly contentTableName: string;
+    /** AI Content DynamoDB table ARN */
+    readonly contentTableArn: string;
     /** Wildcard path for IAM: /bedrock/{environment}/* */
     readonly wildcard: string;
 }
@@ -455,6 +469,67 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
         agentAliasId: `${prefix}/agent-alias-id`,
         apiUrl: `${prefix}/api-url`,
         dataBucketName: `${prefix}/data-bucket-name`,
+        contentTableName: `${prefix}/content-table-name`,
+        contentTableArn: `${prefix}/content-table-arn`,
+        wildcard: `${prefix}/*`,
+    };
+}
+
+// =============================================================================
+// SELF-HEALING SSM PATHS
+// =============================================================================
+
+/**
+ * Self-Healing SSM prefix: /self-healing-{env}/
+ *
+ * Uses the `flatName` convention (e.g. `self-healing-dev`) to match
+ * the `namePrefix` used by the Gateway and Agent stacks when publishing
+ * SSM parameters.
+ */
+export function selfHealingSsmPrefix(environment: Environment): string {
+    return `/self-healing-${shortEnv(environment)}`;
+}
+
+/**
+ * SSM parameter paths for the Self-Healing pipeline.
+ *
+ * Published by GatewayStack and AgentStack for cross-stack discovery.
+ */
+export interface SelfHealingSsmPaths {
+    /** The prefix itself: /self-healing-{env} */
+    readonly prefix: string;
+
+    // --- Gateway (published by GatewayStack) ---
+    /** AgentCore Gateway endpoint URL */
+    readonly gatewayUrl: string;
+    /** AgentCore Gateway ID */
+    readonly gatewayId: string;
+
+    // --- Agent (published by AgentStack) ---
+    /** Strands Agent Lambda function ARN */
+    readonly agentLambdaArn: string;
+    /** Strands Agent Lambda function name */
+    readonly agentLambdaName: string;
+    /** Agent Dead Letter Queue URL */
+    readonly agentDlqUrl: string;
+
+    /** Wildcard path for IAM: /self-healing-{env}/* */
+    readonly wildcard: string;
+}
+
+/**
+ * Get Self-Healing SSM parameter paths for a given environment.
+ */
+export function selfHealingSsmPaths(environment: Environment): SelfHealingSsmPaths {
+    const prefix = selfHealingSsmPrefix(environment);
+
+    return {
+        prefix,
+        gatewayUrl: `${prefix}/gateway-url`,
+        gatewayId: `${prefix}/gateway-id`,
+        agentLambdaArn: `${prefix}/agent-lambda-arn`,
+        agentLambdaName: `${prefix}/agent-lambda-name`,
+        agentDlqUrl: `${prefix}/agent-dlq-url`,
         wildcard: `${prefix}/*`,
     };
 }
