@@ -625,7 +625,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
         },
         cors: {
             // Removed wildcard - use specific preview URLs or configure dynamically
-            allowOrigins: ['http://localhost:3000'],
+            allowOrigins: ['http://localhost:3000', 'https://nelsonlamounier.com'],
             allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
             allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key'],
             allowCredentials: true,
