@@ -6,7 +6,7 @@
  * - AgentCore Gateway resource (AWS::BedrockAgentCore::Gateway)
  * - Auto-provisioned IAM role (Bedrock trust)
  * - Cognito User Pool for M2M auth
- * - Tool Lambda functions (diagnose-alarm, ebs-detach)
+ * - Tool Lambda functions (diagnose-alarm, ebs-detach, check-node-health, analyse-cluster-health)
  * - GatewayTarget registrations
  * - CloudWatch log groups with correct names and retention
  * - SSM parameters for gateway-url and gateway-id
@@ -119,8 +119,8 @@ describe('SelfHealingGatewayStack', () => {
     describe('Gateway Targets', () => {
         const { template } = createGatewayStack();
 
-        it('should register 2 Gateway targets', () => {
-            template.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 2);
+        it('should register 4 Gateway targets', () => {
+            template.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 4);
         });
 
         it('should register the diagnose-alarm target', () => {
@@ -132,6 +132,18 @@ describe('SelfHealingGatewayStack', () => {
         it('should register the ebs-detach target', () => {
             template.hasResourceProperties('AWS::BedrockAgentCore::GatewayTarget', {
                 Name: 'ebs-detach',
+            });
+        });
+
+        it('should register the check-node-health target', () => {
+            template.hasResourceProperties('AWS::BedrockAgentCore::GatewayTarget', {
+                Name: 'check-node-health',
+            });
+        });
+
+        it('should register the analyse-cluster-health target', () => {
+            template.hasResourceProperties('AWS::BedrockAgentCore::GatewayTarget', {
+                Name: 'analyse-cluster-health',
             });
         });
     });

@@ -163,7 +163,7 @@ export class InfrastructureDashboard extends Construct {
         // =================================================================
         this.dashboard.addWidgets(
             new cloudwatch.TextWidget({
-                markdown: '# 🖥️ EC2 Instance Health',
+                markdown: '# EC2 Instance Health',
                 width: FULL_WIDTH,
                 height: 1,
             }),
@@ -252,7 +252,7 @@ export class InfrastructureDashboard extends Construct {
         // =================================================================
         this.dashboard.addWidgets(
             new cloudwatch.TextWidget({
-                markdown: '# 🔀 Network Load Balancer',
+                markdown: '# Network Load Balancer',
                 width: FULL_WIDTH,
                 height: 1,
             }),
@@ -362,7 +362,7 @@ export class InfrastructureDashboard extends Construct {
         if (props.stateMachine) {
             this.dashboard.addWidgets(
                 new cloudwatch.TextWidget({
-                    markdown: '# ⚙️ Bootstrap Orchestrator (Step Functions)',
+                    markdown: '# Bootstrap Orchestrator (Step Functions)',
                     width: FULL_WIDTH,
                     height: 1,
                 }),
@@ -517,7 +517,7 @@ export class InfrastructureDashboard extends Construct {
         if (props.cloudFront) {
             this.dashboard.addWidgets(
                 new cloudwatch.TextWidget({
-                    markdown: '# 🌐 CloudFront CDN',
+                    markdown: '# CloudFront CDN',
                     width: FULL_WIDTH,
                     height: 1,
                 }),

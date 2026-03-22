@@ -11,7 +11,7 @@
  *   1. Read the AMI ID from SSM (published by Image Builder)
  *   2. Verify AMI exists and is in 'available' state via EC2 DescribeImages
  *   3. Check AMI tags (KubernetesVersion, Purpose, Component)
- *   4. Fetch Image Builder S3 and CloudWatch build logs
+ *   4. Fetch Image Builder CloudWatch build logs
  *   5. Scan logs for expected package version strings from the validate phase
  *
  * This replaces the previous golden-ami-observer.ts script with a standard
@@ -39,11 +39,6 @@ import {
     EC2Client,
     DescribeImagesCommand,
 } from '@aws-sdk/client-ec2';
-import {
-    S3Client,
-    ListObjectsV2Command,
-    GetObjectCommand,
-} from '@aws-sdk/client-s3';
 import {
     SSMClient,
     GetParameterCommand,
@@ -100,7 +95,6 @@ const EXPECTED_PACKAGES = [
 
 const ssm = new SSMClient({ region: REGION });
 const ec2 = new EC2Client({ region: REGION });
-const s3 = new S3Client({ region: REGION });
 const cfn = new CloudFormationClient({ region: REGION });
 const logs = new CloudWatchLogsClient({ region: REGION });
 
@@ -114,34 +108,6 @@ let allLogContent: string;
 // =============================================================================
 // Helpers
 // =============================================================================
-
-/** Fetch all S3 build log content from the scripts bucket */
-async function fetchS3BuildLogs(bucket: string, prefix: string): Promise<string> {
-    const parts: string[] = [];
-
-    try {
-        const { Contents } = await s3.send(
-            new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }),
-        );
-
-        for (const obj of Contents ?? []) {
-            if (!obj.Key) continue;
-            try {
-                const { Body } = await s3.send(
-                    new GetObjectCommand({ Bucket: bucket, Key: obj.Key }),
-                );
-                const text = await Body?.transformToString() ?? '';
-                parts.push(text);
-            } catch {
-                // Skip unreadable log files
-            }
-        }
-    } catch {
-        // S3 logs may not be available
-    }
-
-    return parts.join('\n');
-}
 
 /** Fetch all Image Builder CloudWatch log content */
 async function fetchCloudWatchBuildLogs(): Promise<string> {
@@ -213,23 +179,8 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
         console.log(`[Pre-Flight] AMI SSM path: ${AMI_SSM_PATH}`);
         console.log(`[Pre-Flight] Expected stack name: ${STACK_NAME}`);
 
-        // 2. Collect build logs from S3 and CloudWatch
-        const logParts: string[] = [];
-
-        // Try to resolve S3 log bucket from SSM
-        try {
-            const { Parameter: bucketParam } = await ssm.send(
-                new GetParameterCommand({ Name: `${SSM_PREFIX}/scripts-bucket` }),
-            );
-            if (bucketParam?.Value) {
-                logParts.push(await fetchS3BuildLogs(bucketParam.Value, 'image-builder-logs/'));
-            }
-        } catch {
-            console.log('[Pre-Flight] S3 log bucket not found — skipping S3 logs');
-        }
-
-        logParts.push(await fetchCloudWatchBuildLogs());
-        allLogContent = logParts.join('\n');
+        // 2. Collect build logs from CloudWatch
+        allLogContent = await fetchCloudWatchBuildLogs();
 
         console.log(`[Pre-Flight] Total log content length: ${allLogContent.length} chars`);
     }, 30_000);

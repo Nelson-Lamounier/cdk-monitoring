@@ -37,6 +37,7 @@ import { NagSuppressions } from 'cdk-nag';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
+import * as sns from 'aws-cdk-lib/aws-sns';
 
 import { Construct } from 'constructs';
 
@@ -268,13 +269,6 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             ],
         }));
 
-        // TODO: SNS alerting (future)
-        // Permission: Publish to SNS topic on step failure
-        // automationRole.addToPolicy(new iam.PolicyStatement({
-        //     sid: 'AllowSnsPublish',
-        //     actions: ['sns:Publish'],
-        //     resources: [alertTopic.topicArn],
-        // }));
 
         this.automationRoleArn = automationRole.roleArn;
 
@@ -434,6 +428,14 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             notificationEmail: props.notificationEmail,
         });
 
+        // Permission: Publish to SNS alarm topic on step failure
+        automationRole.addToPolicy(new iam.PolicyStatement({
+            sid: 'AllowSnsPublish',
+            effect: iam.Effect.ALLOW,
+            actions: ['sns:Publish'],
+            resources: [alarm.topic.topicArn],
+        }));
+
         // Register alarm SNS topic for cleanup
         const alarmTopicName = `${prefix}-bootstrap-alarm`;
         cleanup.addSnsTopic(alarmTopicName, alarm.topic);
@@ -449,6 +451,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         new NodeDriftEnforcementConstruct(this, 'DriftEnforcement', {
             prefix,
             targetEnvironment: props.targetEnvironment,
+            ssmPrefix: props.ssmPrefix,
         });
 
         // =====================================================================

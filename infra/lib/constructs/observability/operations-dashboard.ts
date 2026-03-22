@@ -178,7 +178,7 @@ export class OperationsDashboard extends Construct {
     private addAmiSection(namePrefix: string): void {
         this.dashboard.addWidgets(
             new cloudwatch.TextWidget({
-                markdown: '# 🖼️ AMI Build Pipeline\nImage Builder execution status and recent build output.',
+                markdown: '# AMI Build Pipeline\nImage Builder execution status and recent build output.',
                 width: FULL_WIDTH,
                 height: 1,
             }),
@@ -222,7 +222,7 @@ export class OperationsDashboard extends Construct {
 
         this.dashboard.addWidgets(
             new cloudwatch.TextWidget({
-                markdown: '# ⚙️ SSM Bootstrap Execution\nStep Functions orchestrator and SSM Automation document execution.',
+                markdown: '# SSM Bootstrap Execution\nStep Functions orchestrator and SSM Automation document execution.',
                 width: FULL_WIDTH,
                 height: 1,
             }),
@@ -240,7 +240,7 @@ export class OperationsDashboard extends Construct {
 
         this.dashboard.addWidgets(
             new cloudwatch.SingleValueWidget({
-                title: 'Bootstrap — Succeeded',
+                title: 'Orchestrator — Executions Succeeded',
                 width: THIRD_WIDTH,
                 height: 4,
                 metrics: [
@@ -256,7 +256,7 @@ export class OperationsDashboard extends Construct {
                 ],
             }),
             new cloudwatch.SingleValueWidget({
-                title: 'Bootstrap — Failed',
+                title: 'Orchestrator — Executions Failed',
                 width: THIRD_WIDTH,
                 height: 4,
                 metrics: [
@@ -272,7 +272,7 @@ export class OperationsDashboard extends Construct {
                 ],
             }),
             new cloudwatch.SingleValueWidget({
-                title: 'Bootstrap — Running',
+                title: 'Orchestrator — Executions Started',
                 width: THIRD_WIDTH,
                 height: 4,
                 metrics: [
@@ -289,43 +289,76 @@ export class OperationsDashboard extends Construct {
             }),
         );
 
-        // Orchestrator execution logs — drill-down
+        // Execution duration — trend line for spotting regressions
+        this.dashboard.addWidgets(
+            new cloudwatch.GraphWidget({
+                title: 'Orchestrator — Execution Duration',
+                width: FULL_WIDTH,
+                height: WIDGET_HEIGHT,
+                left: [
+                    new cloudwatch.Metric({
+                        namespace: 'AWS/States',
+                        metricName: 'ExecutionTime',
+                        dimensionsMap: sfnDimensions,
+                        label: 'Duration',
+                        period,
+                        statistic: 'Average',
+                    }),
+                ],
+                leftYAxis: { min: 0, label: 'Milliseconds' },
+            }),
+        );
+
+        // Orchestrator execution logs — state transitions and failures
         this.dashboard.addWidgets(
             new cloudwatch.LogQueryWidget({
-                title: 'Orchestrator — Recent Execution Logs',
+                title: 'Orchestrator — State Transitions',
                 logGroupNames: [sfnLogGroup],
                 width: HALF_WIDTH,
                 height: LOG_WIDGET_HEIGHT,
                 queryLines: [
-                    'fields @timestamp, detail.status, detail.name, @message',
+                    'fields @timestamp, type, details.name, details.output, @message',
+                    'filter type in ["TaskStateEntered", "TaskSucceeded", "TaskFailed", "ExecutionFailed", "ExecutionSucceeded"]',
                     'sort @timestamp desc',
                     'limit 30',
                 ],
             }),
             new cloudwatch.LogQueryWidget({
-                title: 'Router Lambda — Errors',
+                title: 'Router Lambda — Tag Resolution and Errors',
                 logGroupNames: [routerLogGroup],
                 width: HALF_WIDTH,
                 height: LOG_WIDGET_HEIGHT,
                 queryLines: [
                     'fields @timestamp, @message',
-                    'filter @message like /ERROR|Error|error|Traceback/',
+                    'filter @message like /Router result|ERROR|Error|Traceback|Missing|Unknown/',
                     'sort @timestamp desc',
                     'limit 20',
                 ],
             }),
         );
 
-        // SSM RunCommand output — bootstrap step detail
+        // SSM RunCommand output — bootstrap and deploy step output
         this.dashboard.addWidgets(
             new cloudwatch.LogQueryWidget({
-                title: 'SSM RunCommand — Bootstrap Step Output',
-                logGroupNames: [`/ssm${ssmPrefix}/runcommand`],
-                width: FULL_WIDTH,
+                title: 'Bootstrap Steps — RunCommand Output',
+                logGroupNames: [`/ssm${ssmPrefix}/bootstrap`],
+                width: HALF_WIDTH,
                 height: LOG_WIDGET_HEIGHT,
                 queryLines: [
                     'fields @timestamp, @message',
-                    'filter @message like /STEP|FAIL|ERROR|SUCCESS|✓|✗/',
+                    'filter @message like /=== Executing|=== Completed|FAIL|ERROR|error|Traceback/',
+                    'sort @timestamp desc',
+                    'limit 40',
+                ],
+            }),
+            new cloudwatch.LogQueryWidget({
+                title: 'Deploy Steps — Secret Provisioning Output',
+                logGroupNames: [`/ssm${ssmPrefix}/deploy`],
+                width: HALF_WIDTH,
+                height: LOG_WIDGET_HEIGHT,
+                queryLines: [
+                    'fields @timestamp, @message',
+                    'filter @message like /=== Executing|=== Completed|FAIL|ERROR|error|Traceback/',
                     'sort @timestamp desc',
                     'limit 40',
                 ],
@@ -346,7 +379,7 @@ export class OperationsDashboard extends Construct {
     private addDriftSection(ssmPrefix: string): void {
         this.dashboard.addWidgets(
             new cloudwatch.TextWidget({
-                markdown: '# 🔄 Drift Enforcement\nSSM State Manager Association — kernel modules, sysctl, and service compliance.',
+                markdown: '# Drift Enforcement\nSSM State Manager Association — kernel modules, sysctl, and service compliance.',
                 width: FULL_WIDTH,
                 height: 1,
             }),
@@ -390,7 +423,7 @@ export class OperationsDashboard extends Construct {
         this.dashboard.addWidgets(
             new cloudwatch.LogQueryWidget({
                 title: 'Drift Enforcement — Detection & Remediation Events',
-                logGroupNames: [`/ssm${ssmPrefix}/runcommand`],
+                logGroupNames: [`/ssm${ssmPrefix}/drift`],
                 width: FULL_WIDTH,
                 height: LOG_WIDGET_HEIGHT,
                 queryLines: [
@@ -420,7 +453,7 @@ export class OperationsDashboard extends Construct {
     ): void {
         this.dashboard.addWidgets(
             new cloudwatch.TextWidget({
-                markdown: '# 🤖 Self-Healing Pipeline\nBedrock agent invocations, tool execution, and remediation logs.',
+                markdown: '# Self-Healing Pipeline\nBedrock agent invocations, tool execution, and remediation logs.',
                 width: FULL_WIDTH,
                 height: 1,
             }),

@@ -89,6 +89,9 @@ export interface NodeDriftEnforcementProps {
     /** Target deployment environment */
     readonly targetEnvironment: Environment;
 
+    /** SSM parameter prefix (e.g. '/k8s/development') — used to derive CW log group name */
+    readonly ssmPrefix: string;
+
     /**
      * Schedule expression for the association.
      * @default 'rate(30 minutes)'
@@ -160,6 +163,10 @@ export class NodeDriftEnforcementConstruct extends Construct {
                         inputs: {
                             runCommand: this.buildEnforcementScript(),
                             timeoutSeconds: '120',
+                            cloudWatchOutputConfig: {
+                                CloudWatchOutputEnabled: 'true',
+                                CloudWatchLogGroupName: `/ssm${props.ssmPrefix}/drift`,
+                            },
                         },
                     },
                 ],
@@ -189,6 +196,10 @@ export class NodeDriftEnforcementConstruct extends Construct {
             complianceSeverity: 'HIGH',
             applyOnlyAtCronInterval: false, // Also apply on new instance registration
         });
+
+        // Note: State Manager RunCommand output is streamed to CloudWatch
+        // via the CloudWatchOutputConfig in each step. The log group name
+        // `/ssm${ssmPrefix}/drift` is used by the Operations Dashboard.
 
         // Ensure document exists before the association references it
         this.association.addDependency(this.document);

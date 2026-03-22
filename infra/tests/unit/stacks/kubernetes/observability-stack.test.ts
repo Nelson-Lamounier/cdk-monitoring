@@ -63,9 +63,9 @@ describe('KubernetesObservabilityStack', () => {
     // Dashboard Resource
     // =========================================================================
     describe('Dashboard Resource', () => {
-        it('should create a CloudWatch Dashboard', () => {
+        it('should create 2 CloudWatch Dashboards (Infrastructure + Operations)', () => {
             const { template } = createObservabilityStack();
-            template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
+            template.resourceCountIs('AWS::CloudWatch::Dashboard', 2);
         });
 
         it('should use the correct dashboard name', () => {

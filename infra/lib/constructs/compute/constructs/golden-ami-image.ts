@@ -49,6 +49,7 @@ import * as crypto from 'crypto';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as imagebuilder from 'aws-cdk-lib/aws-imagebuilder';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
@@ -85,7 +86,7 @@ export interface GoldenAmiImageProps {
     /** Security group ID for Image Builder instances */
     readonly securityGroupId: string;
 
-    /** S3 bucket for build logs and bootstrap scripts */
+    /** S3 bucket for bootstrap scripts */
     readonly scriptsBucket: s3.IBucket;
 
     /** SSM parameter path to store the output AMI ID */
@@ -133,12 +134,6 @@ export interface GoldenAmiImageProps {
      * @default 60
      */
     readonly imageTestTimeoutMinutes?: number;
-
-    /**
-     * S3 key prefix for build logs within the scripts bucket.
-     * @default 'image-builder-logs'
-     */
-    readonly s3LogPrefix?: string;
 }
 
 // =============================================================================
@@ -193,7 +188,6 @@ export class GoldenAmiImageConstruct extends Construct {
         const amiTags = props.amiTags ?? {};
         const amiDescription = props.amiDescription ?? `Golden AMI for ${namePrefix}`;
         const imageTestTimeoutMinutes = props.imageTestTimeoutMinutes ?? 60;
-        const s3LogPrefix = props.s3LogPrefix ?? 'image-builder-logs';
 
         // Default managed policies if none provided
         const managedPolicies = props.managedPolicies ?? [
@@ -262,6 +256,17 @@ export class GoldenAmiImageConstruct extends Construct {
         // -----------------------------------------------------------------
         // 4. Infrastructure Configuration
         // -----------------------------------------------------------------
+
+        // CloudWatch Logs for Image Builder build output
+        const buildLogGroup = new logs.LogGroup(this, 'BuildLogs', {
+            logGroupName: `/aws/imagebuilder/${namePrefix}-golden-ami`,
+            retention: logs.RetentionDays.THREE_DAYS,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+        });
+
+        // Grant instance role permission to write build logs
+        buildLogGroup.grantWrite(this.instanceRole);
+
         const infraConfig = new imagebuilder.CfnInfrastructureConfiguration(
             this,
             'InfraConfig',
@@ -272,18 +277,9 @@ export class GoldenAmiImageConstruct extends Construct {
                 subnetId,
                 securityGroupIds: [securityGroupId],
                 terminateInstanceOnFailure: true,
-                logging: {
-                    s3Logs: {
-                        s3BucketName: scriptsBucket.bucketName,
-                        s3KeyPrefix: s3LogPrefix,
-                    },
-                },
             },
         );
         infraConfig.addDependency(this.instanceProfile);
-
-        // Grant Image Builder instances permission to write build logs to S3
-        scriptsBucket.grantWrite(this.instanceRole, `${s3LogPrefix}/*`);
 
         // -----------------------------------------------------------------
         // 5. Distribution Configuration — AMI tagging & naming
