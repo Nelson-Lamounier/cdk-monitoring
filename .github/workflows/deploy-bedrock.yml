@@ -158,6 +158,27 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
 
+      - name: Validate KB document quality
+        run: |
+          echo "Validating knowledge-base/ documents..."
+          ERRORS=0
+          for f in $(find knowledge-base/ -name '*.md' ! -name 'README.md' ! -name '.gitkeep'); do
+            SIZE=$(wc -c < "$f" | tr -d ' ')
+            if [ "$SIZE" -lt 500 ]; then
+              echo "::error file=$f::KB document too small (${SIZE} bytes < 500 min). Enrich before syncing."
+              ERRORS=$((ERRORS + 1))
+            fi
+            # Check for unfilled placeholder sections (empty HTML comments in Decision/Consequences)
+            if grep -qP '^\s*<!-- .*(Describe|Fill in|Document|What I gained)' "$f"; then
+              echo "::warning file=$f::Contains unfilled placeholder sections — enrich before publishing."
+            fi
+          done
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::${ERRORS} KB document(s) below minimum size. Aborting sync."
+            exit 1
+          fi
+          echo "All KB documents passed validation."
+
       - name: Sync KB documents to S3
         id: sync
         run: |

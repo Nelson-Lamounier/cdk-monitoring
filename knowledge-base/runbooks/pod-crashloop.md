@@ -1,62 +1,114 @@
 # Runbook: Pod CrashLoopBackOff
 
 **Last Updated:** 2026-03-22
-
 **Operator:** Solo — infrastructure owner
 
 ## Trigger
 
-A pod enters CrashLoopBackOff state, repeatedly failing health checks.
+A pod enters `CrashLoopBackOff` state — the container starts, crashes, and Kubernetes restarts it with exponential backoff (10s, 20s, 40s, up to 5 minutes).
 
-## Automatic Response
+## Diagnosis Steps
 
-> Infrastructure mechanisms that respond to this scenario without manual intervention.
+### 1. Identify the Crashing Pod
 
-### Evidence Files
+```bash
+kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
+# or for a specific namespace:
+kubectl get pods -n production --field-selector=status.containerStatuses[0].state.waiting.reason=CrashLoopBackOff
+```
 
-- `kubernetes-app/workloads/argocd-apps/golden-path-service.yaml`
-- `kubernetes-app/workloads/charts/golden-path-service/chart/values.yaml`
-- `kubernetes-app/workloads/charts/nextjs/chart/values.yaml`
-- `kubernetes-app/platform/charts/monitoring/chart/values.yaml`
-- `kubernetes-app/workloads/charts/golden-path-service/chart/templates/deployment.yaml`
-- `kubernetes-app/platform/charts/monitoring/chart/templates/alloy/deployment.yaml`
-- `kubernetes-app/platform/charts/monitoring/chart/templates/github-actions-exporter/deployment.yaml`
-- `kubernetes-app/platform/charts/monitoring/chart/templates/grafana/deployment.yaml`
+### 2. Check Pod Events
 
-<!-- Describe what happens automatically when this trigger fires. -->
+```bash
+kubectl describe pod POD_NAME -n NAMESPACE
+# Look for:
+# - "Back-off restarting failed container" events
+# - OOMKilled in lastState.terminated.reason
+# - ImagePullBackOff (wrong image tag or ECR auth failure)
+```
 
-## Manual Verification
+### 3. Check Container Logs
 
-After the automatic response, verify:
+```bash
+# Current container attempt:
+kubectl logs POD_NAME -n NAMESPACE
+# Previous (crashed) container:
+kubectl logs POD_NAME -n NAMESPACE --previous
+```
 
-1. Check pod logs (kubectl logs <pod> --previous)
-2. Verify resource limits are not causing OOMKill (kubectl describe pod)
-3. Check if a recent deployment caused the regression (ArgoCD history)
-4. Verify dependent services are healthy (DynamoDB, S3, external APIs)
+### 4. Common Causes and Fixes
 
-## Recovery Evidence
+#### A. OOMKilled — Container Exceeds Memory Limit
 
-> Where to confirm the system has recovered:
+The pod's `resources.limits.memory` is too low for the workload.
 
-- `docs/kubernetes/monitoring-troubleshooting-guide.md`
-- `kubernetes-app/workloads/argocd-apps/golden-path-service.yaml`
-- `kubernetes-app/workloads/argocd-apps/nextjs.yaml`
-- `kubernetes-app/platform/argocd-apps/argo-rollouts.yaml`
-- `kubernetes-app/platform/argocd-apps/argocd-image-updater.yaml`
-- `kubernetes-app/platform/argocd-apps/argocd-notifications.yaml`
+```bash
+kubectl describe pod POD_NAME -n NAMESPACE | grep -A5 "Last State"
+# Look for: reason: OOMKilled
+```
 
-<!-- Add screenshots of dashboards showing recovery. -->
+**Fix:** Increase memory limit in the Helm values or deployment manifest. The golden-path-service chart (`kubernetes-app/workloads/charts/golden-path-service/chart/`) sets resource limits in `values.yaml`.
 
-## Postmortem Notes
+#### B. Application Error — Process Exits Non-Zero
 
-| Field | Value |
-| :--- | :--- |
-| **Incident Date** | |
-| **Detection Time** | |
-| **Recovery Time** | |
-| **Root Cause** | |
-| **Action Taken** | |
+The container process crashes due to a code error (unhandled exception, missing env var, database connection failure).
+
+```bash
+kubectl logs POD_NAME -n NAMESPACE --previous
+# Check for stack traces, missing environment variables, connection refused errors
+```
+
+**Fix:** Check environment variables in the Deployment spec. For secrets, verify the SSM Automation secrets deployment ran successfully:
+```bash
+aws stepfunctions list-executions --state-machine-arn ARN --status-filter SUCCEEDED
+```
+
+#### C. Liveness Probe Failure
+
+The liveness probe endpoint returns non-200 or times out, causing Kubernetes to restart the container.
+
+```bash
+kubectl describe pod POD_NAME -n NAMESPACE | grep -A10 "Liveness"
+# Check: path, port, initialDelaySeconds, timeoutSeconds
+```
+
+**Fix:** Increase `initialDelaySeconds` if the app needs more startup time, or fix the health endpoint.
+
+#### D. ECR Image Pull Failure
+
+The ECR credential provider fails to authenticate, or the image tag doesn't exist.
+
+```bash
+kubectl describe pod POD_NAME -n NAMESPACE | grep "Failed to pull image"
+```
+
+**Fix:** Verify the ECR credential provider is configured (installed in Golden AMI v1.31.0) and the IAM instance profile has `ecr:GetAuthorizationToken` + `ecr:BatchGetImage` permissions.
+
+### 5. K8sGPT AI Diagnosis (Self-Healing Pipeline)
+
+If the self-healing pipeline is active, K8sGPT runs automated cluster analysis:
+
+```bash
+# On the control plane instance (via SSM):
+k8sgpt analyse --explain
+```
+
+K8sGPT provides AI-powered explanations of Kubernetes issues, including CrashLoopBackOff, and suggests remediation steps. The self-healing Lambda invokes this via SSM SendCommand.
+
+## Monitoring Integration
+
+- **Prometheus Alert:** `KubePodCrashLooping` fires after 15 minutes of crash loops
+- **Grafana Dashboard:** Pod status panel shows CrashLoopBackOff pods in red
+- **Loki:** Container logs searchable via Grafana Explore → Loki datasource
+- **ArgoCD:** If the pod is managed by ArgoCD, the application health status shows `Degraded`
+
+## Source Files
+
+- `kubernetes-app/workloads/charts/golden-path-service/chart/` — Helm chart with resource limits, probes
+- `infra/lib/config/kubernetes/configurations.ts` — Golden AMI config (ECR credential provider v1.31.0, K8sGPT v0.4.29)
+- `docs/kubernetes/monitoring-troubleshooting-guide.md` — Extended troubleshooting guide
+- `infra/lib/constructs/ssm/bootstrap-orchestrator.ts` — Secrets deployment chaining
 
 ---
 
-*Generated by mcp-portfolio-docs — evidence files are real paths in this repository.*
+*Commands and paths above are real values from the cdk-monitoring repository.*

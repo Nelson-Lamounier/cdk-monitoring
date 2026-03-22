@@ -79,7 +79,15 @@ const THINKING_BUDGET_TOKENS = parseInt(process.env.THINKING_BUDGET_TOKENS ?? '1
 const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID ?? '';
 
 /** Number of KB passages to retrieve per article brief. */
-const KB_RETRIEVE_COUNT = parseInt(process.env.KB_RETRIEVE_COUNT ?? '10', 10);
+const KB_RETRIEVE_COUNT = parseInt(process.env.KB_RETRIEVE_COUNT ?? '15', 10);
+
+/**
+ * Minimum KB context length required for KB-augmented generation.
+ * If the retrieved context is below this threshold, the publisher rejects
+ * generation rather than proceeding with thin context that leads to hallucination.
+ * 2000 chars ≈ 2–3 substantive KB passages with real code/config detail.
+ */
+const KB_MIN_CONTEXT_CHARS = parseInt(process.env.KB_MIN_CONTEXT_CHARS ?? '2000', 10);
 
 /**
  * Character threshold for brief detection.
@@ -372,7 +380,7 @@ async function writeMetadataToDynamoDB(
         description: metadata.description,
         author: 'Nelson Lamounier',
         date: datePrefix,
-        status: 'published',
+        status: 'draft',
         category: metadata.category,
         tags: metadata.tags,
         readingTimeMinutes: metadata.readingTime,
@@ -393,7 +401,7 @@ async function writeMetadataToDynamoDB(
         version: 1,
 
         // GSI keys (frontend listing query)
-        gsi1pk: 'STATUS#published',
+        gsi1pk: 'STATUS#draft',
         gsi1sk: `${datePrefix}#${slug}`,
     };
 
@@ -869,6 +877,15 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
                 console.log(`Retrieving KB context for brief: "${markdownContent.substring(0, 100)}..."`);
                 const kbContext = await retrieveKnowledgeBaseContext(markdownContent);
                 console.log(`KB context retrieved: ${kbContext.length} chars`);
+
+                // Guard: reject if KB context is too thin to write a factual article
+                if (kbContext.length < KB_MIN_CONTEXT_CHARS) {
+                    const msg = `KB context too thin (${kbContext.length} chars < ${KB_MIN_CONTEXT_CHARS} min). ` +
+                        `Enrich knowledge-base/ documents before generating articles from briefs. ` +
+                        `Draft: ${key}`;
+                    console.error(msg);
+                    throw new Error(msg);
+                }
 
                 // Use KB context for complexity analysis (the brief alone is too short)
                 contentForComplexity = kbContext;
