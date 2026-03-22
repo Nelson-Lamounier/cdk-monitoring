@@ -12,11 +12,14 @@
  * - Scoped CORS origins
  */
 
+import * as path from 'path';
+
 import { NagSuppressions } from 'cdk-nag';
 
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
@@ -58,7 +61,7 @@ export class BedrockApiStack extends cdk.Stack {
     public readonly api: apigateway.RestApi;
 
     /** The invoke Lambda function */
-    public readonly invokeFunction: lambda.Function;
+    public readonly invokeFunction: lambdaNode.NodejsFunction;
 
     /** The API URL */
     public readonly apiUrl: string;
@@ -81,26 +84,36 @@ export class BedrockApiStack extends cdk.Stack {
 
         // =================================================================
         // Invoke Lambda — Calls Bedrock Agent via SDK
+        //
+        // Uses NodejsFunction for esbuild bundling from the
+        // lambda/bedrock/invoke-agent/ directory.
         // =================================================================
-        this.invokeFunction = new lambda.Function(this, 'InvokeFunction', {
+        this.invokeFunction = new lambdaNode.NodejsFunction(this, 'InvokeFunction', {
             functionName: `${namePrefix}-invoke-agent`,
             runtime: lambda.Runtime.NODEJS_22_X,
-            handler: 'index.handler',
-            code: lambda.Code.fromInline([
-                '// Infrastructure stub — business logic deployed from separate monorepo package',
-                'exports.handler = async (event) => ({',
-                '  statusCode: 200,',
-                '  headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },',
-                '  body: JSON.stringify({ message: "stub — deploy application code" }),',
-                '});',
-            ].join('\n')),
+            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'bedrock', 'invoke-agent', 'index.ts'),
+            handler: 'handler',
             memorySize: props.lambdaMemoryMb,
             timeout: cdk.Duration.seconds(props.lambdaTimeoutSeconds),
             environment: {
                 AGENT_ID: agentId,
                 AGENT_ALIAS_ID: agentAliasId,
+                ALLOWED_ORIGINS: props.allowedOrigins.join(','),
             },
             description: `Agent invocation handler for ${namePrefix}`,
+            logGroup: new logs.LogGroup(this, 'InvokeFunctionLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-invoke-agent`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            bundling: {
+                minify: true,
+                sourceMap: true,
+                externalModules: [
+                    // AWS SDK v3 is included in the Lambda runtime
+                    '@aws-sdk/*',
+                ],
+            },
         });
 
         // CDK-Nag suppression: NODEJS_22_X is the latest Node.js LTS runtime;
