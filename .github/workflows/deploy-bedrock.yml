@@ -7,11 +7,24 @@
 #   3. Bedrock-Agent      — Bedrock Agent, Knowledge Base, Guardrail
 #   4. Bedrock-Api        — API Gateway + Lambda for agent invocation
 #   5. Bedrock-Content    — MD-to-Blog pipeline (S3 event → Lambda → DynamoDB)
+#
+# After deploy, the sync-kb-docs job:
+#   - Syncs knowledge-base/ → S3
+#   - Triggers Bedrock KB ingestion (re-indexes Pinecone)
+#   - Optionally uploads a test brief to drafts/ (if article-slug input is set)
 
 name: Deploy Bedrock (Dev)
 
 on:
-  workflow_dispatch: # Manual trigger
+  workflow_dispatch:
+    inputs:
+      article-slug:
+        description: >
+          Optional article slug to trigger KB-augmented generation.
+          Leave empty to skip. Example: self-managed-kubernetes-on-aws-with-cdk
+        required: false
+        default: ''
+        type: string
   # push:
   #   branches: [develop]
   #   paths:
@@ -127,7 +140,7 @@ jobs:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # ===========================================================================
-  # Docs Sync: Upload docs/knowledge-base/ to S3 KB data bucket
+  # KB Pipeline: Sync docs → Ingest into Pinecone → Optionally generate article
   # Depends on: Data (S3 bucket must exist)
   # ===========================================================================
   sync-kb-docs:
@@ -145,13 +158,74 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
 
       - name: Sync KB documents to S3
+        id: sync
         run: |
           BUCKET_NAME=$(aws ssm get-parameter \
             --name "/bedrock-development/data-bucket-name" \
             --query "Parameter.Value" \
             --output text)
+          echo "bucket-name=${BUCKET_NAME}" >> "$GITHUB_OUTPUT"
           echo "Syncing knowledge-base/ to s3://${BUCKET_NAME}/knowledge-base/"
           aws s3 sync knowledge-base/ "s3://${BUCKET_NAME}/knowledge-base/" \
             --delete \
             --exclude "README.md"
+
+      - name: Trigger KB ingestion (re-index Pinecone)
+        id: ingest
+        run: |
+          KB_ID=$(aws ssm get-parameter \
+            --name "/bedrock-development/knowledge-base-id" \
+            --query "Parameter.Value" \
+            --output text)
+          DS_ID=$(aws bedrock-agent list-data-sources \
+            --knowledge-base-id "${KB_ID}" \
+            --query "dataSourceSummaries[0].dataSourceId" \
+            --output text)
+          echo "Triggering ingestion for KB=${KB_ID}, DS=${DS_ID}"
+
+          JOB_ID=$(aws bedrock-agent start-ingestion-job \
+            --knowledge-base-id "${KB_ID}" \
+            --data-source-id "${DS_ID}" \
+            --query "ingestionJob.ingestionJobId" \
+            --output text)
+          echo "Ingestion job started: ${JOB_ID}"
+
+          # Poll until complete (5 min timeout)
+          for i in $(seq 1 30); do
+            sleep 10
+            STATUS=$(aws bedrock-agent get-ingestion-job \
+              --knowledge-base-id "${KB_ID}" \
+              --data-source-id "${DS_ID}" \
+              --ingestion-job-id "${JOB_ID}" \
+              --query "ingestionJob.status" \
+              --output text)
+            echo "Ingestion status (${i}/30): ${STATUS}"
+            if [ "${STATUS}" = "COMPLETE" ]; then
+              echo "✅ KB ingestion complete"
+              break
+            elif [ "${STATUS}" = "FAILED" ]; then
+              echo "❌ KB ingestion failed"
+              exit 1
+            fi
+          done
+
+      - name: Upload test brief to S3 (triggers article generation)
+        if: inputs.article-slug != ''
+        run: |
+          SLUG="${{ inputs.article-slug }}"
+          BUCKET_NAME="${{ steps.sync.outputs.bucket-name }}"
+          echo "Uploading brief for: ${SLUG}"
+
+          cat > /tmp/${SLUG}.md << 'BRIEF'
+          # ${{ inputs.article-slug }}
+
+          Write an in-depth technical article about this topic using the
+          Knowledge Base context. Include code snippets, architecture
+          decisions, Mermaid diagrams, and operational insights.
+          BRIEF
+
+          aws s3 cp "/tmp/${SLUG}.md" \
+            "s3://${BUCKET_NAME}/drafts/${SLUG}.md"
+          echo "✅ Brief uploaded — Lambda should trigger shortly"
+
 
