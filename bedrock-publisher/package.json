@@ -10,6 +10,7 @@
     "test": "jest --config jest.config.js"
   },
   "devDependencies": {
+    "@aws-sdk/client-bedrock-agent-runtime": "^3.1001.0",
     "@aws-sdk/client-bedrock-runtime": "^3.1001.0",
     "@aws-sdk/client-dynamodb": "^3.1001.0",
     "@aws-sdk/client-s3": "^3.1001.0",
