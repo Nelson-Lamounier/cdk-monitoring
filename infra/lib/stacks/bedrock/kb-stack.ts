@@ -17,6 +17,7 @@ import {
     bedrock,
 } from '@cdklabs/generative-ai-cdk-constructs';
 import { PineconeVectorStore } from '@cdklabs/generative-ai-cdk-constructs/lib/cdk-lib/pinecone';
+import { NagSuppressions } from 'cdk-nag';
 
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -127,6 +128,14 @@ export class BedrockKbStack extends cdk.Stack {
         });
 
         const pineconeSecretFullArn = describeSecret.getResponseField('ARN');
+
+        // CDK-Nag suppression: AwsCustomResource Lambda runtime is managed by
+        // the CDK custom-resources framework — cannot be overridden.
+        NagSuppressions.addResourceSuppressions(
+            describeSecret,
+            [{ id: 'AwsSolutions-L1', reason: 'Lambda runtime managed by CDK AwsCustomResource framework' }],
+            true,
+        );
 
         // =================================================================
         // Pinecone Vector Store Configuration
