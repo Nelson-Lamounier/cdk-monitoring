@@ -122,10 +122,6 @@ export class BedrockObservabilityConstruct extends Construct {
                     cloudWatchConfig: {
                         logGroupName: this.logGroupName,
                         roleArn: '', // Populated below after role creation
-                        largeDataDeliveryS3Config: {
-                            bucketName: '',
-                            keyPrefix: '',
-                        },
                     },
                     textDataDeliveryEnabled: true,
                     imageDataDeliveryEnabled: false,
