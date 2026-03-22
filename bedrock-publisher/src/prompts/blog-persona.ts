@@ -230,7 +230,7 @@ tags: ["tag1", "tag2", "tag3"]          # 3–6 lowercase tags
 slug: "url-friendly-slug"              # kebab-case, matches filename
 publishDate: "YYYY-MM-DD"              # ISO date
 author: "Nelson Lamounier"             # Always this author
-category: "DevOps"                     # One of: DevOps | Cloud | Kubernetes | IaC | CI-CD | Security | Monitoring
+category: "DevOps"                     # One of: DevOps | Cloud | Kubernetes | IaC | CI-CD | Security | Monitoring | Certification
 readingTime: 8                         # Numeric minutes (integer, e.g. 8)
 ---
 \`\`\`
@@ -348,7 +348,7 @@ You MUST return a valid JSON object with exactly this structure:
     "slug": "url-friendly-slug",
     "publishDate": "YYYY-MM-DD",
     "readingTime": 8,
-    "category": "DevOps|Cloud|Kubernetes|IaC|CI-CD|Security|Monitoring",
+    "category": "DevOps|Cloud|Kubernetes|IaC|CI-CD|Security|Monitoring|Certification",
     "aiSummary": "A 2-3 sentence teaser for SEO and social sharing.",
     "technicalConfidence": 92,
     "processingNote": "Brief note on what made this draft interesting or challenging"
