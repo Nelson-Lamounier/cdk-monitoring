@@ -37,7 +37,6 @@ import { NagSuppressions } from 'cdk-nag';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
-import * as sns from 'aws-cdk-lib/aws-sns';
 
 import { Construct } from 'constructs';
 

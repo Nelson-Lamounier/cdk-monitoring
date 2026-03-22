@@ -16,12 +16,14 @@
  * With a 3-day retention and portfolio-level traffic, expect < £1/month.
  */
 
-import * as cr from 'aws-cdk-lib/custom-resources';
+import { NagSuppressions } from 'cdk-nag';
+
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
+import * as cr from 'aws-cdk-lib/custom-resources';
 
-import { NagSuppressions } from 'cdk-nag';
+
 import { Construct } from 'constructs';
 
 // =============================================================================
