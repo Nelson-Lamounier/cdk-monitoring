@@ -104,35 +104,11 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         );
 
         // =================================================================
-        // Stack 2: Agent (Bedrock Agent + Guardrail + Action Group)
-        //
-        // Core AI resources.
-        // =================================================================
-        const agentStack = new BedrockAgentStack(
-            scope,
-            stackId(this.namespace, 'Agent', this.environment),
-            {
-                namePrefix,
-                foundationModel,
-                agentInstruction,
-                agentDescription: configs.agentDescription,
-                idleSessionTtlInSeconds: allocs.agent.idleSessionTtlInSeconds,
-                enableContentFilters: configs.guardrail.enableContentFilters,
-                blockedInputMessaging: configs.guardrail.blockedInputMessaging,
-                blockedOutputsMessaging: configs.guardrail.blockedOutputMessaging,
-                actionGroupLambdaMemoryMb: allocs.actionGroupLambda.memoryMb,
-                actionGroupLambdaTimeoutSeconds: allocs.actionGroupLambda.timeoutSeconds,
-                removalPolicy: configs.removalPolicy,
-                env,
-            }
-        );
-        agentStack.addDependency(dataStack);
-
-        // =================================================================
-        // Stack 2b: Knowledge Base (Pinecone-backed vector store)
+        // Stack 2: Knowledge Base (Pinecone-backed vector store)
         //
         // Creates the Bedrock KB that embeds and retrieves repo docs.
         // Uses Pinecone free tier — zero idle cost.
+        // Must be created before Agent so it can be associated.
         // =================================================================
         const kbStack = new BedrockKbStack(
             scope,
@@ -153,7 +129,35 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         kbStack.addDependency(dataStack);
 
         // =================================================================
-        // Stack 3: API (API Gateway + Lambda for agent invocation)
+        // Stack 3: Agent (Bedrock Agent + Guardrail + Action Group + KB)
+        //
+        // Core AI resources. Knowledge Base is wired here so the chatbot
+        // can answer portfolio questions from Pinecone-indexed documents.
+        // =================================================================
+        const agentStack = new BedrockAgentStack(
+            scope,
+            stackId(this.namespace, 'Agent', this.environment),
+            {
+                namePrefix,
+                foundationModel,
+                agentInstruction,
+                agentDescription: configs.agentDescription,
+                idleSessionTtlInSeconds: allocs.agent.idleSessionTtlInSeconds,
+                enableContentFilters: configs.guardrail.enableContentFilters,
+                blockedInputMessaging: configs.guardrail.blockedInputMessaging,
+                blockedOutputsMessaging: configs.guardrail.blockedOutputMessaging,
+                actionGroupLambdaMemoryMb: allocs.actionGroupLambda.memoryMb,
+                actionGroupLambdaTimeoutSeconds: allocs.actionGroupLambda.timeoutSeconds,
+                removalPolicy: configs.removalPolicy,
+                knowledgeBase: kbStack.knowledgeBase,
+                env,
+            }
+        );
+        agentStack.addDependency(dataStack);
+        agentStack.addDependency(kbStack);
+
+        // =================================================================
+        // Stack 4: API (API Gateway + Lambda for agent invocation)
         //
         // Serverless frontend. References Agent stack outputs.
         // =================================================================

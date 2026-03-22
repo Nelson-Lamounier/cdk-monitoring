@@ -11,6 +11,7 @@
 import {
     bedrock,
 } from '@cdklabs/generative-ai-cdk-constructs';
+import type { IKnowledgeBase } from '@cdklabs/generative-ai-cdk-constructs/lib/cdk-lib/bedrock/knowledge-bases/knowledge-base';
 import { NagSuppressions } from 'cdk-nag';
 
 import * as cdkBedrock from 'aws-cdk-lib/aws-bedrock';
@@ -46,6 +47,8 @@ export interface BedrockAgentStackProps extends cdk.StackProps {
     readonly actionGroupLambdaTimeoutSeconds: number;
     /** Removal policy for resources */
     readonly removalPolicy: cdk.RemovalPolicy;
+    /** Optional Knowledge Base to associate with the agent */
+    readonly knowledgeBase?: IKnowledgeBase;
 }
 
 /**
@@ -201,8 +204,13 @@ export class BedrockAgentStack extends cdk.Stack {
             idleSessionTTL: cdk.Duration.seconds(props.idleSessionTtlInSeconds),
         });
 
-        // Wire Guardrail and Action Group via methods
+        // Wire Guardrail, Knowledge Base, and Action Group via methods
         this.agent.addGuardrail(this.guardrail);
+
+        // Associate Knowledge Base if provided
+        if (props.knowledgeBase) {
+            this.agent.addKnowledgeBase(props.knowledgeBase);
+        }
 
         this.agent.addActionGroup(new bedrock.AgentActionGroup({
             name: `${namePrefix}-actions`,
