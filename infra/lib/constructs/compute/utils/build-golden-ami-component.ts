@@ -319,8 +319,9 @@ phases:
             - |
               # Install pip and Python packages required by deploy.py and bootstrap_argocd.py
               dnf install -y python3-pip
-              pip3 install boto3 pyyaml
+              pip3 install boto3 pyyaml kubernetes
               python3 -c "import boto3; print('boto3', boto3.__version__)"
+              python3 -c "import kubernetes; print('kubernetes', kubernetes.__version__)"
               echo "Python dependencies installed"
 
       - name: CreateDataDirectory
@@ -351,6 +352,7 @@ phases:
             - echo "[validate] helm:" && helm version --short
             - python3 -c "import boto3; print('boto3', boto3.__version__)"
             - python3 -c "import yaml; print('pyyaml available')"
+            - python3 -c "import kubernetes; print('kubernetes', kubernetes.__version__)"
             - test -f /usr/local/bin/ecr-credential-provider && echo "[validate] ecr-credential-provider binary present"
             - test -f /etc/kubernetes/image-credential-provider-config.yaml && echo "[validate] credential provider config present"
             - echo "[validate] k8sgpt:" && k8sgpt version
