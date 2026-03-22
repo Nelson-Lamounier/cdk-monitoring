@@ -129,12 +129,13 @@ export class BedrockKbStack extends cdk.Stack {
 
         const pineconeSecretFullArn = describeSecret.getResponseField('ARN');
 
-        // CDK-Nag suppression: AwsCustomResource Lambda runtime is managed by
-        // the CDK custom-resources framework — cannot be overridden.
-        NagSuppressions.addResourceSuppressions(
-            describeSecret,
-            [{ id: 'AwsSolutions-L1', reason: 'Lambda runtime managed by CDK AwsCustomResource framework' }],
-            true,
+        // CDK-Nag suppression: AwsCustomResource uses a singleton Lambda at the
+        // stack root (AWS679f53fac002430cb0da5b7982bd2287). Its runtime is managed
+        // by the CDK custom-resources framework and cannot be overridden.
+        NagSuppressions.addResourceSuppressionsByPath(
+            this,
+            `/${this.stackName}/AWS679f53fac002430cb0da5b7982bd2287/Resource`,
+            [{ id: 'AwsSolutions-L1', reason: 'Lambda runtime managed by CDK AwsCustomResource singleton — cannot override' }],
         );
 
         // =================================================================
