@@ -57,7 +57,7 @@ import { stackId, STACK_REGISTRY } from '../../../lib/utilities/naming';
 const CDK_ENV = (process.env.CDK_ENV ?? 'development') as Environment;
 const REGION = process.env.AWS_REGION ?? 'eu-west-1';
 const CONFIGS = getK8sConfigs(CDK_ENV);
-const SSM_PREFIX = k8sSsmPrefix(CDK_ENV);
+const _SSM_PREFIX = k8sSsmPrefix(CDK_ENV);
 
 /** Namespace from project config (empty for Kubernetes — stacks have no prefix) */
 const KUBERNETES_NAMESPACE = getProjectConfig(Project.KUBERNETES).namespace;

@@ -177,7 +177,7 @@ export class GoldenAmiImageConstruct extends Construct {
             vpc: _vpc,
             subnetId,
             securityGroupId,
-            scriptsBucket,
+            scriptsBucket: _scriptsBucket,
             amiSsmPath,
         } = props;
 

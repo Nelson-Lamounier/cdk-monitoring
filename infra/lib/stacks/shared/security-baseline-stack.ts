@@ -24,8 +24,8 @@ import * as cdk from 'aws-cdk-lib/core';
 import { Construct } from 'constructs';
 
 import type { Environment } from '../../config/environments';
-import { AccountSecurityBaselineConstruct } from '../../constructs/security/account-security-baseline';
 import { BedrockObservabilityConstruct } from '../../constructs/observability/bedrock-observability';
+import { AccountSecurityBaselineConstruct } from '../../constructs/security/account-security-baseline';
 
 // =========================================================================
 // PROPS
