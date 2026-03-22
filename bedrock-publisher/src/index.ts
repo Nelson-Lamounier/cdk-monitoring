@@ -147,6 +147,8 @@ interface TransformResult {
         processingNote?: string;
         /** Hero image URL for article cards and social sharing */
         heroImageUrl?: string;
+        /** GitHub repository URL for projects with source code (optional — not all articles have repos) */
+        githubUrl?: string;
     };
     /** Director's Shot List — manifest of all visual assets requested */
     shotList: ShotListItem[];
@@ -408,6 +410,11 @@ async function writeMetadataToDynamoDB(
     // Only include heroImageUrl if non-empty
     if (metadata.heroImageUrl) {
         metadataItem.heroImageUrl = metadata.heroImageUrl;
+    }
+
+    // Only include githubUrl if non-empty (not all articles have a repo)
+    if (metadata.githubUrl) {
+        metadataItem.githubUrl = metadata.githubUrl;
     }
 
     await dynamoClient.send(new PutCommand({
