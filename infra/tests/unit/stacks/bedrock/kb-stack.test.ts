@@ -21,7 +21,7 @@ import {
 
 const NAME_PREFIX = 'bedrock-development';
 const PINECONE_CONNECTION_STRING = 'https://portfolio-kb-test.svc.aped-test.pinecone.io';
-const PINECONE_SECRET_ARN = 'arn:aws:secretsmanager:eu-west-1:123456789012:secret:bedrock-dev/pinecone-api-key-AbCdEf';
+const PINECONE_SECRET_NAME = 'bedrock-dev/pinecone-api-key';
 const PINECONE_NAMESPACE = 'portfolio-dev';
 const EMBEDDINGS_MODEL = 'amazon.titan-embed-text-v2:0';
 const KB_DESCRIPTION = 'Test knowledge base';
@@ -51,7 +51,7 @@ describe('BedrockKbStack', () => {
                 embeddingsModel: EMBEDDINGS_MODEL,
                 dataBucketArn: dataBucket.bucketArn,
                 pineconeConnectionString: PINECONE_CONNECTION_STRING,
-                pineconeCredentialsSecretArn: PINECONE_SECRET_ARN,
+                pineconeSecretName: PINECONE_SECRET_NAME,
                 pineconeNamespace: PINECONE_NAMESPACE,
                 kbDescription: KB_DESCRIPTION,
                 kbInstruction: KB_INSTRUCTION,
