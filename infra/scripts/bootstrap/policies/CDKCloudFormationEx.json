@@ -182,7 +182,7 @@
     {
       "Sid": "SecurityServices",
       "Effect": "Allow",
-      "Action": ["guardduty:*", "securityhub:*", "access-analyzer:*"],
+      "Action": ["guardduty:*", "securityhub:*", "access-analyzer:*", "cloudtrail:*"],
       "Resource": "*"
     },
     {
