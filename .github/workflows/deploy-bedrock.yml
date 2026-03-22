@@ -162,7 +162,7 @@ jobs:
         id: sync
         run: |
           BUCKET_NAME=$(aws ssm get-parameter \
-            --name "/bedrock-development/data-bucket-name" \
+            --name "/bedrock-dev/data-bucket-name" \
             --query "Parameter.Value" \
             --output text)
           echo "bucket-name=${BUCKET_NAME}" >> "$GITHUB_OUTPUT"
@@ -175,7 +175,7 @@ jobs:
         id: ingest
         run: |
           KB_ID=$(aws ssm get-parameter \
-            --name "/bedrock-development/knowledge-base-id" \
+            --name "/bedrock-dev/knowledge-base-id" \
             --query "Parameter.Value" \
             --output text)
           DS_ID=$(aws bedrock-agent list-data-sources \
