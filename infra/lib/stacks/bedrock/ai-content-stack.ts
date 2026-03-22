@@ -72,6 +72,10 @@ export interface AiContentStackProps extends cdk.StackProps {
     readonly logRetention: logs.RetentionDays;
     /** Removal policy for stateful resources */
     readonly removalPolicy: cdk.RemovalPolicy;
+    /** Bedrock Knowledge Base ID for KB-augmented article generation (optional) */
+    readonly knowledgeBaseId?: string;
+    /** Bedrock Knowledge Base ARN for IAM permissions (optional) */
+    readonly knowledgeBaseArn?: string;
 }
 
 // =============================================================================
@@ -255,6 +259,7 @@ export class AiContentStack extends cdk.Stack {
                 FOUNDATION_MODEL: props.foundationModel,
                 MAX_TOKENS: String(props.maxTokens),
                 THINKING_BUDGET_TOKENS: String(props.thinkingBudgetTokens),
+                ...(props.knowledgeBaseId ? { KNOWLEDGE_BASE_ID: props.knowledgeBaseId } : {}),
             },
             description: `MD-to-Blog publisher using ${props.foundationModel} for ${namePrefix}`,
             logGroup: new logs.LogGroup(this, 'PublisherLogGroup', {
@@ -330,6 +335,22 @@ export class AiContentStack extends cdk.Stack {
         // IAM — DynamoDB write access
         // =================================================================
         this.contentTable.grantWriteData(this.publisherFunction);
+
+        // =================================================================
+        // IAM — Bedrock Retrieve permission for KB-augmented mode
+        //
+        // Allows the publisher Lambda to query the Knowledge Base
+        // (Pinecone-backed) for relevant context when generating
+        // articles from short briefs.
+        // =================================================================
+        if (props.knowledgeBaseArn) {
+            this.publisherFunction.addToRolePolicy(new iam.PolicyStatement({
+                sid: 'RetrieveFromKnowledgeBase',
+                effect: iam.Effect.ALLOW,
+                actions: ['bedrock:Retrieve'],
+                resources: [props.knowledgeBaseArn],
+            }));
+        }
 
         // =================================================================
         // S3 Event Notification — Trigger on new drafts

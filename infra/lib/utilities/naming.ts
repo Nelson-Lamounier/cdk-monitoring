@@ -50,6 +50,7 @@ export const STACK_REGISTRY = {
     },
     bedrock: {
         data: 'Data',
+        kb: 'Kb',
         agent: 'Agent',
         api: 'Api',
         content: 'Content',

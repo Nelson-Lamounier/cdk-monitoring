@@ -45,6 +45,18 @@ export interface ApiConfig {
 }
 
 /**
+ * Knowledge Base configuration
+ */
+export interface KnowledgeBaseConfig {
+    /** Secrets Manager secret name for Pinecone API key */
+    readonly pineconeSecretName: string;
+    /** Knowledge Base description */
+    readonly description: string;
+    /** Knowledge Base instruction for agent interaction */
+    readonly instruction: string;
+}
+
+/**
  * Complete resource configurations for Bedrock project
  */
 export interface BedrockConfigs {
@@ -54,6 +66,8 @@ export interface BedrockConfigs {
     readonly agentDescription: string;
     /** Guardrail configuration */
     readonly guardrail: GuardrailConfig;
+    /** Knowledge Base configuration */
+    readonly knowledgeBase: KnowledgeBaseConfig;
     /** API Gateway configuration */
     readonly api: ApiConfig;
     /** CloudWatch log retention */
@@ -85,6 +99,11 @@ export const BEDROCK_CONFIGS: Record<DeployableEnvironment, BedrockConfigs> = {
             blockedInputMessaging: 'Sorry, I cannot process that request.',
             blockedOutputMessaging: 'Sorry, I cannot provide that response.',
         },
+        knowledgeBase: {
+            pineconeSecretName: 'bedrock-dev/pinecone-api-key',
+            description: 'Portfolio repository documentation knowledge base (development)',
+            instruction: 'Use this knowledge base to answer questions about the portfolio project, its architecture, design decisions, and implementation details.',
+        },
         api: {
             enableApiKey: true,
             allowedOrigins: ['*'],
@@ -105,6 +124,11 @@ export const BEDROCK_CONFIGS: Record<DeployableEnvironment, BedrockConfigs> = {
             enableContentFilters: true,
             blockedInputMessaging: 'Sorry, I cannot process that request.',
             blockedOutputMessaging: 'Sorry, I cannot provide that response.',
+        },
+        knowledgeBase: {
+            pineconeSecretName: 'bedrock-stg/pinecone-api-key',
+            description: 'Portfolio repository documentation knowledge base (staging)',
+            instruction: 'Use this knowledge base to answer questions about the portfolio project, its architecture, design decisions, and implementation details.',
         },
         api: {
             enableApiKey: true,
@@ -127,6 +151,11 @@ export const BEDROCK_CONFIGS: Record<DeployableEnvironment, BedrockConfigs> = {
             enableContentFilters: true,
             blockedInputMessaging: 'Sorry, I cannot process that request.',
             blockedOutputMessaging: 'Sorry, I cannot provide that response.',
+        },
+        knowledgeBase: {
+            pineconeSecretName: 'bedrock-prd/pinecone-api-key',
+            description: 'Portfolio repository documentation knowledge base',
+            instruction: 'Use this knowledge base to answer questions about the portfolio project, its architecture, design decisions, and implementation details. Always be precise and cite specific components or files when relevant.',
         },
         api: {
             enableApiKey: true,
