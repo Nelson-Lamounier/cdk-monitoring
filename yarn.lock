@@ -8135,6 +8135,7 @@ __metadata:
     "@aws-sdk/client-acm": "npm:^3.1001.0"
     "@aws-sdk/client-api-gateway": "npm:^3.1001.0"
     "@aws-sdk/client-auto-scaling": "npm:^3.1001.0"
+    "@aws-sdk/client-bedrock-agent-runtime": "npm:^3.1001.0"
     "@aws-sdk/client-bedrock-runtime": "npm:^3.1001.0"
     "@aws-sdk/client-cloudformation": "npm:^3.1001.0"
     "@aws-sdk/client-cloudfront": "npm:^3.1001.0"
