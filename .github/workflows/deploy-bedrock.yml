@@ -1,11 +1,12 @@
 # @format
 # @description Deploy Bedrock AI Infrastructure to Development
 #
-# Deploys the 4-stack Bedrock architecture in dependency order:
+# Deploys the 5-stack Bedrock architecture in dependency order:
 #   1. Bedrock-Data       — S3 bucket for Knowledge Base documents + drafts
-#   2. Bedrock-Agent      — Bedrock Agent, Knowledge Base, Guardrail
-#   3. Bedrock-Api        — API Gateway + Lambda for agent invocation
-#   4. Bedrock-Content    — MD-to-Blog pipeline (S3 event → Lambda → DynamoDB)
+#   2. Bedrock-Kb         — Bedrock Knowledge Base (Pinecone vector store)
+#   3. Bedrock-Agent      — Bedrock Agent, Knowledge Base, Guardrail
+#   4. Bedrock-Api        — API Gateway + Lambda for agent invocation
+#   5. Bedrock-Content    — MD-to-Blog pipeline (S3 event → Lambda → DynamoDB)
 
 name: Deploy Bedrock (Dev)
 
@@ -45,12 +46,31 @@ jobs:
       aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: never
-      use-container: false # Bedrock needs Docker for VectorKnowledgeBase synth
+      use-container: false
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # ===========================================================================
-  # Stack 2: Agent (Bedrock Agent, Knowledge Base, Guardrail, Action Group)
+  # Stack 2: KB (Bedrock Knowledge Base backed by Pinecone)
+  # Depends on: Data (S3 bucket for KB data source)
+  # ===========================================================================
+  deploy-kb:
+    name: Deploy KB Stack
+    needs: [deploy-data]
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Bedrock-Kb-development
+      project: bedrock
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+      use-container: false
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Stack 3: Agent (Bedrock Agent, Knowledge Base, Guardrail, Action Group)
   # Depends on: Data (S3 bucket for KB data source)
   # ===========================================================================
   deploy-agent:
@@ -69,7 +89,7 @@ jobs:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # ===========================================================================
-  # Stack 3: API (API Gateway + Lambda for agent invocation)
+  # Stack 4: API (API Gateway + Lambda for agent invocation)
   # Depends on: Agent (agent alias ARN for Lambda)
   # ===========================================================================
   deploy-api:
@@ -88,13 +108,12 @@ jobs:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # ===========================================================================
-  # Stack 4: Content (MD-to-Blog Agentic Pipeline)
-  # Depends on: Data (S3 bucket for drafts/ and published/ prefixes)
-  # Independent of Agent/API stacks — runs in parallel after Data.
+  # Stack 5: Content (MD-to-Blog Agentic Pipeline + KB-Augmented Mode)
+  # Depends on: Data (S3 bucket) + KB (Knowledge Base ID for retrieval)
   # ===========================================================================
   deploy-content:
     name: Deploy Content Stack
-    needs: [deploy-data]
+    needs: [deploy-data, deploy-kb]
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Bedrock-Content-development
@@ -106,3 +125,33 @@ jobs:
       use-container: false
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Docs Sync: Upload docs/knowledge-base/ to S3 KB data bucket
+  # Depends on: Data (S3 bucket must exist)
+  # ===========================================================================
+  sync-kb-docs:
+    name: Sync KB Documents to S3
+    needs: [deploy-data]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+      - name: Sync KB documents to S3
+        run: |
+          BUCKET_NAME=$(aws ssm get-parameter \
+            --name "/bedrock-development/data-bucket-name" \
+            --query "Parameter.Value" \
+            --output text)
+          echo "Syncing knowledge-base/ to s3://${BUCKET_NAME}/knowledge-base/"
+          aws s3 sync knowledge-base/ "s3://${BUCKET_NAME}/knowledge-base/" \
+            --delete \
+            --exclude "README.md"
+

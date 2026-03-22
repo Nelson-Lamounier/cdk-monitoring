@@ -136,5 +136,14 @@ export async function handleGenerateTechnicalDoc(
   const outputPath = path.join(targetDir, `${fileSlug}.md`);
   await mergeOrWrite(outputPath, content);
 
-  return { outputPath, content, documentType: 'technical-doc' };
+  return {
+    outputPath,
+    content,
+    documentType: 'technical-doc',
+    sourceEvidence: sources.map((s) => ({
+      relativePath: s.relativePath,
+      contentType: s.contentType,
+      content: s.content,
+    })),
+  };
 }

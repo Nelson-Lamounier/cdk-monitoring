@@ -12,7 +12,7 @@
 
 import fs from 'node:fs/promises';
 
-import type { DetectedSkill, ScannedFile, SkillCategory } from '../types/index.js';
+import type { DetectedSkill, EvidenceSnippet, ScannedFile, SkillCategory } from '../types/index.js';
 import { SKILLS_TAXONOMY } from '../data/skills-taxonomy.js';
 
 /** Maximum file size (in bytes) to read for content pattern matching. */
@@ -130,4 +130,65 @@ export async function extractSkills(
   }
 
   return detectedSkills;
+}
+
+/** Maximum lines to include in an evidence snippet. */
+const MAX_SNIPPET_LINES = 150;
+
+/** Maximum number of evidence files to read. */
+const MAX_EVIDENCE_FILES = 50;
+
+/**
+ * Reads content previews for evidence files referenced by detected skills.
+ *
+ * Deduplicates file paths across all skills and reads the first N lines
+ * of each file, producing structured snippets for the AI caller.
+ *
+ * @param detectedSkills - Skills with evidence file paths.
+ * @param scannedFiles - Full set of scanned files (for category lookup).
+ * @param repoPath - Absolute path to the repository root.
+ * @returns Array of evidence snippets with content previews.
+ */
+export async function readEvidenceSnippets(
+  detectedSkills: readonly DetectedSkill[],
+  scannedFiles: readonly ScannedFile[],
+  repoPath: string,
+): Promise<EvidenceSnippet[]> {
+  // Collect unique evidence paths
+  const uniquePaths = new Set<string>();
+  for (const skill of detectedSkills) {
+    for (const evidencePath of skill.evidence) {
+      uniquePaths.add(evidencePath);
+    }
+  }
+
+  // Build a lookup map for file categories
+  const categoryMap = new Map<string, ScannedFile['category']>();
+  for (const file of scannedFiles) {
+    categoryMap.set(file.relativePath, file.category);
+  }
+
+  // Read snippets (capped at MAX_EVIDENCE_FILES)
+  const snippets: EvidenceSnippet[] = [];
+  const pathsToRead = [...uniquePaths].slice(0, MAX_EVIDENCE_FILES);
+
+  for (const relativePath of pathsToRead) {
+    try {
+      const absolutePath = `${repoPath}/${relativePath}`;
+      const content = await fs.readFile(absolutePath, 'utf-8');
+      const allLines = content.split('\n');
+      const preview = allLines.slice(0, MAX_SNIPPET_LINES).join('\n');
+
+      snippets.push({
+        relativePath,
+        category: categoryMap.get(relativePath) ?? 'other',
+        contentPreview: preview,
+        totalLines: allLines.length,
+      });
+    } catch {
+      // Skip unreadable files silently
+    }
+  }
+
+  return snippets;
 }

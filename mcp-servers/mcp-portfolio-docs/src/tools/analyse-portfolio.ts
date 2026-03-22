@@ -10,11 +10,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import type { AnalysisResult, ScopeProfile } from '../types/index.js';
+import type { AnalysisResult, EvidencePayload, ScopeProfile } from '../types/index.js';
 import { SCOPE_PROFILES } from '../data/scope-profiles.js';
 import { SKILLS_TAXONOMY } from '../data/skills-taxonomy.js';
 import { scanRepository } from '../scanners/repo-scanner.js';
-import { extractSkills } from '../scanners/skill-extractor.js';
+import { extractSkills, readEvidenceSnippets } from '../scanners/skill-extractor.js';
 import { scanCodeQuality } from '../scanners/code-quality-scanner.js';
 import { matchAgainstMarket } from '../analysers/market-matcher.js';
 import { generatePortfolioOverview } from '../generators/portfolio-overview.js';
@@ -112,10 +112,25 @@ export async function handleAnalysePortfolio(
   // Step 5: Write to disk (merge if file already exists)
   await mergeOrWrite(outputPath, markdownContent);
 
+  // Step 6: Build evidence payload for the AI caller
+  const evidenceSnippets = await readEvidenceSnippets(
+    detectedSkills,
+    scanResult.files,
+    repoPath,
+  );
+
+  const evidencePayload: EvidencePayload = {
+    skills: detectedSkills,
+    evidenceSnippets,
+    coverage,
+    scope,
+  };
+
   return {
     detectedSkills,
     coverage,
     outputPath,
     markdownContent,
+    evidencePayload,
   };
 }

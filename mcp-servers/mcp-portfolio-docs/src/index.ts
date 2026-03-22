@@ -68,6 +68,7 @@ function createServer(): McpServer {
                   skillsDetected: result.detectedSkills.length,
                   coveragePercent: result.coverage.overallCoveragePercent,
                   outputPath: result.outputPath,
+                  evidencePayload: result.evidencePayload,
                 },
                 null,
                 2,
@@ -269,7 +270,12 @@ function createServer(): McpServer {
             {
               type: 'text' as const,
               text: JSON.stringify(
-                { status: 'success', documentType: result.documentType, outputPath: result.outputPath },
+                {
+                  status: 'success',
+                  documentType: result.documentType,
+                  outputPath: result.outputPath,
+                  sourceEvidence: result.sourceEvidence,
+                },
                 null,
                 2,
               ),

@@ -115,6 +115,30 @@ export interface ScanResult {
   readonly categoryCounts: Record<FileCategory, number>;
 }
 
+/** A snippet of a source file used as evidence for a detected skill. */
+export interface EvidenceSnippet {
+  /** Relative path from repo root. */
+  readonly relativePath: string;
+  /** File category (e.g. 'cdk-stack', 'helm-chart'). */
+  readonly category: FileCategory;
+  /** First N lines of the file (truncated for payload size). */
+  readonly contentPreview: string;
+  /** Total line count of the full file. */
+  readonly totalLines: number;
+}
+
+/** Rich evidence payload returned to the AI caller for polished doc generation. */
+export interface EvidencePayload {
+  /** Detected skills with evidence file paths. */
+  readonly skills: readonly DetectedSkill[];
+  /** Source file snippets for each evidence file (deduplicated). */
+  readonly evidenceSnippets: readonly EvidenceSnippet[];
+  /** Coverage matrix summary. */
+  readonly coverage: CoverageMatrix;
+  /** Scope metadata (if scoped scan). */
+  readonly scope?: ScopeProfile;
+}
+
 /** Result of the full analyse-portfolio pipeline. */
 export interface AnalysisResult {
   /** Detected skills with evidence. */
@@ -125,6 +149,8 @@ export interface AnalysisResult {
   readonly outputPath: string;
   /** Generated markdown content. */
   readonly markdownContent: string;
+  /** Rich evidence payload for the AI caller. */
+  readonly evidencePayload?: EvidencePayload;
 }
 
 /** Configuration for a scoped scan profile. */
@@ -187,6 +213,12 @@ export interface GeneratedDocument {
     | 'decision-analysis'
     | 'technical-doc'
     | 'code-quality-report';
+  /** Source file contents used to generate this document (for AI caller). */
+  readonly sourceEvidence?: ReadonlyArray<{
+    readonly relativePath: string;
+    readonly contentType: string;
+    readonly content: string;
+  }>;
 }
 
 // =============================================================================
