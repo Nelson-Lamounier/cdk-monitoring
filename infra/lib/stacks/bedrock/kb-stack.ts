@@ -18,8 +18,9 @@ import {
 } from '@cdklabs/generative-ai-cdk-constructs';
 import { PineconeVectorStore } from '@cdklabs/generative-ai-cdk-constructs/lib/cdk-lib/pinecone';
 
+import * as cr from 'aws-cdk-lib/custom-resources';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -94,20 +95,48 @@ export class BedrockKbStack extends cdk.Stack {
         const { namePrefix } = props;
 
         // =================================================================
+        // Resolve Full Pinecone Secret ARN
+        //
+        // Bedrock requires the COMPLETE secret ARN (with random suffix)
+        // to build its session policy for secretsmanager:GetSecretValue.
+        // Secret.fromSecretNameV2 returns a partial ARN without the suffix,
+        // which causes session policy evaluation to fail.
+        //
+        // Uses AwsCustomResource to call DescribeSecret at deploy time
+        // and retrieve the full ARN.
+        // =================================================================
+        const describeSecret = new cr.AwsCustomResource(this, 'DescribePineconeSecret', {
+            onCreate: {
+                service: 'SecretsManager',
+                action: 'describeSecret',
+                parameters: { SecretId: props.pineconeSecretName },
+                physicalResourceId: cr.PhysicalResourceId.of(`${namePrefix}-pinecone-secret-lookup`),
+            },
+            onUpdate: {
+                service: 'SecretsManager',
+                action: 'describeSecret',
+                parameters: { SecretId: props.pineconeSecretName },
+                physicalResourceId: cr.PhysicalResourceId.of(`${namePrefix}-pinecone-secret-lookup`),
+            },
+            policy: cr.AwsCustomResourcePolicy.fromStatements([
+                new iam.PolicyStatement({
+                    actions: ['secretsmanager:DescribeSecret'],
+                    resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.pineconeSecretName}-??????`],
+                }),
+            ]),
+        });
+
+        const pineconeSecretFullArn = describeSecret.getResponseField('ARN');
+
+        // =================================================================
         // Pinecone Vector Store Configuration
         //
-        // Resolves the Pinecone API key secret within this Stack scope.
-        // Bedrock manages all embedding/upsert/query operations.
+        // Uses the full secret ARN (with random suffix) so Bedrock can
+        // correctly build its session policy for GetSecretValue.
         // =================================================================
-        const pineconeSecret = secretsmanager.Secret.fromSecretNameV2(
-            this,
-            'PineconeSecret',
-            props.pineconeSecretName,
-        );
-
         const pineconeStore = new PineconeVectorStore({
             connectionString: props.pineconeConnectionString,
-            credentialsSecretArn: pineconeSecret.secretArn,
+            credentialsSecretArn: pineconeSecretFullArn,
             metadataField: PINECONE_METADATA_FIELD,
             textField: PINECONE_TEXT_FIELD,
             namespace: props.pineconeNamespace,
@@ -126,11 +155,6 @@ export class BedrockKbStack extends cdk.Stack {
             embeddingsModel: bedrock.BedrockFoundationModel.TITAN_EMBED_TEXT_V2_1024,
             vectorStore: pineconeStore,
         });
-
-        // Grant the KB execution role access to the Pinecone API key secret.
-        // The CDK construct creates the role but does not automatically grant
-        // secretsmanager:GetSecretValue on the Pinecone credentials.
-        pineconeSecret.grantRead(this.knowledgeBase.role);
 
         this.knowledgeBaseId = this.knowledgeBase.knowledgeBaseId;
         this.knowledgeBaseArn = this.knowledgeBase.knowledgeBaseArn;
