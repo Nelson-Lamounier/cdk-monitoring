@@ -19,6 +19,7 @@ import {
 import { PineconeVectorStore } from '@cdklabs/generative-ai-cdk-constructs/lib/cdk-lib/pinecone';
 
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -48,8 +49,8 @@ export interface BedrockKbStackProps extends cdk.StackProps {
     readonly dataBucketArn: string;
     /** Pinecone index connection string (e.g. 'https://portfolio-kb-xxx.svc.aped-xxx.pinecone.io') */
     readonly pineconeConnectionString: string;
-    /** ARN of the Secrets Manager secret containing the Pinecone API key */
-    readonly pineconeCredentialsSecretArn: string;
+    /** Name of the Secrets Manager secret containing the Pinecone API key */
+    readonly pineconeSecretName: string;
     /** Pinecone namespace for data isolation */
     readonly pineconeNamespace: string;
     /** Knowledge Base description */
@@ -95,12 +96,18 @@ export class BedrockKbStack extends cdk.Stack {
         // =================================================================
         // Pinecone Vector Store Configuration
         //
-        // References the Pinecone index and Secrets Manager secret.
+        // Resolves the Pinecone API key secret within this Stack scope.
         // Bedrock manages all embedding/upsert/query operations.
         // =================================================================
+        const pineconeSecret = secretsmanager.Secret.fromSecretNameV2(
+            this,
+            'PineconeSecret',
+            props.pineconeSecretName,
+        );
+
         const pineconeStore = new PineconeVectorStore({
             connectionString: props.pineconeConnectionString,
-            credentialsSecretArn: props.pineconeCredentialsSecretArn,
+            credentialsSecretArn: pineconeSecret.secretArn,
             metadataField: PINECONE_METADATA_FIELD,
             textField: PINECONE_TEXT_FIELD,
             namespace: props.pineconeNamespace,

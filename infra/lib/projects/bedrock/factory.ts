@@ -17,7 +17,6 @@
  * - Bedrock-Content-{environment}
  */
 
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { getBedrockAllocations } from '../../config/bedrock/allocations';
@@ -135,12 +134,6 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         // Creates the Bedrock KB that embeds and retrieves repo docs.
         // Uses Pinecone free tier — zero idle cost.
         // =================================================================
-        const pineconeSecretArn = secretsmanager.Secret.fromSecretNameV2(
-            scope,
-            `${namePrefix}-PineconeSecret`,
-            configs.knowledgeBase.pineconeSecretName,
-        ).secretArn;
-
         const kbStack = new BedrockKbStack(
             scope,
             stackId(this.namespace, 'Kb', this.environment),
@@ -149,7 +142,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 embeddingsModel: allocs.knowledgeBase.embeddingsModel,
                 dataBucketArn: dataStack.dataBucket.bucketArn,
                 pineconeConnectionString: allocs.knowledgeBase.pineconeConnectionString,
-                pineconeCredentialsSecretArn: pineconeSecretArn,
+                pineconeSecretName: configs.knowledgeBase.pineconeSecretName,
                 pineconeNamespace: allocs.knowledgeBase.pineconeNamespace,
                 kbDescription: configs.knowledgeBase.description,
                 kbInstruction: configs.knowledgeBase.instruction,
