@@ -236,17 +236,17 @@ jobs:
         run: |
           SLUG="${{ inputs.article-slug }}"
           BUCKET_NAME="${{ steps.sync.outputs.bucket-name }}"
-          echo "Uploading brief for: ${SLUG}"
+          BRIEF="articles-draft/${SLUG}.md"
 
-          cat > /tmp/${SLUG}.md << 'BRIEF'
-          # ${{ inputs.article-slug }}
+          if [ ! -f "${BRIEF}" ]; then
+            echo "::error::Brief not found: ${BRIEF}"
+            echo "Available briefs:"
+            ls -1 articles-draft/*.md 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
 
-          Write an in-depth technical article about this topic using the
-          Knowledge Base context. Include code snippets, architecture
-          decisions, Mermaid diagrams, and operational insights.
-          BRIEF
-
-          aws s3 cp "/tmp/${SLUG}.md" \
+          echo "Uploading brief: ${BRIEF} ($(wc -c < "${BRIEF}" | tr -d ' ') bytes)"
+          aws s3 cp "${BRIEF}" \
             "s3://${BUCKET_NAME}/drafts/${SLUG}.md"
           echo "✅ Brief uploaded — Lambda should trigger shortly"
 
