@@ -345,6 +345,7 @@ export class KubernetesArgocdWorkerStack extends cdk.Stack {
             instanceName: `${namePrefix}-argocd-worker`,
             bootstrapRole: 'argocd-worker',
             ssmPrefix,
+            clusterIdentifier: namePrefix,
             useSignals: argocdWorkerConfig.useSignals,
             signalsTimeoutMinutes: argocdWorkerConfig.signalsTimeoutMinutes,
             subnetSelection: {

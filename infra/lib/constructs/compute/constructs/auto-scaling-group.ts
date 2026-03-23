@@ -156,6 +156,16 @@ export interface AutoScalingGroupConstructProps {
 
     /** Termination lifecycle hook timeout in seconds @default 300 (5 min) */
     readonly terminationLifecycleHookTimeoutSeconds?: number;
+
+    /**
+     * Kubernetes cluster identifier for AWS Cloud Controller Manager.
+     * When set, tags all instances with `kubernetes.io/cluster/<id>=owned`.
+     * The CCM Node Lifecycle Controller uses this tag to scope which
+     * EC2 instances it manages — required for automatic node object
+     * cleanup when instances are terminated.
+     * @example 'k8s-dev'
+     */
+    readonly clusterIdentifier?: string;
 }
 
 /**
@@ -341,6 +351,17 @@ export class AutoScalingGroupConstruct extends Construct {
             if (props.ssmPrefix) {
                 cdk.Tags.of(this.autoScalingGroup).add('k8s:ssm-prefix', props.ssmPrefix);
             }
+        }
+
+        // AWS Cloud Controller Manager tag: CCM uses this to scope which
+        // EC2 instances it manages. Required for the Node Lifecycle Controller
+        // to detect terminated instances and clean up K8s node objects.
+        if (props.clusterIdentifier) {
+            cdk.Tags.of(this.autoScalingGroup).add(
+                `kubernetes.io/cluster/${props.clusterIdentifier}`,
+                'owned',
+                { applyToLaunchedInstances: true },
+            );
         }
 
         // Tags: all 6 tags applied by TaggingAspect at stack level
