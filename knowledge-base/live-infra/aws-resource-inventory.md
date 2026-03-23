@@ -81,9 +81,15 @@
 
 ### Self-Healing Agent
 
-- **AgentCore Gateway:** MCP-protocol gateway with registered tools
-- **Agent Lambda:** Event-driven with EventBridge trigger from CloudWatch Alarms
-- **DLQ:** Separate dead-letter queue for agent failures
+- **Model:** `eu.anthropic.claude-sonnet-4-6` (Claude Sonnet 4.6, cross-region inference)
+- **AgentCore Gateway:** MCP-protocol gateway with 4 registered tools (diagnose-alarm, ebs-detach, check-node-health, analyse-cluster-health)
+- **Agent Lambda:** `self-healing-dev-agent` (512MB/120s) — Bedrock ConverseCommand loop triggered by EventBridge on CloudWatch Alarms
+- **Tool Lambdas:** `self-healing-dev-tool-diagnose-alarm` (256MB/30s), `self-healing-dev-tool-ebs-detach` (256MB/180s)
+- **Cognito:** User Pool `eu-west-1_iP4AzhjFX` — M2M OAuth2 client credentials flow for Gateway auth
+- **Token Budget Alarm:** `self-healing-dev-agent-token-budget` — MathExpression (input+output tokens > 100K/hr)
+- **DLQ:** `self-healing-dev-agent-dlq` — failed invocation capture (2 retries)
+- **S3 Memory:** Session memory bucket with 30-day lifecycle
+- **PoC verified:** 2026-03-23 — full loop in 26.3s, 4,448 tokens
 
 ### Frontend
 

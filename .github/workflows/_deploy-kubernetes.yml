@@ -356,6 +356,9 @@ jobs:
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
       outputs-directory: "deployment-outputs"
+      # Email config — passed to CDK synth inside _deploy-stack.yml
+      notification-email: ${{ vars.NOTIFICATION_EMAIL }}
+      ses-from-email: ${{ vars.SES_FROM_EMAIL }}
     secrets: inherit
 
   # ===========================================================================

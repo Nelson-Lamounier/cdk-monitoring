@@ -33,7 +33,7 @@ S3  → Session memory (conversation history)
 
 ### Agent Stack
 - **File:** `infra/lib/stacks/self-healing/agent-stack.ts`
-- TypeScript Lambda (Node.js 22, esbuild-bundled) using Bedrock ConverseCommand API.
+- TypeScript Lambda (Node.js 22, esbuild-bundled) using Bedrock ConverseCommand API with `eu.anthropic.claude-sonnet-4-6`.
 - EventBridge rule triggers on any CloudWatch alarm entering ALARM state, **excluding** the agent's own token budget alarm (prevents feedback loops).
 - FinOps guardrails: token budget alarm (100K tokens/hour), reserved concurrency, metric filters for input/output token tracking.
 - Session memory persisted to S3 with 30-day lifecycle policy.
@@ -118,7 +118,7 @@ The Gateway exposes 4 tools to the agent via the MCP protocol:
 ## Challenges Encountered
 
 - **Cognito secret retrieval** — The AgentCore L2 construct creates a Cognito User Pool Client, but the client secret is not available at synth time. The agent Lambda must call `DescribeUserPoolClient` at runtime to obtain it, requiring an additional IAM permission.
-- **Cross-region inference profiles** — Using `eu.anthropic.claude-3-5-haiku` requires IAM permissions on both the inference profile ARN (account-scoped, current region) and the foundation model ARN (wildcard region). This is non-obvious and causes `AccessDeniedException` if only one is granted.
+- **Cross-region inference profiles** — Using `eu.anthropic.claude-sonnet-4-6` requires IAM permissions on both the inference profile ARN (account-scoped, current region) and the foundation model ARN (wildcard region). This is non-obvious and causes `AccessDeniedException` if only one is granted.
 - **SSM SendCommand latency** — K8sGPT analysis via SSM takes 30-90 seconds due to SSH-less command execution overhead. The tool Lambda timeout is set to 90 seconds accordingly.
 - **CDK-nag for L2 constructs** — The AgentCore L2 auto-generates IAM roles and Cognito resources. CDK-nag flags these as "missing" MFA, advanced security mode, etc. — all inapplicable for M2M auth. Requires explicit suppressions with documented reasoning.
 
@@ -129,3 +129,23 @@ The Gateway exposes 4 tools to the agent via the MCP protocol:
 - **Infrastructure self-healing** — Automated alarm → diagnosis → remediation pipeline. Demonstrates SRE automation thinking and reduces MTTR.
 - **FinOps for AI workloads** — Token budget alarms, metric filters, and reserved concurrency. Critical for controlling GenAI costs in production.
 - **Event-driven architecture** — EventBridge → Lambda → MCP Gateway → Tool Lambda chain with DLQ safety nets. Applicable to any serverless event processing pipeline.
+
+## End-to-End Proof of Concept (2026-03-23)
+
+Full pipeline verified with synthetic alarm event for `k8s-dev-bootstrap-orchestrator-errors`:
+
+| Metric | Value |
+|:---|:---|
+| Model | `eu.anthropic.claude-sonnet-4-6` (Claude Sonnet 4.6) |
+| Mode | `DRY_RUN: true` |
+| Total execution time | 26.3 seconds |
+| Cognito OAuth2 token | 1.1s |
+| MCP tool discovery | 139ms (3 tools) |
+| Bedrock iterations | 2 (tool_use → end_turn) |
+| Tool calls | 1 (`diagnose_alarm` via Gateway) |
+| Input tokens | 3,234 |
+| Output tokens | 1,214 |
+| Peak memory | 123 MB / 512 MB |
+| Estimated cost | ~$0.02 |
+
+The agent produced a structured remediation report: identified a transient Step Functions execution failure, confirmed the alarm self-resolved, and proposed hardening steps (Retry policies, Catch handlers, 2-of-3 evaluation window). All DRY_RUN guardrails enforced — no destructive actions taken.

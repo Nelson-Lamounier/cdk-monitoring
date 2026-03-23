@@ -88,18 +88,23 @@ K8s Cluster (kubeadm, private API endpoint on port 6443)
 7. Failures → SQS DLQ
 ```
 
-### Self-Healing Agent
+### Self-Healing Agent (eu.anthropic.claude-sonnet-4-6)
 
 ```
-1. CloudWatch Alarm → EventBridge Rule
-2. → Agent Lambda
-3.   → Bedrock AgentCore Gateway (MCP)
-4.     → Tool: diagnose-alarm
-5.     → Tool: check-node-health
-6.     → Tool: analyse-cluster-health
-7. Failures → SQS DLQ
-8. Notifications → SNS → Email
+1. CloudWatch Alarm → EventBridge Rule (self-exclusion filter)
+2. → Agent Lambda (Bedrock ConverseCommand loop, DRY_RUN mode)
+3.   → Cognito M2M OAuth2 → JWT token
+4.   → Bedrock AgentCore Gateway (MCP tools/list → tools/call)
+5.     → Tool: diagnose-alarm (CloudWatch API)
+6.     → Tool: ebs-detach (EC2 + ASG API)
+7.     → Tool: check-node-health (SSM → kubectl)
+8.     → Tool: analyse-cluster-health (SSM → K8sGPT)
+9. Session memory → S3 (30d lifecycle)
+10. Failures → SQS DLQ (2 retries)
+11. Notifications → SNS → Email report
 ```
+
+**PoC verified:** 2026-03-23 — full loop completed in 26.3s, 4,448 tokens (~$0.02).
 
 ### Frontend Request Path
 

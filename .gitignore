@@ -61,3 +61,5 @@ __pycache__/
 
 .agents/rules/
 .agents/agents/
+
+bedrock-generated.md

@@ -174,7 +174,13 @@ EventBridge triggers the Step Functions orchestrator on every ASG `EC2 Instance 
 
 ## Self-Healing Pipeline
 
-K8sGPT (installed in the Golden AMI) is invoked by the self-healing Lambda via SSM SendCommand. It analyses cluster health using AI diagnostics and feeds results back to the Step Functions workflow for automated remediation.
+Deployed as 2 additional CDK stacks: `SelfHealing-Gateway-development` (AgentCore Gateway + tool Lambdas) and `SelfHealing-Agent-development` (agent Lambda + EventBridge + SNS + S3 + DLQ).
+
+- **Model:** `eu.anthropic.claude-sonnet-4-6` via Bedrock ConverseCommand (tool-use loop, max 10 iterations)
+- **Auth:** Cognito M2M OAuth2 client credentials flow (JWT per invocation)
+- **Tools:** `diagnose_alarm` (CloudWatch API), `ebs_detach` (EC2+ASG), `check_node_health` (SSM→kubectl), `analyse_cluster_health` (SSM→K8sGPT)
+- **FinOps:** Token budget alarm (100K/hr MathExpression), reserved concurrency, EventBridge self-exclusion filter, DRY_RUN mode
+- **PoC verified:** 2026-03-23 — agent completed full diagnostic loop in 26.3s using 4,448 tokens (~$0.02)
 
 ## Source Files
 
