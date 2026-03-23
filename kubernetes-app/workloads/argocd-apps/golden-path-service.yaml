@@ -22,7 +22,7 @@ metadata:
   name: golden-path-service
   annotations:
     kubernetes.io/description: "Golden-path service with Crossplane-managed AWS resources"
-    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/sync-wave: "7"  # Wave 7: After XRDs (wave 6) register EncryptedBucket/MonitoredQueue CRDs
   namespace: argocd
   labels:
     app.kubernetes.io/part-of: argocd
