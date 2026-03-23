@@ -109,9 +109,9 @@ ssm_client = boto3.client("ssm")
 
 ROLE_DOC_MAP = {
     "control-plane": "bootstrap/control-plane-doc-name",
-    "app-worker": "bootstrap/app-worker-doc-name",
-    "mon-worker": "bootstrap/mon-worker-doc-name",
-    "argocd-worker": "bootstrap/argocd-worker-doc-name",
+    "app-worker": "bootstrap/worker-doc-name",
+    "mon-worker": "bootstrap/worker-doc-name",
+    "argocd-worker": "bootstrap/worker-doc-name",
 }
 
 def handler(event, context):
@@ -401,8 +401,12 @@ def handler(event, context):
     // =========================================================================
 
     /**
-     * Builds an SSM Automation polling loop:
-     * Start → Wait → Poll → Check → (loop back to Wait or succeed/fail)
+     * Builds an SSM Automation polling loop with a step-level timeout guard:
+     * Start → InitCounter → Wait → Poll → IncrCount → CheckTimeout → CheckStatus → (loop)
+     *
+     * The counter prevents infinite polling — fails after {@link MAX_POLL_ITERATIONS}
+     * iterations (default: 120 × 30s = 60 min) instead of relying solely on the
+     * 2-hour global state machine timeout.
      */
     private buildAutomationChain(
         id: string,
@@ -414,6 +418,11 @@ def handler(event, context):
         automationRoleArn: string,
     ): { start: sfn.IChainable; end: sfn.Pass } {
         const stack = cdk.Stack.of(this);
+
+        /** Max polling iterations before failing (120 × 30s = 60 min). */
+        const MAX_POLL_ITERATIONS = 120;
+
+        const pollCountPath = `$.${id}PollCount`;
 
         const startExec = new sfnTasks.CallAwsService(this, `${id}Start`, {
             service: 'ssm',
@@ -443,6 +452,12 @@ def handler(event, context):
             resultPath: `$.${id}Result`,
         });
 
+        // Initialise poll counter to 0
+        const initCounter = new sfn.Pass(this, `${id}InitCount`, {
+            result: sfn.Result.fromNumber(0),
+            resultPath: pollCountPath,
+        });
+
         const waitStep = new sfn.Wait(this, `${id}Wait`, {
             time: sfn.WaitTime.duration(cdk.Duration.seconds(30)),
         });
@@ -462,12 +477,36 @@ def handler(event, context):
             resultPath: `$.${id}Status`,
         });
 
+        // Increment poll counter using States.MathAdd intrinsic
+        const incrPollCount = new sfn.Pass(this, `${id}IncrCount`, {
+            resultPath: pollCountPath,
+            parameters: {
+                'count.$': sfn.JsonPath.mathAdd(
+                    sfn.JsonPath.numberAt(pollCountPath),
+                    1,
+                ),
+            },
+        });
+
         const successState = new sfn.Pass(this, `${id}Done`);
 
         const failState = new sfn.Fail(this, `${id}Failed`, {
             cause: `SSM Automation ${id} failed`,
             error: 'AutomationFailed',
         });
+
+        const timeoutState = new sfn.Fail(this, `${id}Timeout`, {
+            cause: `SSM Automation ${id} polling exceeded ${MAX_POLL_ITERATIONS} iterations (~${(MAX_POLL_ITERATIONS * 30) / 60} min)`,
+            error: 'AutomationTimeout',
+        });
+
+        // Check poll count before looping back to wait
+        const checkTimeout = new sfn.Choice(this, `${id}CheckTimeout`)
+            .when(
+                sfn.Condition.numberGreaterThanEquals(pollCountPath, MAX_POLL_ITERATIONS),
+                timeoutState,
+            )
+            .otherwise(waitStep);
 
         const checkStatus = new sfn.Choice(this, `${id}Check`)
             .when(
@@ -480,14 +519,16 @@ def handler(event, context):
                     sfn.Condition.stringEquals(`$.${id}Status.Status`, 'Waiting'),
                     sfn.Condition.stringEquals(`$.${id}Status.Status`, 'Pending'),
                 ),
-                waitStep,
+                incrPollCount,
             )
             .otherwise(failState);
 
-        // Chain: Start → Wait → Poll → Check → (loop back to Wait or proceed)
-        startExec.next(waitStep);
+        // Chain: Start → InitCounter → Wait → Poll → CheckStatus → IncrCount → CheckTimeout → (loop)
+        startExec.next(initCounter);
+        initCounter.next(waitStep);
         waitStep.next(pollStatus);
         pollStatus.next(checkStatus);
+        incrPollCount.next(checkTimeout);
 
         return { start: startExec, end: successState };
     }
@@ -501,7 +542,7 @@ def handler(event, context):
         props: BootstrapOrchestratorProps,
     ): sfn.Chain {
         const stack = cdk.Stack.of(this);
-        const docParamName = `${props.ssmPrefix}/bootstrap/${workerRole}-doc-name`;
+        const docParamName = `${props.ssmPrefix}/bootstrap/worker-doc-name`;
         const instanceParamName = `${props.ssmPrefix}/bootstrap/${workerRole}-instance-id`;
 
         const getWorkerDoc = new sfnTasks.CallAwsService(this, `GetDoc-${workerRole}`, {

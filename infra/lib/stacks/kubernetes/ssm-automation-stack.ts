@@ -146,14 +146,8 @@ export class K8sSsmAutomationStack extends cdk.Stack {
     /** Control plane SSM Automation document name */
     public readonly controlPlaneDocName: string;
 
-    /** App worker SSM Automation document name */
-    public readonly appWorkerDocName: string;
-
-    /** Monitoring worker SSM Automation document name */
-    public readonly monWorkerDocName: string;
-
-    /** ArgoCD worker SSM Automation document name */
-    public readonly argocdWorkerDocName: string;
+    /** Unified worker SSM Automation document name (all worker roles) */
+    public readonly workerDocName: string;
 
     /** Next.js secrets SSM Automation document name */
     public readonly nextjsSecretsDocName: string;
@@ -293,32 +287,18 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         });
         this.controlPlaneDocName = cpDoc.documentName;
 
-        const appWorkerDoc = new SsmAutomationDocument(this, 'AppWorkerAutomation', {
-            documentName: `${prefix}-bootstrap-app-worker`,
-            description: 'Orchestrates Kubernetes app-worker node bootstrap (consolidated)',
+        // Unified worker document — serves app-worker, mon-worker, and
+        // argocd-worker roles.  The NODE_LABEL env var (set by user data /
+        // SSM Automation parameters) controls per-role behaviour inside the
+        // Python bootstrap script.
+        const workerDoc = new SsmAutomationDocument(this, 'WorkerAutomation', {
+            documentName: `${prefix}-bootstrap-worker`,
+            description: 'Orchestrates Kubernetes worker node bootstrap (all roles — app, monitoring, argocd)',
             documentCategory: 'bootstrap',
             steps: WORKER_STEPS,
             ...docBaseProps,
         });
-        this.appWorkerDocName = appWorkerDoc.documentName;
-
-        const monWorkerDoc = new SsmAutomationDocument(this, 'MonWorkerAutomation', {
-            documentName: `${prefix}-bootstrap-mon-worker`,
-            description: 'Orchestrates Kubernetes mon-worker node bootstrap (consolidated)',
-            documentCategory: 'bootstrap',
-            steps: WORKER_STEPS,
-            ...docBaseProps,
-        });
-        this.monWorkerDocName = monWorkerDoc.documentName;
-
-        const argocdWorkerDoc = new SsmAutomationDocument(this, 'ArgocdWorkerAutomation', {
-            documentName: `${prefix}-bootstrap-argocd-worker`,
-            description: 'Orchestrates Kubernetes argocd-worker node bootstrap (consolidated)',
-            documentCategory: 'bootstrap',
-            steps: WORKER_STEPS,
-            ...docBaseProps,
-        });
-        this.argocdWorkerDocName = argocdWorkerDoc.documentName;
+        this.workerDocName = workerDoc.documentName;
 
         // =====================================================================
         // SSM Automation Documents — Deploy (2)
@@ -356,26 +336,12 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         });
         cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/control-plane-doc-name`, cpDocParam);
 
-        const appWorkerDocParam = new ssm.StringParameter(this, 'AppWorkerDocNameParam', {
-            parameterName: `${props.ssmPrefix}/bootstrap/app-worker-doc-name`,
-            stringValue: appWorkerDoc.documentName,
-            description: 'SSM Automation document name for app-worker node bootstrap',
+        const workerDocParam = new ssm.StringParameter(this, 'WorkerDocNameParam', {
+            parameterName: `${props.ssmPrefix}/bootstrap/worker-doc-name`,
+            stringValue: workerDoc.documentName,
+            description: 'SSM Automation document name for worker node bootstrap (all roles)',
         });
-        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/app-worker-doc-name`, appWorkerDocParam);
-
-        const monWorkerDocParam = new ssm.StringParameter(this, 'MonWorkerDocNameParam', {
-            parameterName: `${props.ssmPrefix}/bootstrap/mon-worker-doc-name`,
-            stringValue: monWorkerDoc.documentName,
-            description: 'SSM Automation document name for mon-worker node bootstrap',
-        });
-        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/mon-worker-doc-name`, monWorkerDocParam);
-
-        const argocdWorkerDocParam = new ssm.StringParameter(this, 'ArgocdWorkerDocNameParam', {
-            parameterName: `${props.ssmPrefix}/bootstrap/argocd-worker-doc-name`,
-            stringValue: argocdWorkerDoc.documentName,
-            description: 'SSM Automation document name for argocd-worker node bootstrap',
-        });
-        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/argocd-worker-doc-name`, argocdWorkerDocParam);
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/worker-doc-name`, workerDocParam);
 
         const nextjsDocParam = new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
             parameterName: `${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`,

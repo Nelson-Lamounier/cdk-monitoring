@@ -61,8 +61,8 @@ describe('K8sSsmAutomationStack', () => {
     describe('SSM Automation Documents', () => {
         const { template } = createSsmAutomationStack();
 
-        it('should create 7 SSM documents (6 Automation + 1 Command for drift enforcement)', () => {
-            template.resourceCountIs('AWS::SSM::Document', 7);
+        it('should create 5 SSM documents (4 Automation + 1 Command for drift enforcement)', () => {
+            template.resourceCountIs('AWS::SSM::Document', 5);
         });
 
         it('should create a control plane automation document', () => {
@@ -74,47 +74,18 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should create an app-worker automation document', () => {
+        it('should create a unified worker automation document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 DocumentType: 'Automation',
-                Name: 'k8s-dev-bootstrap-app-worker',
+                Name: 'k8s-dev-bootstrap-worker',
                 DocumentFormat: 'JSON',
                 UpdateMethod: 'NewVersion',
             });
         });
 
-        it('should create a mon-worker automation document', () => {
+        it('should have 1 consolidated step in the worker document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
-                DocumentType: 'Automation',
-                Name: 'k8s-dev-bootstrap-mon-worker',
-                DocumentFormat: 'JSON',
-                UpdateMethod: 'NewVersion',
-            });
-        });
-
-        it('should create an argocd-worker automation document', () => {
-            template.hasResourceProperties('AWS::SSM::Document', {
-                DocumentType: 'Automation',
-                Name: 'k8s-dev-bootstrap-argocd-worker',
-                DocumentFormat: 'JSON',
-                UpdateMethod: 'NewVersion',
-            });
-        });
-
-        it('should have 1 consolidated step in the control plane document', () => {
-            template.hasResourceProperties('AWS::SSM::Document', {
-                Name: 'k8s-dev-bootstrap-control-plane',
-                Content: Match.objectLike({
-                    mainSteps: Match.arrayWith([
-                        Match.objectLike({ name: 'bootstrapControlPlane' }),
-                    ]),
-                }),
-            });
-        });
-
-        it('should have 1 consolidated step in the app-worker document', () => {
-            template.hasResourceProperties('AWS::SSM::Document', {
-                Name: 'k8s-dev-bootstrap-app-worker',
+                Name: 'k8s-dev-bootstrap-worker',
                 Content: Match.objectLike({
                     mainSteps: Match.arrayWith([
                         Match.objectLike({ name: 'bootstrapWorker' }),
@@ -278,24 +249,10 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should create SSM parameter for app-worker document name', () => {
+        it('should create SSM parameter for worker document name', () => {
             template.hasResourceProperties('AWS::SSM::Parameter', {
-                Name: '/k8s/development/bootstrap/app-worker-doc-name',
-                Value: 'k8s-dev-bootstrap-app-worker',
-            });
-        });
-
-        it('should create SSM parameter for mon-worker document name', () => {
-            template.hasResourceProperties('AWS::SSM::Parameter', {
-                Name: '/k8s/development/bootstrap/mon-worker-doc-name',
-                Value: 'k8s-dev-bootstrap-mon-worker',
-            });
-        });
-
-        it('should create SSM parameter for argocd-worker document name', () => {
-            template.hasResourceProperties('AWS::SSM::Parameter', {
-                Name: '/k8s/development/bootstrap/argocd-worker-doc-name',
-                Value: 'k8s-dev-bootstrap-argocd-worker',
+                Name: '/k8s/development/bootstrap/worker-doc-name',
+                Value: 'k8s-dev-bootstrap-worker',
             });
         });
 
@@ -330,16 +287,8 @@ describe('K8sSsmAutomationStack', () => {
             expect(stack.controlPlaneDocName).toBe('k8s-dev-bootstrap-control-plane');
         });
 
-        it('should expose appWorkerDocName', () => {
-            expect(stack.appWorkerDocName).toBe('k8s-dev-bootstrap-app-worker');
-        });
-
-        it('should expose monWorkerDocName', () => {
-            expect(stack.monWorkerDocName).toBe('k8s-dev-bootstrap-mon-worker');
-        });
-
-        it('should expose argocdWorkerDocName', () => {
-            expect(stack.argocdWorkerDocName).toBe('k8s-dev-bootstrap-argocd-worker');
+        it('should expose workerDocName', () => {
+            expect(stack.workerDocName).toBe('k8s-dev-bootstrap-worker');
         });
 
         it('should expose automationRoleArn', () => {
@@ -369,10 +318,10 @@ describe('K8sSsmAutomationStack', () => {
         });
 
         it('should create custom resources for SSM parameter cleanup', () => {
-            // 7 SSM parameters + 2 log groups + 1 SNS topic = 10 custom resources
+            // 5 SSM parameters + 2 log groups + 1 SNS topic = 8 custom resources
             // Plus the 1 custom resource from the Provider framework itself
             // We verify at least the Custom::AWS resources exist
-            template.resourceCountIs('AWS::CloudFormation::CustomResource', 10);
+            template.resourceCountIs('AWS::CloudFormation::CustomResource', 8);
         });
 
         it('should grant the cleanup Lambda logs:DeleteLogGroup permission', () => {

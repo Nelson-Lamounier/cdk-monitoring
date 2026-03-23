@@ -116,17 +116,17 @@ const BOOTSTRAP_ROLES: BootstrapRole[] = [
     {
         label: 'App Worker',
         role: 'app-worker',
-        docNameParam: `${PREFIX}/bootstrap/app-worker-doc-name`,
+        docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
     },
     {
         label: 'Mon Worker',
         role: 'mon-worker',
-        docNameParam: `${PREFIX}/bootstrap/mon-worker-doc-name`,
+        docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
     },
     {
         label: 'ArgoCD Worker',
         role: 'argocd-worker',
-        docNameParam: `${PREFIX}/bootstrap/argocd-worker-doc-name`,
+        docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
     },
 ];
 
