@@ -5533,7 +5533,7 @@ __metadata:
   resolution: "@nelsonlamounier/cdk-governance-aspects@workspace:packages/cdk-governance-aspects"
   dependencies:
     "@types/jest": "npm:^29.5.14"
-    aws-cdk-lib: "npm:^2.185.0"
+    aws-cdk-lib: "npm:^2.244.0"
     constructs: "npm:^10.4.2"
     jest: "npm:^29.7.0"
     ts-jest: "npm:^29.3.1"
@@ -7617,9 +7617,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"aws-cdk-lib@npm:^2.185.0, aws-cdk-lib@npm:^2.232.1":
-  version: 2.243.0
-  resolution: "aws-cdk-lib@npm:2.243.0"
+"aws-cdk-lib@npm:^2.244.0":
+  version: 2.244.0
+  resolution: "aws-cdk-lib@npm:2.244.0"
   dependencies:
     "@aws-cdk/asset-awscli-v1": "npm:2.2.263"
     "@aws-cdk/asset-node-proxy-agent-v6": "npm:^2.1.1"
@@ -7638,16 +7638,25 @@ __metadata:
     yaml: "npm:1.10.2"
   peerDependencies:
     constructs: ^10.5.0
-  checksum: 10c0/34b25f4d7b8b12bf5a38a40138517ec819e0ab2daa81e6af7f5f78ca79ae1c533ba15e618d458df7037be06bc6279ba66730396e99f07edb3ac9a36a13c94adc
+  checksum: 10c0/f4903e44648e7ef8d506e45b004df4e54000e442952568f1a083f0076eb2bf1dd4b4378c54610fc4fc35a8edce2191d87c4e0311973670d26fcf3e987850f28c
   languageName: node
   linkType: hard
 
-"aws-cdk@npm:2.1111.0, aws-cdk@npm:^2.232.1":
+"aws-cdk@npm:2.1111.0":
   version: 2.1111.0
   resolution: "aws-cdk@npm:2.1111.0"
   bin:
     cdk: bin/cdk
   checksum: 10c0/7cf579068b19a211a845a5f55676dd335209ec91b3783845d0ed5e72f4fa1fcd3d39cc7f878c82c3628302b05639fccf006b4b956127e169fb9b469e7bf3b3a9
+  languageName: node
+  linkType: hard
+
+"aws-cdk@npm:^2.1112.0":
+  version: 2.1112.0
+  resolution: "aws-cdk@npm:2.1112.0"
+  bin:
+    cdk: bin/cdk
+  checksum: 10c0/82eb0c205f6043063b0290625839a20c2683b1b645da02427834669461e46a5aa6517d6b63da3cf984ba032ccc02c4e06b189d7ec3bb3f34e116b433cf74c0cb
   languageName: node
   linkType: hard
 
@@ -8179,8 +8188,8 @@ __metadata:
     "@types/source-map-support": "npm:^0.5.10"
     "@typescript-eslint/eslint-plugin": "npm:^8.18.1"
     "@typescript-eslint/parser": "npm:^8.18.1"
-    aws-cdk: "npm:^2.232.1"
-    aws-cdk-lib: "npm:^2.232.1"
+    aws-cdk: "npm:^2.1112.0"
+    aws-cdk-lib: "npm:^2.244.0"
     aws-sdk-client-mock: "npm:^4.1.0"
     aws-sdk-client-mock-jest: "npm:^4.1.0"
     babel-jest: "npm:^29.7.0"
