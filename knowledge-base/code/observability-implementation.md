@@ -1,116 +1,177 @@
-# Observability Implementation — Prometheus, Grafana, CloudWatch, Loki, Tempo
+# Observability Implementation — Prometheus, Grafana, CloudWatch, Loki, Tempo, Alloy
 
 **Project:** cdk-monitoring
-**Last Updated:** 2026-03-22
+**Last Updated:** 2026-03-23
 
 ## Architecture
 
-Observability runs on a dedicated monitoring worker node (t3.medium Spot) with Kubernetes node label `workload=monitoring`. Workloads are placed via node affinity in Helm values.
+Observability runs on a dedicated monitoring worker node (t3.medium Spot in development, t3.small Spot in staging/production) with Kubernetes node label `workload=monitoring`. Workloads are placed via `nodeSelector` in Helm values. DaemonSets (node-exporter, Promtail) run on all nodes.
 
-The monitoring stack includes:
-- **Prometheus Operator** — metrics collection and alerting
-- **Grafana** — dashboards and visualisation
-- **Loki** — log aggregation (replacing EFK stack)
-- **Tempo** — distributed tracing (OTLP gRPC)
-- **Node Exporter** — host-level metrics
-- **CloudWatch** — pre-deployment infrastructure dashboards
+The monitoring stack includes 11 services deployed via a **custom Helm chart** (`kubernetes-app/platform/charts/monitoring/chart/`), managed by ArgoCD:
+
+- **Prometheus** — metrics collection (native `scrape_configs`, not Prometheus Operator)
+- **Grafana** — dashboards (13 dashboards), alerting (11 rules), and federated datasources (6 sources)
+- **Loki** — log aggregation (TSDB store, v13 schema, 7d retention in dev)
+- **Tempo** — distributed tracing with metrics generator (span-metrics → Prometheus remote write)
+- **Alloy** — Grafana Faro collector for browser Real User Monitoring (RUM)
+- **Promtail** — DaemonSet log shipper (pushes pod logs to Loki)
+- **Node Exporter** — DaemonSet host-level metrics
+- **kube-state-metrics** — Kubernetes object state metrics
+- **GitHub Actions Exporter** — CI/CD pipeline metrics
+- **Steampipe** — AWS cloud inventory via SQL (PostgreSQL datasource in Grafana)
+- **CloudWatch** — pre-deployment infrastructure dashboards (eu-west-1 + us-east-1)
+
+## Custom Helm Chart (Not kube-prometheus-stack)
+
+The stack uses a custom Helm chart, not the `kube-prometheus-stack`. Templates are organised into service-isolated subdirectories:
+
+```
+chart/templates/
+├── _helpers.tpl              # Cross-cutting Helm helpers
+├── network-policy.yaml       # Namespace ingress guard
+├── resource-quota.yaml       # Budget enforcement
+├── alloy/                    # Faro collector
+├── grafana/                  # 8 files (deployment, alerting, dashboards, ingress, configmaps)
+├── loki/                     # Log aggregation
+├── prometheus/               # Metrics engine + RBAC
+├── tempo/                    # Distributed tracing
+├── promtail/                 # Log shipper DaemonSet
+├── node-exporter/            # Host metrics DaemonSet
+├── kube-state-metrics/       # Cluster state metrics
+├── github-actions-exporter/  # CI/CD pipeline metrics
+├── steampipe/                # AWS cloud inventory SQL
+└── traefik/                  # Ingress configuration
+```
 
 ## Prometheus
 
-Deployed via the kube-prometheus-stack Helm chart through ArgoCD (`kubernetes-app/platform/argocd-apps/monitoring.yaml`).
+Prometheus is deployed as a single-replica Deployment with native `scrape_configs` in a ConfigMap — not Prometheus Operator, not ServiceMonitor CRDs.
 
-Prometheus scrapes targets via ServiceMonitor CRDs:
-- kubelet (port 10250)
-- kube-state-metrics
-- Node Exporter (port 9101)
-- Traefik metrics (port 9100)
-- CoreDNS
-- Application pods with `prometheus.io/scrape: "true"` annotations
+12 scrape jobs covering the full cluster surface:
 
-Monitoring SG rules enable cross-node scraping:
-- TCP 9090 from VPC CIDR — Prometheus web UI / API
-- TCP 9100 from VPC CIDR + Pod CIDR — Node Exporter metrics
-- TCP 30100 from VPC CIDR — Loki push API (NodePort)
-- TCP 30417 from VPC CIDR — Tempo OTLP gRPC (NodePort)
+| Job | Target | Discovery |
+|---|---|---|
+| `prometheus` | Self-scrape | Static |
+| `kubernetes-nodes` | Kubelet | K8s SD (node role) |
+| `kubernetes-cadvisor` | Container metrics | K8s SD (node role) |
+| `kubernetes-service-endpoints` | Annotated services | K8s SD (endpoints) |
+| `node-exporter` | Host metrics | K8s SD (endpoints) |
+| `kube-state-metrics` | Cluster state | Static |
+| `grafana` | Grafana internal | Static |
+| `loki` | Loki internal | Static |
+| `tempo` | Tempo internal | Static |
+| `github-actions-exporter` | CI/CD metrics | Static |
+| `traefik` | Ingress controller | K8s SD (pod role) |
+| `nextjs-app` | Application metrics | Static |
+| `alloy` | Faro collector | Static |
 
-## Grafana
+Configuration: 15d retention, 30s scrape interval, ClusterRole RBAC for cross-namespace discovery.
 
-Grafana is deployed as part of the kube-prometheus-stack with pre-configured dashboards:
+## Tempo — Distributed Tracing with Metrics Generator
 
-- **CloudWatch Edge dashboard** (`kubernetes-app/platform/charts/monitoring/chart/dashboards/cloudwatch-edge.json`) — CloudFront request counts, error rates, cache hit ratios
-- **Kubernetes cluster dashboards** — node resource usage, pod status, namespace quotas
-- **Application dashboards** — request latency, error rates per service
+Tempo receives OTLP gRPC/HTTP traces. Key configuration:
 
-Grafana is accessible at `ops.nelsonlamounier.com/grafana` via Traefik ingress.
+- **Metrics generator** enabled: `span-metrics`, `service-graphs`, `local-blocks`
+- **Remote write** to Prometheus with `send_exemplars: true` — creates Metrics → Traces bridge
+- **Block retention**: 72h, max 5MB per trace, 2000 max live traces
+- **Storage**: local-path PVC (10Gi dev)
+
+## Alloy — Faro RUM Collector
+
+Alloy bridges browser telemetry into the backend:
+
+1. **Faro Receiver** (port 12347) — accepts Faro SDK payloads
+2. **Loki Writer** — forwards client logs (JS errors, Web Vitals)
+3. **OTLP Exporter** — forwards client traces to Tempo via gRPC
+4. **Prometheus Exporter** — self-monitoring metrics
+
+Exposed at `/faro` via Traefik IngressRoute with `StripPrefix` middleware.
+
+## Grafana — Federated Datasources
+
+6 datasources configured:
+
+| Datasource | Type | Purpose |
+|---|---|---|
+| Prometheus | Default | Cluster metrics, span-derived RED metrics |
+| Loki | Logs | Pod logs + client-side Faro logs |
+| Tempo | Traces | Distributed traces with service graph |
+| CloudWatch (eu-west-1) | Cloud | Lambda, SSM, EC2, VPC Flow Logs |
+| CloudWatch Edge (us-east-1) | Cloud | CloudFront request counts, error rates |
+| Steampipe | PostgreSQL | Live AWS resource inventory via SQL |
+
+Three-pillar cross-linking:
+- **Loki → Tempo**: `derivedFields` regex links log lines to trace IDs
+- **Tempo → Loki**: `tracesToLogs` configuration links traces to associated logs
+- **Tempo → Prometheus**: `serviceMap` connects service graph to metric queries
+
+13 dashboards loaded via external JSON dashboard pattern (sidecar with `grafana_dashboard: "1"` label).
+
+## Alerting — Grafana Unified Alerting to SNS
+
+11 alert rules across 3 groups, backed by an SNS contact point (KMS-encrypted):
+
+- **Cluster Health**: Node Down (2m), High CPU (5m), High Memory (5m), Pod CrashLooping, Pod Not Ready (5m)
+- **Application Health**: High Error Rate 5xx (5m), High Latency P95 >2s (5m)
+- **Storage & Tracing**: Disk Space Low >80% (5m), Disk Space Critical >90% (2m), DynamoDB Error Rate (span-metric), Span Ingestion Stopped (10m)
+
+SNS topic ARN is injected via ArgoCD Helm parameter override from SSM.
+
+## Ingress — ClusterIP + Traefik IngressRoutes (Not NodePorts)
+
+All monitoring services use standard ClusterIP services with Traefik IngressRoutes:
+
+- Grafana at `/grafana` (native `GF_SERVER_ROOT_URL`)
+- Prometheus at `/prometheus` (native `--web.external-url`)
+- Alloy Faro at `/faro` (with `StripPrefix` middleware)
+
+## NetworkPolicy and ResourceQuota
+
+**NetworkPolicy** allows:
+- Intra-namespace: all pods communicate freely
+- Cross-namespace: Loki (3100), Tempo OTLP (4317, 4318), node-exporter (9100)
+- External via Traefik: Grafana (3000), Prometheus (9090), Alloy (12347) — `ipBlock: 0.0.0.0/0` due to `hostNetwork`
+
+**ResourceQuota** (development): 1.5 CPU requests / 2Gi memory requests / 3 CPU limits / 4Gi memory limits / 6 PVCs.
 
 ## CloudWatch
 
 ### Pre-Deployment Dashboard
 
-The `KubernetesObservabilityStack` creates a CloudWatch dashboard (`infra/lib/constructs/observability/cloudwatch-dashboard.ts`) that monitors infrastructure health before workloads are deployed:
+The `KubernetesObservabilityStack` creates a CloudWatch dashboard monitoring infrastructure health before workloads are deployed:
 
 - EC2 instance CPU, memory, disk utilisation
 - ASG desired vs running instances
 - NLB healthy host count and connection metrics
 - EBS volume read/write IOPS and throughput
-- Lambda invocation counts and error rates (EIP failover, bootstrap router)
-
-### CloudWatch Logs
-
-All Lambda functions and EC2 instances ship logs to CloudWatch Log Groups:
-- KMS-encrypted with the cluster KMS key
-- Retention: 1 week (development), 3 months (production)
-- Log groups created explicitly in CDK (not auto-created by Lambda runtime)
+- Lambda invocation counts and error rates
 
 ### Bedrock Observability
 
-The `BedrockObservabilityConstruct` (`infra/lib/constructs/observability/bedrock-observability.ts`) creates:
+The `BedrockObservabilityConstruct` creates:
 - CloudWatch dashboard for Bedrock model invocations
 - CloudTrail data events for model invocation logging
 - Metrics: invocation count, latency, token usage, throttling
 
-## Loki — Log Aggregation
+## Real Challenges Encountered
 
-Loki is deployed via ArgoCD Helm chart. Application pods ship logs to Loki via the Loki push API on NodePort 30100.
-
-## Tempo — Distributed Tracing
-
-Tempo receives OTLP gRPC traces on NodePort 30417. Applications instrument with OpenTelemetry SDKs and ship traces to Tempo for visualisation in Grafana.
-
-## Troubleshooting Guides
-
-Operational troubleshooting documentation:
-- `docs/kubernetes/monitoring-troubleshooting-guide.md` — Prometheus target down, Grafana dashboards not loading
-- `docs/kubernetes/prometheus-targets-troubleshooting.md` — ServiceMonitor not scraping, target endpoints missing
-- `docs/cloudwatch-steampipe-data-paths.md` — CloudWatch metrics data path analysis
-
-## Decision Reasoning
-
-1. **K8s-native observability over SaaS** — Prometheus + Grafana + Loki + Tempo run inside the cluster, not as SaaS subscriptions (Datadog, New Relic). This eliminates per-host licensing costs (~$15/host/month) and keeps all telemetry data within the AWS account. The trade-off is operational overhead for maintaining the monitoring stack.
-
-2. **Dedicated monitoring node** — Observability workloads (Prometheus, Grafana, Loki, Tempo) run on a dedicated `t3.medium` node with `workload=monitoring` taint. This prevents monitoring pods from competing with application pods for resources. Prometheus in particular has unpredictable memory usage (grows with number of time series).
-
-3. **CloudWatch for pre-deployment validation** — CloudWatch dashboards monitor EC2/NLB/Lambda health before Kubernetes workloads are deployed. This provides visibility during the bootstrap window when Prometheus doesn't exist yet.
-
-4. **NodePort for cross-stack log/trace shipping** — Loki (30100) and Tempo (30417) use NodePorts instead of ClusterIP. This allows the CloudWatch agent and non-K8s components to push data directly to the monitoring node without needing Kubernetes DNS resolution.
-
-## Challenges Encountered
-
-- **Prometheus target discovery** — ServiceMonitor CRDs weren't finding targets because the Prometheus Operator was deployed before the monitored services. Solved by adding ArgoCD sync-wave ordering (monitoring at wave 3, after workloads at wave 5).
-- **Grafana dashboard ConfigMap size** — Complex dashboards (CloudWatch edge, K8s cluster) exceeded the 1MB ConfigMap limit. Solved by splitting into separate ConfigMaps per dashboard and using Grafana's dashboard provider for dynamic loading.
-- **Loki log volume** — Loki ingested all pod logs by default, consuming excessive storage. Configured log retention policies and namespace-based filtering to only ingest logs from non-system namespaces.
+- **RWO PVC deadlock** — `RollingUpdate` strategy creates new pod before terminating old, but RWO PVC can't be mounted by both. Fix: `Recreate` strategy with explicit `rollingUpdate: null`.
+- **Loki compactor validation** — Enabling `retention_enabled: true` fails with `CONFIG ERROR` if `delete_request_store` isn't defined. Fix: add `delete_request_store: filesystem`.
+- **Grafana SNS schema mismatch** — Error says `topicArn` (camelCase), docs say `sns_topic_arn`, actual provisioning requires `topic_arn` (snake_case). Fix: API Discovery Pattern via `GET /api/v1/provisioning/contact-points`.
 
 ## Transferable Skills Demonstrated
 
-- **Full-stack observability design** — implementing metrics (Prometheus), logs (Loki), traces (Tempo), and dashboards (Grafana) in a single, self-hosted stack. This is the same LGTM (Loki, Grafana, Tempo, Mimir) stack pattern adopted by organisations standardising on open-source observability.
-- **Cost-conscious monitoring** — avoiding SaaS vendor lock-in by self-hosting observability at a fraction of the cost. Applicable to any team evaluating build-vs-buy decisions for monitoring infrastructure.
-- **Multi-layer visibility** — combining CloudWatch (AWS infrastructure) with Prometheus (Kubernetes) for visibility across both the cloud provider and the container orchestrator. This dual-layer approach is standard in production environments.
+- **Full-stack observability design** — implementing metrics (Prometheus), logs (Loki), traces (Tempo), RUM (Faro/Alloy), cloud inventory (Steampipe), and CI/CD metrics (GitHub Actions Exporter) in a single, self-hosted stack.
+- **Span-metric alerting** — DynamoDB error rate and latency alerts derived from Tempo span metrics, not CloudWatch. Demonstrates trace-based alerting patterns.
+- **Cost-conscious monitoring** — avoiding SaaS vendor lock-in by self-hosting at a fraction of the cost. Applicable to build-vs-buy decisions.
+- **Multi-layer visibility** — combining CloudWatch (AWS infrastructure) with Prometheus (Kubernetes) for complementary observability windows.
 
 ## Source Files
 
-- `infra/lib/constructs/observability/cloudwatch-dashboard.ts` — CloudWatch dashboard construct
+- `kubernetes-app/platform/charts/monitoring/chart/` — Custom Helm chart (all 11 services)
+- `kubernetes-app/platform/argocd-apps/monitoring.yaml` — ArgoCD Application
+- `infra/lib/stacks/kubernetes/monitoring-worker-stack.ts` — CDK monitoring node stack
+- `infra/lib/config/kubernetes/configurations.ts` — Monitoring worker config + SG rules
+- `infra/lib/constructs/observability/cloudwatch-dashboard.ts` — CloudWatch dashboard
 - `infra/lib/constructs/observability/bedrock-observability.ts` — Bedrock model monitoring
-- `kubernetes-app/platform/argocd-apps/monitoring.yaml` — ArgoCD App for monitoring stack
-- `kubernetes-app/platform/charts/monitoring/chart/dashboards/cloudwatch-edge.json` — CloudFront dashboard
-- `infra/lib/config/kubernetes/configurations.ts` — Monitoring SG rules (ports 9090, 9100, 30100, 30417)
-- `docs/kubernetes/monitoring-troubleshooting-guide.md` — Operational troubleshooting
+- `infra/scripts/cd/deploy-monitoring-secrets.ts` — CI/CD secrets deployment pipeline
