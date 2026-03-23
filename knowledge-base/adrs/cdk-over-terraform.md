@@ -48,6 +48,12 @@ Key implementation files:
 - **Steeper learning curve** — CDK's construct model and jsii type system add complexity beyond raw CFn templates
 - **Synth time** — Full synthesis of 12 K8s stacks takes ~15 seconds; Terraform plan is typically faster
 
+## Transferable Skills Demonstrated
+
+- **Type-safe Infrastructure as Code** — using TypeScript with `strict: true` across 30+ CloudFormation stacks catches misconfigurations at compile time, not deploy time. This discipline transfers directly to any CDK, Pulumi, or CDKTF environment.
+- **Reusable construct library** — building shared constructs (`SecurityGroupConstruct`, `LaunchTemplateConstruct`, `SsmParameterStoreConstruct`) demonstrates software engineering practices applied to infrastructure code. The same pattern is used by platform teams to standardise resource creation across development squads.
+- **Policy-as-code compliance** — integrating CDK-nag AwsSolutions checks into the synthesis step makes security compliance automatic, not afterthought. Applicable to any team needing continuous compliance without a separate policy pipeline.
+
 ---
 
 *Evidence files listed above are real paths in the cdk-monitoring repository.*

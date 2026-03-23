@@ -52,6 +52,12 @@ Key implementation files:
 - **Cold start latency** — the Router Lambda adds ~500ms cold start on first invocation (acceptable for bootstrap)
 - **Express workflow limits** — 5-minute execution limit for Express; switched to Standard for the 15-minute bootstrap timeout
 
+## Transferable Skills Demonstrated
+
+- **Event-driven orchestration** — designing EventBridge → Step Functions → SSM Automation chains for automated instance bootstrap demonstrates serverless workflow patterns used by platform teams for any multi-step operational process.
+- **Self-healing infrastructure** — ASG replacement → automatic bootstrap → drift enforcement creates a self-healing pipeline where instance failures require zero manual intervention. This is the same reliability pattern used by SRE teams aiming for reduced operational toil.
+- **Declarative workflow design** — expressing retry logic, backoff policies, and conditional branching in the state machine definition (not Lambda code) separates orchestration concerns from business logic. Applicable to any team building complex operational workflows.
+
 ---
 
 *Evidence files listed above are real paths in the cdk-monitoring repository.*

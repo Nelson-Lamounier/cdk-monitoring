@@ -52,6 +52,12 @@ Wave 5: workloads (nextjs, golden-path-service)
 - **CRD complexity** — ArgoCD's Application CRD adds another abstraction layer that must be understood and maintained
 - **No native Helm controller** — ArgoCD renders Helm charts at sync time rather than using native Helm releases, which can complicate `helm list` debugging
 
+## Transferable Skills Demonstrated
+
+- **GitOps orchestration** — designing sync-wave dependency ordering (cert-manager → Traefik → monitoring → workloads) demonstrates systems thinking about deployment sequencing. This pattern is used by platform teams managing complex multi-service deployments.
+- **Automated CD loop** — ECR → Image Updater → Git commit → ArgoCD sync creates a fully automated deployment pipeline from container build to production. Applicable to any team implementing continuous delivery without manual promotion gates.
+- **Operational visibility** — integrating ArgoCD UI, sync verification scripts, and notification channels (argocd-notifications) provides multi-layer deployment observability. This reduces MTTR for deployment failures across the entire stack.
+
 ---
 
 *Evidence files listed above are real paths in the cdk-monitoring repository.*

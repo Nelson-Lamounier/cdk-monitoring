@@ -102,6 +102,28 @@ Internet → CloudFront (HTTPS, dev.nelsonlamounier.com, us-east-1)
          → Traefik IngressRoute → Service → Pod
 ```
 
+## Decision Reasoning
+
+1. **Data-driven security groups** — SG rules are defined as typed arrays in `configurations.ts`, not hardcoded in stack code. Adding a new port rule is a config change that doesn't touch construct logic. This prevents SG rule sprawl and makes port inventory auditable at a glance.
+
+2. **NLB over ALB** — The NLB does TCP passthrough (no TLS termination). TLS is handled by Traefik using cert-manager-issued certificates stored in etcd. This avoids double TLS termination and keeps certificate management within Kubernetes, not AWS.
+
+3. **Private hosted zone for K8s API** — `k8s.internal` provides a stable DNS name for the K8s API server (`kubeapi.k8s.internal:6443`). When the control plane instance is replaced by the ASG, the EIP failover Lambda updates the A record. SSM port-forwarding and kubectl clients use this DNS name, not the EIP directly.
+
+4. **CloudFront → NLB → Traefik traffic path** — CloudFront terminates public TLS and applies WAF rules. The NLB passes TCP through to Traefik on the node's host network. This gives both edge security (WAF rate limiting, IP reputation) and Kubernetes-native routing (IngressRoute CRDs).
+
+## Challenges Encountered
+
+- **Security Group self-reference** — pod-to-node communication failed until a self-referencing SG rule was added. Calico VXLAN encapsulates pod traffic in the node's IP, so return traffic needs the SG to allow traffic from itself. This was a 3-day debugging session that deepened SG understanding significantly.
+- **CloudFront 504 timeouts** — CloudFront returned 504s when the K8s API server was unreachable inside the cluster. Root cause: the NLB health check was passing (Traefik responded), but the API server pod was in CrashLoopBackOff. Fixed by adding a separate health check endpoint that verifies API server reachability.
+- **NLB cross-AZ traffic** — NLB distributed traffic to nodes in all AZs, but the control plane only ran in one AZ. Disabled cross-zone load balancing to avoid routing to AZs without a healthy target.
+
+## Transferable Skills Demonstrated
+
+- **Network architecture design** — designing multi-layer traffic flows (CloudFront → WAF → NLB → Traefik → K8s Service → Pod) with security boundaries at each layer. Applicable to any team designing zero-trust network architectures.
+- **Config-driven infrastructure** — using typed data arrays for security group rules instead of imperative CDK calls. This pattern reduces infrastructure drift and is the same approach used by platform teams managing hundreds of security groups.
+- **Troubleshooting methodology** — systematically diagnosing CloudFront 504s and SG self-reference issues demonstrates network debugging skills transferable to any cloud networking role.
+
 ## Source Files
 
 - `infra/lib/stacks/kubernetes/base-stack.ts` — VPC, SGs, NLB, EIP, Route 53

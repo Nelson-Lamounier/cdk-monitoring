@@ -45,6 +45,12 @@ Key implementation files:
 - **No EKS-native integrations** — no IRSA (using instance profile instead), no managed node groups (using custom ASGs)
 - **Single control plane** — no HA control plane; relies on ASG self-healing (acceptable for dev/portfolio, not for production workloads)
 
+## Transferable Skills Demonstrated
+
+- **Infrastructure automation** — full lifecycle automation (AMI baking → bootstrap → drift enforcement → self-healing) eliminates manual provisioning. This is the same automation pattern used by SRE teams to reduce MTTR and human error in production environments.
+- **Cost-aware architecture** — choosing self-managed K8s at ~$45/month over EKS at ~$118/month demonstrates FinOps thinking before production budgets are at stake. Applicable to any team evaluating managed vs self-managed trade-offs.
+- **Deep Kubernetes operational knowledge** — building the cluster from scratch (kubeadm, etcd, CNI, SG rules) provides foundation-level K8s understanding. This depth transfers to troubleshooting managed clusters (EKS, GKE) where the control plane is abstracted but the same components run underneath.
+
 ---
 
 *Evidence files listed above are real paths in the cdk-monitoring repository.*

@@ -145,6 +145,8 @@ interface TransformResult {
         technicalConfidence: number;
         /** Brief note about what made this draft interesting/challenging */
         processingNote?: string;
+        /** Skills demonstrated for recruiter scan-matching (3–6 tags) */
+        skillsDemonstrated?: string[];
         /** Hero image URL for article cards and social sharing */
         heroImageUrl?: string;
         /** GitHub repository URL for projects with source code (optional — not all articles have repos) */
@@ -394,6 +396,7 @@ async function writeMetadataToDynamoDB(
         // AI fields
         aiSummary: metadata.aiSummary,
         processingNote: metadata.processingNote || '',
+        skillsDemonstrated: metadata.skillsDemonstrated ?? [],
         shotListCount: shotList.length,
 
         // Timestamps
@@ -448,6 +451,7 @@ async function writeMetadataToDynamoDB(
             complexityReason: complexity.reason,
             thinkingBudgetUsed: complexity.budgetTokens,
             shotList,
+            skillsDemonstrated: metadata.skillsDemonstrated ?? [],
         },
     }));
 }

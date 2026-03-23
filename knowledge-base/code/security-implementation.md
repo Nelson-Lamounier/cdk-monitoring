@@ -92,6 +92,28 @@ All EC2 instances are configured with `ssmOnlyAccess: true`. There are no SSH ke
 - Audit logging to CloudWatch
 - Port forwarding for kubectl access to the K8s API (TCP 6443)
 
+## Decision Reasoning
+
+1. **CDK-nag at synth time** — Security compliance is checked during `cdk synth`, not as a post-deployment scan. Any AwsSolutions finding without an explicit suppression blocks the build. This shifts security left — non-compliant stacks cannot be deployed, period.
+
+2. **SSM-only access, no SSH** — Eliminating SSH keys removes an entire class of credential management (key rotation, bastion hosts, port 22 SG rules). SSM Session Manager provides IAM-authenticated access with CloudWatch audit logging — more secure and more auditable.
+
+3. **IMDSv2 hop limit of 2** — The default hop limit of 1 would prevent Kubernetes pods from accessing the instance metadata endpoint (needed for ECR credential provider). Setting it to 2 allows container traffic to reach IMDS while still blocking unauthorised proxy chains.
+
+4. **GuardDuty K8s audit logs disabled** — GuardDuty's Kubernetes protection only works with EKS. Enabling it on a self-managed cluster would generate misleading findings. EBS malware scanning is enabled because it operates at the EC2 level regardless of orchestration platform.
+
+## Challenges Encountered
+
+- **CDK-nag suppression management** — Early iterations had too many broad suppressions. Adopted a rule: every suppression must include a justification string explaining why the finding is acceptable for this specific context. This creates an auditable trail of security decisions.
+- **IMDSv2 and ECR credentials** — The ECR credential provider binary (`ecr-credential-provider`) initially failed because IMDSv2 with hop limit 1 blocked pod-level IMDS access. Debugging required understanding the network path from pod → node → IMDS endpoint — a non-obvious interaction between container networking and instance metadata.
+- **KMS key policy for CloudWatch** — CloudWatch Logs requires the KMS key policy to include `logs.eu-west-1.amazonaws.com` as a principal. Without this, log group creation fails silently (no error, just no logs). CDK-nag flagged the missing encryption, which led to discovering the key policy requirement.
+
+## Transferable Skills Demonstrated
+
+- **Security-first infrastructure** — implementing multi-layer security (IAM least-privilege, GuardDuty, KMS encryption, CDK-nag, NetworkPolicies, IMDSv2, SSM-only access) as part of the infrastructure code, not as a bolt-on. This demonstrates the "security as code" pattern used by organisations with strict compliance requirements.
+- **Policy-as-code compliance** — using CDK-nag AwsSolutions pack to enforce compliance at build time. Applicable to any team needing continuous compliance validation (SOC 2, PCI-DSS, HIPAA) without a separate scanning pipeline.
+- **Zero-trust access model** — SSM-only access (no SSH keys, no bastion hosts, no port 22) demonstrates modern access patterns. Transferable to any team adopting zero-trust principles for infrastructure access.
+
 ## Source Files
 
 - `infra/lib/stacks/shared/security-baseline-stack.ts` — GuardDuty, CloudTrail

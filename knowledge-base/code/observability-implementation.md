@@ -84,6 +84,28 @@ Operational troubleshooting documentation:
 - `docs/kubernetes/prometheus-targets-troubleshooting.md` — ServiceMonitor not scraping, target endpoints missing
 - `docs/cloudwatch-steampipe-data-paths.md` — CloudWatch metrics data path analysis
 
+## Decision Reasoning
+
+1. **K8s-native observability over SaaS** — Prometheus + Grafana + Loki + Tempo run inside the cluster, not as SaaS subscriptions (Datadog, New Relic). This eliminates per-host licensing costs (~$15/host/month) and keeps all telemetry data within the AWS account. The trade-off is operational overhead for maintaining the monitoring stack.
+
+2. **Dedicated monitoring node** — Observability workloads (Prometheus, Grafana, Loki, Tempo) run on a dedicated `t3.medium` node with `workload=monitoring` taint. This prevents monitoring pods from competing with application pods for resources. Prometheus in particular has unpredictable memory usage (grows with number of time series).
+
+3. **CloudWatch for pre-deployment validation** — CloudWatch dashboards monitor EC2/NLB/Lambda health before Kubernetes workloads are deployed. This provides visibility during the bootstrap window when Prometheus doesn't exist yet.
+
+4. **NodePort for cross-stack log/trace shipping** — Loki (30100) and Tempo (30417) use NodePorts instead of ClusterIP. This allows the CloudWatch agent and non-K8s components to push data directly to the monitoring node without needing Kubernetes DNS resolution.
+
+## Challenges Encountered
+
+- **Prometheus target discovery** — ServiceMonitor CRDs weren't finding targets because the Prometheus Operator was deployed before the monitored services. Solved by adding ArgoCD sync-wave ordering (monitoring at wave 3, after workloads at wave 5).
+- **Grafana dashboard ConfigMap size** — Complex dashboards (CloudWatch edge, K8s cluster) exceeded the 1MB ConfigMap limit. Solved by splitting into separate ConfigMaps per dashboard and using Grafana's dashboard provider for dynamic loading.
+- **Loki log volume** — Loki ingested all pod logs by default, consuming excessive storage. Configured log retention policies and namespace-based filtering to only ingest logs from non-system namespaces.
+
+## Transferable Skills Demonstrated
+
+- **Full-stack observability design** — implementing metrics (Prometheus), logs (Loki), traces (Tempo), and dashboards (Grafana) in a single, self-hosted stack. This is the same LGTM (Loki, Grafana, Tempo, Mimir) stack pattern adopted by organisations standardising on open-source observability.
+- **Cost-conscious monitoring** — avoiding SaaS vendor lock-in by self-hosting observability at a fraction of the cost. Applicable to any team evaluating build-vs-buy decisions for monitoring infrastructure.
+- **Multi-layer visibility** — combining CloudWatch (AWS infrastructure) with Prometheus (Kubernetes) for visibility across both the cloud provider and the container orchestrator. This dual-layer approach is standard in production environments.
+
 ## Source Files
 
 - `infra/lib/constructs/observability/cloudwatch-dashboard.ts` — CloudWatch dashboard construct
