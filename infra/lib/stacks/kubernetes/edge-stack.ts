@@ -8,10 +8,10 @@
  * ## Traffic Flow
  * ```
  * User → CloudFront (HTTPS) → Elastic IP (HTTP) → Traefik → Next.js pod
- *        └── Certificate: dev.nelsonlamounier.com
+ *        └── Certificate: nelsonlamounier.com
  *
- * NOTE: CloudFront→EIP uses HTTP to avoid SSL hostname mismatch.
- *       Traefik's self-signed cert doesn't match our domain certificate.
+ * NOTE: CloudFront→EIP uses HTTP because Traefik's Let's Encrypt cert
+ *       covers ops.nelsonlamounier.com only, not the main domain.
  * ```
  *
  * ## Resources Created
@@ -376,7 +376,9 @@ export class KubernetesEdgeStack extends cdk.Stack {
         const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(staticAssetsBucket);
 
         // EIP origin — Traefik Ingress on the Kubernetes node
-        // Uses HTTP_ONLY since Traefik's self-signed cert doesn't match our domain
+        // Uses HTTP_ONLY because Traefik's Let's Encrypt cert (via cert-manager)
+        // covers ops.nelsonlamounier.com only — not the main domain. CloudFront
+        // would fail the SSL handshake due to hostname mismatch.
         //
         // IMPORTANT: CloudFront rejects raw IP addresses as origin domain names.
         // Convert the EIP to its AWS EC2 public DNS hostname:
@@ -459,6 +461,16 @@ export class KubernetesEdgeStack extends cdk.Stack {
             cookieBehavior: cloudfront.OriginRequestCookieBehavior.none(),
         });
 
+        // Admin/Auth Origin Request Policy — forwards NextAuth.js session cookies
+        // Required for login, session validation, and CSRF protection on admin routes.
+        const adminOriginRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'AdminOriginRequestPolicy', {
+            originRequestPolicyName: `${envName}-${namePrefix}-admin-origin`,
+            comment: 'Forward headers + NextAuth.js session cookies for admin/auth routes',
+            headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(...cfConfig.originRequestHeaders),
+            queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.all(),
+            cookieBehavior: cloudfront.OriginRequestCookieBehavior.allowList(...cfConfig.adminCookies),
+        });
+
         // CloudFront Distribution
         this.distribution = new CloudFrontConstruct(this, 'Distribution', {
             environment: props.targetEnvironment,
@@ -512,6 +524,30 @@ export class KubernetesEdgeStack extends cdk.Stack {
                     allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
                     compress: false,
                     description: 'Next.js API routes (no caching)',
+                },
+                // NextAuth.js callback/session routes — must forward cookies
+                // Placed after /api/* but CloudFront evaluates most-specific path first,
+                // so /api/auth/* takes precedence over /api/* automatically.
+                {
+                    pathPattern: CLOUDFRONT_PATH_PATTERNS.authCallback,
+                    origin: eipOrigin,
+                    cachePolicy: noCachePolicy,
+                    originRequestPolicy: adminOriginRequestPolicy,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    compress: false,
+                    description: 'NextAuth.js auth callbacks (no caching, cookies forwarded)',
+                },
+                // Admin pages — caching disabled, cookies forwarded for session validation
+                {
+                    pathPattern: CLOUDFRONT_PATH_PATTERNS.admin,
+                    origin: eipOrigin,
+                    cachePolicy: noCachePolicy,
+                    originRequestPolicy: adminOriginRequestPolicy,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    compress: true,
+                    description: 'Admin pages (no caching, cookies forwarded for auth)',
                 },
             ],
             errorResponses: CLOUDFRONT_ERROR_RESPONSES.map((err) => ({

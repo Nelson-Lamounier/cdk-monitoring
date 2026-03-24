@@ -408,6 +408,11 @@ export interface CloudFrontConfig {
         readonly api: readonly string[];
     };
     readonly originRequestHeaders: readonly string[];
+    /**
+     * Cookies forwarded to the origin for admin/auth routes.
+     * NextAuth.js v5 uses these cookies for session management.
+     */
+    readonly adminCookies: readonly string[];
 }
 
 /**
@@ -555,6 +560,10 @@ export const CLOUDFRONT_PATH_PATTERNS = {
         public: '/public/*',
     },
     api: '/api/*',
+    /** Admin pages — caching disabled, cookies forwarded */
+    admin: '/admin/*',
+    /** NextAuth.js callback/session routes — caching disabled, cookies forwarded */
+    authCallback: '/api/auth/*',
 } as const;
 
 /**
@@ -643,6 +652,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
             errorResponseTtl: cdk.Duration.seconds(60),
             cacheHeaders: { dynamic: ['Accept', 'Accept-Language'], api: ['Accept', 'Accept-Language', 'Authorization', 'Content-Type'] },
             originRequestHeaders: ['Host', 'CloudFront-Viewer-Country', 'CloudFront-Is-Mobile-Viewer', 'CloudFront-Is-Desktop-Viewer', 'User-Agent'],
+            adminCookies: ['__Secure-authjs.session-token', '__Host-authjs.csrf-token', 'authjs.callback-url'],
         },
         ecsTask: {
             logRetention: logs.RetentionDays.ONE_MONTH,
@@ -732,6 +742,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
             errorResponseTtl: cdk.Duration.seconds(60),
             cacheHeaders: { dynamic: ['Accept', 'Accept-Language'], api: ['Accept', 'Accept-Language', 'Authorization', 'Content-Type'] },
             originRequestHeaders: ['Host', 'CloudFront-Viewer-Country', 'CloudFront-Is-Mobile-Viewer', 'CloudFront-Is-Desktop-Viewer', 'User-Agent'],
+            adminCookies: ['__Secure-authjs.session-token', '__Host-authjs.csrf-token', 'authjs.callback-url'],
         },
         ecsTask: {
             logRetention: logs.RetentionDays.THREE_MONTHS,
@@ -821,6 +832,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
             errorResponseTtl: cdk.Duration.seconds(60),
             cacheHeaders: { dynamic: ['Accept', 'Accept-Language'], api: ['Accept', 'Accept-Language', 'Authorization', 'Content-Type'] },
             originRequestHeaders: ['Host', 'CloudFront-Viewer-Country', 'CloudFront-Is-Mobile-Viewer', 'CloudFront-Is-Desktop-Viewer', 'User-Agent'],
+            adminCookies: ['__Secure-authjs.session-token', '__Host-authjs.csrf-token', 'authjs.callback-url'],
         },
         ecsTask: {
             logRetention: logs.RetentionDays.ONE_YEAR,  // Compliance requirement
