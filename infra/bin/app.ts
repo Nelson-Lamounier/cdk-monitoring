@@ -76,8 +76,10 @@ const { stacks } = factory.createAllStacks(app, {
 // 4. Cross-Cutting Aspects
 // ============================================================================
 
-// Tagging — enforces consistent 6-key kebab-case schema across all resources
-// Applied per-stack so `component` can vary (compute, networking, data, etc.)
+// Infrastructure version — MUST be stable (not a git SHA or timestamp).
+// Changing this value mutates the 'version' tag on launch templates,
+// creating a new LT version that triggers ASG rolling replacement of
+// all EC2 instances. Only bump when intentionally releasing infra changes.
 const INFRA_VERSION = process.env.INFRA_VERSION ?? '1.0.0';
 
 stacks.forEach(stack => {

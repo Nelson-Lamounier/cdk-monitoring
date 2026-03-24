@@ -420,7 +420,6 @@ jobs:
           SES_FROM_EMAIL: ci-validation@placeholder.local
           VERIFICATION_SECRET: ci-placeholder-secret
           ALLOW_IPV4: "203.0.113.0/32"
-          INFRA_VERSION: ${{ github.sha }}
 
 
 
@@ -492,7 +491,6 @@ jobs:
           SES_FROM_EMAIL: ci-validation@placeholder.local
           VERIFICATION_SECRET: ci-placeholder-secret
           ALLOW_IPV4: "203.0.113.0/32"
-          INFRA_VERSION: ${{ github.sha }}
 
       - name: Run IaC Security Scan
         id: checkov
