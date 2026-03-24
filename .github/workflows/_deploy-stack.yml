@@ -139,8 +139,6 @@ env:
   # Node.js version is read from .nvmrc for centralization
   NODE_VERSION: "22" # Fallback - prefer .nvmrc
   CI_IMAGE: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-  # Injected into CDK TaggingAspect as the 'version' tag on all resources
-  INFRA_VERSION: ${{ github.sha }}
   # Force Node 24 for actions that haven't released Node 24-native versions yet
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
