@@ -81,8 +81,7 @@ permissions:
 env:
   NODE_VERSION: "22"
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-  # Injected into CDK TaggingAspect as the 'version' tag on all resources
-  INFRA_VERSION: ${{ github.sha }}
+
 
 jobs:
   # ===========================================================================

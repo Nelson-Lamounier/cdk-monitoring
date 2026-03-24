@@ -158,6 +158,27 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
 
+      - name: Validate KB document quality
+        run: |
+          echo "Validating knowledge-base/ documents..."
+          ERRORS=0
+          for f in $(find knowledge-base/ -name '*.md' ! -name 'README.md' ! -name '.gitkeep'); do
+            SIZE=$(wc -c < "$f" | tr -d ' ')
+            if [ "$SIZE" -lt 500 ]; then
+              echo "::error file=$f::KB document too small (${SIZE} bytes < 500 min). Enrich before syncing."
+              ERRORS=$((ERRORS + 1))
+            fi
+            # Check for unfilled placeholder sections (empty HTML comments in Decision/Consequences)
+            if grep -qP '^\s*<!-- .*(Describe|Fill in|Document|What I gained)' "$f"; then
+              echo "::warning file=$f::Contains unfilled placeholder sections — enrich before publishing."
+            fi
+          done
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::${ERRORS} KB document(s) below minimum size. Aborting sync."
+            exit 1
+          fi
+          echo "All KB documents passed validation."
+
       - name: Sync KB documents to S3
         id: sync
         run: |
@@ -215,17 +236,17 @@ jobs:
         run: |
           SLUG="${{ inputs.article-slug }}"
           BUCKET_NAME="${{ steps.sync.outputs.bucket-name }}"
-          echo "Uploading brief for: ${SLUG}"
+          BRIEF="articles-draft/${SLUG}.md"
 
-          cat > /tmp/${SLUG}.md << 'BRIEF'
-          # ${{ inputs.article-slug }}
+          if [ ! -f "${BRIEF}" ]; then
+            echo "::error::Brief not found: ${BRIEF}"
+            echo "Available briefs:"
+            ls -1 articles-draft/*.md 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
 
-          Write an in-depth technical article about this topic using the
-          Knowledge Base context. Include code snippets, architecture
-          decisions, Mermaid diagrams, and operational insights.
-          BRIEF
-
-          aws s3 cp "/tmp/${SLUG}.md" \
+          echo "Uploading brief: ${BRIEF} ($(wc -c < "${BRIEF}" | tr -d ' ') bytes)"
+          aws s3 cp "${BRIEF}" \
             "s3://${BUCKET_NAME}/drafts/${SLUG}.md"
           echo "✅ Brief uploaded — Lambda should trigger shortly"
 
