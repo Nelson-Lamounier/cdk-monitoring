@@ -838,15 +838,62 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # K8s Manifest Deployment — ArgoCD (GitOps)
+  # Verify Bootstrap Orchestrator — Step Function Health Gate
   #
-  # Application manifests are deployed by ArgoCD running
-  # on the kubeadm node. ArgoCD watches this Git repo and auto-syncs changes
-  # within ~3 minutes. No CI pipeline jobs needed.
+  # When compute stacks deploy and the ASG replaces an EC2 instance,
+  # EventBridge triggers the bootstrap orchestrator Step Function.
+  # This job polls for recent executions and waits for completion,
+  # failing the pipeline if any bootstrap execution fails.
   #
-  # See: kubernetes-app/k8s-bootstrap/system/argocd/ for ArgoCD config and Application CRDs.
-  # SSM Run Command documents are retained as a fallback for secret updates.
+  # If no compute stacks changed (no ASG replacement), the job
+  # succeeds immediately with "no executions found".
   # ===========================================================================
+  verify-bootstrap:
+    name: Verify Bootstrap Orchestrator
+    needs:
+      - setup
+      - deploy-controlplane
+      - deploy-app-worker
+      - deploy-monitoring-worker
+      - deploy-argocd-worker
+    if: >-
+      always()
+      && (
+        needs.deploy-controlplane.result == 'success'
+        || needs.deploy-app-worker.result == 'success'
+        || needs.deploy-monitoring-worker.result == 'success'
+        || needs.deploy-argocd-worker.result == 'success'
+      )
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run Bootstrap Orchestrator Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes/bootstrap-orchestrator $CDK_ENV --verbose
 
   # ===========================================================================
   # Deployment Failure Alert (staging/production only)
@@ -871,6 +918,7 @@ jobs:
         deploy-api,
         deploy-edge,
         deploy-observability,
+        verify-bootstrap,
       ]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -886,6 +934,7 @@ jobs:
         || needs.deploy-api.result == 'failure'
         || needs.deploy-edge.result == 'failure'
         || needs.deploy-observability.result == 'failure'
+        || needs.verify-bootstrap.result == 'failure'
       )
       && inputs.cdk-environment != 'development'
 
@@ -948,6 +997,7 @@ jobs:
       - deploy-api
       - deploy-edge
       - deploy-observability
+      - verify-bootstrap
       - deployment-failure-alert
     runs-on: ubuntu-latest
     timeout-minutes: 5

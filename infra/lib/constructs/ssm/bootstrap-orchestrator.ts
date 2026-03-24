@@ -114,6 +114,25 @@ ROLE_DOC_MAP = {
     "argocd-worker": "bootstrap/worker-doc-name",
 }
 
+def _skip(reason):
+    """Return a full response with all fields the resultSelector expects.
+
+    Step Functions resultSelector crashes with States.Runtime if any
+    JSONPath key is missing. Every return path must include every field
+    so the HasRole choice can route to SkipNonK8s gracefully.
+    """
+    logger.info("Skipping: %s", reason)
+    return {
+        "role": None,
+        "instanceId": "",
+        "asgName": "",
+        "ssmPrefix": "",
+        "docName": "",
+        "s3Bucket": "",
+        "region": "",
+        "reason": reason,
+    }
+
 def handler(event, context):
     """Read ASG tags and return role + SSM metadata for Step Functions."""
     detail = event.get("detail", {})
@@ -121,29 +140,25 @@ def handler(event, context):
     asg_name = detail.get("AutoScalingGroupName", "")
 
     if not instance_id or not asg_name:
-        logger.info("Missing instance or ASG info, skipping")
-        return {"role": None, "reason": "Missing instance or ASG info"}
+        return _skip("Missing instance or ASG info")
 
     logger.info("Instance launched: %s in ASG %s", instance_id, asg_name)
 
     resp = asg_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
     groups = resp.get("AutoScalingGroups", [])
     if not groups:
-        logger.info("ASG %s not found, skipping", asg_name)
-        return {"role": None, "reason": f"ASG {asg_name} not found"}
+        return _skip(f"ASG {asg_name} not found")
 
     tags = {t["Key"]: t["Value"] for t in groups[0].get("Tags", [])}
     role = tags.get("k8s:bootstrap-role")
     ssm_prefix = tags.get("k8s:ssm-prefix")
 
     if not role or not ssm_prefix:
-        logger.info("No k8s tags on ASG %s, skipping", asg_name)
-        return {"role": None, "reason": f"No k8s tags on ASG {asg_name}"}
+        return _skip(f"No k8s tags on ASG {asg_name}")
 
     doc_param = ROLE_DOC_MAP.get(role)
     if not doc_param:
-        logger.warning("Unknown bootstrap role: %s", role)
-        return {"role": None, "reason": f"Unknown role: {role}"}
+        return _skip(f"Unknown role: {role}")
 
     # Resolve the SSM Automation document name + S3 bucket
     doc_name = ssm_client.get_parameter(Name=f"{ssm_prefix}/{doc_param}")["Parameter"]["Value"]
