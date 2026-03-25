@@ -32,10 +32,18 @@
  * ```
  */
 
+import * as path from 'path';
+
+import { NagSuppressions } from 'cdk-nag';
+
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -352,6 +360,10 @@ echo "SSM Automation will be triggered by the CI pipeline"
         // Grant S3 read access for manifest download
         scriptsBucket.grantRead(this.instanceRole);
 
+        // Grant scoped S3 write for etcd DR backups (dr-backups/ prefix only)
+        scriptsBucket.grantPut(this.instanceRole, 'dr-backups/*');
+        scriptsBucket.grantDelete(this.instanceRole, 'dr-backups/*');
+
         // Grant SSM Automation permissions — start/poll/publish execution ID
         this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
             sid: 'SsmAutomationExecution',
@@ -458,6 +470,90 @@ echo "SSM Automation will be triggered by the CI pipeline"
             tier: ssm.ParameterTier.STANDARD,
         });
 
+        // =====================================================================
+        // EBS Detach Lifecycle Lambda + EventBridge Rule
+        //
+        // The ASG lifecycle hook (enableTerminationLifecycleHook) pauses
+        // instance termination and emits an EventBridge event. This Lambda
+        // catches that event, gracefully detaches tagged EBS volumes, waits
+        // for them to reach 'available', then completes the lifecycle action.
+        //
+        // Without this: hook fires → no handler → timeout → force-detach →
+        // new instance finds volume 'in-use' → UPDATE_FAILED.
+        // =====================================================================
+        const ebsDetachLifecycleFn = new lambdaNode.NodejsFunction(this, 'EbsDetachLifecycleFunction', {
+            functionName: `${namePrefix}-ebs-detach-lifecycle`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'ebs-detach', 'index.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.minutes(4), // Must be < lifecycle hook timeout (5 min)
+            logGroup: new logs.LogGroup(this, 'EbsDetachLifecycleLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-ebs-detach-lifecycle`,
+                retention: logs.RetentionDays.TWO_WEEKS,
+                removalPolicy: cdk.RemovalPolicy.DESTROY,
+                encryptionKey: logGroupKmsKey,
+            }),
+            tracing: lambda.Tracing.ACTIVE,
+            description: `Graceful EBS detach on ASG termination for ${namePrefix}`,
+            environment: {
+                VOLUME_TAG_KEY: 'ManagedBy',
+                VOLUME_TAG_VALUE: 'MonitoringStack',
+            },
+            bundling: {
+                minify: true,
+                sourceMap: true,
+                externalModules: ['@aws-sdk/*'],
+            },
+        });
+
+        // Grant EC2 + ASG permissions for EBS detachment and lifecycle completion
+        ebsDetachLifecycleFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'ManageEbsVolumes',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ec2:DescribeVolumes',
+                'ec2:DescribeInstances',
+                'ec2:DetachVolume',
+            ],
+            resources: ['*'],
+        }));
+
+        ebsDetachLifecycleFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'CompleteLifecycleAction',
+            effect: iam.Effect.ALLOW,
+            actions: ['autoscaling:CompleteLifecycleAction'],
+            resources: [`arn:aws:autoscaling:${this.region}:${this.account}:autoScalingGroup:*:autoScalingGroupName/${namePrefix}-asg`],
+        }));
+
+        // EventBridge rule: catch lifecycle hook events for this ASG
+        new events.Rule(this, 'EbsDetachLifecycleRule', {
+            ruleName: `${namePrefix}-ebs-detach-lifecycle`,
+            description: `Trigger EBS detach Lambda on ${namePrefix} ASG termination lifecycle`,
+            eventPattern: {
+                source: ['aws.autoscaling'],
+                detailType: ['EC2 Instance-terminate Lifecycle Action'],
+                detail: {
+                    AutoScalingGroupName: [`${namePrefix}-asg`],
+                },
+            },
+            targets: [new eventsTargets.LambdaFunction(ebsDetachLifecycleFn, {
+                retryAttempts: 2,
+                maxEventAge: cdk.Duration.minutes(5),
+            })],
+        });
+
+        NagSuppressions.addResourceSuppressions(
+            ebsDetachLifecycleFn,
+            [{
+                id: 'AwsSolutions-IAM5',
+                reason: 'EC2 DetachVolume/DescribeVolumes require wildcard — volumes and instances are dynamic (resolved by tag at runtime)',
+            }, {
+                id: 'AwsSolutions-L1',
+                reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
+            }],
+            true,
+        );
 
 
 
@@ -603,17 +699,49 @@ function grantMonitoringPermissions(
 
 
     const k8sEnv = ssmPrefix.split('/').pop() || 'development';
+    // SSM RunCommand CloudWatch Logs — the SSM Agent on the EC2 instance
+    // writes stdout/stderr to these log groups when CloudWatchOutputConfig
+    // is enabled in the SSM Automation documents. The Automation execution
+    // role has its own grant, but the Agent uses the instance profile.
     role.addToPrincipalPolicy(new iam.PolicyStatement({
-        sid: 'SecretsManagerArgoCdWrite',
+        sid: 'SsmRunCommandCloudWatchLogs',
+        effect: iam.Effect.ALLOW,
+        actions: [
+            'logs:CreateLogGroup',
+            'logs:CreateLogStream',
+            'logs:PutLogEvents',
+            'logs:DescribeLogGroups',
+            'logs:DescribeLogStreams',
+        ],
+        resources: [
+            `arn:aws:logs:${region}:${account}:log-group:/ssm${ssmPrefix}/*`,
+            `arn:aws:logs:${region}:${account}:log-group:/ssm${ssmPrefix}/*:*`,
+        ],
+    }));
+
+    // Environment short name for cross-stack secret naming (matches CrossplaneIamConstruct)
+    const envShortMap: Record<string, string> = {
+        development: 'dev',
+        staging: 'stg',
+        production: 'prod',
+    };
+    const envShort = envShortMap[k8sEnv] ?? k8sEnv;
+
+    role.addToPrincipalPolicy(new iam.PolicyStatement({
+        sid: 'SecretsManagerBootstrap',
         effect: iam.Effect.ALLOW,
         actions: [
             'secretsmanager:CreateSecret',
             'secretsmanager:PutSecretValue',
             'secretsmanager:UpdateSecret',
             'secretsmanager:DescribeSecret',
+            'secretsmanager:GetSecretValue',
         ],
         resources: [
+            // ArgoCD CI bot token + bootstrap-created secrets
             `arn:aws:secretsmanager:${region}:${account}:secret:k8s/${k8sEnv}/*`,
+            // Crossplane AWS credentials (read-only — provisioned by CrossplaneIamConstruct)
+            `arn:aws:secretsmanager:${region}:${account}:secret:shared-${envShort}/crossplane/aws-credentials-??????`,
         ],
     }));
 }

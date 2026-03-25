@@ -1,7 +1,7 @@
 # CI/CD & GitOps Pipeline Implementation
 
 **Project:** cdk-monitoring
-**Last Updated:** 2026-03-23
+**Last Updated:** 2026-03-25
 
 ## Architecture
 
@@ -22,7 +22,11 @@ GitHub Actions (infrastructure)                ArgoCD (workloads)
 
 2. **Day-1 orchestration** — `day-1-orchestration.yml` provides full-stack deployment from zero: shared stacks → K8s base → Golden AMI → SSM Automation → Compute (CP + workers) → post-bootstrap config. This is the "big red button" for disaster recovery.
 
-3. **Separate SSM Automation pipeline** — BSM/SSM Automation documents are deployed via `deploy-ssm-automation.yml`, independently from the compute stacks. This means bootstrap scripts can be updated without redeploying EC2 instances — a critical separation for safe operational changes.
+3. **6-phase SSM Automation pipeline** — `_deploy-ssm-automation.yml` implements a phased deployment: Admin IPs → S3 Sync → S3 Verify (integration test) → Trigger SSM → Verify SSM (integration test) → Post-Bootstrap. Each step is labelled with its phase number for clear observability. The S3 verification phase runs `s3-bootstrap-artefacts.integration.test.ts` to validate artefact presence before triggering SSM Automation.
+
+4. **Consolidated secrets deployment** — `_post-bootstrap-config.yml` deploys both Next.js and monitoring secrets via a single `deploy-secrets` job, aligned with the consolidated `k8s-deploy-secrets` SSM Automation document. Eliminates redundant checkout/build/credential steps.
+
+5. **Python test integration** — `ci.yml` includes a `test-k8s-bootstrap` job running the full 135-test Python suite (boot, deploy, system) via `just bootstrap-pytest`. Fully offline with all AWS/K8s calls mocked.
 
 4. **ArgoCD ApplicationSet** — `workload-generator.yaml` uses a Git generator to auto-discover new workloads. Dropping a new ArgoCD Application YAML into `kubernetes-app/workloads/argocd-apps/` is all that's needed to deploy a new service — no CI changes required.
 
@@ -32,13 +36,13 @@ GitHub Actions (infrastructure)                ArgoCD (workloads)
 
 | Workflow | Purpose |
 |---|---|
-| `ci.yml` | Lint, test, synth on every PR |
+| `ci.yml` | Lint, test (TS + Python), synth on every PR |
 | `deploy-kubernetes.yml` | Deploy all 12 K8s stacks |
 | `deploy-bedrock.yml` | Deploy 5 Bedrock AI stacks + sync KB docs |
 | `deploy-shared.yml` | Deploy shared infrastructure (VPC, security, FinOps) |
-| `deploy-ssm-automation.yml` | Deploy SSM docs independently |
+| `deploy-ssm-automation.yml` | 6-phase: Admin IPs → S3 Sync → Verify → Trigger → SSM Verify → Secrets |
 | `deploy-frontend.yml` | Build + push Next.js image to ECR |
-| `deploy-post-bootstrap.yml` | Post-bootstrap K8s configuration |
+| `deploy-post-bootstrap.yml` | Post-bootstrap K8s configuration (single deploy-secrets job) |
 | `day-1-orchestration.yml` | Full-stack deployment from zero |
 | `gitops-k8s.yml` | Verify ArgoCD sync after deployments |
 | `build-ci-image.yml` | Build custom Docker CI image |
@@ -54,11 +58,21 @@ GitHub Actions (infrastructure)                ArgoCD (workloads)
 | Notifications | `argocd-notifications.yaml` | Deployment status notifications |
 | Sync verification | `infra/scripts/cd/verify-argocd-sync.ts` | CI integration test for ArgoCD |
 
+## Integration Tests in Pipeline
+
+| Test | Pipeline Phase | Validates |
+|------|---------------|-----------|
+| `s3-bootstrap-artefacts.integration.test.ts` | Phase 3 (S3 Verify) | Bucket existence, file counts per S3 prefix |
+| `ssm-automation-runtime.integration.test.ts` | Phase 5 (SSM Verify) | Instance targeting, EC2 health, SSM Agent online |
+
+Both tests use the vacuous-pass pattern — assertions pass when resources don't exist yet (Day-0 deployments).
+
 ## Challenges Encountered
 
 - **Sync-wave dependency ordering** — initial ArgoCD deployments failed because cert-manager wasn't ready when Traefik needed TLS certificates. Solved by assigning sync-wave annotations (0-5) to enforce correct deployment ordering.
 - **Custom CI Docker image** — the default GitHub Actions runners didn't have `kubectl`, `helm`, or the AWS CLI v2 pre-installed. Built a custom CI image (`build-ci-image.yml`) to reduce pipeline execution time by 30%.
 - **ArgoCD Redis CrashLoop** — ArgoCD's `secret-init` container failed when the redis-initial-password Secret was missing. Fixed by ensuring the ArgoCD namespace and secrets are provisioned before the ArgoCD Helm install.
+- **SSM document proliferation** — separate SSM Automation documents for Next.js and monitoring secrets caused 4-state Step Functions orchestration. Consolidated into a single `k8s-deploy-secrets` document with 2-step sequence, reducing to 2-state (1 lookup + 1 chain).
 
 ## Transferable Skills Demonstrated
 
@@ -69,7 +83,11 @@ GitHub Actions (infrastructure)                ArgoCD (workloads)
 ## Source Files
 
 - `.github/workflows/` — 21 GitHub Actions workflow files
+- `.github/workflows/_deploy-ssm-automation.yml` — 6-phase SSM deployment workflow
+- `.github/workflows/_post-bootstrap-config.yml` — Consolidated secrets deployment
 - `kubernetes-app/platform/argocd-apps/` — ArgoCD Application manifests
 - `kubernetes-app/workloads/argocd-apps/` — Workload Application manifests
 - `infra/scripts/cd/verify-argocd-sync.ts` — ArgoCD sync verification script
+- `infra/tests/integration/kubernetes/s3-bootstrap-artefacts.integration.test.ts` — S3 artefact verification
+- `infra/tests/integration/kubernetes/ssm-automation-runtime.integration.test.ts` — SSM runtime verification
 - `kubernetes-app/k8s-bootstrap/system/argocd/` — ArgoCD Helm values and ingress

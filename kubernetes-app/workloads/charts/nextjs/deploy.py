@@ -21,22 +21,30 @@ Environment overrides:
 
 from __future__ import annotations
 
-import base64
-import logging
 import os
-import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
-# Third-party imports are loaded lazily in _load_dependencies() so that
-# --dry-run works on dev machines without boto3/kubernetes installed.
-boto3 = None
-ClientError = None
-k8s_client = None
-k8s_config = None
+# Ensure deploy_helpers is importable from the k8s-bootstrap directory.
+# On EC2: /data/k8s-bootstrap/deploy_helpers/
+# Locally: relative to this file's grandparent (kubernetes-app/k8s-bootstrap/)
+_BOOTSTRAP_DIR = os.environ.get(
+    "DEPLOY_HELPERS_PATH",
+    str(Path(__file__).resolve().parents[2] / "k8s-bootstrap"),
+)
+if _BOOTSTRAP_DIR not in sys.path:
+    sys.path.insert(0, _BOOTSTRAP_DIR)
+
+from deploy_helpers.config import DeployConfig
+from deploy_helpers.k8s import ensure_namespace, load_k8s, upsert_secret
+from deploy_helpers.logging import log_info, log_warn
+from deploy_helpers.s3 import sync_from_s3
+from deploy_helpers.ssm import resolve_secrets
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
 # CDK flatName() uses shortEnv() abbreviations for resource prefixes.
 # This map mirrors infra/lib/config/environments.ts → shortEnv().
@@ -46,115 +54,7 @@ SHORT_ENV_MAP: dict[str, str] = {
     "production": "prd",
 }
 
-
-def _load_dependencies() -> None:
-    """Import third-party libraries. Called once from main() before real work."""
-    global boto3, ClientError, k8s_client, k8s_config
-
-    import boto3 as _boto3
-    from botocore.exceptions import ClientError as _ClientError
-    from kubernetes import client as _k8s_client
-    from kubernetes import config as _k8s_config
-
-    boto3 = _boto3
-    ClientError = _ClientError
-    k8s_client = _k8s_client
-    k8s_config = _k8s_config
-
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    stream=sys.stdout,
-)
-log = logging.getLogger("nextjs-deploy")
-
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-@dataclass
-class Config:
-    """Deployment configuration sourced from environment variables."""
-
-    manifests_dir: str = field(
-        default_factory=lambda: os.getenv("MANIFESTS_DIR", "/data/workloads/charts/nextjs")
-    )
-    ssm_prefix: str = field(
-        default_factory=lambda: os.getenv("SSM_PREFIX", "/k8s/development")
-    )
-    aws_region: str = field(
-        default_factory=lambda: os.getenv("AWS_REGION", "eu-west-1")
-    )
-    kubeconfig: str = field(
-        default_factory=lambda: os.getenv("KUBECONFIG", "/etc/kubernetes/admin.conf")
-    )
-    s3_bucket: str = field(
-        default_factory=lambda: os.getenv("S3_BUCKET", "")
-    )
-    s3_key_prefix: str = field(
-        default_factory=lambda: os.getenv("S3_KEY_PREFIX", "k8s")
-    )
-
-    namespace: str = "nextjs-app"
-    dry_run: bool = False
-
-    # Resolved at runtime
-    secrets: dict[str, str] = field(default_factory=dict)
-
-    @property
-    def frontend_ssm_prefix(self) -> str:
-        """Derive frontend SSM prefix: /k8s/development → /nextjs/development."""
-        override = os.getenv("FRONTEND_SSM_PREFIX", "")
-        if override:
-            return override
-        env = self.ssm_prefix.rsplit("/", 1)[-1]
-        return f"/nextjs/{env}"
-
-    def print_banner(self) -> None:
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        log.info("=== Next.js Secret Deployment ===")
-        log.info("Manifests:    %s", self.manifests_dir)
-        log.info("SSM prefix:   %s", self.ssm_prefix)
-        log.info("Frontend SSM: %s", self.frontend_ssm_prefix)
-        log.info("Region:       %s", self.aws_region)
-        log.info("Triggered:    %s", now)
-        log.info("")
-
-
-# ---------------------------------------------------------------------------
-# Step 1: S3 sync (thin CLI wrapper — s3 sync has no boto3 equivalent)
-# ---------------------------------------------------------------------------
-def sync_from_s3(cfg: Config) -> None:
-    """Re-sync manifests directory from S3 when S3_BUCKET is set."""
-    if not cfg.s3_bucket:
-        return
-
-    log.info("=== Step 1: Re-syncing manifests from S3 ===")
-    # Sync to parent of manifests_dir (e.g. /data/k8s/apps/)
-    sync_dir = str(Path(cfg.manifests_dir).parent.parent)
-    src = f"s3://{cfg.s3_bucket}/{cfg.s3_key_prefix}/"
-
-    _run_cmd(
-        ["aws", "s3", "sync", src, f"{sync_dir}/", "--region", cfg.aws_region],
-        check=True,
-    )
-
-    # Make scripts executable
-    for sh in Path(sync_dir).rglob("*.sh"):
-        sh.chmod(sh.stat().st_mode | 0o111)
-
-    log.info("✓ Manifests synced from %s", src)
-    log.info("")
-
-
-# ---------------------------------------------------------------------------
-# Step 2: Resolve secrets from SSM
-# ---------------------------------------------------------------------------
-FRONTEND_SECRET_MAP = {
+FRONTEND_SECRET_MAP: dict[str, str] = {
     "dynamodb-table-name": "DYNAMODB_TABLE_NAME",
     "assets-bucket-name": "ASSETS_BUCKET_NAME",
     "api-gateway-url": "NEXT_PUBLIC_API_URL",
@@ -166,242 +66,214 @@ FRONTEND_SECRET_MAP = {
 }
 
 
-def resolve_ssm_secrets(cfg: Config) -> dict[str, str]:
-    """Fetch secrets from SSM Parameter Store using boto3.
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-    Resolves frontend application secrets from FRONTEND_SSM_PREFIX and
-    the ECR repository URI from SSM_PREFIX.
+@dataclass
+class NextjsConfig(DeployConfig):
+    """Next.js-specific deployment configuration.
 
-    For the DynamoDB table name, falls back to the Bedrock SSM path
-    (/bedrock-{env}/content-table-name) if the legacy nextjs path is
-    not found — the table is now consolidated in AiContentStack.
-
-    Returns a dict of env_var_name → value for all resolved secrets.
+    Extends ``DeployConfig`` with the ``MANIFESTS_DIR`` and
+    ``FRONTEND_SSM_PREFIX`` fields used for nextjs secret resolution.
     """
-    log.info("=== Step 2: Resolving secrets from SSM ===")
 
-    ssm = boto3.client("ssm", region_name=cfg.aws_region)
-    secrets: dict[str, str] = {}
+    manifests_dir: str = field(
+        default_factory=lambda: os.getenv(
+            "MANIFESTS_DIR", "/data/workloads/charts/nextjs"
+        ),
+    )
+    namespace: str = "nextjs-app"
 
-    # Frontend application secrets
-    for param_name, env_var in FRONTEND_SECRET_MAP.items():
-        # Check for environment override
-        existing = os.getenv(env_var, "")
-        if existing and existing != f"${{{env_var}}}":
-            log.info("  ✓ %s: using environment override", env_var)
-            secrets[env_var] = existing
-            continue
+    @property
+    def frontend_ssm_prefix(self) -> str:
+        """Derive frontend SSM prefix: /k8s/development → /nextjs/development."""
+        override = os.getenv("FRONTEND_SSM_PREFIX", "")
+        if override:
+            return override
+        env = self.ssm_prefix.rsplit("/", 1)[-1]
+        return f"/nextjs/{env}"
 
-        ssm_path = f"{cfg.frontend_ssm_prefix}/{param_name}"
-        log.info("  → Resolving %s from SSM: %s", env_var, ssm_path)
+    @property
+    def environment_name(self) -> str:
+        """Extract environment name from ssm_prefix (e.g. 'development')."""
+        return self.ssm_prefix.rsplit("/", 1)[-1]
 
+    @property
+    def short_env(self) -> str:
+        """Short environment abbreviation for CDK resource names."""
+        return SHORT_ENV_MAP.get(self.environment_name, self.environment_name)
+
+
+# ---------------------------------------------------------------------------
+# App-specific: SSM resolution with Bedrock fallbacks
+# ---------------------------------------------------------------------------
+
+def _load_boto3() -> tuple:
+    """Lazily import boto3 and ClientError.
+
+    Returns:
+        Tuple of (boto3_module, ClientError_class).
+    """
+    import boto3 as _boto3
+    from botocore.exceptions import ClientError as _ClientError
+
+    return _boto3, _ClientError
+
+
+def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_cls: type) -> dict[str, str]:
+    """Resolve Next.js application secrets from SSM.
+
+    Uses the generic ``resolve_secrets`` helper for the standard map,
+    then applies app-specific fallback logic:
+
+    1. **DynamoDB table**: Falls back to ``/bedrock-{env}/content-table-name``
+       if the legacy nextjs path is not found.
+    2. **Assets bucket**: Overrides with ``/bedrock-{env}/assets-bucket-name``
+       since article MDX content now lives in the Bedrock data bucket.
+
+    Args:
+        cfg: Next.js deployment configuration.
+        ssm_client: boto3 SSM client instance.
+        client_error_cls: botocore ``ClientError`` class.
+
+    Returns:
+        Dict of env_var_name → value for all resolved secrets.
+    """
+    log_info("=== Resolving secrets from SSM ===")
+
+    secrets = resolve_secrets(
+        ssm_client,
+        cfg.frontend_ssm_prefix,
+        FRONTEND_SECRET_MAP,
+        client_error_cls=client_error_cls,
+    )
+
+    # Fallback: DynamoDB table is now in AiContentStack
+    if "DYNAMODB_TABLE_NAME" not in secrets:
+        bedrock_path = f"/bedrock-{cfg.short_env}/content-table-name"
+        log_info("Trying Bedrock fallback for DynamoDB", ssm_path=bedrock_path)
         try:
-            resp = ssm.get_parameter(Name=ssm_path, WithDecryption=True)
-            value = resp["Parameter"]["Value"]
-            secrets[env_var] = value
-            log.info("  ✓ %s: resolved from SSM", env_var)
-        except ClientError as exc:
-            code = exc.response["Error"]["Code"]
-            if code == "ParameterNotFound":
-                log.warning("  ⚠ %s: not found in SSM (%s)", env_var, ssm_path)
+            resp = ssm_client.get_parameter(Name=bedrock_path, WithDecryption=True)
+            secrets["DYNAMODB_TABLE_NAME"] = resp["Parameter"]["Value"]
+            log_info("Resolved from Bedrock SSM path", env_var="DYNAMODB_TABLE_NAME")
+        except client_error_cls:
+            log_warn("Bedrock fallback also failed", env_var="DYNAMODB_TABLE_NAME")
 
-                # Fallback: DynamoDB table is now in AiContentStack
-                # CDK flatName() abbreviates: development→dev, production→prd
-                # Try /bedrock-{short_env}/content-table-name
-                if env_var == "DYNAMODB_TABLE_NAME":
-                    full_env = cfg.ssm_prefix.rsplit("/", 1)[-1]
-                    short = SHORT_ENV_MAP.get(full_env, full_env)
-                    bedrock_path = f"/bedrock-{short}/content-table-name"
-                    log.info("  → Fallback: trying Bedrock SSM path: %s", bedrock_path)
-                    try:
-                        resp = ssm.get_parameter(Name=bedrock_path, WithDecryption=True)
-                        value = resp["Parameter"]["Value"]
-                        secrets[env_var] = value
-                        log.info("  ✓ %s: resolved from Bedrock SSM path", env_var)
-                    except ClientError as inner_exc:
-                        inner_code = inner_exc.response["Error"]["Code"]
-                        log.warning("  ⚠ %s: Bedrock fallback also failed (%s)", env_var, inner_code)
-            else:
-                log.warning("  ⚠ %s: SSM error (%s)", env_var, code)
-
-    # Post-resolution override: Article MDX content now lives in the Bedrock
-    # data bucket (bedrock-{env}-kb-data), NOT the legacy nextjs-article-assets-{env}
-    # bucket. The legacy bucket and its SSM parameter still exist for potential
-    # future non-article assets (images, uploads), so we override here rather
-    # than deleting the legacy parameter.
+    # Override: Assets bucket now points to Bedrock data bucket
     # TODO: Remove once legacy bucket is decommissioned.
-    full_env = cfg.ssm_prefix.rsplit("/", 1)[-1]
-    short = SHORT_ENV_MAP.get(full_env, full_env)
-    bedrock_assets_path = f"/bedrock-{short}/assets-bucket-name"
+    bedrock_assets_path = f"/bedrock-{cfg.short_env}/assets-bucket-name"
     try:
-        resp = ssm.get_parameter(Name=bedrock_assets_path, WithDecryption=True)
+        resp = ssm_client.get_parameter(Name=bedrock_assets_path, WithDecryption=True)
         bedrock_value = resp["Parameter"]["Value"]
         prev = secrets.get("ASSETS_BUCKET_NAME", "<unset>")
         if prev != bedrock_value:
-            log.info("  → Overriding ASSETS_BUCKET_NAME: %s → %s (Bedrock source of truth)",
-                     prev, bedrock_value)
+            log_info(
+                "Overriding ASSETS_BUCKET_NAME with Bedrock source of truth",
+                previous=prev,
+                new_value=bedrock_value,
+            )
             secrets["ASSETS_BUCKET_NAME"] = bedrock_value
-    except ClientError:
-        log.info("  → No Bedrock assets-bucket-name override found; using resolved value")
+    except client_error_cls:
+        log_info("No Bedrock assets-bucket-name override found; using resolved value")
 
-    log.info("")
     return secrets
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Create/update Kubernetes secrets (pre-Helm)
+# App-specific: K8s secret creation
 # ---------------------------------------------------------------------------
-def create_k8s_secrets(
-    v1: k8s_client.CoreV1Api,
-    cfg: Config,
-) -> None:
-    """Create or update Kubernetes Secrets from resolved SSM values.
 
-    Uses an idempotent upsert pattern: try create, on 409 Conflict → replace.
-    Created BEFORE Helm so the Deployment pods can mount secrets immediately.
+_NEXTJS_SECRET_KEYS = [
+    "DYNAMODB_TABLE_NAME",
+    "ASSETS_BUCKET_NAME",
+    "NEXT_PUBLIC_API_URL",
+    "NEXTAUTH_SECRET",
+    "ADMIN_USERNAME",
+    "ADMIN_PASSWORD",
+    "NEXTAUTH_URL",
+]
+
+
+def create_nextjs_k8s_secrets(v1: object, cfg: NextjsConfig) -> None:
+    """Create or update the nextjs-secrets Kubernetes Secret.
+
+    Args:
+        v1: Kubernetes ``CoreV1Api`` instance.
+        cfg: Next.js deployment configuration with resolved secrets.
     """
-    log.info("=== Step 3: Creating Kubernetes secrets ===")
+    log_info("=== Creating Kubernetes secrets ===")
+    ensure_namespace(v1, cfg.namespace)
 
-    # Ensure namespace exists
-    _ensure_namespace(v1, cfg.namespace)
-
-    secrets = cfg.secrets
     secret_data: dict[str, str] = {}
-
-    for env_var in [
-        "DYNAMODB_TABLE_NAME", "ASSETS_BUCKET_NAME", "NEXT_PUBLIC_API_URL",
-        "NEXTAUTH_SECRET", "ADMIN_USERNAME", "ADMIN_PASSWORD", "NEXTAUTH_URL",
-    ]:
-        value = secrets.get(env_var, "")
+    for key in _NEXTJS_SECRET_KEYS:
+        value = cfg.secrets.get(key, "")
         if value:
-            secret_data[env_var] = value
+            secret_data[key] = value
 
     # AWS_REGION is always needed for SDK calls — inject from config
     secret_data["AWS_REGION"] = cfg.aws_region
 
     if secret_data:
-        _upsert_secret(
-            v1,
-            name="nextjs-secrets",
-            namespace=cfg.namespace,
-            data=secret_data,
-        )
-        log.info("  ✓ nextjs-secrets created/updated (%d keys)", len(secret_data))
+        upsert_secret(v1, "nextjs-secrets", cfg.namespace, secret_data)
+        log_info("nextjs-secrets created/updated", keys=len(secret_data))
     else:
-        log.warning("  ⚠ No secrets resolved — skipping secret creation")
-
-    log.info("")
-
-
-def _ensure_namespace(v1: k8s_client.CoreV1Api, namespace: str) -> None:
-    """Create the namespace if it doesn't exist."""
-    try:
-        v1.read_namespace(name=namespace)
-    except k8s_client.ApiException as exc:
-        if exc.status == 404:
-            v1.create_namespace(
-                body=k8s_client.V1Namespace(
-                    metadata=k8s_client.V1ObjectMeta(name=namespace)
-                )
-            )
-            log.info("  ✓ Namespace '%s' created", namespace)
-        else:
-            raise
-
-
-def _upsert_secret(
-    v1: k8s_client.CoreV1Api,
-    name: str,
-    namespace: str,
-    data: dict[str, str],
-) -> None:
-    """Create or replace a Kubernetes Secret (idempotent)."""
-    encoded = {k: base64.b64encode(v.encode()).decode() for k, v in data.items()}
-    secret = k8s_client.V1Secret(
-        metadata=k8s_client.V1ObjectMeta(name=name, namespace=namespace),
-        type="Opaque",
-        data=encoded,
-    )
-    try:
-        v1.create_namespaced_secret(namespace=namespace, body=secret)
-    except k8s_client.ApiException as exc:
-        if exc.status == 409:
-            v1.replace_namespaced_secret(name=name, namespace=namespace, body=secret)
-        else:
-            raise
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def _run_cmd(
-    cmd: list[str],
-    check: bool = True,
-) -> subprocess.CompletedProcess:
-    """Run a shell command, streaming output to stdout."""
-    log.debug("  $ %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=False, text=True, check=False)
-    if check and result.returncode != 0:
-        log.error("Command failed (exit %d): %s", result.returncode, " ".join(cmd))
-        raise SystemExit(result.returncode)
-    return result
+        log_warn("No secrets resolved — skipping secret creation")
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 def main() -> None:
-    cfg = Config()
+    """Entry point for Next.js secret deployment."""
+    cfg = NextjsConfig.from_env()
 
     # Handle --dry-run flag
     if "--dry-run" in sys.argv:
         cfg.dry_run = True
-        cfg.print_banner()
-        log.info("=== DRY RUN — no changes will be made ===")
-        log.info("  manifests_dir:    %s", cfg.manifests_dir)
-        log.info("  ssm_prefix:       %s", cfg.ssm_prefix)
-        log.info("  frontend_ssm:     %s", cfg.frontend_ssm_prefix)
-        log.info("  aws_region:       %s", cfg.aws_region)
-        log.info("  kubeconfig:       %s", cfg.kubeconfig)
-        log.info("  s3_bucket:        %s", cfg.s3_bucket or "(none)")
-        log.info("  namespace:        %s", cfg.namespace)
+        cfg.print_banner("Next.js Secret Deployment — DRY RUN")
+        log_info("Dry run configuration", **{
+            "manifests_dir": cfg.manifests_dir,
+            "frontend_ssm": cfg.frontend_ssm_prefix,
+            "kubeconfig": cfg.kubeconfig,
+            "s3_bucket": cfg.s3_bucket or "(none)",
+        })
         return
 
-    # Load third-party dependencies (boto3, kubernetes)
-    _load_dependencies()
+    # Load third-party dependencies
+    boto3_mod, client_error_cls = _load_boto3()
 
-    cfg.print_banner()
+    cfg.print_banner("Next.js Secret Deployment")
 
-    # Step 1: S3 sync
-    sync_from_s3(cfg)
+    # Step 1: S3 sync (optional)
+    if cfg.s3_bucket:
+        sync_dir = str(Path(cfg.manifests_dir).parent.parent)
+        sync_from_s3(cfg.s3_bucket, cfg.s3_key_prefix, sync_dir, cfg.aws_region)
 
-    # Load kubeconfig for K8s API calls
-    os.environ["KUBECONFIG"] = cfg.kubeconfig
-    k8s_config.load_kube_config(config_file=cfg.kubeconfig)
-    v1 = k8s_client.CoreV1Api()
+    # Step 2: Load Kubernetes client
+    v1 = load_k8s(cfg.kubeconfig)
 
-    # Step 2: Resolve secrets from SSM
-    cfg.secrets = resolve_ssm_secrets(cfg)
+    # Step 3: Resolve secrets from SSM
+    ssm_client = boto3_mod.client("ssm", region_name=cfg.aws_region)
+    cfg.secrets = resolve_nextjs_secrets(cfg, ssm_client, client_error_cls)
 
-    # Step 3: Create Kubernetes secrets
-    create_k8s_secrets(v1, cfg)
+    # Step 4: Create Kubernetes secrets
+    create_nextjs_k8s_secrets(v1, cfg)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    log.info("")
-    log.info("✓ Next.js secrets deployed successfully (%s)", now)
+    log_info("Next.js secrets deployed successfully")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        log.info("\n✗ Deployment interrupted")
+        log_info("Deployment interrupted")
         sys.exit(130)
     except SystemExit:
         raise
     except Exception as exc:
-        log.error("✗ Deployment failed: %s", exc, exc_info=True)
+        from deploy_helpers.logging import log_error
+
+        log_error("Deployment failed", error=str(exc))
         sys.exit(1)

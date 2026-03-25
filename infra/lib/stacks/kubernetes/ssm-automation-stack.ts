@@ -35,6 +35,7 @@
 import { NagSuppressions } from 'cdk-nag';
 
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -112,16 +113,13 @@ const WORKER_STEPS: AutomationStep[] = [
     },
 ];
 
-const NEXTJS_SECRETS_STEPS: AutomationStep[] = [
+const DEPLOY_SECRETS_STEPS: AutomationStep[] = [
     {
         name: 'deployNextjsSecrets',
         scriptPath: 'app-deploy/nextjs/deploy.py',
         timeoutSeconds: 300,
         description: 'Resolve SSM parameters and create/update nextjs-secrets K8s Secret',
     },
-];
-
-const MONITORING_SECRETS_STEPS: AutomationStep[] = [
     {
         name: 'deployMonitoringSecrets',
         scriptPath: 'app-deploy/monitoring/deploy.py',
@@ -149,14 +147,17 @@ export class K8sSsmAutomationStack extends cdk.Stack {
     /** Unified worker SSM Automation document name (all worker roles) */
     public readonly workerDocName: string;
 
-    /** Next.js secrets SSM Automation document name */
-    public readonly nextjsSecretsDocName: string;
-
-    /** Monitoring secrets SSM Automation document name */
-    public readonly monitoringSecretsDocName: string;
+    /** Consolidated deploy secrets SSM Automation document name (nextjs + monitoring) */
+    public readonly deploySecretsDocName: string;
 
     /** Automation execution role ARN */
     public readonly automationRoleArn: string;
+
+    /** CloudWatch Log Group for SSM bootstrap RunCommand output */
+    public readonly bootstrapLogGroup: logs.LogGroup;
+
+    /** CloudWatch Log Group for SSM deploy RunCommand output */
+    public readonly deployLogGroup: logs.LogGroup;
 
     constructor(scope: Construct, id: string, props: K8sSsmAutomationStackProps) {
         super(scope, id, props);
@@ -266,6 +267,28 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         this.automationRoleArn = automationRole.roleArn;
 
         // =====================================================================
+        // CloudWatch Log Groups — SSM RunCommand Output
+        //
+        // Pre-create log groups so retention and removal policies are enforced.
+        // Without this, the SSM Agent auto-creates groups with infinite retention.
+        // The SSM Agent on the EC2 instance writes RunCommand stdout/stderr here.
+        // =====================================================================
+
+        this.bootstrapLogGroup = new logs.LogGroup(this, 'BootstrapLogGroup', {
+            logGroupName: `/ssm${props.ssmPrefix}/bootstrap`,
+            retention: logs.RetentionDays.TWO_WEEKS,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+        });
+        cleanup.addLogGroup(`/ssm${props.ssmPrefix}/bootstrap`, this.bootstrapLogGroup);
+
+        this.deployLogGroup = new logs.LogGroup(this, 'DeployLogGroup', {
+            logGroupName: `/ssm${props.ssmPrefix}/deploy`,
+            retention: logs.RetentionDays.TWO_WEEKS,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+        });
+        cleanup.addLogGroup(`/ssm${props.ssmPrefix}/deploy`, this.deployLogGroup);
+
+        // =====================================================================
         // Common document props
         // =====================================================================
         const docBaseProps = {
@@ -301,26 +324,17 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         this.workerDocName = workerDoc.documentName;
 
         // =====================================================================
-        // SSM Automation Documents — Deploy (2)
+        // SSM Automation Documents — Deploy (1 — consolidated)
         // =====================================================================
 
-        const nextjsDoc = new SsmAutomationDocument(this, 'NextjsSecretsAutomation', {
-            documentName: `${prefix}-deploy-nextjs-secrets`,
-            description: 'Deploy Next.js K8s secrets — syncs from S3, resolves SSM parameters, creates Secret',
+        const deployDoc = new SsmAutomationDocument(this, 'DeploySecretsAutomation', {
+            documentName: `${prefix}-deploy-secrets`,
+            description: 'Deploy K8s secrets (nextjs + monitoring) — syncs from S3, resolves SSM parameters, creates Secrets',
             documentCategory: 'deploy',
-            steps: NEXTJS_SECRETS_STEPS,
+            steps: DEPLOY_SECRETS_STEPS,
             ...docBaseProps,
         });
-        this.nextjsSecretsDocName = nextjsDoc.documentName;
-
-        const monitoringDoc = new SsmAutomationDocument(this, 'MonitoringSecretsAutomation', {
-            documentName: `${prefix}-deploy-monitoring-secrets`,
-            description: 'Deploy monitoring K8s secrets — syncs from S3, resolves SSM parameters, deploys Helm chart',
-            documentCategory: 'deploy',
-            steps: MONITORING_SECRETS_STEPS,
-            ...docBaseProps,
-        });
-        this.monitoringSecretsDocName = monitoringDoc.documentName;
+        this.deploySecretsDocName = deployDoc.documentName;
 
         // =====================================================================
         // SSM Parameters — Document Discovery
@@ -343,19 +357,12 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         });
         cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/worker-doc-name`, workerDocParam);
 
-        const nextjsDocParam = new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
-            parameterName: `${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`,
-            stringValue: nextjsDoc.documentName,
-            description: 'SSM Automation document name for Next.js secrets deployment',
+        const deployDocParam = new ssm.StringParameter(this, 'DeploySecretsDocNameParam', {
+            parameterName: `${props.ssmPrefix}/deploy/secrets-doc-name`,
+            stringValue: deployDoc.documentName,
+            description: 'SSM Automation document name for consolidated secrets deployment (nextjs + monitoring)',
         });
-        cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`, nextjsDocParam);
-
-        const monDocParam = new ssm.StringParameter(this, 'MonitoringSecretsDocNameParam', {
-            parameterName: `${props.ssmPrefix}/deploy/monitoring-secrets-doc-name`,
-            stringValue: monitoringDoc.documentName,
-            description: 'SSM Automation document name for monitoring secrets deployment',
-        });
-        cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/monitoring-secrets-doc-name`, monDocParam);
+        cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/secrets-doc-name`, deployDocParam);
 
         const roleArnParam = new ssm.StringParameter(this, 'AutomationRoleArnParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/automation-role-arn`,
@@ -363,6 +370,20 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             description: 'IAM role ARN for SSM Automation execution',
         });
         cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/automation-role-arn`, roleArnParam);
+
+        const bootstrapLogGroupParam = new ssm.StringParameter(this, 'BootstrapLogGroupParam', {
+            parameterName: `${props.ssmPrefix}/cloudwatch/ssm-bootstrap-log-group`,
+            stringValue: this.bootstrapLogGroup.logGroupName,
+            description: 'CloudWatch Log Group for SSM RunCommand bootstrap output',
+        });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/cloudwatch/ssm-bootstrap-log-group`, bootstrapLogGroupParam);
+
+        const deployLogGroupParam = new ssm.StringParameter(this, 'DeployLogGroupParam', {
+            parameterName: `${props.ssmPrefix}/cloudwatch/ssm-deploy-log-group`,
+            stringValue: this.deployLogGroup.logGroupName,
+            description: 'CloudWatch Log Group for SSM RunCommand deploy output',
+        });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/cloudwatch/ssm-deploy-log-group`, deployLogGroupParam);
 
         // =====================================================================
         // Step Functions Orchestrator — EventBridge → State Machine → SSM
