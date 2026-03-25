@@ -3,19 +3,16 @@
  * Golden AMI Stack — Post-Deployment Integration Test
  *
  * Runs AFTER the GoldenAmiStack is deployed via CI (_deploy-kubernetes.yml).
- * Calls real AWS APIs to verify that the Golden AMI was built successfully,
- * the AMI exists in the account, and all expected packages are present
- * in the Image Builder build logs.
+ * Calls real AWS APIs to verify AMI properties, security posture, tags,
+ * and stack health.
  *
- * Verification Strategy:
+ * Verification Strategy (property-based — tests the artefact, not the build process):
  *   1. Read the AMI ID from SSM (published by Image Builder)
  *   2. Verify AMI exists and is in 'available' state via EC2 DescribeImages
- *   3. Check AMI tags (KubernetesVersion, Purpose, Component)
- *   4. Fetch Image Builder CloudWatch build logs
- *   5. Scan logs for expected package version strings from the validate phase
- *
- * This replaces the previous golden-ami-observer.ts script with a standard
- * Jest integration test for consistency with other stack verification jobs.
+ *   3. Check AMI properties (architecture, EBS, ENA, virtualisation type)
+ *   4. Validate security posture (private launch permissions, encrypted snapshots)
+ *   5. Verify AMI tags (KubernetesVersion, Purpose, Component)
+ *   6. Confirm CloudFormation stack health and downstream SSM readiness
  *
  * Environment Variables:
  *   CDK_ENV      — Target environment (default: development)
@@ -23,6 +20,9 @@
  *
  * @example CI invocation:
  *   just ci-integration-test kubernetes/golden-ami-stack development
+ *
+ * @example Local invocation:
+ *   just test-golden-ami development
  */
 
 import {
@@ -30,15 +30,12 @@ import {
     DescribeStacksCommand,
 } from '@aws-sdk/client-cloudformation';
 import {
-    CloudWatchLogsClient,
-    DescribeLogGroupsCommand,
-    DescribeLogStreamsCommand,
-    GetLogEventsCommand,
-} from '@aws-sdk/client-cloudwatch-logs';
-import {
     EC2Client,
     DescribeImagesCommand,
+    DescribeImageAttributeCommand,
+    DescribeSnapshotsCommand,
 } from '@aws-sdk/client-ec2';
+import type { Image, BlockDeviceMapping } from '@aws-sdk/client-ec2';
 import {
     SSMClient,
     GetParameterCommand,
@@ -68,26 +65,27 @@ const STACK_NAME = stackId(KUBERNETES_NAMESPACE, STACK_REGISTRY.kubernetes.golde
 /** SSM path where Image Builder stores the AMI ID */
 const AMI_SSM_PATH = CONFIGS.image.amiSsmPath;
 
-/**
- * Expected packages from the Image Builder validate phase.
- * Each pattern matches version output in the build logs.
- */
-const EXPECTED_PACKAGES = [
-    { name: 'Docker', pattern: /docker/i },
-    { name: 'AWS CLI', pattern: /aws-cli/i },
-    { name: 'CloudWatch Agent', pattern: /cloudwatch/i },
-    { name: 'containerd', pattern: /containerd/i },
-    { name: 'runc', pattern: /runc/i },
-    { name: 'crictl', pattern: /crictl/i },
-    { name: 'kubeadm', pattern: /kubeadm/i },
-    { name: 'kubelet', pattern: /kubelet/i },
-    { name: 'kubectl', pattern: /kubectl|gitVersion/i },
-    { name: 'Calico manifests', pattern: /calico\.yaml/i },
-    { name: 'cfn-signal', pattern: /cfn-signal/i },
-    { name: 'Helm', pattern: /helm/i },
-    { name: 'boto3', pattern: /boto3/i },
-    { name: 'ecr-credential-provider', pattern: /ecr-credential-provider/i },
-];
+// =============================================================================
+// Constants
+// =============================================================================
+
+/** Expected AMI architecture */
+const EXPECTED_ARCHITECTURE = 'x86_64';
+
+/** Expected virtualisation type */
+const EXPECTED_VIRTUALISATION_TYPE = 'hvm';
+
+/** Expected root device type */
+const EXPECTED_ROOT_DEVICE_TYPE = 'ebs';
+
+/** Expected root EBS volume type */
+const EXPECTED_VOLUME_TYPE = 'gp3';
+
+/** Minimum root volume size in GB (from config) */
+const MIN_ROOT_VOLUME_SIZE_GB = CONFIGS.compute.rootVolumeSizeGb;
+
+/** Maximum AMI age in days before considered stale */
+const MAX_AMI_AGE_DAYS = 30;
 
 // =============================================================================
 // AWS SDK Clients
@@ -96,74 +94,35 @@ const EXPECTED_PACKAGES = [
 const ssm = new SSMClient({ region: REGION });
 const ec2 = new EC2Client({ region: REGION });
 const cfn = new CloudFormationClient({ region: REGION });
-const logs = new CloudWatchLogsClient({ region: REGION });
 
 // =============================================================================
 // Shared State (populated in beforeAll)
 // =============================================================================
 
 let amiId: string;
-let allLogContent: string;
+let image: Image;
+let rootBlockDevice: BlockDeviceMapping;
+let rootSnapshotId: string;
 
 // =============================================================================
 // Helpers
 // =============================================================================
 
-/** Maximum log streams to inspect per log group */
-const MAX_LOG_STREAMS = 5;
-
-/** Maximum events to fetch per log stream */
-const MAX_EVENTS_PER_STREAM = 200;
-
-/** Fetch all Image Builder CloudWatch log content */
-async function fetchCloudWatchBuildLogs(): Promise<string> {
-    const parts: string[] = [];
-
-    try {
-        const { logGroups } = await logs.send(
-            new DescribeLogGroupsCommand({ logGroupNamePrefix: '/aws/imagebuilder/' }),
-        );
-
-        for (const lg of logGroups ?? []) {
-            if (!lg.logGroupName) continue;
-            try {
-                // Fetch multiple streams — Image Builder creates one per
-                // build phase (build, validate, test). Fetching only the
-                // latest stream misses output from earlier phases.
-                const { logStreams } = await logs.send(
-                    new DescribeLogStreamsCommand({
-                        logGroupName: lg.logGroupName,
-                        orderBy: 'LastEventTime',
-                        descending: true,
-                        limit: MAX_LOG_STREAMS,
-                    }),
-                );
-
-                for (const stream of logStreams ?? []) {
-                    const streamName = stream.logStreamName;
-                    if (!streamName) continue;
-
-                    const { events } = await logs.send(
-                        new GetLogEventsCommand({
-                            logGroupName: lg.logGroupName,
-                            logStreamName: streamName,
-                            limit: MAX_EVENTS_PER_STREAM,
-                        }),
-                    );
-
-                    for (const event of events ?? []) {
-                        if (event.message) parts.push(event.message);
-                    }
-                }
-            } catch {
-                // Skip individual log group errors
-            }
-        }
-    } catch {
-        // CloudWatch logs may not be available
-    }
-
-    return parts.join('\n');
+/**
+ * Safely retrieves a required tag value from the AMI tags.
+ *
+ * @param tags - Array of EC2 tags
+ * @param key - Tag key to search for
+ * @returns The tag object
+ * @throws If the tag is not found
+ */
+function requireTag(
+    tags: Array<{ Key?: string; Value?: string }>,
+    key: string,
+): { Key?: string; Value?: string } {
+    const tag = tags.find(t => t.Key === key);
+    if (!tag) throw new Error(`Missing required AMI tag: ${key}`);
+    return tag;
 }
 
 // =============================================================================
@@ -172,7 +131,7 @@ async function fetchCloudWatchBuildLogs(): Promise<string> {
 
 describe('GoldenAmiStack — Post-Deploy Verification', () => {
     // =========================================================================
-    // Setup — Load AMI ID from SSM + collect build logs
+    // Setup — Load AMI ID from SSM + describe the AMI
     // =========================================================================
     beforeAll(async () => {
         // 1. Resolve AMI ID from SSM
@@ -190,10 +149,31 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
         console.log(`[Pre-Flight] AMI SSM path: ${AMI_SSM_PATH}`);
         console.log(`[Pre-Flight] Expected stack name: ${STACK_NAME}`);
 
-        // 2. Collect build logs from CloudWatch
-        allLogContent = await fetchCloudWatchBuildLogs();
+        // 2. Describe the AMI (shared across all property tests)
+        const { Images } = await ec2.send(
+            new DescribeImagesCommand({ ImageIds: [amiId] }),
+        );
 
-        console.log(`[Pre-Flight] Total log content length: ${allLogContent.length} chars`);
+        expect(Images).toBeDefined();
+        expect(Images!).toHaveLength(1);
+        image = Images![0];
+
+        // 3. Extract root block device mapping
+        const rootMapping = (image.BlockDeviceMappings ?? []).find(
+            bdm => bdm.DeviceName === image.RootDeviceName,
+        );
+
+        if (!rootMapping) {
+            throw new Error(
+                `Root block device not found for device name: ${image.RootDeviceName ?? 'undefined'}`,
+            );
+        }
+        rootBlockDevice = rootMapping;
+        rootSnapshotId = rootBlockDevice.Ebs?.SnapshotId ?? '';
+
+        console.log(`[Pre-Flight] Architecture: ${image.Architecture ?? 'unknown'}`);
+        console.log(`[Pre-Flight] Root device: ${image.RootDeviceName ?? 'unknown'}`);
+        console.log(`[Pre-Flight] Root snapshot: ${rootSnapshotId}`);
     }, 30_000);
 
     // =========================================================================
@@ -222,59 +202,137 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
     });
 
     // =========================================================================
-    // AMI Metadata
+    // AMI Properties — validates the produced artefact's EC2 properties
     // =========================================================================
-    describe('AMI Metadata', () => {
-        let amiState: string;
-        let tags: Array<{ Key?: string; Value?: string }>;
-        let description: string;
+    describe('AMI Properties', () => {
+        it('should be in available state', () => {
+            expect(image.State).toBe('available');
+        });
 
-        // Depends on: amiId populated in top-level beforeAll
-        beforeAll(async () => {
-            const { Images } = await ec2.send(
-                new DescribeImagesCommand({ ImageIds: [amiId] }),
+        it(`should have ${EXPECTED_ARCHITECTURE} architecture`, () => {
+            expect(image.Architecture).toBe(EXPECTED_ARCHITECTURE);
+        });
+
+        it(`should use ${EXPECTED_VIRTUALISATION_TYPE} virtualisation`, () => {
+            expect(image.VirtualizationType).toBe(EXPECTED_VIRTUALISATION_TYPE);
+        });
+
+        it(`should have ${EXPECTED_ROOT_DEVICE_TYPE} root device type`, () => {
+            expect(image.RootDeviceType).toBe(EXPECTED_ROOT_DEVICE_TYPE);
+        });
+
+        it('should have ENA support enabled', () => {
+            expect(image.EnaSupport).toBe(true);
+        });
+
+        it(`should use ${EXPECTED_VOLUME_TYPE} root volume type`, () => {
+            expect(rootBlockDevice.Ebs?.VolumeType).toBe(EXPECTED_VOLUME_TYPE);
+        });
+
+        it(`should have root volume size >= ${MIN_ROOT_VOLUME_SIZE_GB} GB`, () => {
+            expect(rootBlockDevice.Ebs?.VolumeSize).toBeGreaterThanOrEqual(
+                MIN_ROOT_VOLUME_SIZE_GB,
             );
-
-            expect(Images).toBeDefined();
-            expect(Images!).toHaveLength(1);
-
-            const image = Images![0];
-            amiState = image.State ?? '';
-            tags = image.Tags ?? [];
-            description = image.Description ?? '';
         });
 
-        it('should exist and be in available state', () => {
-            expect(amiState).toBe('available');
-        });
-
-        it('should have the KubernetesVersion tag', () => {
-            const k8sTag = tags.find(t => t.Key === 'KubernetesVersion');
-            expect(k8sTag).toBeDefined();
-            expect(k8sTag!.Value).toBe(CONFIGS.cluster.kubernetesVersion);
-        });
-
-        it('should have the Purpose tag set to GoldenAMI', () => {
-            const purposeTag = tags.find(t => t.Key === 'Purpose');
-            expect(purposeTag).toBeDefined();
-            expect(purposeTag!.Value).toBe('GoldenAMI');
-        });
-
-        it('should have a description containing the name prefix and K8s version', () => {
-            expect(description).toContain(CONFIGS.cluster.kubernetesVersion);
+        it('should have a valid root snapshot ID', () => {
+            expect(rootSnapshotId).toMatch(/^snap-[a-f0-9]+$/);
         });
     });
 
     // =========================================================================
-    // Package Verification (log-based)
+    // AMI Security — validates launch permissions and encryption
     // =========================================================================
-    describe('Package Verification (build logs)', () => {
-        it.each(EXPECTED_PACKAGES)(
-            'should have $name verified in build logs',
-            ({ pattern }) => {
-                expect(pattern.test(allLogContent)).toBe(true);
-            },
-        );
+    describe('AMI Security', () => {
+        let isPublic: boolean;
+        let snapshotEncrypted: boolean;
+
+        // Depends on: amiId and rootSnapshotId from top-level beforeAll
+        beforeAll(async () => {
+            // 1. Check launch permissions — AMI should be private
+            const launchPerms = await ec2.send(
+                new DescribeImageAttributeCommand({
+                    ImageId: amiId,
+                    Attribute: 'launchPermission',
+                }),
+            );
+            const perms = launchPerms.LaunchPermissions ?? [];
+            isPublic = perms.some(p => p.Group === 'all');
+
+            // 2. Check root snapshot encryption
+            const { Snapshots } = await ec2.send(
+                new DescribeSnapshotsCommand({
+                    SnapshotIds: [rootSnapshotId],
+                }),
+            );
+
+            expect(Snapshots).toBeDefined();
+            expect(Snapshots!).toHaveLength(1);
+            snapshotEncrypted = Snapshots![0].Encrypted ?? false;
+        }, 15_000);
+
+        it('should NOT have public launch permissions', () => {
+            expect(isPublic).toBe(false);
+        });
+
+        it('should have an encrypted root EBS snapshot', () => {
+            expect(snapshotEncrypted).toBe(true);
+        });
+    });
+
+    // =========================================================================
+    // AMI Tags — validates infrastructure tagging contract
+    // =========================================================================
+    describe('AMI Tags', () => {
+        let tags: Array<{ Key?: string; Value?: string }>;
+
+        // Depends on: image from top-level beforeAll
+        beforeAll(() => {
+            tags = image.Tags ?? [];
+        });
+
+        it('should have the KubernetesVersion tag', () => {
+            const k8sTag = requireTag(tags, 'KubernetesVersion');
+            expect(k8sTag.Value).toBe(CONFIGS.cluster.kubernetesVersion);
+        });
+
+        it('should have the Purpose tag set to GoldenAMI', () => {
+            const purposeTag = requireTag(tags, 'Purpose');
+            expect(purposeTag.Value).toBe('GoldenAMI');
+        });
+
+        it('should have a description containing the K8s version', () => {
+            expect(image.Description ?? '').toContain(
+                CONFIGS.cluster.kubernetesVersion,
+            );
+        });
+    });
+
+    // =========================================================================
+    // Image Builder Pipeline — validates freshness
+    // =========================================================================
+    describe('Image Builder Pipeline', () => {
+        it('should have been created by Image Builder', () => {
+            // Image Builder AMIs follow the CDK naming pattern:
+            // {namePrefix}-golden-ami-{buildDate}
+            const name = (image.Name ?? '').toLowerCase();
+            expect(name).toContain('golden-ami');
+        });
+
+        it(`should not be older than ${MAX_AMI_AGE_DAYS} days`, () => {
+            const creationDate = image.CreationDate;
+            expect(creationDate).toBeDefined();
+
+            const created = new Date(creationDate!);
+            const now = new Date();
+            const ageInDays =
+                (now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24);
+
+            console.log(
+                `[Pipeline] AMI age: ${ageInDays.toFixed(1)} days (max: ${MAX_AMI_AGE_DAYS})`,
+            );
+            expect(ageInDays).toBeLessThanOrEqual(MAX_AMI_AGE_DAYS);
+        });
     });
 
     // =========================================================================
