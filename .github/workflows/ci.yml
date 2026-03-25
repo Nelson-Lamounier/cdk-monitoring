@@ -17,6 +17,7 @@
 #   - CDK Synthesis     → just ci-synth-validate
 #   - Helm Validate (all) → just helm-validate-charts
 #   - Helm Validation   → helm lint + helm template + kubeconform
+#   - K8s Bootstrap Tests → just bootstrap-pytest
 #
 # Projects validated during CDK synthesis:
 #   1. k8s         — K8s cluster stacks (Base, ControlPlane, Workers, Edge, API)
@@ -369,6 +370,36 @@ jobs:
         run: just test-frontend-ops
 
   # ============================================================================
+  # K8s Bootstrap Python Tests
+  # ============================================================================
+  test-k8s-bootstrap:
+    name: Test K8s Bootstrap (Python)
+    needs: [detect-changes]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    if: |
+      needs.detect-changes.outputs.k8s-content == 'true' ||
+      needs.detect-changes.outputs.run-all == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Install Python test dependencies into the CI venv
+      - name: Install Python Dependencies
+        run: |
+          pip install --no-cache-dir -e 'kubernetes-app/k8s-bootstrap[dev]'
+
+      # Runs all k8s-bootstrap Python tests (unit + static validation).
+      # Covers: boot/, deploy_helpers/, system/ (argocd, cert-manager, dr)
+      # Fully offline — all AWS/K8s calls are mocked via pytest-mock.
+      # Recipe: justfile → bootstrap-pytest → python -m pytest
+      - name: Run Python Tests
+        run: just bootstrap-pytest
+
+  # ============================================================================
   # NOTE: Snapshot Tests
   # ============================================================================
   # Snapshot tests are run LOCALLY, not in CI.
@@ -548,6 +579,7 @@ jobs:
       - typecheck
       - test-stacks
       - test-frontend-ops
+      - test-k8s-bootstrap
       - build
       - validate-cdk
       - validate-helm
@@ -578,6 +610,7 @@ jobs:
           echo "### Tests" >> $GITHUB_STEP_SUMMARY
           echo "- Stack Tests: ${{ needs.test-stacks.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Frontend Ops Tests: ${{ needs.test-frontend-ops.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- K8s Bootstrap Tests: ${{ needs.test-k8s-bootstrap.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Security" >> $GITHUB_STEP_SUMMARY
@@ -600,6 +633,7 @@ jobs:
             "typecheck:${{ needs.typecheck.result }}" \
             "test-stacks:${{ needs.test-stacks.result }}" \
             "test-frontend-ops:${{ needs.test-frontend-ops.result }}" \
+            "test-k8s-bootstrap:${{ needs.test-k8s-bootstrap.result }}" \
             "iac-security-scan:${{ needs.iac-security-scan.result }}" \
             "build:${{ needs.build.result }}" \
             "validate-cdk:${{ needs.validate-cdk.result }}" \
