@@ -106,17 +106,34 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Deploy via SSM
+      - name: Resolve Image URI
+        id: resolve-image
         run: |
-          IMAGE_URI="${{ needs.build-and-push.outputs.image-uri }}"
+          # Construct image URI directly from SSM + commit SHA
+          # (bypasses reusable workflow output propagation)
+          ECR_URL=$(aws ssm get-parameter \
+            --name "/shared/ecr/${{ env.ENVIRONMENT }}/repository-uri" \
+            --query 'Parameter.Value' \
+            --output text)
 
-          # Mask image URI (contains ECR URL with AWS account ID)
+          if [ -z "$ECR_URL" ] || [ "$ECR_URL" = "None" ]; then
+            echo "::error::ECR repository URL not found in SSM: /shared/ecr/${{ env.ENVIRONMENT }}/repository-uri"
+            exit 1
+          fi
+
+          IMAGE_URI="${ECR_URL}:${{ github.sha }}"
+          echo "::add-mask::$ECR_URL"
           echo "::add-mask::$IMAGE_URI"
+          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+          echo "[PASS] Resolved image URI from SSM"
+
+      - name: Update SSM for ArgoCD
+        run: |
+          IMAGE_URI="${{ steps.resolve-image.outputs.image-uri }}"
           echo "Deploying image to Kubernetes..."
 
           # Update the SSM parameter with the new image URI so ArgoCD
-          # picks it up on next sync, or trigger a direct deployment
-          # via SSM send-command to the control plane.
+          # picks it up on next sync
           aws ssm put-parameter \
             --name "/nextjs/${{ env.ENVIRONMENT }}/image-uri" \
             --value "$IMAGE_URI" \
