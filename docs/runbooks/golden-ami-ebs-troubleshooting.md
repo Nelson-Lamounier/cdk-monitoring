@@ -38,7 +38,8 @@ prop in CDK stacks). Replace `<env>` with `development`, `staging`, or
 
 | Log Group | Source | Content |
 | :--- | :--- | :--- |
-| `/aws/imagebuilder/*` | EC2 Image Builder | AMI bake logs — component install and validate phases |
+| `/aws/imagebuilder/k8s-dev-golden-ami` | EC2 Image Builder | AMI bake execution logs |
+| `/aws/imagebuilder/k8s-dev-golden-ami-recipe` | EC2 Image Builder | Recipe-level install and validate phase output |
 
 > [!TIP]
 > Image Builder logs are created automatically by the service. Search for
@@ -207,10 +208,20 @@ aws logs tail "/aws/lambda/k8s-ebs-detach-lifecycle" \
 # 1. Run local static analysis to catch YAML anti-patterns
 just test-ami-build
 
-# 2. Check Image Builder logs for FATAL errors
-aws logs filter-log-events \
+# 2. Discover Image Builder log groups
+aws logs describe-log-groups \
   --log-group-name-prefix "/aws/imagebuilder/" \
-  --filter-pattern "FATAL" \
+  --query "logGroups[*].logGroupName" --output table \
+  --region eu-west-1 --profile dev-account
+
+# Known log groups:
+#   /aws/imagebuilder/k8s-dev-golden-ami
+#   /aws/imagebuilder/k8s-dev-golden-ami-recipe
+
+# 3. Query the specific log group for errors
+aws logs filter-log-events \
+  --log-group-name "/aws/imagebuilder/k8s-dev-golden-ami" \
+  --filter-pattern "?FATAL ?ERROR ?FAIL" \
   --start-time $(date -v-2H +%s)000 \
   --region eu-west-1 --profile dev-account
 ```

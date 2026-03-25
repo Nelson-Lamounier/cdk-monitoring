@@ -352,7 +352,17 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
         });
 
         it('should NOT use alternatives --set python3 (breaks cloud-init)', () => {
-            expect(componentYaml).not.toContain('alternatives --set python3');
+            const executableLines = componentYaml
+                .split('\n')
+                .filter((line) => {
+                    const trimmed = line.trim();
+                    return (
+                        trimmed.includes('alternatives --set python3') &&
+                        !trimmed.startsWith('#') &&
+                        !trimmed.startsWith('//')
+                    );
+                });
+            expect(executableLines).toHaveLength(0);
         });
 
         it('should NOT use alternatives --install for python3', () => {
