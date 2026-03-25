@@ -3,7 +3,72 @@
  *
  * Provides consistent colored console output across all scripts.
  * Matches the visual style of the original shell scripts.
+ *
+ * Includes file-logging support: call `startFileLogging()` to tee all
+ * console output into a timestamped log file for post-mortem analysis.
  */
+
+import { mkdirSync, createWriteStream } from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
+import type { WriteStream } from 'fs'
+
+/** Active file log stream, if logging is enabled */
+let logStream: WriteStream | undefined
+
+/** Strip ANSI escape codes so the log file is human-readable */
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*m/g, '')
+}
+
+/**
+ * Start tee-ing all `console.log` and `console.error` output to a
+ * timestamped log file under `scripts/local/diagnostics/.troubleshoot-logs/`.
+ *
+ * @param scriptName - Short name used in the filename (e.g. 'sns-orphans')
+ * @returns The absolute path of the created log file
+ */
+export function startFileLogging(scriptName: string): string {
+  const __dirname = dirname(fileURLToPath(import.meta.url))
+  const logsDir = join(__dirname, '..', 'local', 'diagnostics', '.troubleshoot-logs')
+  mkdirSync(logsDir, { recursive: true })
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const logFile = join(logsDir, `${scriptName}-${timestamp}.log`)
+
+  logStream = createWriteStream(logFile, { flags: 'a' })
+  logStream.write(`=== ${scriptName} — ${new Date().toISOString()} ===\n\n`)
+
+  // Monkey-patch console.log and console.error
+  const originalLog = console.log.bind(console)
+  const originalError = console.error.bind(console)
+
+  console.log = (...args: unknown[]) => {
+    originalLog(...args)
+    const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+    logStream?.write(stripAnsi(line) + '\n')
+  }
+
+  console.error = (...args: unknown[]) => {
+    originalError(...args)
+    const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+    logStream?.write('[ERROR] ' + stripAnsi(line) + '\n')
+  }
+
+  return logFile
+}
+
+/**
+ * Flush and close the log file stream.
+ * Call this at the end of the script to ensure all output is written.
+ */
+export function stopFileLogging(): void {
+  if (logStream) {
+    logStream.end()
+    logStream = undefined
+  }
+}
 
 // ANSI color codes
 const colors = {

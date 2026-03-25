@@ -99,6 +99,124 @@ bootstrap account profile *ARGS:
       --toolkit-stack-name CDKToolkit \
       {{ARGS}}
 
+# List all CloudFormation stacks in the account
+# Shows: stack name, status, creation time, and drift status.
+# Usage: just cfn-stacks development
+#        just cfn-stacks development CREATE_COMPLETE   # filter by status
+[group('cdk')]
+cfn-stacks environment status="" region="eu-west-1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PROFILE=$(just _profile {{environment}})
+    echo "══════════════════════════════════════════════════════════════"
+    echo "  CloudFormation Stacks ({{environment}} / {{region}})"
+    echo "══════════════════════════════════════════════════════════════"
+    echo ""
+    QUERY='StackSummaries[*].[StackName,StackStatus,CreationTime,DriftInformation.StackDriftStatus]'
+    if [ -n "{{status}}" ]; then
+      aws cloudformation list-stacks \
+        --stack-status-filter "{{status}}" \
+        --query "${QUERY}" \
+        --output table \
+        --region {{region}} --profile "${PROFILE}"
+    else
+      aws cloudformation list-stacks \
+        --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE ROLLBACK_COMPLETE \
+        --query "${QUERY}" \
+        --output table \
+        --region {{region}} --profile "${PROFILE}"
+    fi
+
+# Query CloudTrail for CloudFormation events on a specific stack
+# Shows: who triggered the action, event name, timestamp, and error (if any).
+# Usage: just cfn-trail Shared-SecurityBaseline-development development
+#        just cfn-trail GoldenAmi-development development 30   # last 30 days
+[group('cdk')]
+cfn-trail stack environment days="14" region="eu-west-1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PROFILE=$(just _profile {{environment}})
+    START=$(date -u -v-{{days}}d '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d '{{days}} days ago' '+%Y-%m-%dT%H:%M:%SZ')
+    echo "══════════════════════════════════════════════════════════════"
+    echo "  CloudTrail — {{stack}} (last {{days}} days)"
+    echo "══════════════════════════════════════════════════════════════"
+    echo ""
+    aws cloudtrail lookup-events \
+      --lookup-attributes "AttributeKey=ResourceName,AttributeValue={{stack}}" \
+      --start-time "${START}" \
+      --query 'Events[*].{Time:EventTime,Event:EventName,User:Username,Source:EventSource}' \
+      --output table \
+      --region {{region}} --profile "${PROFILE}"
+
+# Audit SNS topics — list all topics and detail those without subscriptions
+# Usage: just sns-orphans development
+[group('cdk')]
+sns-orphans environment region="eu-west-1":
+    npx tsx scripts/local/sns-orphans.ts --env {{environment}} --profile $(just _profile {{environment}}) --region {{region}}
+
+# Audit CloudWatch log groups — identify empty, stale, and unmanaged log groups
+# Usage: just cw-log-audit development
+[group('cdk')]
+cw-log-audit environment region="eu-west-1":
+    npx tsx scripts/local/cloudwatch-log-audit.ts --env {{environment}} --profile $(just _profile {{environment}}) --region {{region}}
+
+# Troubleshoot CloudFormation stack deployments — diagnose slow, stuck, or failed operations
+# Usage: just cfn-troubleshoot ComputeStack-development development
+[group('cdk')]
+cfn-troubleshoot stack environment region="eu-west-1":
+    npx tsx scripts/local/cfn-troubleshoot.ts --stack {{stack}} --env {{environment}} --profile $(just _profile {{environment}}) --region {{region}}
+
+# Fetch /var/log/cloud-init-output.log from a remote EC2 instance via SSM
+# Usage: just cloud-init-log i-0abc123def456 development
+[group('cdk')]
+cloud-init-log instance-id environment="development" region="eu-west-1" tail="200":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PROFILE=$(just _profile {{environment}})
+    LOG_DIR="scripts/local/diagnostics/.troubleshoot-logs"
+    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+    LOG_FILE="${LOG_DIR}/cloud-init-{{instance-id}}-${TIMESTAMP}.log"
+    mkdir -p "${LOG_DIR}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  cloud-init-output.log — {{instance-id}}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    CMD_ID=$(aws ssm send-command \
+      --instance-ids "{{instance-id}}" \
+      --document-name "AWS-RunShellScript" \
+      --parameters "commands=[\"tail -n {{tail}} /var/log/cloud-init-output.log\"]" \
+      --profile "${PROFILE}" \
+      --region {{region}} \
+      --query "Command.CommandId" \
+      --output text)
+    echo "SSM Command ID: ${CMD_ID}"
+    echo "Waiting for command to complete..."
+    aws ssm wait command-executed \
+      --command-id "${CMD_ID}" \
+      --instance-id "{{instance-id}}" \
+      --profile "${PROFILE}" \
+      --region {{region}} 2>/dev/null || true
+    sleep 2
+    OUTPUT=$(aws ssm get-command-invocation \
+      --command-id "${CMD_ID}" \
+      --instance-id "{{instance-id}}" \
+      --profile "${PROFILE}" \
+      --region {{region}} \
+      --query "StandardOutputContent" \
+      --output text)
+    echo ""
+    echo "${OUTPUT}"
+    echo "${OUTPUT}" > "${LOG_FILE}"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "✅ Log saved to: ${LOG_FILE}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Audit EBS volume lifecycle — diagnose detach/attach timing during ASG rolling updates
+# Usage: just ebs-lifecycle vol-09129364aa3bd586e development
+#        just ebs-lifecycle vol-xxx development --stack ControlPlane-development --asg-logical-id ComputeAutoScalingGroupASG7021CF69
+[group('cdk')]
+ebs-lifecycle volume environment="development" *EXTRA_ARGS:
+    npx tsx scripts/local/ebs-lifecycle-audit.ts --volume {{volume}} --env {{environment}} --profile $(just _profile {{environment}}) {{EXTRA_ARGS}}
 # =============================================================================
 # CI SCRIPTS (Non-interactive — used by GitHub Actions)
 #
