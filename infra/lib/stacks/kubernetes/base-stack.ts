@@ -340,6 +340,11 @@ export class KubernetesBaseStack extends cdk.Stack {
             volumeName: `${namePrefix}-data`,
         });
 
+        // Tag for EBS lifecycle Lambda discovery — the ebs-detach Lambda
+        // filters by ManagedBy=MonitoringStack to find volumes to gracefully
+        // detach before ASG instance termination.
+        cdk.Tags.of(this.ebsVolume).add('ManagedBy', 'MonitoringStack');
+
         // =====================================================================
         // EBS Snapshot Lifecycle Policy (DLM)
         //
