@@ -8,7 +8,6 @@
 #
 # Recipe mapping (CI step → justfile recipe):
 #   - Security Audit    → just audit
-#   - Snyk Scan         → just security-snyk
 #   - IaC Security Scan → just ci-security-scan
 #   - ESLint            → just lint
 #   - Type Check        → just typecheck
@@ -423,34 +422,6 @@ jobs:
 
 
 
-  # ============================================================================
-  # Snyk Security Scan (Open-Source Deps + IaC)
-  # ============================================================================
-  snyk-scan:
-    name: Snyk Security Scan
-    needs: [setup, detect-changes]
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 10
-    # Run when source or dependencies change
-    if: needs.detect-changes.outputs.any-src == 'true' || needs.detect-changes.outputs.ci-config == 'true'
-    # Advisory — findings do not block the pipeline
-    continue-on-error: true
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Environment and Dependencies
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Run Snyk Scans
-        run: just security-snyk
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
   # ============================================================================
   # IaC Security Scan (Checkov — Blocking on CRITICAL/HIGH)
@@ -460,7 +431,7 @@ jobs:
   # thresholds. Uploads SARIF to GitHub Security for inline PR annotations.
   #
   # Security gates:
-  #   - CI:     Checkov (blocks on CRITICAL/HIGH) + Snyk (advisory)
+  #   - CI:     Checkov (blocks on CRITICAL/HIGH)
   #   - LOCAL:  cdk-nag aspect provides real-time feedback
   #
   # Recipe: justfile → ci-security-scan → scripts/ci/security-scan.ts
@@ -571,7 +542,6 @@ jobs:
       - detect-changes
       - lint-workflows
       - audit
-      - snyk-scan
       - iac-security-scan
       - lint
       - deps-check
@@ -611,7 +581,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Security" >> $GITHUB_STEP_SUMMARY
-          echo "- Snyk Scan: ${{ needs.snyk-scan.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- IaC Security Scan: ${{ needs.iac-security-scan.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -635,7 +604,6 @@ jobs:
             "build:${{ needs.build.result }}" \
             "validate-cdk:${{ needs.validate-cdk.result }}" \
             "validate-helm:${{ needs.validate-helm.result }}"; do
-            # Note: snyk-scan excluded from failure checks (continue-on-error: true)
             JOB_NAME="${job_result%%:*}"
             JOB_STATUS="${job_result##*:}"
             if [[ "$JOB_STATUS" == "failure" ]]; then

@@ -35,6 +35,7 @@
 import { NagSuppressions } from 'cdk-nag';
 
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -158,6 +159,12 @@ export class K8sSsmAutomationStack extends cdk.Stack {
     /** Automation execution role ARN */
     public readonly automationRoleArn: string;
 
+    /** CloudWatch Log Group for SSM bootstrap RunCommand output */
+    public readonly bootstrapLogGroup: logs.LogGroup;
+
+    /** CloudWatch Log Group for SSM deploy RunCommand output */
+    public readonly deployLogGroup: logs.LogGroup;
+
     constructor(scope: Construct, id: string, props: K8sSsmAutomationStackProps) {
         super(scope, id, props);
 
@@ -266,6 +273,28 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         this.automationRoleArn = automationRole.roleArn;
 
         // =====================================================================
+        // CloudWatch Log Groups — SSM RunCommand Output
+        //
+        // Pre-create log groups so retention and removal policies are enforced.
+        // Without this, the SSM Agent auto-creates groups with infinite retention.
+        // The SSM Agent on the EC2 instance writes RunCommand stdout/stderr here.
+        // =====================================================================
+
+        this.bootstrapLogGroup = new logs.LogGroup(this, 'BootstrapLogGroup', {
+            logGroupName: `/ssm${props.ssmPrefix}/bootstrap`,
+            retention: logs.RetentionDays.TWO_WEEKS,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+        });
+        cleanup.addLogGroup(`/ssm${props.ssmPrefix}/bootstrap`, this.bootstrapLogGroup);
+
+        this.deployLogGroup = new logs.LogGroup(this, 'DeployLogGroup', {
+            logGroupName: `/ssm${props.ssmPrefix}/deploy`,
+            retention: logs.RetentionDays.TWO_WEEKS,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+        });
+        cleanup.addLogGroup(`/ssm${props.ssmPrefix}/deploy`, this.deployLogGroup);
+
+        // =====================================================================
         // Common document props
         // =====================================================================
         const docBaseProps = {
@@ -363,6 +392,20 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             description: 'IAM role ARN for SSM Automation execution',
         });
         cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/automation-role-arn`, roleArnParam);
+
+        const bootstrapLogGroupParam = new ssm.StringParameter(this, 'BootstrapLogGroupParam', {
+            parameterName: `${props.ssmPrefix}/cloudwatch/ssm-bootstrap-log-group`,
+            stringValue: this.bootstrapLogGroup.logGroupName,
+            description: 'CloudWatch Log Group for SSM RunCommand bootstrap output',
+        });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/cloudwatch/ssm-bootstrap-log-group`, bootstrapLogGroupParam);
+
+        const deployLogGroupParam = new ssm.StringParameter(this, 'DeployLogGroupParam', {
+            parameterName: `${props.ssmPrefix}/cloudwatch/ssm-deploy-log-group`,
+            stringValue: this.deployLogGroup.logGroupName,
+            description: 'CloudWatch Log Group for SSM RunCommand deploy output',
+        });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/cloudwatch/ssm-deploy-log-group`, deployLogGroupParam);
 
         // =====================================================================
         // Step Functions Orchestrator — EventBridge → State Machine → SSM

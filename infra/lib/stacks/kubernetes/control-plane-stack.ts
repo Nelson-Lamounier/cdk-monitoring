@@ -352,6 +352,10 @@ echo "SSM Automation will be triggered by the CI pipeline"
         // Grant S3 read access for manifest download
         scriptsBucket.grantRead(this.instanceRole);
 
+        // Grant scoped S3 write for etcd DR backups (dr-backups/ prefix only)
+        scriptsBucket.grantPut(this.instanceRole, 'dr-backups/*');
+        scriptsBucket.grantDelete(this.instanceRole, 'dr-backups/*');
+
         // Grant SSM Automation permissions — start/poll/publish execution ID
         this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
             sid: 'SsmAutomationExecution',
@@ -603,17 +607,49 @@ function grantMonitoringPermissions(
 
 
     const k8sEnv = ssmPrefix.split('/').pop() || 'development';
+    // SSM RunCommand CloudWatch Logs — the SSM Agent on the EC2 instance
+    // writes stdout/stderr to these log groups when CloudWatchOutputConfig
+    // is enabled in the SSM Automation documents. The Automation execution
+    // role has its own grant, but the Agent uses the instance profile.
     role.addToPrincipalPolicy(new iam.PolicyStatement({
-        sid: 'SecretsManagerArgoCdWrite',
+        sid: 'SsmRunCommandCloudWatchLogs',
+        effect: iam.Effect.ALLOW,
+        actions: [
+            'logs:CreateLogGroup',
+            'logs:CreateLogStream',
+            'logs:PutLogEvents',
+            'logs:DescribeLogGroups',
+            'logs:DescribeLogStreams',
+        ],
+        resources: [
+            `arn:aws:logs:${region}:${account}:log-group:/ssm${ssmPrefix}/*`,
+            `arn:aws:logs:${region}:${account}:log-group:/ssm${ssmPrefix}/*:*`,
+        ],
+    }));
+
+    // Environment short name for cross-stack secret naming (matches CrossplaneIamConstruct)
+    const envShortMap: Record<string, string> = {
+        development: 'dev',
+        staging: 'stg',
+        production: 'prod',
+    };
+    const envShort = envShortMap[k8sEnv] ?? k8sEnv;
+
+    role.addToPrincipalPolicy(new iam.PolicyStatement({
+        sid: 'SecretsManagerBootstrap',
         effect: iam.Effect.ALLOW,
         actions: [
             'secretsmanager:CreateSecret',
             'secretsmanager:PutSecretValue',
             'secretsmanager:UpdateSecret',
             'secretsmanager:DescribeSecret',
+            'secretsmanager:GetSecretValue',
         ],
         resources: [
+            // ArgoCD CI bot token + bootstrap-created secrets
             `arn:aws:secretsmanager:${region}:${account}:secret:k8s/${k8sEnv}/*`,
+            // Crossplane AWS credentials (read-only — provisioned by CrossplaneIamConstruct)
+            `arn:aws:secretsmanager:${region}:${account}:secret:shared-${envShort}/crossplane/aws-credentials-??????`,
         ],
     }));
 }

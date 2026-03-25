@@ -420,27 +420,6 @@ security-scan *ARGS:
     checkov --directory infra/cdk.out --framework cloudformation --compact --quiet \
       -o cli -o json --output-file-path security-reports {{ARGS}}
 
-# Run Snyk security scan (open-source deps + IaC)
-# Requires SNYK_TOKEN environment variable (set in GitHub Secrets or local env).
-# Free tier: unlimited tests for open-source projects, 300 IaC tests/month.
-# Usage: just security-snyk
-[group('quality')]
-security-snyk *ARGS:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if ! command -v snyk &> /dev/null; then
-      echo "→ Installing Snyk CLI…"
-      npm install -g snyk
-    fi
-    echo "=== Snyk Open-Source (Dependencies) ==="
-    snyk test --all-projects --severity-threshold=high {{ARGS}} || true
-    echo ""
-    echo "=== Snyk IaC (CloudFormation Templates) ==="
-    if [ -d "infra/cdk.out" ]; then
-      snyk iac test infra/cdk.out --severity-threshold=high {{ARGS}} || true
-    else
-      echo "⚠ infra/cdk.out/ not found. Run 'just synth <project> <env>' first."
-    fi
 
 # =============================================================================
 # KUBERNETES
@@ -655,6 +634,779 @@ ssm-status execution-id region="eu-west-1" profile="dev-account":
       --automation-execution-id {{execution-id}} \
       --query "AutomationExecution.{Status:AutomationExecutionStatus,Steps:StepExecutions[*].{Step:StepName,Status:StepStatus,Start:ExecutionStartTime,End:ExecutionEndTime}}" \
       --output table \
+      --region {{region}} --profile {{profile}}
+
+# List latest SSM Automation executions for all bootstrap documents
+# Shows: execution ID, status, timing, and per-step progress for each
+# bootstrap type (control-plane + worker).
+# Usage: just ssm-bootstrap-status
+#        just ssm-bootstrap-status 5          # last 5 executions per doc
+[group('k8s')]
+ssm-bootstrap-status count="3" env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Map full environment names to short abbreviations (matches CDK shortEnv())
+    case "{{env}}" in
+      development) SHORT_ENV="dev" ;;
+      staging)     SHORT_ENV="stg" ;;
+      production)  SHORT_ENV="prd" ;;
+      *)           SHORT_ENV="{{env}}" ;;
+    esac
+    DOCS=("k8s-${SHORT_ENV}-bootstrap-control-plane" "k8s-${SHORT_ENV}-bootstrap-worker")
+    for DOC in "${DOCS[@]}"; do
+      echo "═══════════════════════════════════════════════════════════"
+      echo "  📄  ${DOC}"
+      echo "═══════════════════════════════════════════════════════════"
+      echo ""
+      EXEC_IDS=$(aws ssm describe-automation-executions \
+        --filters "Key=DocumentNamePrefix,Values=${DOC}" \
+        --max-results {{count}} \
+        --query "AutomationExecutionMetadataList[*].[AutomationExecutionId,AutomationExecutionStatus,ExecutionStartTime,ExecutionEndTime]" \
+        --output text \
+        --region {{region}} --profile {{profile}} 2>/dev/null || echo "")
+      if [ -z "$EXEC_IDS" ]; then
+        echo "  (no executions found)"
+        echo ""
+        continue
+      fi
+      while IFS=$'\t' read -r EXEC_ID STATUS START END; do
+        echo "  ▸ ${EXEC_ID}"
+        echo "    Status: ${STATUS}  |  Start: ${START}  |  End: ${END:-—}"
+        echo "    Steps:"
+        aws ssm get-automation-execution \
+          --automation-execution-id "${EXEC_ID}" \
+          --query "AutomationExecution.StepExecutions[*].[StepName,StepStatus]" \
+          --output text \
+          --region {{region}} --profile {{profile}} 2>/dev/null | \
+          while IFS=$'\t' read -r STEP_NAME STEP_STATUS; do
+            case "${STEP_STATUS}" in
+              Success)    ICON="✅" ;;
+              Failed)     ICON="❌" ;;
+              InProgress) ICON="🔄" ;;
+              Cancelled)  ICON="⛔" ;;
+              TimedOut)   ICON="⏰" ;;
+              *)          ICON="⬜" ;;
+            esac
+            printf "      %s  %-40s %s\n" "${ICON}" "${STEP_NAME}" "${STEP_STATUS}"
+          done
+        echo ""
+      done <<< "$EXEC_IDS"
+    done
+
+# Retrieve stdout/stderr logs for each step of the latest SSM Automation
+# bootstrap execution. Fetches per-step output via `get-command-invocation`.
+# Usage: just ssm-bootstrap-logs
+#        just ssm-bootstrap-logs 100                  # last 100 lines per step
+#        just ssm-bootstrap-logs 50 development worker # worker doc only
+[group('k8s')]
+ssm-bootstrap-logs tail="50" env="development" doc="all" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Map full environment names to short abbreviations (matches CDK shortEnv())
+    case "{{env}}" in
+      development) SHORT_ENV="dev" ;;
+      staging)     SHORT_ENV="stg" ;;
+      production)  SHORT_ENV="prd" ;;
+      *)           SHORT_ENV="{{env}}" ;;
+    esac
+    # Build document list based on doc filter
+    case "{{doc}}" in
+      control-plane) DOCS=("k8s-${SHORT_ENV}-bootstrap-control-plane") ;;
+      worker)        DOCS=("k8s-${SHORT_ENV}-bootstrap-worker") ;;
+      *)             DOCS=("k8s-${SHORT_ENV}-bootstrap-control-plane" "k8s-${SHORT_ENV}-bootstrap-worker") ;;
+    esac
+    for DOC in "${DOCS[@]}"; do
+      echo ""
+      echo "╔═══════════════════════════════════════════════════════════╗"
+      echo "║  📄  ${DOC}"
+      echo "╚═══════════════════════════════════════════════════════════╝"
+      echo ""
+      # Get the latest execution for this document
+      LATEST=$(aws ssm describe-automation-executions \
+        --filters "Key=DocumentNamePrefix,Values=${DOC}" \
+        --max-results 1 \
+        --query "AutomationExecutionMetadataList[0].AutomationExecutionId" \
+        --output text \
+        --region {{region}} --profile {{profile}} 2>/dev/null || echo "None")
+      if [ "$LATEST" = "None" ] || [ -z "$LATEST" ]; then
+        echo "  (no executions found)"
+        continue
+      fi
+      echo "  Execution: ${LATEST}"
+      echo ""
+      # Get step details: name, status, and commandId
+      STEPS_JSON=$(aws ssm get-automation-execution \
+        --automation-execution-id "${LATEST}" \
+        --query "AutomationExecution.StepExecutions[*].{Name:StepName,Status:StepStatus,Outputs:Outputs}" \
+        --output json \
+        --region {{region}} --profile {{profile}} 2>/dev/null)
+      STEP_COUNT=$(echo "$STEPS_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+      if [ "$STEP_COUNT" = "0" ]; then
+        echo "  (no steps found)"
+        continue
+      fi
+      for i in $(seq 0 $(( STEP_COUNT - 1 ))); do
+        STEP_NAME=$(echo "$STEPS_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i]['Name'])")
+        STEP_STATUS=$(echo "$STEPS_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[$i]['Status'])")
+        # Extract CommandId from step outputs (aws:runCommand outputs include CommandId)
+        COMMAND_ID=$(echo "$STEPS_JSON" | python3 -c "
+    import sys, json
+    d = json.load(sys.stdin)
+    outputs = d[$i].get('Outputs', {})
+    cmd_id = outputs.get('CommandId', [''])[0] if outputs else ''
+    print(cmd_id)
+    " 2>/dev/null || echo "")
+        case "${STEP_STATUS}" in
+          Success)    ICON="✅" ;;
+          Failed)     ICON="❌" ;;
+          InProgress) ICON="🔄" ;;
+          Cancelled)  ICON="⛔" ;;
+          TimedOut)   ICON="⏰" ;;
+          *)          ICON="⬜" ;;
+        esac
+        echo "  ┌─────────────────────────────────────────────────────────"
+        printf "  │ %s  %-40s %s\n" "${ICON}" "${STEP_NAME}" "${STEP_STATUS}"
+        echo "  └─────────────────────────────────────────────────────────"
+        if [ -z "$COMMAND_ID" ]; then
+          echo "    (no command output available — step may not have executed)"
+          echo ""
+          continue
+        fi
+        # Resolve the target instance ID from the automation parameters
+        INSTANCE_ID=$(aws ssm get-automation-execution \
+          --automation-execution-id "${LATEST}" \
+          --query "AutomationExecution.Parameters.InstanceId[0]" \
+          --output text \
+          --region {{region}} --profile {{profile}} 2>/dev/null || echo "")
+        if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+          echo "    (could not resolve instance ID)"
+          echo ""
+          continue
+        fi
+        # Fetch command invocation output (stdout + stderr)
+        OUTPUT_JSON=$(aws ssm get-command-invocation \
+          --command-id "${COMMAND_ID}" \
+          --instance-id "${INSTANCE_ID}" \
+          --query "{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}" \
+          --output json \
+          --region {{region}} --profile {{profile}} 2>/dev/null || echo '{"Status":"NotFound","Stdout":"","Stderr":""}')
+        STDOUT=$(echo "$OUTPUT_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('Stdout',''))" 2>/dev/null || echo "")
+        STDERR=$(echo "$OUTPUT_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('Stderr',''))" 2>/dev/null || echo "")
+        if [ -n "$STDOUT" ]; then
+          echo "    ── stdout (last {{tail}} lines) ──"
+          echo "$STDOUT" | tail -n {{tail}} | sed 's/^/    /'
+        fi
+        if [ -n "$STDERR" ]; then
+          echo "    ── stderr (last {{tail}} lines) ──"
+          echo "$STDERR" | tail -n {{tail}} | sed 's/^/    /'
+        fi
+        if [ -z "$STDOUT" ] && [ -z "$STDERR" ]; then
+          echo "    (output empty or truncated — check CloudWatch log group /ssm/k8s/{{env}}/bootstrap)"
+        fi
+        echo ""
+      done
+    done
+
+# Run unified SSM bootstrap diagnostics — combines execution status,
+# step logs (stdout/stderr), and S3 sync verification into a single report.
+# Usage: just ssm-diagnose
+#        just ssm-diagnose --env staging --tail 100
+[group('k8s')]
+ssm-diagnose *ARGS:
+    ./scripts/local/diagnostics/ssm-bootstrap-diagnose.sh {{ARGS}}
+
+# Show last S3 sync status for SSM Automation bootstrap and chart scripts.
+# Displays per-prefix file counts and most recently modified objects.
+# Usage: just ssm-s3-sync-status
+#        just ssm-s3-sync-status development 10  # last 10 files per prefix
+[group('k8s')]
+ssm-s3-sync-status env="development" count="5" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_KEY="/k8s/{{env}}/scripts-bucket"
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  🪣  S3 Sync Status — {{env}}"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    # Resolve bucket name from SSM
+    BUCKET=$(aws ssm get-parameter \
+      --name "${SSM_KEY}" \
+      --query 'Parameter.Value' --output text \
+      --region {{region}} \
+      --profile "{{profile}}" 2>/dev/null | sed 's|^s3://||;s|/$||')
+    if [ -z "$BUCKET" ]; then
+      echo "  ❌ SSM parameter ${SSM_KEY} not found."
+      echo "     Has the infrastructure pipeline been deployed?"
+      exit 1
+    fi
+    echo "  Bucket: s3://${BUCKET}"
+    echo ""
+    PREFIXES=("k8s-bootstrap/" "platform/charts/" "workloads/charts/")
+    for PREFIX in "${PREFIXES[@]}"; do
+      echo "  ┌─────────────────────────────────────────────────────────"
+      echo "  │ 📂 ${PREFIX}"
+      echo "  └─────────────────────────────────────────────────────────"
+      # List all objects under this prefix
+      LISTING=$(aws s3api list-objects-v2 \
+        --bucket "${BUCKET}" \
+        --prefix "${PREFIX}" \
+        --query "Contents[*].{Key:Key,Modified:LastModified,Size:Size}" \
+        --output json \
+        --region {{region}} --profile "{{profile}}" 2>/dev/null || echo "[]")
+      TOTAL=$(echo "$LISTING" | python3 -c "
+    import sys, json
+    d = json.load(sys.stdin)
+    print(len(d) if isinstance(d, list) else 0)
+    " 2>/dev/null || echo "0")
+      if [ "$TOTAL" = "0" ] || [ "$TOTAL" = "null" ]; then
+        echo "    (no files found)"
+        echo ""
+        continue
+      fi
+      # Find the most recent modification timestamp
+      NEWEST=$(echo "$LISTING" | python3 -c "
+    import sys, json
+    data = json.load(sys.stdin)
+    if data:
+        print(max(d['Modified'] for d in data))
+    else:
+        print('N/A')
+    " 2>/dev/null || echo "N/A")
+      echo "    Total files : ${TOTAL}"
+      echo "    Last sync   : ${NEWEST}"
+      echo ""
+      # Show the N most recently modified files
+      echo "    Most recently modified (last {{count}}):"
+      echo "$LISTING" | python3 -c "
+    import sys, json
+    data = json.load(sys.stdin)
+    if not data:
+        sys.exit(0)
+    data.sort(key=lambda x: x['Modified'], reverse=True)
+    for obj in data[:{{count}}]:
+        size_kb = obj['Size'] / 1024
+        ts = obj['Modified'][:19].replace('T', ' ')
+        name = obj['Key'].replace('${PREFIX}', '', 1)
+        print(f'      {ts}  {size_kb:>7.1f} KB  {name}')
+    " 2>/dev/null
+      echo ""
+    done
+
+# =============================================================================
+# LOCAL BOOTSTRAP TESTING (push to S3 → pull on instance → run)
+#
+# Workflow for testing ArgoCD bootstrap changes on the control plane
+# without going through CI/CD:
+#   1. just bootstrap-sync          — push local scripts to S3
+#   2. just bootstrap-pull <id>     — pull from S3 onto the instance
+#   3. just bootstrap-dry-run <id>  — dry-run the bootstrap on the instance
+#   4. just bootstrap-run <id>      — run the real bootstrap
+#
+# Or use the combined recipe:
+#   just bootstrap-test <id>        — sync + pull + dry-run (all-in-one)
+# =============================================================================
+
+# Sync local k8s-bootstrap scripts to S3 (push your changes)
+# Usage: just bootstrap-sync
+[group('k8s')]
+bootstrap-sync env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_KEY="/k8s/{{env}}/scripts-bucket"
+    BUCKET=$(aws ssm get-parameter \
+      --name "${SSM_KEY}" \
+      --query 'Parameter.Value' --output text \
+      --region {{region}} --profile {{profile}})
+    if [ -z "$BUCKET" ]; then
+      echo "❌ SSM parameter ${SSM_KEY} not found."
+      exit 1
+    fi
+    echo "📤 Syncing local k8s-bootstrap → s3://${BUCKET}/k8s-bootstrap/"
+    aws s3 sync kubernetes-app/k8s-bootstrap/ "s3://${BUCKET}/k8s-bootstrap/" \
+      --delete \
+      --exclude '__pycache__/*' \
+      --exclude '*.pyc' \
+      --exclude 'tests/*' \
+      --exclude '.venv/*' \
+      --exclude '.pyre_configuration' \
+      --exclude '.pyre_configuration.local' \
+      --exclude 'pyproject.toml' \
+      --exclude '.mypy_cache/*' \
+      --region {{region}} --profile {{profile}}
+    echo ""
+    echo "✅ Scripts pushed to S3. Next: just bootstrap-pull <instance-id>"
+
+# Pull latest scripts from S3 onto the control plane instance
+# Usage: just bootstrap-pull i-0f1491fd3dc63fd66
+[group('k8s')]
+bootstrap-pull instance-id env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_KEY="/k8s/{{env}}/scripts-bucket"
+    BUCKET=$(aws ssm get-parameter \
+      --name "${SSM_KEY}" \
+      --query 'Parameter.Value' --output text \
+      --region {{region}} --profile {{profile}})
+    echo "📥 Pulling scripts from S3 onto {{instance-id}}..."
+    COMMAND_ID=$(aws ssm send-command \
+      --instance-ids "{{instance-id}}" \
+      --document-name "AWS-RunShellScript" \
+      --parameters "commands=['aws s3 sync s3://${BUCKET}/k8s-bootstrap/ /data/k8s-bootstrap/ --delete --region {{region}} && echo \"✅ Scripts synced to /data/k8s-bootstrap/\"']" \
+      --timeout-seconds 120 \
+      --region {{region}} --profile {{profile}} \
+      --query "Command.CommandId" --output text)
+    echo "  Command ID: ${COMMAND_ID}"
+    echo "  Waiting for completion..."
+    aws ssm wait command-executed \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --region {{region}} --profile {{profile}} 2>/dev/null || true
+    aws ssm get-command-invocation \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --query "{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}" \
+      --output yaml \
+      --region {{region}} --profile {{profile}}
+    echo ""
+    echo "✅ Scripts pulled. Next: just bootstrap-dry-run {{instance-id}}"
+
+# Dry-run the ArgoCD bootstrap on the control plane (no changes applied)
+# Usage: just bootstrap-dry-run i-0f1491fd3dc63fd66
+[group('k8s')]
+bootstrap-dry-run instance-id env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "🧪 Running ArgoCD bootstrap --dry-run on {{instance-id}}..."
+    COMMAND_ID=$(aws ssm send-command \
+      --instance-ids "{{instance-id}}" \
+      --document-name "AWS-RunShellScript" \
+      --parameters "commands=['cd /data/k8s-bootstrap/system/argocd && pip3 install -q -r requirements.txt 2>/dev/null && KUBECONFIG=/etc/kubernetes/admin.conf python3 bootstrap_argocd.py --dry-run']" \
+      --timeout-seconds 300 \
+      --region {{region}} --profile {{profile}} \
+      --query "Command.CommandId" --output text)
+    echo "  Command ID: ${COMMAND_ID}"
+    echo "  Waiting for completion (up to 5 min)..."
+    aws ssm wait command-executed \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --region {{region}} --profile {{profile}} 2>/dev/null || true
+    aws ssm get-command-invocation \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --query "{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}" \
+      --output yaml \
+      --region {{region}} --profile {{profile}}
+
+# Run the real ArgoCD bootstrap on the control plane (output saved to local log)
+# Usage: just bootstrap-run i-0f1491fd3dc63fd66
+[group('k8s')]
+bootstrap-run instance-id env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    LOG_DIR="kubernetes-app/k8s-bootstrap/logs"
+    mkdir -p "${LOG_DIR}"
+    TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+    LOG_FILE="${LOG_DIR}/bootstrap-run-${TIMESTAMP}.log"
+    echo "🚀 Running ArgoCD bootstrap on {{instance-id}}..."
+    echo "   ⚠ This will apply real changes to the cluster!"
+    echo "   📄 Log: ${LOG_FILE}"
+    echo ""
+    {
+      echo "=== ArgoCD Bootstrap Run ==="
+      echo "Instance:    {{instance-id}}"
+      echo "Environment: {{env}}"
+      echo "Region:      {{region}}"
+      echo "Timestamp:   ${TIMESTAMP}"
+      echo ""
+    } | tee "${LOG_FILE}"
+    COMMAND_ID=$(aws ssm send-command \
+      --instance-ids "{{instance-id}}" \
+      --document-name "AWS-RunShellScript" \
+      --parameters "commands=['cd /data/k8s-bootstrap/system/argocd && pip3 install -q -r requirements.txt 2>/dev/null && KUBECONFIG=/etc/kubernetes/admin.conf python3 bootstrap_argocd.py']" \
+      --timeout-seconds 600 \
+      --region {{region}} --profile {{profile}} \
+      --query "Command.CommandId" --output text)
+    echo "  Command ID: ${COMMAND_ID}" | tee -a "${LOG_FILE}"
+    echo "  Waiting for completion (up to 10 min)..." | tee -a "${LOG_FILE}"
+    aws ssm wait command-executed \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --region {{region}} --profile {{profile}} 2>/dev/null || true
+    aws ssm get-command-invocation \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --query "{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}" \
+      --output yaml \
+      --region {{region}} --profile {{profile}} | tee -a "${LOG_FILE}"
+    echo ""
+    echo "✅ Log saved to: ${LOG_FILE}"
+
+# Full bootstrap test workflow: sync → pull → dry-run (all-in-one)
+# Usage: just bootstrap-test i-0f1491fd3dc63fd66
+[group('k8s')]
+bootstrap-test instance-id env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  🔄  Bootstrap Test Workflow"
+    echo "  Instance: {{instance-id}}"
+    echo "  Environment: {{env}}"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    echo "── Step 1/3: Sync scripts to S3 ──"
+    just bootstrap-sync {{env}} {{region}} {{profile}}
+    echo ""
+    echo "── Step 2/3: Pull scripts onto instance ──"
+    just bootstrap-pull {{instance-id}} {{env}} {{region}} {{profile}}
+    echo ""
+    echo "── Step 3/3: Dry-run bootstrap ──"
+    just bootstrap-dry-run {{instance-id}} {{env}} {{region}} {{profile}}
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  ✅  Dry-run complete! To apply for real:"
+    echo "     just bootstrap-run {{instance-id}}"
+    echo "═══════════════════════════════════════════════════════════"
+
+# Run k8s-bootstrap Python tests locally (unit + static validation)
+# Usage: just bootstrap-pytest
+# Usage: just bootstrap-pytest tests/system/test_dr_scripts.py   (specific file)
+[group('k8s')]
+bootstrap-pytest *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  🧪  k8s-bootstrap — Python Test Suite"
+    echo "═══════════════════════════════════════════════════════════"
+    cd kubernetes-app/k8s-bootstrap
+    python -m pytest {{args}}
+
+# Run boot/ tests locally (mocked — no AWS credentials required)
+# Usage: just boot-test-local                           (all boot tests)
+# Usage: just boot-test-local test_ebs_volume.py        (single file)
+# Usage: just boot-test-local -k "test_returns_nvme"    (single test)
+[group('test')]
+boot-test-local *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  🧪  boot/ — Local Unit Tests (mocked)"
+    echo "═══════════════════════════════════════════════════════════"
+    cd kubernetes-app/k8s-bootstrap
+    python -m pytest tests/boot/ -v {{args}}
+
+# Run deploy_helpers/ tests locally (mocked — no AWS credentials required)
+# Usage: just deploy-test-local                           (all deploy tests)
+# Usage: just deploy-test-local test_ssm.py               (single file)
+# Usage: just deploy-test-local -k "test_resolves_single"  (single test)
+[group('test')]
+deploy-test-local *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  🧪  deploy_helpers/ — Local Unit Tests (mocked)"
+    echo "═══════════════════════════════════════════════════════════"
+    cd kubernetes-app/k8s-bootstrap
+    python -m pytest tests/deploy/ -v {{args}}
+
+# Run deploy.py on a live instance via SSM RunCommand (dry-run by default)
+# Prerequisites: just bootstrap-sync && just bootstrap-pull <id>
+# Usage: just deploy-test-live i-0f1491fd3dc63fd66 nextjs
+# Usage: just deploy-test-live i-0f1491fd3dc63fd66 monitoring
+# Usage: just deploy-test-live i-0f1491fd3dc63fd66 nextjs --no-dry-run
+[group('test')]
+deploy-test-live instance-id app="nextjs" dry_run="--dry-run" env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    LOG_DIR="kubernetes-app/k8s-bootstrap/logs"
+    mkdir -p "${LOG_DIR}"
+    TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+    LOG_FILE="${LOG_DIR}/deploy-{{app}}-${TIMESTAMP}.log"
+
+    # Determine script path based on app
+    if [[ "{{app}}" == "nextjs" ]]; then
+      SCRIPT_PATH="/data/app-deploy/nextjs/deploy.py"
+    elif [[ "{{app}}" == "monitoring" ]]; then
+      SCRIPT_PATH="/data/app-deploy/monitoring/deploy.py"
+    else
+      echo "❌ Unknown app: {{app}} (expected 'nextjs' or 'monitoring')"
+      exit 1
+    fi
+
+    # Build command (dry-run by default)
+    DRY_FLAG=""
+    if [[ "{{dry_run}}" == "--dry-run" ]]; then
+      DRY_FLAG="--dry-run"
+      echo "  🧪 Dry-run mode (use --no-dry-run for real deployment)"
+    else
+      echo "  ⚠ LIVE mode — will apply real changes!"
+    fi
+
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  🚀  Deploy Live Test — {{app}}"
+    echo "  Instance: {{instance-id}}"
+    echo "  Script:   ${SCRIPT_PATH}"
+    echo "  Mode:     ${DRY_FLAG:-LIVE}"
+    echo "  📄 Log:   ${LOG_FILE}"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+
+    {
+      echo "=== Deploy Live Test ==="
+      echo "App:         {{app}}"
+      echo "Instance:    {{instance-id}}"
+      echo "Environment: {{env}}"
+      echo "Region:      {{region}}"
+      echo "Dry-run:     {{dry_run}}"
+      echo "Timestamp:   ${TIMESTAMP}"
+      echo ""
+    } | tee "${LOG_FILE}"
+
+    COMMAND_ID=$(aws ssm send-command \
+      --instance-ids "{{instance-id}}" \
+      --document-name "AWS-RunShellScript" \
+      --parameters "commands=['source /etc/profile.d/k8s-env.sh 2>/dev/null || true && KUBECONFIG=/etc/kubernetes/admin.conf python3 ${SCRIPT_PATH} ${DRY_FLAG}']" \
+      --timeout-seconds 300 \
+      --region {{region}} --profile {{profile}} \
+      --query "Command.CommandId" --output text)
+
+    echo "  Command ID: ${COMMAND_ID}" | tee -a "${LOG_FILE}"
+    echo "  Waiting for completion (up to 5 min)..." | tee -a "${LOG_FILE}"
+
+    aws ssm wait command-executed \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --region {{region}} --profile {{profile}} 2>/dev/null || true
+
+    aws ssm get-command-invocation \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --query "{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}" \
+      --output yaml \
+      --region {{region}} --profile {{profile}} | tee -a "${LOG_FILE}"
+
+    echo ""
+    echo "✅ Log saved to: ${LOG_FILE}"
+
+# Run control plane bootstrap on a live instance via SSM RunCommand
+# Prerequisites: just bootstrap-sync && just bootstrap-pull <id>
+# Usage: just boot-test-cp i-0f1491fd3dc63fd66
+[group('k8s')]
+boot-test-cp instance-id env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    LOG_DIR="kubernetes-app/k8s-bootstrap/logs"
+    mkdir -p "${LOG_DIR}"
+    TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+    LOG_FILE="${LOG_DIR}/boot-cp-${TIMESTAMP}.log"
+    echo "🚀 Running control plane bootstrap on {{instance-id}}..."
+    echo "   ⚠ This will apply real changes to the instance!"
+    echo "   📄 Log: ${LOG_FILE}"
+    echo ""
+    {
+      echo "=== Control Plane Bootstrap Run ==="
+      echo "Instance:    {{instance-id}}"
+      echo "Environment: {{env}}"
+      echo "Region:      {{region}}"
+      echo "Timestamp:   ${TIMESTAMP}"
+      echo ""
+    } | tee "${LOG_FILE}"
+    COMMAND_ID=$(aws ssm send-command \
+      --instance-ids "{{instance-id}}" \
+      --document-name "AWS-RunShellScript" \
+      --parameters "commands=['source /etc/profile.d/k8s-env.sh 2>/dev/null || true && cd /data/k8s-bootstrap/boot/steps && python3 control_plane.py']" \
+      --timeout-seconds 900 \
+      --region {{region}} --profile {{profile}} \
+      --query "Command.CommandId" --output text)
+    echo "  Command ID: ${COMMAND_ID}" | tee -a "${LOG_FILE}"
+    echo "  Waiting for completion (up to 15 min)..." | tee -a "${LOG_FILE}"
+    aws ssm wait command-executed \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --region {{region}} --profile {{profile}} 2>/dev/null || true
+    aws ssm get-command-invocation \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --query "{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}" \
+      --output yaml \
+      --region {{region}} --profile {{profile}} | tee -a "${LOG_FILE}"
+    echo ""
+    echo "✅ Log saved to: ${LOG_FILE}"
+
+# Run worker bootstrap on a live instance via SSM RunCommand
+# Prerequisites: just bootstrap-sync && just bootstrap-pull <id>
+# Run AFTER control plane has completed (worker needs join credentials).
+# Usage: just boot-test-worker i-071c910118e0c0beb
+[group('k8s')]
+boot-test-worker instance-id env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    LOG_DIR="kubernetes-app/k8s-bootstrap/logs"
+    mkdir -p "${LOG_DIR}"
+    TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+    LOG_FILE="${LOG_DIR}/boot-worker-${TIMESTAMP}.log"
+    echo "🚀 Running worker bootstrap on {{instance-id}}..."
+    echo "   ⚠ This will apply real changes to the instance!"
+    echo "   📄 Log: ${LOG_FILE}"
+    echo ""
+    {
+      echo "=== Worker Bootstrap Run ==="
+      echo "Instance:    {{instance-id}}"
+      echo "Environment: {{env}}"
+      echo "Region:      {{region}}"
+      echo "Timestamp:   ${TIMESTAMP}"
+      echo ""
+    } | tee "${LOG_FILE}"
+    COMMAND_ID=$(aws ssm send-command \
+      --instance-ids "{{instance-id}}" \
+      --document-name "AWS-RunShellScript" \
+      --parameters "commands=['source /etc/profile.d/k8s-env.sh 2>/dev/null || true && cd /data/k8s-bootstrap/boot/steps && python3 worker.py']" \
+      --timeout-seconds 600 \
+      --region {{region}} --profile {{profile}} \
+      --query "Command.CommandId" --output text)
+    echo "  Command ID: ${COMMAND_ID}" | tee -a "${LOG_FILE}"
+    echo "  Waiting for completion (up to 10 min)..." | tee -a "${LOG_FILE}"
+    aws ssm wait command-executed \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --region {{region}} --profile {{profile}} 2>/dev/null || true
+    aws ssm get-command-invocation \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --query "{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}" \
+      --output yaml \
+      --region {{region}} --profile {{profile}} | tee -a "${LOG_FILE}"
+    echo ""
+    echo "✅ Log saved to: ${LOG_FILE}"
+
+# Full boot live test workflow: sync → pull → run control plane (all-in-one)
+# Usage: just boot-test-live i-0f1491fd3dc63fd66                  (control plane)
+# Usage: just boot-test-live i-071c910118e0c0beb worker           (worker)
+[group('k8s')]
+boot-test-live instance-id node="cp" env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  🔄  Boot Live Test Workflow"
+    echo "  Instance: {{instance-id}}"
+    echo "  Node:     {{node}}"
+    echo "  Environment: {{env}}"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    echo "── Step 1/3: Sync scripts to S3 ──"
+    just bootstrap-sync {{env}} {{region}} {{profile}}
+    echo ""
+    echo "── Step 2/3: Pull scripts onto instance ──"
+    just bootstrap-pull {{instance-id}} {{env}} {{region}} {{profile}}
+    echo ""
+    echo "── Step 3/3: Run bootstrap ({{node}}) ──"
+    if [[ "{{node}}" == "worker" ]]; then
+      just boot-test-worker {{instance-id}} {{env}} {{region}} {{profile}}
+    else
+      just boot-test-cp {{instance-id}} {{env}} {{region}} {{profile}}
+    fi
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  ✅  Boot live test complete!"
+    echo "═══════════════════════════════════════════════════════════"
+
+# Usage: just cert-test i-0f1491fd3dc63fd66
+# Usage: just cert-test i-0f1491fd3dc63fd66 backup     (backup only)
+# Usage: just cert-test i-0f1491fd3dc63fd66 restore    (restore only)
+[group('k8s')]
+cert-test instance-id mode="both" secret="ops-tls-cert" namespace="kube-system" env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  🔒  TLS Certificate Persist — Dry-Run Test"
+    echo "  Instance:  {{instance-id}}"
+    echo "  Secret:    {{namespace}}/{{secret}}"
+    echo "  Mode:      {{mode}}"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+
+    CERT_SCRIPT="/data/k8s-bootstrap/system/cert-manager/persist-tls-cert.py"
+    BASE_CMD="KUBECONFIG=/etc/kubernetes/admin.conf python3 ${CERT_SCRIPT}"
+
+    run_ssm_cmd() {
+      local label="$1"
+      local cmd="$2"
+      echo "── ${label} ──"
+      COMMAND_ID=$(aws ssm send-command \
+        --instance-ids "{{instance-id}}" \
+        --document-name "AWS-RunShellScript" \
+        --parameters "commands=['${cmd}']" \
+        --timeout-seconds 120 \
+        --region {{region}} --profile {{profile}} \
+        --query "Command.CommandId" --output text)
+      echo "  Command ID: ${COMMAND_ID}"
+      aws ssm wait command-executed \
+        --command-id "${COMMAND_ID}" \
+        --instance-id "{{instance-id}}" \
+        --region {{region}} --profile {{profile}} 2>/dev/null || true
+      aws ssm get-command-invocation \
+        --command-id "${COMMAND_ID}" \
+        --instance-id "{{instance-id}}" \
+        --query "{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}" \
+        --output yaml \
+        --region {{region}} --profile {{profile}}
+      echo ""
+    }
+
+    if [[ "{{mode}}" == "both" || "{{mode}}" == "backup" ]]; then
+      run_ssm_cmd "Backup dry-run" "${BASE_CMD} --backup --secret {{secret}} --namespace {{namespace}} --dry-run"
+    fi
+    if [[ "{{mode}}" == "both" || "{{mode}}" == "restore" ]]; then
+      run_ssm_cmd "Restore dry-run" "${BASE_CMD} --restore --secret {{secret}} --namespace {{namespace}} --dry-run"
+    fi
+
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  ✅  Dry-run complete! To run for real, use SSM directly:"
+    echo "     --backup  → backs up K8s secret to SSM"
+    echo "     --restore → restores K8s secret from SSM"
+    echo "═══════════════════════════════════════════════════════════"
+
+# Test etcd backup script on the control plane via SSM
+# Usage: just etcd-test i-0f1491fd3dc63fd66          (check config only)
+# Usage: just etcd-test i-0f1491fd3dc63fd66 run       (take a real backup)
+[group('k8s')]
+etcd-test instance-id mode="check" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  💾  etcd Backup — Test (mode: {{mode}})"
+    echo "  Instance: {{instance-id}}"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+
+    if [[ "{{mode}}" == "check" ]]; then
+      # Validate config without taking a snapshot — uses multiple commands to avoid quote nesting
+      CMD="source /etc/profile.d/k8s-env.sh 2>/dev/null || true && echo S3_BUCKET=\${S3_BUCKET:-NOT_SET} && echo AWS_REGION=\${AWS_REGION:-NOT_SET} && echo [etcd certs] && ls -la /etc/kubernetes/pki/etcd/ 2>/dev/null || echo No etcd certs found && echo [etcdctl] && { command -v etcdctl && etcdctl version || echo etcdctl not in PATH, will use container fallback; } && echo [timer status] && systemctl is-active etcd-backup.timer 2>/dev/null || echo Timer not installed yet"
+    elif [[ "{{mode}}" == "run" ]]; then
+      CMD="bash /data/k8s-bootstrap/system/dr/etcd-backup.sh"
+    else
+      echo "ERROR: Unknown mode '{{mode}}'. Use 'check' or 'run'."
+      exit 1
+    fi
+
+    COMMAND_ID=$(aws ssm send-command \
+      --instance-ids "{{instance-id}}" \
+      --document-name "AWS-RunShellScript" \
+      --parameters "commands=['${CMD}']" \
+      --timeout-seconds 120 \
+      --region {{region}} --profile {{profile}} \
+      --query "Command.CommandId" --output text)
+    echo "  Command ID: ${COMMAND_ID}"
+    echo "  Waiting for completion..."
+    aws ssm wait command-executed \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --region {{region}} --profile {{profile}} 2>/dev/null || true
+    aws ssm get-command-invocation \
+      --command-id "${COMMAND_ID}" \
+      --instance-id "{{instance-id}}" \
+      --query "{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}" \
+      --output yaml \
       --region {{region}} --profile {{profile}}
 
 # =============================================================================

@@ -318,12 +318,19 @@ phases:
         inputs:
           commands:
             - |
-              # Install pip and Python packages required by deploy.py and bootstrap_argocd.py
-              dnf install -y python3-pip
-              pip3 install boto3 pyyaml kubernetes
+              # Install Python 3.11 (AL2023 ships 3.9 as default; boto3 drops 3.9 April 2026)
+              dnf install -y python3.11 python3.11-pip
+
+              # Set python3.11 as the default python3/pip3 via alternatives
+              alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+              alternatives --set python3 /usr/bin/python3.11
+
+              # Install packages required by deploy.py and bootstrap_argocd.py
+              pip3.11 install boto3 pyyaml kubernetes bcrypt
+              python3 -c "import sys; print(f'Python {sys.version}')"
               python3 -c "import boto3; print('boto3', boto3.__version__)"
               python3 -c "import kubernetes; print('kubernetes', kubernetes.__version__)"
-              echo "Python dependencies installed"
+              echo "Python 3.11 + dependencies installed"
 
       - name: CreateDataDirectory
         action: ExecuteBash
@@ -351,9 +358,11 @@ phases:
             - test -f /etc/sysctl.d/k8s.conf && echo "[validate] sysctl k8s config present"
             - test -f /opt/aws/bin/cfn-signal && echo "[validate] cfn-signal binary present"
             - echo "[validate] helm:" && helm version --short
+            - python3 -c "import sys; assert sys.version_info >= (3, 11), f'Expected 3.11+, got {sys.version}'; print(f'python3 {sys.version}')"
             - python3 -c "import boto3; print('boto3', boto3.__version__)"
             - python3 -c "import yaml; print('pyyaml available')"
             - python3 -c "import kubernetes; print('kubernetes', kubernetes.__version__)"
+            - python3 -c "import bcrypt; print('bcrypt available')"
             - test -f /usr/local/bin/ecr-credential-provider && echo "[validate] ecr-credential-provider binary present"
             - test -f /etc/kubernetes/image-credential-provider-config.yaml && echo "[validate] credential provider config present"
             - echo "[validate] k8sgpt:" && k8sgpt version
