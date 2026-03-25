@@ -341,18 +341,20 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
     describe('AMI Software Components', () => {
         let componentYaml: string;
 
+        let executableAlternativesLines: string[];
+
         // Depends on: CONFIGS populated at module scope
         beforeAll(() => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            const { buildGoldenAmiComponent } = require('../../../lib/constructs/compute/utils/build-golden-ami-component');
+            const { buildGoldenAmiComponent } = require('../../../lib/constructs/compute/utils/build-golden-ami-component') as {
+                buildGoldenAmiComponent: (opts: { imageConfig: typeof CONFIGS.image; clusterConfig: typeof CONFIGS.cluster }) => string;
+            };
             componentYaml = buildGoldenAmiComponent({
                 imageConfig: CONFIGS.image,
                 clusterConfig: CONFIGS.cluster,
-            }) as string;
-        });
+            });
 
-        it('should NOT use alternatives --set python3 (breaks cloud-init)', () => {
-            const executableLines = componentYaml
+            // Pre-filter executable lines containing the anti-pattern (outside it() per jest/no-conditional-in-test)
+            executableAlternativesLines = componentYaml
                 .split('\n')
                 .filter((line) => {
                     const trimmed = line.trim();
@@ -362,7 +364,10 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
                         !trimmed.startsWith('//')
                     );
                 });
-            expect(executableLines).toHaveLength(0);
+        });
+
+        it('should NOT use alternatives --set python3 (breaks cloud-init)', () => {
+            expect(executableAlternativesLines).toHaveLength(0);
         });
 
         it('should NOT use alternatives --install for python3', () => {

@@ -14,9 +14,9 @@
  *   yarn jest tests/unit/constructs/compute/build-golden-ami-component.test.ts
  */
 
-import { buildGoldenAmiComponent } from '../../../../lib/constructs/compute/utils/build-golden-ami-component';
-import { getK8sConfigs } from '../../../../lib/config/kubernetes';
 import { Environment } from '../../../../lib/config/environments';
+import { getK8sConfigs } from '../../../../lib/config/kubernetes';
+import { buildGoldenAmiComponent } from '../../../../lib/constructs/compute/utils/build-golden-ami-component';
 
 // =============================================================================
 // Configuration (config-driven — no hardcoded versions)
@@ -46,14 +46,19 @@ describe('buildGoldenAmiComponent — Anti-Pattern Detection', () => {
     // Critical: System Python Integrity
     // =========================================================================
     describe('System Python Integrity', () => {
-        it('should NOT execute alternatives --set python3 (breaks cloud-init)', () => {
-            const lines = componentYaml.split('\n');
-            const executableAlternativesLines = lines.filter(
-                (line) => {
+        let executableAlternativesLines: string[];
+
+        // Depends on: componentYaml populated in top-level beforeAll
+        beforeAll(() => {
+            executableAlternativesLines = componentYaml
+                .split('\n')
+                .filter((line) => {
                     const trimmed = line.trim();
                     return trimmed.includes('alternatives --set python3') && !trimmed.startsWith('#');
-                },
-            );
+                });
+        });
+
+        it('should NOT execute alternatives --set python3 (breaks cloud-init)', () => {
             expect(executableAlternativesLines).toHaveLength(0);
         });
 
@@ -70,6 +75,16 @@ describe('buildGoldenAmiComponent — Anti-Pattern Detection', () => {
     // Critical: Virtualenv at /opt/k8s-venv
     // =========================================================================
     describe('Virtualenv Setup', () => {
+        let barePipLines: string[];
+
+        // Depends on: componentYaml populated in top-level beforeAll
+        beforeAll(() => {
+            // Match "pip3 install" that is NOT preceded by /opt/k8s-venv/bin/
+            barePipLines = componentYaml
+                .split('\n')
+                .filter((line) => line.includes('pip3 install') && !line.includes('/opt/k8s-venv/bin/pip'));
+        });
+
         it('should create a virtualenv at /opt/k8s-venv with Python 3.11', () => {
             expect(componentYaml).toContain('python3.11 -m venv /opt/k8s-venv');
         });
@@ -79,11 +94,6 @@ describe('buildGoldenAmiComponent — Anti-Pattern Detection', () => {
         });
 
         it('should NOT install packages via bare pip3 (would use system Python)', () => {
-            // Match "pip3 install" that is NOT preceded by /opt/k8s-venv/bin/
-            const lines = componentYaml.split('\n');
-            const barePipLines = lines.filter(
-                (line) => line.includes('pip3 install') && !line.includes('/opt/k8s-venv/bin/pip'),
-            );
             expect(barePipLines).toHaveLength(0);
         });
 
