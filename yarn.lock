@@ -6089,8 +6089,8 @@ __metadata:
   resolution: "@nelsonlamounier/cdk-governance-aspects@workspace:packages/cdk-governance-aspects"
   dependencies:
     "@types/jest": "npm:^29.5.14"
-    aws-cdk-lib: "npm:^2.185.0"
-    constructs: "npm:^10.4.2"
+    aws-cdk-lib: "npm:^2.244.0"
+    constructs: "npm:^10.6.0"
     jest: "npm:^29.7.0"
     ts-jest: "npm:^29.3.1"
     typescript: "npm:~5.8.2"
@@ -8173,9 +8173,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"aws-cdk-lib@npm:^2.185.0, aws-cdk-lib@npm:^2.232.1":
-  version: 2.243.0
-  resolution: "aws-cdk-lib@npm:2.243.0"
+"aws-cdk-lib@npm:^2.244.0":
+  version: 2.244.0
+  resolution: "aws-cdk-lib@npm:2.244.0"
   dependencies:
     "@aws-cdk/asset-awscli-v1": "npm:2.2.263"
     "@aws-cdk/asset-node-proxy-agent-v6": "npm:^2.1.1"
@@ -8194,16 +8194,25 @@ __metadata:
     yaml: "npm:1.10.2"
   peerDependencies:
     constructs: ^10.5.0
-  checksum: 10c0/34b25f4d7b8b12bf5a38a40138517ec819e0ab2daa81e6af7f5f78ca79ae1c533ba15e618d458df7037be06bc6279ba66730396e99f07edb3ac9a36a13c94adc
+  checksum: 10c0/f4903e44648e7ef8d506e45b004df4e54000e442952568f1a083f0076eb2bf1dd4b4378c54610fc4fc35a8edce2191d87c4e0311973670d26fcf3e987850f28c
   languageName: node
   linkType: hard
 
-"aws-cdk@npm:2.1111.0, aws-cdk@npm:^2.232.1":
+"aws-cdk@npm:2.1111.0":
   version: 2.1111.0
   resolution: "aws-cdk@npm:2.1111.0"
   bin:
     cdk: bin/cdk
   checksum: 10c0/7cf579068b19a211a845a5f55676dd335209ec91b3783845d0ed5e72f4fa1fcd3d39cc7f878c82c3628302b05639fccf006b4b956127e169fb9b469e7bf3b3a9
+  languageName: node
+  linkType: hard
+
+"aws-cdk@npm:^2.1113.0":
+  version: 2.1113.0
+  resolution: "aws-cdk@npm:2.1113.0"
+  bin:
+    cdk: bin/cdk
+  checksum: 10c0/46769381e4d8cd690207a9df67d3ec650c175dc878496cf413e675d44ffbe8b2bae25187b3ffeeb55cb03790912e4078d27bac3251b3aaeb01bc9fad635b9ce6
   languageName: node
   linkType: hard
 
@@ -8742,14 +8751,14 @@ __metadata:
     "@types/source-map-support": "npm:^0.5.10"
     "@typescript-eslint/eslint-plugin": "npm:^8.18.1"
     "@typescript-eslint/parser": "npm:^8.18.1"
-    aws-cdk: "npm:^2.232.1"
-    aws-cdk-lib: "npm:^2.232.1"
+    aws-cdk: "npm:^2.1113.0"
+    aws-cdk-lib: "npm:^2.244.0"
     aws-sdk-client-mock: "npm:^4.1.0"
     aws-sdk-client-mock-jest: "npm:^4.1.0"
     babel-jest: "npm:^29.7.0"
     cdk-nag: "npm:^2.37.55"
     chalk: "npm:^5.6.2"
-    constructs: "npm:^10.4.4"
+    constructs: "npm:^10.6.0"
     dependency-cruiser: "npm:^17.3.7"
     dotenv: "npm:^16.3.1"
     esbuild: "npm:^0.27.3"
@@ -8960,10 +8969,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"constructs@npm:^10.4.2, constructs@npm:^10.4.4":
-  version: 10.5.1
-  resolution: "constructs@npm:10.5.1"
-  checksum: 10c0/06767f8a026f6951fd1b1073e9980ab1c006b8ca4b691362ba72e6044756f6bd661defc95f7c307d08b955fd23f3e79adda6096c1339dbb814e1f07831dacac6
+"constructs@npm:^10.6.0":
+  version: 10.6.0
+  resolution: "constructs@npm:10.6.0"
+  checksum: 10c0/67fbd1719698509b527d2d7c1f8a6ac26d91eaf15edc69fedebc71100abf4d8ebc306184883fbb677299d6fd9c2dcbbea80db0e4201564f88f9ff88f15d6668f
   languageName: node
   linkType: hard
 
