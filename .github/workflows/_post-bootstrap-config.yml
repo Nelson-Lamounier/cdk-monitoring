@@ -7,18 +7,27 @@
 # re-deploy secrets without re-triggering the heavy bootstrap process.
 #
 # ─── Job Flow ──────────────────────────────────────────────────────
-#   deploy-nextjs-secrets ──┐
-#                           ├── verify
-#   deploy-monitoring-secrets ┘
+#   deploy-secrets → verify
 #
-#   1. deploy-nextjs-secrets      - Create/update nextjs-secrets K8s Secret
-#   2. deploy-monitoring-secrets  - Create/update monitoring K8s Secrets
-#   3. verify                     - ArgoCD health + K8s smoke tests
+#   1. deploy-secrets  - Deploy Next.js + monitoring K8s Secrets via
+#                        the consolidated k8s-deploy-secrets SSM
+#                        Automation document (2-step sequence)
+#   2. verify          - ArgoCD health + K8s smoke tests
 #
 # ─── Usage ─────────────────────────────────────────────────────────
 #   Called by:
-#     - _deploy-ssm-automation.yml  (after bootstrap completes)
+#     - _deploy-ssm-automation.yml  (Phase 6, after bootstrap completes)
 #     - deploy-post-bootstrap.yml   (standalone for secret-only updates)
+#
+# ─── SSM Document Consolidation ───────────────────────────────────
+#   Both Next.js and monitoring secrets are deployed via a single
+#   SSM Automation document (k8s-deploy-secrets) with 2 steps.
+#   The document name is resolved from SSM parameter:
+#     /k8s/<env>/deploy/secrets-doc-name
+#
+#   Each CI deploy script triggers the document with app-specific
+#   parameters (app name, SSM paths) — the document handles S3 sync
+#   of deploy scripts and Python execution on the control plane.
 
 name: Post-Bootstrap Config (Reusable)
 
@@ -48,58 +57,20 @@ env:
 
 jobs:
   # ===========================================================================
-  # Deploy Next.js Secrets — Create K8s Secret from SSM Parameters
+  # Deploy Secrets — Next.js + Monitoring via consolidated SSM Document
   #
-  # Runs deploy.py on the control plane via SSM Automation document.
-  # The document syncs deploy scripts from S3 and executes deploy.py
-  # to resolve SSM parameters and create/update the nextjs-secrets
-  # K8s Secret.
+  # Triggers the k8s-deploy-secrets SSM Automation document twice:
+  #   Step 1: Next.js secrets (SSM → K8s Secret in nextjs namespace)
+  #   Step 2: Monitoring secrets (grafana-admin-password, github-token
+  #           → K8s Secrets + Helm chart + Grafana password reset)
   #
-  # Visible in: AWS Console → Systems Manager → Automation → Executions
-  # ===========================================================================
-  deploy-nextjs-secrets:
-    name: Deploy Next.js Secrets
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 10
-    environment: ${{ inputs.environment }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Node.js & Install dependencies
-        uses: ./.github/actions/setup-node-yarn
-
-      - name: Build TypeScript
-        run: just build
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
-
-      - name: Deploy Next.js Secrets
-        run: |
-          just ci-deploy-nextjs-secrets \
-            --environment ${{ inputs.environment }} \
-            --region ${{ vars.AWS_REGION || 'eu-west-1' }}
-
-  # ===========================================================================
-  # Deploy Monitoring Secrets — Create K8s Secrets from SSM Parameters
-  #
-  # Runs deploy.py on the control plane via SSM Automation document.
-  # The document syncs deploy scripts from S3 and executes deploy.py
-  # to resolve SSM parameters (grafana-admin-password, github-token),
-  # create/update K8s Secrets, deploy Helm chart, and reset Grafana password.
+  # Both scripts resolve the document name from the same SSM parameter:
+  #   /k8s/<env>/deploy/secrets-doc-name
   #
   # Visible in: AWS Console → Systems Manager → Automation → Executions
   # ===========================================================================
-  deploy-monitoring-secrets:
-    name: Deploy Monitoring Secrets
+  deploy-secrets:
+    name: Deploy Secrets (Next.js + Monitoring)
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
@@ -123,7 +94,28 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
           audience: sts.amazonaws.com
 
-      - name: Deploy Monitoring Secrets
+      # -----------------------------------------------------------------------
+      # Step 1 — Deploy Next.js Secrets
+      #
+      # Triggers k8s-deploy-secrets SSM Automation document to execute
+      # deploy.py on the control plane. Resolves SSM parameters for
+      # Next.js app config and creates/updates the nextjs-secrets
+      # K8s Secret in the nextjs namespace.
+      # -----------------------------------------------------------------------
+      - name: "Step 1 — Deploy Next.js Secrets"
+        run: |
+          just ci-deploy-nextjs-secrets \
+            --environment ${{ inputs.environment }} \
+            --region ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+      # -----------------------------------------------------------------------
+      # Step 2 — Deploy Monitoring Secrets
+      #
+      # Same SSM Automation document, different parameters. Resolves
+      # grafana-admin-password and github-token from SSM, creates/updates
+      # K8s Secrets, deploys Helm chart, and resets Grafana password.
+      # -----------------------------------------------------------------------
+      - name: "Step 2 — Deploy Monitoring Secrets"
         run: >-
           just ci-deploy-monitoring-secrets
           --environment ${{ inputs.environment }}
@@ -138,15 +130,10 @@ jobs:
   # ===========================================================================
   verify:
     name: Verify & Smoke Tests
-    needs:
-      [
-        deploy-nextjs-secrets,
-        deploy-monitoring-secrets,
-      ]
+    needs: [deploy-secrets]
     if: >-
       always()
-      && (needs.deploy-nextjs-secrets.result == 'success' || needs.deploy-nextjs-secrets.result == 'skipped')
-      && (needs.deploy-monitoring-secrets.result == 'success' || needs.deploy-monitoring-secrets.result == 'skipped')
+      && (needs.deploy-secrets.result == 'success' || needs.deploy-secrets.result == 'skipped')
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
