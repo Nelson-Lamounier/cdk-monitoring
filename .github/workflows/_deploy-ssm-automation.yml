@@ -201,7 +201,7 @@ jobs:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
         run: |
-          yarn install --immutable --cwd infra
+          yarn --cwd infra install --immutable
           just ci-integration-test kubernetes/s3-bootstrap-artefacts $CDK_ENV --verbose
 
       # -----------------------------------------------------------------------
