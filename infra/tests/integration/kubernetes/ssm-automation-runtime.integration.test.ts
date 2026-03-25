@@ -30,7 +30,6 @@ import {
 import type { Instance, InstanceStatus } from '@aws-sdk/client-ec2';
 import {
     SSMClient,
-    DescribeAutomationExecutionsCommand,
     GetAutomationExecutionCommand,
     DescribeInstanceInformationCommand,
     GetParameterCommand,
@@ -89,6 +88,8 @@ interface BootstrapRole {
     role: string;
     /** SSM parameter path for the automation document name */
     docNameParam: string;
+    /** SSM parameter path where trigger-bootstrap.ts publishes the execution ID */
+    execParam: string;
 }
 
 /** Cached data per role, populated in beforeAll */
@@ -101,6 +102,8 @@ interface RoleData {
     ssmInfo?: InstanceInformation;
     /** Instance ID that the latest SSM Automation execution targeted */
     automationTargetInstanceId?: string;
+    /** The k8s:bootstrap-role tag value of the automation-targeted instance */
+    automationTargetRole?: string;
 }
 
 // =============================================================================
@@ -112,21 +115,25 @@ const BOOTSTRAP_ROLES: BootstrapRole[] = [
         label: 'Control Plane',
         role: 'control-plane',
         docNameParam: `${PREFIX}/bootstrap/control-plane-doc-name`,
+        execParam: `${PREFIX}/bootstrap/execution-id`,
     },
     {
         label: 'App Worker',
         role: 'app-worker',
-        docNameParam: `${PREFIX}/bootstrap/app-worker-doc-name`,
+        docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
+        execParam: `${PREFIX}/bootstrap/worker-execution-id`,
     },
     {
         label: 'Mon Worker',
         role: 'mon-worker',
-        docNameParam: `${PREFIX}/bootstrap/mon-worker-doc-name`,
+        docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
+        execParam: `${PREFIX}/bootstrap/mon-worker-execution-id`,
     },
     {
         label: 'ArgoCD Worker',
         role: 'argocd-worker',
-        docNameParam: `${PREFIX}/bootstrap/argocd-worker-doc-name`,
+        docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
+        execParam: `${PREFIX}/bootstrap/argocd-worker-execution-id`,
     },
 ];
 
@@ -194,23 +201,19 @@ async function getSsmAgentInfo(instanceId: string): Promise<InstanceInformation 
 }
 
 /**
- * Get the instance ID targeted by the latest SSM Automation execution
- * for a given document name. Returns undefined if no execution exists.
+ * Get the instance ID targeted by a specific SSM Automation execution.
  *
- * Uses two API calls: DescribeAutomationExecutions → execution ID,
- * then GetAutomationExecution → full execution with Parameters.
+ * Reads the execution ID from the role-specific SSM parameter
+ * (published by trigger-bootstrap.ts), then fetches the execution
+ * detail to extract the InstanceId parameter.
+ *
+ * This avoids ambiguity from the shared worker doc name — each role
+ * has its own execution-ID parameter.
  */
-async function getAutomationTargetInstance(docName: string): Promise<string | undefined> {
-    const listing = await ssm.send(
-        new DescribeAutomationExecutionsCommand({
-            Filters: [
-                { Key: 'DocumentNamePrefix', Values: [docName] },
-            ],
-            MaxResults: 1,
-        }),
-    );
-
-    const execId = listing.AutomationExecutionMetadataList?.[0]?.AutomationExecutionId;
+async function getAutomationTargetFromExecParam(
+    execParam: string,
+): Promise<string | undefined> {
+    const execId = await getParam(execParam);
     if (!execId) return undefined;
 
     const detail = await ssm.send(
@@ -218,6 +221,30 @@ async function getAutomationTargetInstance(docName: string): Promise<string | un
     );
 
     return detail.AutomationExecution?.Parameters?.['InstanceId']?.[0];
+}
+
+/**
+ * Resolve the k8s:bootstrap-role tag for a given instance ID.
+ *
+ * Works for both running and recently-terminated instances because
+ * EC2 retains tags on terminated instances for a short period.
+ * Returns undefined if the instance or tag cannot be found.
+ */
+async function getInstanceBootstrapRole(instanceId: string): Promise<string | undefined> {
+    try {
+        const { Reservations } = await ec2.send(
+            new DescribeInstancesCommand({
+                InstanceIds: [instanceId],
+            }),
+        );
+
+        const instance = (Reservations ?? []).flatMap((r) => r.Instances ?? [])[0];
+        const tag = (instance?.Tags ?? []).find((t) => t.Key === BOOTSTRAP_ROLE_TAG);
+        return tag?.Value;
+    } catch {
+        // Instance may have been fully cleaned up
+        return undefined;
+    }
 }
 
 // =============================================================================
@@ -250,9 +277,18 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
             }
 
             // 4. SSM Automation target — which instance did the doc run on?
-            const docName = await getParam(target.docNameParam);
-            if (docName) {
-                data.automationTargetInstanceId = await getAutomationTargetInstance(docName);
+            //    Uses the role-specific execution-ID SSM parameter to avoid
+            //    shared-doc-name ambiguity between workers.
+            data.automationTargetInstanceId = await getAutomationTargetFromExecParam(
+                target.execParam,
+            );
+
+            // 5. Resolve the bootstrap-role tag of the targeted instance
+            //    (works even if the instance was terminated by ASG)
+            if (data.automationTargetInstanceId) {
+                data.automationTargetRole = await getInstanceBootstrapRole(
+                    data.automationTargetInstanceId,
+                );
             }
 
             roleDataMap.set(target.label, data);
@@ -265,19 +301,24 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
     describe.each(BOOTSTRAP_ROLES)(
         'Targeting — $label',
         (target) => {
-            let targetInstanceId: string | typeof VACUOUS;
-            let expectedInstanceId: string | typeof VACUOUS;
+            let automationTargetRole: string | typeof VACUOUS;
+            let expectedRole: string | typeof VACUOUS;
 
             // Depends on: roleDataMap populated in top-level beforeAll
             beforeAll(() => {
                 const data = roleDataMap.get(target.label) ?? {};
-                targetInstanceId = data.automationTargetInstanceId ?? VACUOUS;
-                expectedInstanceId = data.instance?.InstanceId ?? VACUOUS;
+                automationTargetRole = data.automationTargetRole ?? VACUOUS;
+                // Pre-compute expected value: if no execution data exists
+                // (vacuous), expect VACUOUS; otherwise expect the role tag.
+                expectedRole = automationTargetRole === VACUOUS ? VACUOUS : target.role;
             });
 
             it('should have targeted the instance tagged with the correct role', () => {
-                // Vacuous pass when no execution or no instance exists
-                expect(targetInstanceId).toBe(expectedInstanceId);
+                // Vacuous pass when no execution or no instance exists.
+                // When ASG replaces an instance after the last bootstrap run,
+                // the automation's target instance ID will differ from the
+                // current running instance — but the tag must still match.
+                expect(automationTargetRole).toBe(expectedRole);
             });
         },
     );

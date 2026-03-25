@@ -66,12 +66,15 @@ K8s Cluster (kubeadm, private API endpoint on port 6443)
 │       └── ArgoCD ApplicationSet Controller
 │
 └── Monitoring Worker Node
-        ├── Prometheus (kube-prometheus-stack)
-        ├── Grafana
-        ├── Loki (log aggregation via NodePort)
-        ├── Tempo (distributed tracing via NodePort)
-        ├── OpenCost
-        └── Alertmanager
+        ├── Prometheus (custom Helm chart, native scrape_configs)
+        ├── Grafana (13 dashboards, unified alerting → SNS)
+        ├── Loki (log aggregation via ClusterIP)
+        ├── Tempo (distributed tracing via ClusterIP)
+        ├── Alloy (Faro RUM collector)
+        ├── Promtail (DaemonSet log shipper)
+        ├── kube-state-metrics
+        ├── GitHub Actions Exporter
+        └── Steampipe (AWS cloud inventory via SQL)
 ```
 
 ## Data Flow
@@ -122,18 +125,23 @@ Browser → Route 53 DNS
 ### Monitoring Data Path
 
 ```
-K8s Pods → Prometheus (scrape every 30s)
-  → Grafana (dashboards)
-  → Alertmanager → SNS topic → Email notifications
+K8s Pods → Prometheus (native scrape_configs, 30s interval, 12 jobs)
+  → Grafana (13 dashboards)
+  → Grafana Unified Alerting (11 rules) → SNS topic → Email notifications
 
-Application logs → Loki (push via NodePort)
-  → Grafana (log queries)
+Pod logs → Promtail DaemonSet → Loki (ClusterIP)
+  → Grafana (log queries, derived fields → Tempo trace links)
 
-Traces → Tempo (push via NodePort)
-  → Grafana (trace explorer)
+Browser → Faro SDK → Alloy (port 12347 via /faro IngressRoute)
+  → Loki (client logs) + Tempo (client traces)
+
+Application traces → Tempo (OTLP gRPC/HTTP, ClusterIP)
+  → Metrics generator → Prometheus (span-metrics remote write)
+  → Grafana (trace explorer, service graph)
 
 CloudWatch ← Lambda invocations, API Gateway metrics, EC2 metrics
-  → CloudWatch Dashboards (Bedrock observability)
+  → CloudWatch Dashboards (Bedrock observability, pre-deployment)
+  → Grafana (CloudWatch datasource eu-west-1 + us-east-1)
 ```
 
 ## Security Group Architecture
@@ -154,9 +162,9 @@ Ingress SG (Traefik)
   └── Port 8443 (Traefik dashboard) from admin IPs only
 
 Monitoring SG
-  ├── Port 3000 (Grafana) from admin IPs
-  ├── Port 9090 (Prometheus) from admin IPs
-  └── Loki + Tempo NodePorts from VPC CIDR
+  ├── Port 9090 (Prometheus) from VPC CIDR
+  ├── Port 9100 (Node Exporter) from VPC CIDR + Pod CIDR
+  └── Port 12347 (Alloy Faro) from VPC CIDR
 ```
 
 **Admin IPs** are stored in SSM configuration and referenced dynamically by CDK — not hardcoded in security group rules.

@@ -158,6 +158,11 @@ FRONTEND_SECRET_MAP = {
     "dynamodb-table-name": "DYNAMODB_TABLE_NAME",
     "assets-bucket-name": "ASSETS_BUCKET_NAME",
     "api-gateway-url": "NEXT_PUBLIC_API_URL",
+    # NextAuth.js admin authentication
+    "auth/nextauth-secret": "NEXTAUTH_SECRET",
+    "auth/admin-username": "ADMIN_USERNAME",
+    "auth/admin-password": "ADMIN_PASSWORD",
+    "auth/nextauth-url": "NEXTAUTH_URL",
 }
 
 
@@ -263,7 +268,10 @@ def create_k8s_secrets(
     secrets = cfg.secrets
     secret_data: dict[str, str] = {}
 
-    for env_var in ["DYNAMODB_TABLE_NAME", "ASSETS_BUCKET_NAME", "NEXT_PUBLIC_API_URL"]:
+    for env_var in [
+        "DYNAMODB_TABLE_NAME", "ASSETS_BUCKET_NAME", "NEXT_PUBLIC_API_URL",
+        "NEXTAUTH_SECRET", "ADMIN_USERNAME", "ADMIN_PASSWORD", "NEXTAUTH_URL",
+    ]:
         value = secrets.get(env_var, "")
         if value:
             secret_data[env_var] = value

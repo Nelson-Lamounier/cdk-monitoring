@@ -69,7 +69,7 @@
 ### Storage
 
 - **S3 Buckets:** KB source data, bootstrap scripts, frontend static assets (10 total)
-- **EFS:** Shared filesystem for monitoring data (Prometheus, Grafana) — survives instance termination
+- **EBS (GP3):** KMS-encrypted volumes for each EC2 instance, local-path PVs for monitoring data
 - **DynamoDB:** Single table for published article metadata (single-table design)
 
 ### AI / Bedrock
@@ -98,9 +98,12 @@
 
 ### Observability
 
-- **Loki:** Log aggregation endpoint on monitoring node (NodePort)
-- **Tempo:** Distributed tracing endpoint on monitoring node (NodePort)
-- **SNS:** Monitoring alerts topic for Alertmanager notifications
+- **Prometheus:** Custom Helm chart, native scrape_configs (12 jobs, 30s interval)
+- **Grafana:** 13 dashboards, 6 federated datasources (Prometheus, Loki, Tempo, CloudWatch ×2, Steampipe)
+- **Loki:** Log aggregation via ClusterIP (TSDB store, v13 schema, 7d retention)
+- **Tempo:** Distributed tracing via ClusterIP, metrics generator → Prometheus remote write
+- **Alloy:** Faro RUM collector (port 12347, Traefik IngressRoute /faro)
+- **Grafana Unified Alerting:** 11 rules → SNS contact point (KMS-encrypted topic)
 - **Secrets:** Prometheus metrics token and Grafana admin password in SSM SecureString
 
 ## SSM Parameter Architecture
@@ -127,7 +130,7 @@ All infrastructure outputs are stored in SSM Parameter Store (141 parameters) us
 - **SSM as parameter store** — All infrastructure outputs stored in SSM rather than CloudFormation exports or Terraform outputs. This enables cross-stack lookups, programmatic discovery by CI/CD pipelines, and MCP tool access.
 - **SecureString for secrets** — K8s join tokens, deploy keys, admin passwords, and TLS certificates stored as KMS-encrypted SecureString parameters. No secrets in Git or environment variables.
 - **4 EC2 instances** — Separated control plane from worker nodes by role (app, ArgoCD, monitoring). Each node has a dedicated SSM automation execution ID for traceable bootstrap provenance.
-- **EFS for monitoring data** — Prometheus and Grafana data persisted to EFS rather than local EBS. Survives instance termination and supports the self-healing architecture.
+- **Local-path PVs for monitoring** — Prometheus, Grafana, and Loki data use local-path Persistent Volumes on the dedicated monitoring node. The `Recreate` deployment strategy prevents RWO PVC deadlocks during updates.
 
 ## Transferable Skills Demonstrated
 

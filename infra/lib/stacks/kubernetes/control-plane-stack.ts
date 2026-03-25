@@ -201,6 +201,7 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             instanceName: `${namePrefix}-control-plane`,
             bootstrapRole: 'control-plane',
             ssmPrefix: props.ssmPrefix,
+            clusterIdentifier: namePrefix,
             enableTerminationLifecycleHook: true,
             useSignals: configs.compute.useSignals,
             signalsTimeoutMinutes: configs.compute.signalsTimeoutMinutes,
@@ -550,6 +551,23 @@ function grantMonitoringPermissions(
             'ec2:DetachVolume',
             'ec2:DescribeVolumes',
             'ec2:DescribeInstances',
+        ],
+        resources: ['*'],
+    }));
+
+    // AWS Cloud Controller Manager — read-only EC2 permissions
+    // The CCM's Node Lifecycle Controller uses these to detect
+    // terminated instances, apply zone/region labels, and set providerID.
+    role.addToPrincipalPolicy(new iam.PolicyStatement({
+        sid: 'AwsCcmNodeLifecycle',
+        effect: iam.Effect.ALLOW,
+        actions: [
+            'ec2:DescribeAvailabilityZones',
+            'ec2:DescribeRegions',
+            'ec2:DescribeRouteTables',
+            'ec2:DescribeSecurityGroups',
+            'ec2:DescribeSubnets',
+            'ec2:DescribeVpcs',
         ],
         resources: ['*'],
     }));

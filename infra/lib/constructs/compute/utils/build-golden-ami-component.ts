@@ -240,8 +240,9 @@ phases:
               ECR_PROVIDER_VERSION="${imageConfig.bakedVersions.ecrCredentialProvider}"
 
               curl -fsSL \\
-                "https://storage.googleapis.com/k8s-staging-provider-aws/releases/\${ECR_PROVIDER_VERSION}/linux/$ARCH/ecr-credential-provider-linux-$ARCH" \\
-                -o /usr/local/bin/ecr-credential-provider
+                "https://storage.googleapis.com/k8s-artifacts-prod/binaries/cloud-provider-aws/\${ECR_PROVIDER_VERSION}/linux/$ARCH/ecr-credential-provider-linux-$ARCH" \\
+                -o /usr/local/bin/ecr-credential-provider \\
+                || { echo "FATAL: ecr-credential-provider download failed"; exit 1; }
               chmod +x /usr/local/bin/ecr-credential-provider
               echo "ecr-credential-provider \${ECR_PROVIDER_VERSION} installed"
 

@@ -32,9 +32,9 @@ All assertions pass **vacuously** when no instances or executions exist (e.g. fi
 | Role | EC2 Tag Value | SSM Doc Param |
 |---|---|---|
 | Control Plane | `control-plane` | `/k8s/{env}/bootstrap/control-plane-doc-name` |
-| App Worker | `app-worker` | `/k8s/{env}/bootstrap/app-worker-doc-name` |
-| Mon Worker | `mon-worker` | `/k8s/{env}/bootstrap/mon-worker-doc-name` |
-| ArgoCD Worker | `argocd-worker` | `/k8s/{env}/bootstrap/argocd-worker-doc-name` |
+| App Worker | `app-worker` | `/k8s/{env}/bootstrap/worker-doc-name` |
+| Mon Worker | `mon-worker` | `/k8s/{env}/bootstrap/worker-doc-name` |
+| ArgoCD Worker | `argocd-worker` | `/k8s/{env}/bootstrap/worker-doc-name` |
 
 ---
 

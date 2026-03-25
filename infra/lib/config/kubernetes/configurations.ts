@@ -457,7 +457,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
-            nodeLabel: 'workload=monitoring',
+            nodeLabel: 'workload=monitoring,environment=development',
             detailedMonitoring: false,
             useSignals: true,
             signalsTimeoutMinutes: 40,
@@ -466,7 +466,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
         },
         argocdWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
-            nodeLabel: 'workload=argocd',
+            nodeLabel: 'workload=argocd,environment=development',
             useSpotInstances: true,
             detailedMonitoring: false,
             useSignals: true,
@@ -538,7 +538,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
-            nodeLabel: 'workload=monitoring',
+            nodeLabel: 'workload=monitoring,environment=staging',
             detailedMonitoring: true,
             useSignals: true,
             signalsTimeoutMinutes: 40,
@@ -547,7 +547,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
         },
         argocdWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
-            nodeLabel: 'workload=argocd',
+            nodeLabel: 'workload=argocd,environment=staging',
             useSpotInstances: true,
             detailedMonitoring: true,
             useSignals: true,
@@ -619,7 +619,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
-            nodeLabel: 'workload=monitoring',
+            nodeLabel: 'workload=monitoring,environment=production',
             detailedMonitoring: true,
             useSignals: true,
             signalsTimeoutMinutes: 40,
@@ -628,7 +628,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
         },
         argocdWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
-            nodeLabel: 'workload=argocd',
+            nodeLabel: 'workload=argocd,environment=production',
             useSpotInstances: true,
             detailedMonitoring: true,
             useSignals: true,

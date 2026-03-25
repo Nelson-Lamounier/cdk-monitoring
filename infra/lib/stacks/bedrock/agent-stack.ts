@@ -11,6 +11,7 @@
 import {
     bedrock,
 } from '@cdklabs/generative-ai-cdk-constructs';
+import type { IKnowledgeBase } from '@cdklabs/generative-ai-cdk-constructs/lib/cdk-lib/bedrock/knowledge-bases/knowledge-base';
 import { NagSuppressions } from 'cdk-nag';
 
 import * as cdkBedrock from 'aws-cdk-lib/aws-bedrock';
@@ -46,6 +47,8 @@ export interface BedrockAgentStackProps extends cdk.StackProps {
     readonly actionGroupLambdaTimeoutSeconds: number;
     /** Removal policy for resources */
     readonly removalPolicy: cdk.RemovalPolicy;
+    /** Optional Knowledge Base to associate with the agent */
+    readonly knowledgeBase?: IKnowledgeBase;
 }
 
 /**
@@ -122,6 +125,53 @@ export class BedrockAgentStack extends cdk.Stack {
             });
         }
 
+        // =================================================================
+        // Topic Denial — Block off-topic queries
+        // =================================================================
+        this.guardrail.addDeniedTopicFilter(
+            bedrock.Topic.custom({
+                name: 'OffTopicQueries',
+                definition:
+                    'Any question or request not related to Nelson Lamounier\'s ' +
+                    'portfolio, projects, skills, certifications, AWS infrastructure, ' +
+                    'career experience, or the technologies documented in the Knowledge Base.',
+                examples: [
+                    'What is the capital of France?',
+                    'Explain how machine learning works',
+                    'Help me with my homework',
+                    'What is the weather today?',
+                    'Tell me a joke',
+                ],
+            }),
+        );
+
+        this.guardrail.addDeniedTopicFilter(
+            bedrock.Topic.custom({
+                name: 'CodeGenerationRequests',
+                definition:
+                    'Requests to write, generate, debug, or refactor code that is ' +
+                    'not directly documented in the Knowledge Base. The assistant ' +
+                    'should not act as a general-purpose coding tool.',
+                examples: [
+                    'Write me a Python script to sort a list',
+                    'Generate a React component for a login page',
+                    'Debug this Java code for me',
+                    'Create a SQL query to join these tables',
+                ],
+            }),
+        );
+
+        // =================================================================
+        // Contextual Grounding — Ensure responses are KB-grounded
+        // =================================================================
+        this.guardrail.addContextualGroundingFilter({
+            type: bedrock.ContextualGroundingFilterType.GROUNDING,
+            threshold: 0.7,
+        });
+        this.guardrail.addContextualGroundingFilter({
+            type: bedrock.ContextualGroundingFilterType.RELEVANCE,
+            threshold: 0.7,
+        });
 
 
         // =================================================================
@@ -201,8 +251,13 @@ export class BedrockAgentStack extends cdk.Stack {
             idleSessionTTL: cdk.Duration.seconds(props.idleSessionTtlInSeconds),
         });
 
-        // Wire Guardrail and Action Group via methods
+        // Wire Guardrail, Knowledge Base, and Action Group via methods
         this.agent.addGuardrail(this.guardrail);
+
+        // Associate Knowledge Base if provided
+        if (props.knowledgeBase) {
+            this.agent.addKnowledgeBase(props.knowledgeBase);
+        }
 
         this.agent.addActionGroup(new bedrock.AgentActionGroup({
             name: `${namePrefix}-actions`,

@@ -121,6 +121,18 @@ export interface NextjsSsmPaths {
         readonly distributionId: string;
     };
 
+    // --- Authentication (NextAuth.js) ---
+    readonly auth: {
+        /** NextAuth.js JWT signing secret */
+        readonly nextauthSecret: string;
+        /** Admin username for Credentials provider */
+        readonly adminUsername: string;
+        /** Admin password for Credentials provider */
+        readonly adminPassword: string;
+        /** NextAuth.js base URL (e.g., https://nelsonlamounier.com) */
+        readonly nextauthUrl: string;
+    };
+
     // --- Wildcard for IAM policy grants ---
     /** Wildcard path for IAM: /{namePrefix}/{environment}/* */
     readonly wildcard: string;
@@ -169,6 +181,14 @@ export function nextjsSsmPaths(
             wafArn: `${prefix}/cloudfront/waf-arn`,
             distributionDomain: `${prefix}/cloudfront/distribution-domain`,
             distributionId: `${prefix}/cloudfront/distribution-id`,
+        },
+
+        // Authentication (NextAuth.js)
+        auth: {
+            nextauthSecret: `${prefix}/auth/nextauth-secret`,
+            adminUsername: `${prefix}/auth/admin-username`,
+            adminPassword: `${prefix}/auth/admin-password`,
+            nextauthUrl: `${prefix}/auth/nextauth-url`,
         },
 
         // Wildcard

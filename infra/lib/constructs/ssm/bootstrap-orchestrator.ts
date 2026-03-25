@@ -109,10 +109,29 @@ ssm_client = boto3.client("ssm")
 
 ROLE_DOC_MAP = {
     "control-plane": "bootstrap/control-plane-doc-name",
-    "app-worker": "bootstrap/app-worker-doc-name",
-    "mon-worker": "bootstrap/mon-worker-doc-name",
-    "argocd-worker": "bootstrap/argocd-worker-doc-name",
+    "app-worker": "bootstrap/worker-doc-name",
+    "mon-worker": "bootstrap/worker-doc-name",
+    "argocd-worker": "bootstrap/worker-doc-name",
 }
+
+def _skip(reason):
+    """Return a full response with all fields the resultSelector expects.
+
+    Step Functions resultSelector crashes with States.Runtime if any
+    JSONPath key is missing. Every return path must include every field
+    so the HasRole choice can route to SkipNonK8s gracefully.
+    """
+    logger.info("Skipping: %s", reason)
+    return {
+        "role": None,
+        "instanceId": "",
+        "asgName": "",
+        "ssmPrefix": "",
+        "docName": "",
+        "s3Bucket": "",
+        "region": "",
+        "reason": reason,
+    }
 
 def handler(event, context):
     """Read ASG tags and return role + SSM metadata for Step Functions."""
@@ -121,29 +140,25 @@ def handler(event, context):
     asg_name = detail.get("AutoScalingGroupName", "")
 
     if not instance_id or not asg_name:
-        logger.info("Missing instance or ASG info, skipping")
-        return {"role": None, "reason": "Missing instance or ASG info"}
+        return _skip("Missing instance or ASG info")
 
     logger.info("Instance launched: %s in ASG %s", instance_id, asg_name)
 
     resp = asg_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
     groups = resp.get("AutoScalingGroups", [])
     if not groups:
-        logger.info("ASG %s not found, skipping", asg_name)
-        return {"role": None, "reason": f"ASG {asg_name} not found"}
+        return _skip(f"ASG {asg_name} not found")
 
     tags = {t["Key"]: t["Value"] for t in groups[0].get("Tags", [])}
     role = tags.get("k8s:bootstrap-role")
     ssm_prefix = tags.get("k8s:ssm-prefix")
 
     if not role or not ssm_prefix:
-        logger.info("No k8s tags on ASG %s, skipping", asg_name)
-        return {"role": None, "reason": f"No k8s tags on ASG {asg_name}"}
+        return _skip(f"No k8s tags on ASG {asg_name}")
 
     doc_param = ROLE_DOC_MAP.get(role)
     if not doc_param:
-        logger.warning("Unknown bootstrap role: %s", role)
-        return {"role": None, "reason": f"Unknown role: {role}"}
+        return _skip(f"Unknown role: {role}")
 
     # Resolve the SSM Automation document name + S3 bucket
     doc_name = ssm_client.get_parameter(Name=f"{ssm_prefix}/{doc_param}")["Parameter"]["Value"]
@@ -401,8 +416,12 @@ def handler(event, context):
     // =========================================================================
 
     /**
-     * Builds an SSM Automation polling loop:
-     * Start → Wait → Poll → Check → (loop back to Wait or succeed/fail)
+     * Builds an SSM Automation polling loop with a step-level timeout guard:
+     * Start → InitCounter → Wait → Poll → IncrCount → CheckTimeout → CheckStatus → (loop)
+     *
+     * The counter prevents infinite polling — fails after {@link MAX_POLL_ITERATIONS}
+     * iterations (default: 120 × 30s = 60 min) instead of relying solely on the
+     * 2-hour global state machine timeout.
      */
     private buildAutomationChain(
         id: string,
@@ -414,6 +433,11 @@ def handler(event, context):
         automationRoleArn: string,
     ): { start: sfn.IChainable; end: sfn.Pass } {
         const stack = cdk.Stack.of(this);
+
+        /** Max polling iterations before failing (120 × 30s = 60 min). */
+        const MAX_POLL_ITERATIONS = 120;
+
+        const pollCountPath = `$.${id}PollCount`;
 
         const startExec = new sfnTasks.CallAwsService(this, `${id}Start`, {
             service: 'ssm',
@@ -443,6 +467,12 @@ def handler(event, context):
             resultPath: `$.${id}Result`,
         });
 
+        // Initialise poll counter to 0
+        const initCounter = new sfn.Pass(this, `${id}InitCount`, {
+            result: sfn.Result.fromNumber(0),
+            resultPath: pollCountPath,
+        });
+
         const waitStep = new sfn.Wait(this, `${id}Wait`, {
             time: sfn.WaitTime.duration(cdk.Duration.seconds(30)),
         });
@@ -462,12 +492,36 @@ def handler(event, context):
             resultPath: `$.${id}Status`,
         });
 
+        // Increment poll counter using States.MathAdd intrinsic
+        const incrPollCount = new sfn.Pass(this, `${id}IncrCount`, {
+            resultPath: pollCountPath,
+            parameters: {
+                'count.$': sfn.JsonPath.mathAdd(
+                    sfn.JsonPath.numberAt(pollCountPath),
+                    1,
+                ),
+            },
+        });
+
         const successState = new sfn.Pass(this, `${id}Done`);
 
         const failState = new sfn.Fail(this, `${id}Failed`, {
             cause: `SSM Automation ${id} failed`,
             error: 'AutomationFailed',
         });
+
+        const timeoutState = new sfn.Fail(this, `${id}Timeout`, {
+            cause: `SSM Automation ${id} polling exceeded ${MAX_POLL_ITERATIONS} iterations (~${(MAX_POLL_ITERATIONS * 30) / 60} min)`,
+            error: 'AutomationTimeout',
+        });
+
+        // Check poll count before looping back to wait
+        const checkTimeout = new sfn.Choice(this, `${id}CheckTimeout`)
+            .when(
+                sfn.Condition.numberGreaterThanEquals(pollCountPath, MAX_POLL_ITERATIONS),
+                timeoutState,
+            )
+            .otherwise(waitStep);
 
         const checkStatus = new sfn.Choice(this, `${id}Check`)
             .when(
@@ -480,14 +534,16 @@ def handler(event, context):
                     sfn.Condition.stringEquals(`$.${id}Status.Status`, 'Waiting'),
                     sfn.Condition.stringEquals(`$.${id}Status.Status`, 'Pending'),
                 ),
-                waitStep,
+                incrPollCount,
             )
             .otherwise(failState);
 
-        // Chain: Start → Wait → Poll → Check → (loop back to Wait or proceed)
-        startExec.next(waitStep);
+        // Chain: Start → InitCounter → Wait → Poll → CheckStatus → IncrCount → CheckTimeout → (loop)
+        startExec.next(initCounter);
+        initCounter.next(waitStep);
         waitStep.next(pollStatus);
         pollStatus.next(checkStatus);
+        incrPollCount.next(checkTimeout);
 
         return { start: startExec, end: successState };
     }
@@ -501,7 +557,7 @@ def handler(event, context):
         props: BootstrapOrchestratorProps,
     ): sfn.Chain {
         const stack = cdk.Stack.of(this);
-        const docParamName = `${props.ssmPrefix}/bootstrap/${workerRole}-doc-name`;
+        const docParamName = `${props.ssmPrefix}/bootstrap/worker-doc-name`;
         const instanceParamName = `${props.ssmPrefix}/bootstrap/${workerRole}-instance-id`;
 
         const getWorkerDoc = new sfnTasks.CallAwsService(this, `GetDoc-${workerRole}`, {

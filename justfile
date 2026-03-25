@@ -956,6 +956,45 @@ k8s-diagnose environment="development":
 k8s-diagnose-raw:
     k8sgpt analyze
 
+# Port-forward Prometheus for local MCP access
+# Required by: Prometheus MCP server (mcp_config.json → host.docker.internal:9090)
+# Usage: just prom-forward
+[group('k8s')]
+prom-forward:
+    #!/usr/bin/env bash
+    if lsof -i :9090 &>/dev/null; then
+      echo "⚠  Port 9090 already in use (Prometheus forward may be running)"
+      lsof -i :9090 | head -3
+      exit 0
+    fi
+    echo "→ Starting Prometheus port-forward on localhost:9090…"
+    kubectl port-forward svc/prometheus 9090:9090 -n monitoring &
+    sleep 2
+    echo "✓ Prometheus available at http://localhost:9090/prometheus"
+    echo "  Stop with: just prom-forward-stop"
+
+# Check if Prometheus port-forward is running
+[group('k8s')]
+prom-forward-status:
+    #!/usr/bin/env bash
+    if lsof -i :9090 &>/dev/null; then
+      echo "✓ Prometheus port-forward is running"
+      lsof -i :9090 | head -3
+    else
+      echo "✗ Prometheus port-forward is NOT running"
+      echo "  Start with: just prom-forward"
+    fi
+
+# Stop Prometheus port-forward
+[group('k8s')]
+prom-forward-stop:
+    #!/usr/bin/env bash
+    if pkill -f "port-forward svc/prometheus"; then
+      echo "✓ Prometheus port-forward stopped"
+    else
+      echo "ℹ  No Prometheus port-forward was running"
+    fi
+
 # Trigger an ad-hoc etcd backup via SSM Run Command
 # Use before: maintenance, upgrades, Crossplane changes, or node recycling
 # Backup → s3://<scripts-bucket>/dr-backups/etcd/<timestamp>.db
@@ -1095,6 +1134,83 @@ argocd-ci-token region="eu-west-1" profile="dev-account" environment="developmen
         --region "{{region}}"
       echo "✓ Secret created: $SECRET_ID"
     fi
+
+# Seed NextAuth.js authentication SSM parameters (one-time setup).
+#
+# These four SecureString parameters are consumed by the Next.js container
+# at runtime for admin authentication (Credentials provider + JWT sessions).
+#
+# CDK Reference: infra/lib/stacks/kubernetes/edge-stack.ts
+#   - CloudFront forwards NextAuth.js session cookies (__Secure-authjs.session-token,
+#     __Host-authjs.csrf-token, authjs.callback-url) via AdminOriginRequestPolicy
+#     on /api/auth/* and /admin/* paths.
+#   - See also: infra/lib/config/ssm-paths.ts → NextjsSsmPaths.auth
+#   - See also: infra/lib/config/nextjs.ts → CloudFrontConfig.adminCookies
+#
+# Prerequisites:
+#   - AWS CLI configured with the correct profile
+#   - Run once per account; values persist across redeployments
+#
+# Usage: just seed-nextauth-ssm
+#        just seed-nextauth-ssm development eu-west-1 dev-account
+[group('ops')]
+seed-nextauth-ssm env="development" region="eu-west-1" profile="dev-account" prefix="nextjs":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_PREFIX="/{{prefix}}/{{env}}/auth"
+    echo "=== Seeding NextAuth.js SSM Parameters ==="
+    echo "  Prefix: ${SSM_PREFIX}"
+    echo "  Region: {{region}}"
+    echo "  Profile: {{profile}}"
+    echo ""
+
+    # 1. NEXTAUTH_SECRET — random JWT signing key
+    echo "→ Generating NEXTAUTH_SECRET (base64, 32 bytes)…"
+    aws ssm put-parameter \
+      --name "${SSM_PREFIX}/nextauth-secret" \
+      --value "$(openssl rand -base64 32)" \
+      --type SecureString \
+      --overwrite \
+      --region "{{region}}" --profile "{{profile}}"
+    echo "  ✓ ${SSM_PREFIX}/nextauth-secret"
+
+    # 2. Admin username
+    echo "→ Setting admin username…"
+    aws ssm put-parameter \
+      --name "${SSM_PREFIX}/admin-username" \
+      --value "admin" \
+      --type SecureString \
+      --overwrite \
+      --region "{{region}}" --profile "{{profile}}"
+    echo "  ✓ ${SSM_PREFIX}/admin-username"
+
+    # 3. Admin password (placeholder — change immediately after seeding)
+    echo "→ Setting admin password (⚠ change this value after seeding!)…"
+    aws ssm put-parameter \
+      --name "${SSM_PREFIX}/admin-password" \
+      --value "your-secure-password" \
+      --type SecureString \
+      --overwrite \
+      --region "{{region}}" --profile "{{profile}}"
+    echo "  ✓ ${SSM_PREFIX}/admin-password"
+
+    # 4. NEXTAUTH_URL — base URL for callbacks
+    echo "→ Setting NEXTAUTH_URL…"
+    aws ssm put-parameter \
+      --name "${SSM_PREFIX}/nextauth-url" \
+      --value "https://nelsonlamounier.com" \
+      --type SecureString \
+      --overwrite \
+      --region "{{region}}" --profile "{{profile}}"
+    echo "  ✓ ${SSM_PREFIX}/nextauth-url"
+
+    echo ""
+    echo "✓ All NextAuth.js parameters seeded under ${SSM_PREFIX}"
+    echo ""
+    echo "⚠  IMPORTANT: Update the admin password before going live:"
+    echo "   aws ssm put-parameter --name '${SSM_PREFIX}/admin-password' \\"
+    echo "     --value '<YOUR_REAL_PASSWORD>' --type SecureString --overwrite \\"
+    echo "     --region {{region}} --profile {{profile}}"
 
 # =============================================================================
 # DOCUMENTATION

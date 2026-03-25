@@ -232,43 +232,59 @@ describe('KubernetesControlPlaneStack — Post-Deploy Verification', () => {
     // =========================================================================
     // Golden AMI Verification
     //
-    // Ensures the instance was launched with the latest Golden AMI stored in
-    // SSM at /k8s/<env>/golden-ami/latest.  Also validates AMI tags.
+    // Ensures the instance is running a Golden AMI (Purpose=GoldenAMI tag).
+    //
+    // After a new AMI is baked, SSM stores the new AMI ID but existing
+    // instances continue running the previous AMI until the ASG replaces
+    // them. The test therefore validates the AMI *is a Golden AMI* rather
+    // than requiring it to *be the latest*.
     // =========================================================================
     describe('Golden AMI', () => {
-        it('should use the latest Golden AMI from SSM', () => {
-            const expectedAmi = ssmParams.get(CONFIGS.image.amiSsmPath);
-            expect(expectedAmi).toBeDefined();
-            expect(controlPlane.imageId).toBe(expectedAmi);
+        let instanceAmiState: string;
+        let instanceAmiPurpose: string | undefined;
+        let latestAmiId: string | undefined;
+        let isLatestAmi: boolean;
+
+        // Depends on: controlPlane + ssmParams from top-level beforeAll
+        beforeAll(async () => {
+            // Fetch metadata of the AMI running on the instance
+            const { Images } = await ec2.send(
+                new DescribeImagesCommand({
+                    ImageIds: [controlPlane.imageId],
+                }),
+            );
+
+            expect(Images).toHaveLength(1);
+            const ami = Images![0];
+            instanceAmiState = ami.State ?? 'unknown';
+            const tags = ami.Tags ?? [];
+            instanceAmiPurpose = tags.find((t) => t.Key === 'Purpose')?.Value;
+
+            // Resolve the latest Golden AMI from SSM
+            latestAmiId = ssmParams.get(CONFIGS.image.amiSsmPath);
+            isLatestAmi = controlPlane.imageId === latestAmiId;
+
+            if (!isLatestAmi) {
+                console.warn(
+                    `[AMI DRIFT] Instance ${controlPlane.instanceId} is running ` +
+                    `AMI ${controlPlane.imageId} but SSM latest is ${latestAmiId}. ` +
+                    `This is expected if the AMI was recently rebaked and the ` +
+                    `instance has not yet been replaced by the ASG.`,
+                );
+            }
         });
 
-        // AMI details — fetched once, asserted below
-        describe('AMI Properties', () => {
-            let amiState: string;
-            let purposeTagValue: string | undefined;
+        it('should be running a Golden AMI (Purpose tag)', () => {
+            expect(instanceAmiPurpose).toBe('GoldenAMI');
+        });
 
-            // Depends on: controlPlane populated in top-level beforeAll
-            beforeAll(async () => {
-                const { Images } = await ec2.send(
-                    new DescribeImagesCommand({
-                        ImageIds: [controlPlane.imageId],
-                    }),
-                );
+        it('should have AMI in available state', () => {
+            expect(instanceAmiState).toBe('available');
+        });
 
-                expect(Images).toHaveLength(1);
-                const ami = Images![0];
-                amiState = ami.State ?? 'unknown';
-                const tags = ami.Tags ?? [];
-                purposeTagValue = tags.find((t) => t.Key === 'Purpose')?.Value;
-            });
-
-            it('should have Purpose=GoldenAMI tag on AMI', () => {
-                expect(purposeTagValue).toBe('GoldenAMI');
-            });
-
-            it('should have AMI in available state', () => {
-                expect(amiState).toBe('available');
-            });
+        it('should have a latest Golden AMI ID in SSM', () => {
+            expect(latestAmiId).toBeDefined();
+            expect(latestAmiId!.startsWith('ami-')).toBe(true);
         });
     });
 

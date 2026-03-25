@@ -408,6 +408,11 @@ export interface CloudFrontConfig {
         readonly api: readonly string[];
     };
     readonly originRequestHeaders: readonly string[];
+    /**
+     * Cookies forwarded to the origin for admin/auth routes.
+     * NextAuth.js v5 uses these cookies for session management.
+     */
+    readonly adminCookies: readonly string[];
 }
 
 /**
@@ -555,6 +560,10 @@ export const CLOUDFRONT_PATH_PATTERNS = {
         public: '/public/*',
     },
     api: '/api/*',
+    /** Admin pages — caching disabled, cookies forwarded */
+    admin: '/admin/*',
+    /** NextAuth.js callback/session routes — caching disabled, cookies forwarded */
+    authCallback: '/api/auth/*',
 } as const;
 
 /**
@@ -625,7 +634,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
         },
         cors: {
             // Removed wildcard - use specific preview URLs or configure dynamically
-            allowOrigins: ['http://localhost:3000'],
+            allowOrigins: ['http://localhost:3000', 'https://nelsonlamounier.com'],
             allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
             allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key'],
             allowCredentials: true,
@@ -643,6 +652,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
             errorResponseTtl: cdk.Duration.seconds(60),
             cacheHeaders: { dynamic: ['Accept', 'Accept-Language'], api: ['Accept', 'Accept-Language', 'Authorization', 'Content-Type'] },
             originRequestHeaders: ['Host', 'CloudFront-Viewer-Country', 'CloudFront-Is-Mobile-Viewer', 'CloudFront-Is-Desktop-Viewer', 'User-Agent'],
+            adminCookies: ['__Secure-authjs.session-token', '__Host-authjs.csrf-token', 'authjs.callback-url'],
         },
         ecsTask: {
             logRetention: logs.RetentionDays.ONE_MONTH,
@@ -732,6 +742,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
             errorResponseTtl: cdk.Duration.seconds(60),
             cacheHeaders: { dynamic: ['Accept', 'Accept-Language'], api: ['Accept', 'Accept-Language', 'Authorization', 'Content-Type'] },
             originRequestHeaders: ['Host', 'CloudFront-Viewer-Country', 'CloudFront-Is-Mobile-Viewer', 'CloudFront-Is-Desktop-Viewer', 'User-Agent'],
+            adminCookies: ['__Secure-authjs.session-token', '__Host-authjs.csrf-token', 'authjs.callback-url'],
         },
         ecsTask: {
             logRetention: logs.RetentionDays.THREE_MONTHS,
@@ -821,6 +832,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
             errorResponseTtl: cdk.Duration.seconds(60),
             cacheHeaders: { dynamic: ['Accept', 'Accept-Language'], api: ['Accept', 'Accept-Language', 'Authorization', 'Content-Type'] },
             originRequestHeaders: ['Host', 'CloudFront-Viewer-Country', 'CloudFront-Is-Mobile-Viewer', 'CloudFront-Is-Desktop-Viewer', 'User-Agent'],
+            adminCookies: ['__Secure-authjs.session-token', '__Host-authjs.csrf-token', 'authjs.callback-url'],
         },
         ecsTask: {
             logRetention: logs.RetentionDays.ONE_YEAR,  // Compliance requirement
@@ -923,7 +935,7 @@ export const NEXTJS_K8S_CONFIGS: Record<DeployableEnvironment, NextJsK8sConfig> 
     [Environment.DEVELOPMENT]: {
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
         capacityType: 'on-demand',
-        nodeLabel: 'workload=frontend',
+        nodeLabel: 'workload=frontend,environment=development',
         controlPlaneSsmPrefix: '/k8s/development',
         detailedMonitoring: false,
         useSignals: true,
@@ -935,7 +947,7 @@ export const NEXTJS_K8S_CONFIGS: Record<DeployableEnvironment, NextJsK8sConfig> 
     [Environment.STAGING]: {
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
         capacityType: 'on-demand',
-        nodeLabel: 'workload=frontend',
+        nodeLabel: 'workload=frontend,environment=staging',
         controlPlaneSsmPrefix: '/k8s/staging',
         detailedMonitoring: true,
         useSignals: true,
@@ -947,7 +959,7 @@ export const NEXTJS_K8S_CONFIGS: Record<DeployableEnvironment, NextJsK8sConfig> 
     [Environment.PRODUCTION]: {
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
         capacityType: 'on-demand', // Switch to reserved via AWS console/CLI after purchase
-        nodeLabel: 'workload=frontend',
+        nodeLabel: 'workload=frontend,environment=production',
         controlPlaneSsmPrefix: '/k8s/production',
         detailedMonitoring: true,
         useSignals: true,

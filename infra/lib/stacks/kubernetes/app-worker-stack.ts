@@ -372,6 +372,7 @@ export class KubernetesAppWorkerStack extends cdk.Stack {
             instanceName: `${namePrefix}-app-worker`,
             bootstrapRole: 'app-worker',
             ssmPrefix,
+            clusterIdentifier: namePrefix,
             useSignals: workerConfig.useSignals,
             signalsTimeoutMinutes: workerConfig.signalsTimeoutMinutes,
             subnetSelection: {
