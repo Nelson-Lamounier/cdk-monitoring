@@ -22,7 +22,7 @@ Prior to the permanent fix (step 4b in `control_plane.py`), the CCM was
 deployed exclusively via ArgoCD (sync-wave 2). This created a circular
 dependency:
 
-```
+```text
 kubelet starts with --cloud-provider=external
   → nodes tainted with 'uninitialized'
     → ArgoCD pods can't schedule (taint blocks them)
@@ -74,20 +74,27 @@ kubectl get pods -n argocd
 
 ---
 
-## Recovery — Manual Fix (if step 4b hasn't run)
+## Recovery — Manual Fix (from operator workstation)
 
-If the cluster is already in the deadlock state (code hasn't been updated
-or the pipeline hasn't re-run), apply this manual fix:
+If the cluster is in the deadlock state — either because the automated
+step 4b hasn't been synced to S3 yet, or because a fresh bootstrap ran
+before the fix was deployed — apply this manual fix from any machine
+with `kubectl` and `helm` access to the cluster.
 
-### 1. Install CCM via Helm
+> **Prerequisite**: Establish a kubectl tunnel to the cluster first:
+> `just k8s-tunnel-auto`
+
+### 1. Add the Helm Repository
 
 ```bash
-# Add the Helm repo
 helm repo add aws-cloud-controller-manager \
-  https://kubernetes.github.io/cloud-provider-aws
+  https://kubernetes.github.io/cloud-provider-aws --force-update
 helm repo update
+```
 
-# Create values file
+### 2. Create Values File and Install CCM
+
+```bash
 cat <<'EOF' > /tmp/ccm-values.yaml
 args:
   - --v=2
@@ -104,7 +111,6 @@ tolerations:
 hostNetworking: true
 EOF
 
-# Install the CCM
 helm upgrade --install aws-cloud-controller-manager \
   aws-cloud-controller-manager/aws-cloud-controller-manager \
   --namespace kube-system \
@@ -112,60 +118,84 @@ helm upgrade --install aws-cloud-controller-manager \
   --wait --timeout 120s
 ```
 
-### 2. Verify Taint Removal
+Expected output:
 
-```bash
-# Watch for taint removal (should happen within 30s)
-kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.taints}{"\n"}{end}'
-# The 'uninitialized' taint should be gone
-
-# CCM pod should be Running
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-cloud-controller-manager
+```text
+Release "aws-cloud-controller-manager" does not exist. Installing it now.
+NAME: aws-cloud-controller-manager
+STATUS: deployed
 ```
 
-### 3. Verify Pods Start Scheduling
+### 3. Verify Taint Removal
 
 ```bash
-# ArgoCD pods should transition from Pending → Running
-kubectl get pods -n argocd -w
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.taints}{"\n"}{end}'
+```
+
+Expected: Only `node-role.kubernetes.io/control-plane` taint on the
+control plane node. The `uninitialized` taint should be gone from all nodes.
+
+### 4. Verify CCM Pod
+
+```bash
+kubectl get pods -n kube-system | grep aws-cloud-controller
+# EXPECTED: aws-cloud-controller-manager-xxxxx   1/1   Running
+```
+
+### 5. Verify Pods Start Scheduling
+
+```bash
+# ArgoCD pods transition from Pending → Running (~30s)
+kubectl get pods -n argocd
 
 # CoreDNS should start
 kubectl get pods -n kube-system -l k8s-app=kube-dns
 ```
 
+### 6. Monitor ArgoCD Application Sync
+
+```bash
+# Watch as ArgoCD syncs all platform applications
+kubectl get applications -n argocd
+```
+
+ArgoCD will process all sync waves (0–5). Apps transition through:
+`OutOfSync` / `Missing` → `Progressing` → `Synced` / `Healthy`
+
 ---
 
 ## Recovery — Trigger Automated Fix (preferred)
 
-If the code change (step 4b) is merged but the cluster is already stuck:
+If the code change (step 4b) is merged **and** the updated
+`control_plane.py` has been synced to S3:
 
 ### Option A: Re-run the Pipeline
 
 ```bash
-# Trigger the SSM automation workflow via GitHub Actions
 gh workflow run _deploy-ssm-automation.yml \
   --ref main \
   -f environment=development
 ```
 
-The pipeline syncs the updated `control_plane.py` to S3, then triggers
-SSM Automation on the control plane. Step 4b will install the CCM
-and step 7 will bootstrap ArgoCD.
+The pipeline syncs `control_plane.py` to S3, then triggers SSM Automation.
+Step 4b installs the CCM and step 7 bootstraps ArgoCD.
 
-### Option B: Re-run Control Plane Bootstrap Manually
+### Option B: Re-run Bootstrap on the Node
 
 ```bash
 # On the control plane (via SSM session):
-# Remove the CCM marker to allow re-run
 rm -f /etc/kubernetes/.ccm-installed
-
-# Re-run the bootstrap
 python3 /data/k8s-bootstrap/boot/steps/control_plane.py
 ```
 
+> [!WARNING]
+> If the pipeline re-runs **before** the updated `control_plane.py` is
+> synced to S3, the node will still have the old bootstrap script and
+> step 4b will not exist. In this case, use the manual fix above.
+
 ---
 
-## Verification
+## Verification Checklist
 
 ```bash
 # 1. CCM pod is Running
@@ -173,32 +203,93 @@ kubectl get pods -n kube-system | grep aws-cloud-controller
 # EXPECTED: aws-cloud-controller-manager-xxxxx   1/1   Running
 
 # 2. No 'uninitialized' taint on any node
-kubectl describe nodes | grep -A5 Taints:
-# EXPECTED: only the control-plane NoSchedule taint
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.taints}{"\n"}{end}'
+# EXPECTED: only control-plane NoSchedule taint on the CP node
 
 # 3. ArgoCD pods are Running
 kubectl get pods -n argocd
-# EXPECTED: all 7 pods Running
+# EXPECTED: all pods 1/1 Running
 
 # 4. CoreDNS is Running
 kubectl get pods -n kube-system -l k8s-app=kube-dns
 # EXPECTED: 2/2 Running
 
-# 5. ArgoCD UI is accessible
-curl -sk https://ops.nelsonlamounier.com/argocd/ | head -5
-# EXPECTED: HTML response (not connection refused)
+# 5. No Pending or failing pods across the cluster
+kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
+# EXPECTED: No resources found
+
+# 6. ArgoCD applications syncing
+kubectl get applications -n argocd
+# EXPECTED: Most apps Synced/Healthy, some Progressing
+
+# 7. Endpoints responding
+curl -sk -o /dev/null -w "%{http_code}" https://ops.nelsonlamounier.com/argocd/
+# EXPECTED: 200 (or 307 redirect to login) — may take 5–10 min after recovery
 ```
 
 ---
 
-## Recovery Timeline
+## Real-World Recovery Log — 2026-03-25
+
+This section documents the actual recovery performed on 2026-03-25 and
+serves as a reference for future incidents.
+
+### Timeline
+
+| Time (UTC) | Event |
+| :--- | :--- |
+| ~17:00 (D-1) | Cluster bootstrapped, CCM not installed (old `control_plane.py`) |
+| 04:34 | Fix committed: `step_install_ccm()` added to `control_plane.py` |
+| 04:45 | `_deploy-ssm-automation.yml` pipeline re-triggered |
+| 05:12 | Pipeline complete, but cluster still in deadlock |
+| 05:14 | Diagnosis confirmed: CCM absent, taint present on all 4 nodes |
+| 05:17 | Manual Helm install from operator workstation |
+| 05:17:35 | CCM deployed, taint removed within seconds |
+| 05:18 | ArgoCD pods transition to Running, CoreDNS starts |
+| 05:19 | ArgoCD syncs 17 applications (monitoring, Traefik, Crossplane, etc.) |
+| 05:22 | All pods Running, endpoints returning HTTP 404 (Traefik routing) |
+| ~05:30 | Full platform operational |
+
+### Key Observations
+
+1. **S3 sync timing**: The pipeline re-run triggered the bootstrap
+   **before** the updated `control_plane.py` was synced to S3. The node
+   executed the old script without step 4b.
+
+2. **Taint removal was instant**: Once the CCM DaemonSet pod started
+   on the control plane, all 4 nodes had the `uninitialized` taint
+   removed within seconds.
+
+3. **Cascade recovery**: Removing the taint caused all blocked pods to
+   schedule immediately — ArgoCD, CoreDNS, and then all downstream
+   platform apps via ArgoCD sync waves.
+
+4. **ArgoCD adopted the Helm release**: The `aws-cloud-controller-manager`
+   ArgoCD Application (sync-wave 2, `selfHeal: true`) detected the
+   manually-installed Helm release and reported `Synced` / `Healthy`
+   without any conflict.
+
+5. **Endpoint progression**: Endpoints moved from `connection refused` →
+   `HTTP 404` → `HTTP 200` as Traefik, then the backend apps, came online.
+
+### Lesson Learned
+
+> [!IMPORTANT]
+> When adding new bootstrap steps, ensure the updated script is synced
+> to S3 **before** triggering the SSM automation. The pipeline should
+> sequence: (1) S3 sync → (2) SSM trigger. If the bootstrap runs from
+> a stale script, new steps will not execute.
+
+---
+
+## Recovery Timeline (expected)
 
 | Phase | Duration | Notes |
-|:---|:---:|:---|
+| :--- | :---: | :--- |
 | Diagnose deadlock | 2 min | Confirm Pending pods + taint |
 | Install CCM (manual) | 3 min | Helm install + repo add |
-| Taint removal | 30s | CCM processes node automatically |
-| ArgoCD starts | 2 min | Pods schedule + containers pull |
+| Taint removal | ~5s | CCM processes all nodes instantly |
+| ArgoCD starts | 1 min | Pods schedule + containers start |
 | Full platform sync | 10 min | ArgoCD syncs all wave 0–5 apps |
 | **Total** | **~15 min** | Manual intervention |
 
