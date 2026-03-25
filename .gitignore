@@ -43,6 +43,8 @@ Thumbs.db
 
 # Logs
 *.log
+scripts/local/diagnostics/.troubleshoot-logs/*
+!scripts/local/diagnostics/.troubleshoot-logs/.gitkeep
 
 # Generated docs & reports
 docs/
@@ -54,6 +56,12 @@ security-reports/
 
 # Python
 __pycache__/
+.venv/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+.pyre_configuration
+.pyre/
 
 # Scratch / one-off files
 *.txt
