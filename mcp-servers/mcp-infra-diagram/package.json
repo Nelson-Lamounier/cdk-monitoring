@@ -21,7 +21,7 @@
     "@aws-sdk/client-wafv2": "^3.1001.0",
     "@kubernetes/client-node": "^1.2.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "zod": "^3.24.4"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
