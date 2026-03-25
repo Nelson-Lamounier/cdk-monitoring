@@ -113,16 +113,13 @@ const WORKER_STEPS: AutomationStep[] = [
     },
 ];
 
-const NEXTJS_SECRETS_STEPS: AutomationStep[] = [
+const DEPLOY_SECRETS_STEPS: AutomationStep[] = [
     {
         name: 'deployNextjsSecrets',
         scriptPath: 'app-deploy/nextjs/deploy.py',
         timeoutSeconds: 300,
         description: 'Resolve SSM parameters and create/update nextjs-secrets K8s Secret',
     },
-];
-
-const MONITORING_SECRETS_STEPS: AutomationStep[] = [
     {
         name: 'deployMonitoringSecrets',
         scriptPath: 'app-deploy/monitoring/deploy.py',
@@ -150,11 +147,8 @@ export class K8sSsmAutomationStack extends cdk.Stack {
     /** Unified worker SSM Automation document name (all worker roles) */
     public readonly workerDocName: string;
 
-    /** Next.js secrets SSM Automation document name */
-    public readonly nextjsSecretsDocName: string;
-
-    /** Monitoring secrets SSM Automation document name */
-    public readonly monitoringSecretsDocName: string;
+    /** Consolidated deploy secrets SSM Automation document name (nextjs + monitoring) */
+    public readonly deploySecretsDocName: string;
 
     /** Automation execution role ARN */
     public readonly automationRoleArn: string;
@@ -330,26 +324,17 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         this.workerDocName = workerDoc.documentName;
 
         // =====================================================================
-        // SSM Automation Documents — Deploy (2)
+        // SSM Automation Documents — Deploy (1 — consolidated)
         // =====================================================================
 
-        const nextjsDoc = new SsmAutomationDocument(this, 'NextjsSecretsAutomation', {
-            documentName: `${prefix}-deploy-nextjs-secrets`,
-            description: 'Deploy Next.js K8s secrets — syncs from S3, resolves SSM parameters, creates Secret',
+        const deployDoc = new SsmAutomationDocument(this, 'DeploySecretsAutomation', {
+            documentName: `${prefix}-deploy-secrets`,
+            description: 'Deploy K8s secrets (nextjs + monitoring) — syncs from S3, resolves SSM parameters, creates Secrets',
             documentCategory: 'deploy',
-            steps: NEXTJS_SECRETS_STEPS,
+            steps: DEPLOY_SECRETS_STEPS,
             ...docBaseProps,
         });
-        this.nextjsSecretsDocName = nextjsDoc.documentName;
-
-        const monitoringDoc = new SsmAutomationDocument(this, 'MonitoringSecretsAutomation', {
-            documentName: `${prefix}-deploy-monitoring-secrets`,
-            description: 'Deploy monitoring K8s secrets — syncs from S3, resolves SSM parameters, deploys Helm chart',
-            documentCategory: 'deploy',
-            steps: MONITORING_SECRETS_STEPS,
-            ...docBaseProps,
-        });
-        this.monitoringSecretsDocName = monitoringDoc.documentName;
+        this.deploySecretsDocName = deployDoc.documentName;
 
         // =====================================================================
         // SSM Parameters — Document Discovery
@@ -372,19 +357,12 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         });
         cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/worker-doc-name`, workerDocParam);
 
-        const nextjsDocParam = new ssm.StringParameter(this, 'NextjsSecretsDocNameParam', {
-            parameterName: `${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`,
-            stringValue: nextjsDoc.documentName,
-            description: 'SSM Automation document name for Next.js secrets deployment',
+        const deployDocParam = new ssm.StringParameter(this, 'DeploySecretsDocNameParam', {
+            parameterName: `${props.ssmPrefix}/deploy/secrets-doc-name`,
+            stringValue: deployDoc.documentName,
+            description: 'SSM Automation document name for consolidated secrets deployment (nextjs + monitoring)',
         });
-        cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/nextjs-secrets-doc-name`, nextjsDocParam);
-
-        const monDocParam = new ssm.StringParameter(this, 'MonitoringSecretsDocNameParam', {
-            parameterName: `${props.ssmPrefix}/deploy/monitoring-secrets-doc-name`,
-            stringValue: monitoringDoc.documentName,
-            description: 'SSM Automation document name for monitoring secrets deployment',
-        });
-        cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/monitoring-secrets-doc-name`, monDocParam);
+        cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/secrets-doc-name`, deployDocParam);
 
         const roleArnParam = new ssm.StringParameter(this, 'AutomationRoleArnParam', {
             parameterName: `${props.ssmPrefix}/bootstrap/automation-role-arn`,

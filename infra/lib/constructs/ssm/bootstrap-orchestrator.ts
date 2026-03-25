@@ -254,13 +254,13 @@ def handler(event, context):
             props.automationRoleArn,
         );
 
-        // Step 2: Resolve nextjs secrets doc name
-        const getNextjsDocName = new sfnTasks.CallAwsService(this, 'GetNextjsDocName', {
+        // Step 2: Resolve consolidated deploy secrets doc name
+        const getDeployDocName = new sfnTasks.CallAwsService(this, 'GetDeployDocName', {
             service: 'ssm',
             action: 'getParameter',
             parameters: {
                 Name: sfn.JsonPath.format(
-                    '{}/deploy/nextjs-secrets-doc-name',
+                    '{}/deploy/secrets-doc-name',
                     sfn.JsonPath.stringAt('$.router.ssmPrefix'),
                 ),
             },
@@ -270,13 +270,13 @@ def handler(event, context):
             resultSelector: {
                 'docName.$': '$.Parameter.Value',
             },
-            resultPath: '$.nextjsDoc',
+            resultPath: '$.deployDoc',
         });
 
-        // Step 3: Deploy nextjs secrets
-        const nextjsSecrets = this.buildAutomationChain(
-            'NextjsSecrets',
-            '$.nextjsDoc.docName',
+        // Step 3: Deploy secrets (nextjs + monitoring in single document)
+        const deploySecrets = this.buildAutomationChain(
+            'DeploySecrets',
+            '$.deployDoc.docName',
             '$.router.instanceId',
             '$.router.ssmPrefix',
             '$.router.s3Bucket',
@@ -284,37 +284,7 @@ def handler(event, context):
             props.automationRoleArn,
         );
 
-        // Step 4: Resolve monitoring secrets doc name
-        const getMonDocName = new sfnTasks.CallAwsService(this, 'GetMonDocName', {
-            service: 'ssm',
-            action: 'getParameter',
-            parameters: {
-                Name: sfn.JsonPath.format(
-                    '{}/deploy/monitoring-secrets-doc-name',
-                    sfn.JsonPath.stringAt('$.router.ssmPrefix'),
-                ),
-            },
-            iamResources: [
-                `arn:aws:ssm:${stack.region}:${stack.account}:parameter${props.ssmPrefix}/*`,
-            ],
-            resultSelector: {
-                'docName.$': '$.Parameter.Value',
-            },
-            resultPath: '$.monDoc',
-        });
-
-        // Step 5: Deploy monitoring secrets
-        const monSecrets = this.buildAutomationChain(
-            'MonSecrets',
-            '$.monDoc.docName',
-            '$.router.instanceId',
-            '$.router.ssmPrefix',
-            '$.router.s3Bucket',
-            '$.router.region',
-            props.automationRoleArn,
-        );
-
-        // Step 6: Wait for CA to propagate before worker re-join
+        // Step 4: Wait for CA to propagate before worker re-join
         const waitForCa = new sfn.Wait(this, 'WaitForCaPublish', {
             time: sfn.WaitTime.duration(cdk.Duration.minutes(15)),
             comment: 'Wait for CP to publish new CA hash before worker re-bootstrap',
@@ -331,11 +301,9 @@ def handler(event, context):
         workerRejoinParallel.branch(this.buildWorkerRejoinBranch('argocd-worker', props));
 
         // Chain the CP branch
-        cpBootstrap.end.next(getNextjsDocName);
-        getNextjsDocName.next(nextjsSecrets.start as sfn.IChainable);
-        nextjsSecrets.end.next(getMonDocName);
-        getMonDocName.next(monSecrets.start as sfn.IChainable);
-        monSecrets.end.next(waitForCa);
+        cpBootstrap.end.next(getDeployDocName);
+        getDeployDocName.next(deploySecrets.start as sfn.IChainable);
+        deploySecrets.end.next(waitForCa);
         waitForCa.next(workerRejoinParallel);
 
         const cpChain = sfn.Chain.start(cpBootstrap.start as sfn.IChainable);

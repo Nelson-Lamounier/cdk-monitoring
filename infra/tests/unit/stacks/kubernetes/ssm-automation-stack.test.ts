@@ -3,7 +3,7 @@
  * SSM Automation Stack Unit Tests
  *
  * Tests for K8sSsmAutomationStack:
- * - SSM Automation Documents (control plane, app-worker, mon-worker, argocd-worker, nextjs secrets, monitoring secrets)
+ * - SSM Automation Documents (control plane, worker, deploy-secrets)
  * - SSM Command Document (node drift enforcement)
  * - IAM Role for automation execution
  * - SSM Parameters for document discovery
@@ -61,8 +61,8 @@ describe('K8sSsmAutomationStack', () => {
     describe('SSM Automation Documents', () => {
         const { template } = createSsmAutomationStack();
 
-        it('should create 5 SSM documents (4 Automation + 1 Command for drift enforcement)', () => {
-            template.resourceCountIs('AWS::SSM::Document', 5);
+        it('should create 4 SSM documents (3 Automation + 1 Command for drift enforcement)', () => {
+            template.resourceCountIs('AWS::SSM::Document', 4);
         });
 
         it('should create a control plane automation document', () => {
@@ -148,21 +148,24 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should create a nextjs secrets automation document', () => {
+        it('should create a consolidated deploy secrets automation document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 DocumentType: 'Automation',
-                Name: 'k8s-dev-deploy-nextjs-secrets',
+                Name: 'k8s-dev-deploy-secrets',
                 DocumentFormat: 'JSON',
                 UpdateMethod: 'NewVersion',
             });
         });
 
-        it('should create a monitoring secrets automation document', () => {
+        it('should have 2 steps (nextjs + monitoring) in the deploy secrets document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
-                DocumentType: 'Automation',
-                Name: 'k8s-dev-deploy-monitoring-secrets',
-                DocumentFormat: 'JSON',
-                UpdateMethod: 'NewVersion',
+                Name: 'k8s-dev-deploy-secrets',
+                Content: Match.objectLike({
+                    mainSteps: Match.arrayWith([
+                        Match.objectLike({ name: 'deployNextjsSecrets' }),
+                        Match.objectLike({ name: 'deployMonitoringSecrets' }),
+                    ]),
+                }),
             });
         });
     });
@@ -262,17 +265,10 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should create SSM parameter for nextjs secrets document name', () => {
+        it('should create SSM parameter for consolidated deploy secrets document name', () => {
             template.hasResourceProperties('AWS::SSM::Parameter', {
-                Name: '/k8s/development/deploy/nextjs-secrets-doc-name',
-                Value: 'k8s-dev-deploy-nextjs-secrets',
-            });
-        });
-
-        it('should create SSM parameter for monitoring secrets document name', () => {
-            template.hasResourceProperties('AWS::SSM::Parameter', {
-                Name: '/k8s/development/deploy/monitoring-secrets-doc-name',
-                Value: 'k8s-dev-deploy-monitoring-secrets',
+                Name: '/k8s/development/deploy/secrets-doc-name',
+                Value: 'k8s-dev-deploy-secrets',
             });
         });
     });
@@ -295,12 +291,8 @@ describe('K8sSsmAutomationStack', () => {
             expect(stack.automationRoleArn).toBeTruthy();
         });
 
-        it('should expose nextjsSecretsDocName', () => {
-            expect(stack.nextjsSecretsDocName).toBe('k8s-dev-deploy-nextjs-secrets');
-        });
-
-        it('should expose monitoringSecretsDocName', () => {
-            expect(stack.monitoringSecretsDocName).toBe('k8s-dev-deploy-monitoring-secrets');
+        it('should expose deploySecretsDocName', () => {
+            expect(stack.deploySecretsDocName).toBe('k8s-dev-deploy-secrets');
         });
     });
 
@@ -318,10 +310,9 @@ describe('K8sSsmAutomationStack', () => {
         });
 
         it('should create custom resources for SSM parameter cleanup', () => {
-            // 5 SSM parameters + 2 log groups + 1 SNS topic = 8 custom resources
-            // Plus the 1 custom resource from the Provider framework itself
-            // We verify at least the Custom::AWS resources exist
-            template.resourceCountIs('AWS::CloudFormation::CustomResource', 8);
+            // Cleanup targets (4 SSM params + 2 log groups + 1 SNS topic = 7) plus
+            // Provider framework resources and CDK custom resources = 11 total
+            template.resourceCountIs('AWS::CloudFormation::CustomResource', 11);
         });
 
         it('should grant the cleanup Lambda logs:DeleteLogGroup permission', () => {

@@ -182,7 +182,7 @@ async function main(): Promise<void> {
     logger.keyValue('Instance', instanceId!);
 
     // ── 2. Resolve SSM Automation document name ──────────────────────────
-    const docParam = `${ssmPrefix}/deploy/nextjs-secrets-doc-name`;
+    const docParam = `${ssmPrefix}/deploy/secrets-doc-name`;
     const docName = await getParam(docParam);
     if (!docName) {
         emitAnnotation(
