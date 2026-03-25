@@ -119,6 +119,15 @@ otel:
   serviceName: "nextjs-frontend"
 
 # ---------------------------------------------------------------------------
+# Auth.js — Proxy Trust Configuration
+# ---------------------------------------------------------------------------
+# Required for Auth.js v5 behind reverse proxies (Traefik, CloudFront).
+# When true, injects AUTH_TRUST_HOST=true so Auth.js trusts the
+# forwarded Host header instead of rejecting it as UntrustedHost.
+auth:
+  trustHost: true
+
+# ---------------------------------------------------------------------------
 # Network Policy
 # ---------------------------------------------------------------------------
 networkPolicy:

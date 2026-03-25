@@ -66,6 +66,10 @@ spec:
               value: "{{ .Values.otel.endpoint }}"
             - name: OTEL_SERVICE_NAME
               value: "{{ .Values.otel.serviceName }}"
+            {{- if .Values.auth.trustHost }}
+            - name: AUTH_TRUST_HOST
+              value: "true"
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ .Values.secrets.name }}

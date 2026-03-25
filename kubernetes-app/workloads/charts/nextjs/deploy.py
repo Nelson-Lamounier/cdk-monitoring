@@ -177,6 +177,22 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
     except client_error_cls:
         log_info("No Bedrock assets-bucket-name override found; using resolved value")
 
+    # Bedrock Agent: resolve API URL and API key for the chatbot.
+    # api-url is a plain String; agent-api-key is a SecureString.
+    _BEDROCK_AGENT_PARAMS: dict[str, str] = {
+        "api-url": "BEDROCK_AGENT_API_URL",
+        "agent-api-key": "BEDROCK_AGENT_API_KEY",
+    }
+    for param_suffix, env_var in _BEDROCK_AGENT_PARAMS.items():
+        bedrock_path = f"/bedrock-{cfg.short_env}/{param_suffix}"
+        log_info("Resolving Bedrock Agent param", env_var=env_var, ssm_path=bedrock_path)
+        try:
+            resp = ssm_client.get_parameter(Name=bedrock_path, WithDecryption=True)
+            secrets[env_var] = resp["Parameter"]["Value"]
+            log_info("Resolved Bedrock Agent param", env_var=env_var)
+        except client_error_cls:
+            log_warn("Bedrock Agent param not found", env_var=env_var, ssm_path=bedrock_path)
+
     return secrets
 
 
@@ -192,6 +208,8 @@ _NEXTJS_SECRET_KEYS = [
     "ADMIN_USERNAME",
     "ADMIN_PASSWORD",
     "NEXTAUTH_URL",
+    "BEDROCK_AGENT_API_URL",
+    "BEDROCK_AGENT_API_KEY",
 ]
 
 
