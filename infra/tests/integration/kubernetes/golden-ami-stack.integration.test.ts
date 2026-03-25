@@ -336,6 +336,55 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
     });
 
     // =========================================================================
+    // AMI Software Components (static analysis of build component YAML)
+    // =========================================================================
+    describe('AMI Software Components', () => {
+        let componentYaml: string;
+
+        // Depends on: CONFIGS populated at module scope
+        beforeAll(() => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { buildGoldenAmiComponent } = require('../../../lib/constructs/compute/utils/build-golden-ami-component');
+            componentYaml = buildGoldenAmiComponent({
+                imageConfig: CONFIGS.image,
+                clusterConfig: CONFIGS.cluster,
+            }) as string;
+        });
+
+        it('should NOT use alternatives --set python3 (breaks cloud-init)', () => {
+            expect(componentYaml).not.toContain('alternatives --set python3');
+        });
+
+        it('should NOT use alternatives --install for python3', () => {
+            expect(componentYaml).not.toContain('alternatives --install /usr/bin/python3');
+        });
+
+        it('should create a virtualenv at /opt/k8s-venv with Python 3.11', () => {
+            expect(componentYaml).toContain('python3.11 -m venv /opt/k8s-venv');
+        });
+
+        it('should install pip packages into the virtualenv', () => {
+            expect(componentYaml).toContain('/opt/k8s-venv/bin/pip install');
+        });
+
+        it('should validate cloud-init is functional in the validate phase', () => {
+            expect(componentYaml).toContain('cloud-init status');
+        });
+
+        it('should functionally test cfn-signal (not just binary existence)', () => {
+            expect(componentYaml).toContain('cfn-signal --version');
+        });
+
+        it('should verify system python3 is preserved for cloud-init', () => {
+            expect(componentYaml).toContain('SYS_PY_VERSION');
+        });
+
+        it('should validate venv Python packages via /opt/k8s-venv/bin/python3', () => {
+            expect(componentYaml).toContain('/opt/k8s-venv/bin/python3 -c');
+        });
+    });
+
+    // =========================================================================
     // CloudFormation Stack
     // =========================================================================
     describe('CloudFormation Stack', () => {

@@ -217,6 +217,13 @@ cloud-init-log instance-id environment="development" region="eu-west-1" tail="20
 [group('cdk')]
 ebs-lifecycle volume environment="development" *EXTRA_ARGS:
     npx tsx scripts/local/ebs-lifecycle-audit.ts --volume {{volume}} --env {{environment}} --profile $(just _profile {{environment}}) {{EXTRA_ARGS}}
+
+# Validate Golden AMI build component YAML for known anti-patterns (no AWS calls)
+# Usage: just test-ami-build
+[group('cdk')]
+test-ami-build:
+    yarn jest tests/unit/constructs/compute/build-golden-ami-component.test.ts --verbose
+
 # =============================================================================
 # CI SCRIPTS (Non-interactive — used by GitHub Actions)
 #

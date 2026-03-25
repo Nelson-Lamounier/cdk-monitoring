@@ -319,18 +319,26 @@ phases:
           commands:
             - |
               # Install Python 3.11 (AL2023 ships 3.9 as default; boto3 drops 3.9 April 2026)
+              # IMPORTANT: Do NOT use 'alternatives --set python3' — this breaks cloud-init
+              # which depends on system Python 3.9 package metadata. Instead, create an
+              # isolated virtualenv at /opt/k8s-venv for bootstrap scripts.
               dnf install -y python3.11 python3.11-pip
 
-              # Set python3.11 as the default python3/pip3 via alternatives
-              alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
-              alternatives --set python3 /usr/bin/python3.11
+              # Create isolated virtualenv — system python3 (3.9) stays untouched
+              python3.11 -m venv /opt/k8s-venv
 
-              # Install packages required by deploy.py and bootstrap_argocd.py
-              pip3.11 install boto3 pyyaml kubernetes bcrypt
-              python3 -c "import sys; print(f'Python {sys.version}')"
-              python3 -c "import boto3; print('boto3', boto3.__version__)"
-              python3 -c "import kubernetes; print('kubernetes', kubernetes.__version__)"
-              echo "Python 3.11 + dependencies installed"
+              # Install packages required by bootstrap orchestrator and deploy scripts
+              /opt/k8s-venv/bin/pip install --upgrade pip
+              /opt/k8s-venv/bin/pip install boto3 pyyaml kubernetes bcrypt
+
+              # Verify venv Python
+              /opt/k8s-venv/bin/python3 -c "import sys; print(f'Venv Python {sys.version}')"
+              /opt/k8s-venv/bin/python3 -c "import boto3; print('boto3', boto3.__version__)"
+              /opt/k8s-venv/bin/python3 -c "import kubernetes; print('kubernetes', kubernetes.__version__)"
+
+              # Verify system python3 is still 3.9 (cloud-init dependency)
+              python3 -c "import sys; assert sys.version_info < (3, 11), f'System python3 must remain 3.9, got {sys.version}'; print(f'System Python {sys.version} (preserved for cloud-init)')"
+              echo "Python 3.11 virtualenv at /opt/k8s-venv — system python3 preserved"
 
       - name: CreateDataDirectory
         action: ExecuteBash
@@ -357,12 +365,22 @@ phases:
             - test -f /etc/containerd/config.toml && echo "[validate] containerd config present"
             - test -f /etc/sysctl.d/k8s.conf && echo "[validate] sysctl k8s config present"
             - test -f /opt/aws/bin/cfn-signal && echo "[validate] cfn-signal binary present"
+            - /opt/aws/bin/cfn-signal --version && echo "[validate] cfn-signal functional (dependencies resolve)"
             - echo "[validate] helm:" && helm version --short
-            - python3 -c "import sys; assert sys.version_info >= (3, 11), f'Expected 3.11+, got {sys.version}'; print(f'python3 {sys.version}')"
-            - python3 -c "import boto3; print('boto3', boto3.__version__)"
-            - python3 -c "import yaml; print('pyyaml available')"
-            - python3 -c "import kubernetes; print('kubernetes', kubernetes.__version__)"
-            - python3 -c "import bcrypt; print('bcrypt available')"
+            - echo "[validate] cloud-init:" && cloud-init status && echo "[validate] cloud-init is functional"
+            - |
+              # Critical: verify system python3 is NOT overridden (cloud-init depends on 3.9)
+              SYS_PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+              if [ "$SYS_PY_VERSION" = "3.11" ]; then
+                echo "FATAL: System python3 has been overridden to 3.11 — cloud-init will break!"
+                exit 1
+              fi
+              echo "[validate] system python3 is $SYS_PY_VERSION (preserved for cloud-init)"
+            - /opt/k8s-venv/bin/python3 -c "import sys; assert sys.version_info >= (3, 11), f'Expected 3.11+, got {sys.version}'; print(f'[validate] venv python3 {sys.version}')"
+            - /opt/k8s-venv/bin/python3 -c "import boto3; print('[validate] boto3', boto3.__version__)"
+            - /opt/k8s-venv/bin/python3 -c "import yaml; print('[validate] pyyaml available')"
+            - /opt/k8s-venv/bin/python3 -c "import kubernetes; print('[validate] kubernetes', kubernetes.__version__)"
+            - /opt/k8s-venv/bin/python3 -c "import bcrypt; print('[validate] bcrypt available')"
             - test -f /usr/local/bin/ecr-credential-provider && echo "[validate] ecr-credential-provider binary present"
             - test -f /etc/kubernetes/image-credential-provider-config.yaml && echo "[validate] credential provider config present"
             - echo "[validate] k8sgpt:" && k8sgpt version
