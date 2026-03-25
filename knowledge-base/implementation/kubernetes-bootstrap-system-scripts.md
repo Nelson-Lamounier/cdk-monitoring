@@ -302,7 +302,7 @@ Fully mocked unit tests for the `deploy_helpers` framework and app-specific depl
 ### Running Tests
 
 ```bash
-# All 125 tests across all suites
+# All 135 tests across all suites
 just bootstrap-pytest
 
 # System tests only (~4 seconds)
@@ -317,6 +317,16 @@ just deploy-test-local
 # Single test by name
 just bootstrap-pytest tests/deploy/ -k "test_dynamodb_bedrock_fallback"
 ```
+
+### CI Integration
+
+The `test-k8s-bootstrap` job in `ci.yml` runs the full 135-test Python suite on every PR:
+
+1. Installs `pyproject.toml[dev]` dependencies into the CI venv
+2. Executes `just bootstrap-pytest` (fully offline, all calls mocked)
+3. Reports results to the CI summary and failure-check gate
+
+Run via: `just ci-bootstrap-pytest`
 
 ## Deploy Helpers Framework (`deploy_helpers/`)
 
@@ -428,6 +438,16 @@ Both `deploy_helpers` and `boot_helpers` serve as shared frameworks, but address
 
 Both emit structured JSON logging and follow the same dataclass pattern (`BootConfig` vs `DeployConfig`) with `@classmethod from_env()` constructors.
 
+### SSM Document Consolidation
+
+Both Next.js and monitoring secrets are now deployed via a single consolidated
+`k8s-deploy-secrets` SSM Automation document (replacing the former separate
+`nextjs-secrets` and `monitoring-secrets` documents). The document name is
+resolved from a single SSM parameter: `/k8s/<env>/deploy/secrets-doc-name`.
+
+The CI pipeline's `_post-bootstrap-config.yml` triggers the document twice
+via a single `deploy-secrets` job (Step 1: Next.js, Step 2: Monitoring).
+
 ## Application Deploy Scripts
 
 ### Next.js Deploy (`workloads/charts/nextjs/deploy.py`)
@@ -504,6 +524,10 @@ Output is captured to `logs/deploy-<app>-<timestamp>.log`.
 - `kubernetes-app/k8s-bootstrap/tests/system/test_dr_scripts.py` *(Python — static validation)*
 - `kubernetes-app/k8s-bootstrap/pyproject.toml` *(Python — project configuration)*
 - `infra/lib/stacks/kubernetes/control-plane-stack.ts` *(CDK — IAM grants)*
+- `infra/lib/constructs/ssm/automation-document.ts` *(CDK — SSM document builder)*
+- `infra/tests/integration/kubernetes/s3-bootstrap-artefacts.integration.test.ts` *(integration test — S3 artefact verification)*
+- `.github/workflows/_deploy-ssm-automation.yml` *(workflow — 6-phase deployment)*
+- `.github/workflows/_post-bootstrap-config.yml` *(workflow — consolidated secrets deployment)*
 
 ---
 
