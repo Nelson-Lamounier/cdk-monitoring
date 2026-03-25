@@ -46,55 +46,88 @@ prop in CDK stacks). Replace `<env>` with `development`, `staging`, or
 
 ---
 
-## Quick Diagnostics
+## Quick Diagnostics (`just` commands)
 
-### 1. Check Cloud-Init Status on a Running Instance
+All diagnostic commands below are defined in the project `justfile` and
+require no manual AWS CLI invocations.
+
+### 1. Fetch Cloud-Init Log from an Instance
+
+Retrieves `/var/log/cloud-init-output.log` via SSM and saves a local
+copy under `scripts/local/diagnostics/.troubleshoot-logs/`.
 
 ```bash
-# Via SSM Session Manager
-aws ssm start-session --target <instance-id> \
-  --region eu-west-1 --profile dev-account
+# Fetch the last 200 lines (default)
+just cloud-init-log <instance-id>
 
-# Inside the instance
+# Fetch the last 500 lines, staging environment
+just cloud-init-log <instance-id> staging eu-west-1 500
+```
+
+### 2. Audit EBS Volume Lifecycle
+
+Shows the full attach/detach event timeline for a volume, including
+CloudTrail correlation and ASG lifecycle hook status.
+
+```bash
+# Basic audit
+just ebs-lifecycle <volume-id>
+
+# With ASG context
+just ebs-lifecycle <volume-id> development --stack ControlPlane-development \
+  --asg-logical-id ComputeAutoScalingGroupASG7021CF69
+```
+
+### 3. Audit CloudWatch Log Groups
+
+Identifies empty, stale, and unmanaged log groups — useful after stack
+teardowns or to verify log groups are populating.
+
+```bash
+just cw-log-audit development
+```
+
+### 4. Troubleshoot CloudFormation Stack Deployments
+
+Diagnoses slow, stuck, or failed stack operations — including ASG
+`UPDATE_IN_PROGRESS` hangs.
+
+```bash
+just cfn-troubleshoot ControlPlane-development development
+```
+
+### 5. SSM Bootstrap Status & Logs
+
+Shows recent SSM Automation execution status and per-step output.
+
+```bash
+# View last 3 executions
+just ssm-bootstrap-status
+
+# View last 5 executions
+just ssm-bootstrap-status 5
+
+# Read step stdout/stderr (last 100 lines, control-plane doc)
+just ssm-bootstrap-logs 100 development control-plane
+```
+
+### 6. Validate AMI Build Component YAML (no AWS calls)
+
+Runs 17 unit tests that statically analyse the generated component YAML
+for anti-patterns (e.g. `alternatives --set python3`).
+
+```bash
+just test-ami-build
+```
+
+### 7. Connect to Cluster
+
+```bash
+# Auto-discover instance and start SSM tunnel
+just k8s-tunnel-auto
+
+# Check cloud-init on the node
 cloud-init status --long
-cat /var/log/cloud-init-output.log | tail -100
-```
-
-### 2. Check cfn-signal Was Sent
-
-```bash
-# Inside the instance
-grep cfn-signal /var/log/cloud-init-output.log
-```
-
-If absent, cloud-init failed before reaching the cfn-signal step.
-
-### 3. Query EBS Detach Lambda Logs
-
-```bash
-aws logs tail "/aws/lambda/k8s-ebs-detach-lifecycle" \
-  --since 1h --format short \
-  --region eu-west-1 --profile dev-account
-```
-
-### 4. Query Instance Bootstrap Logs
-
-```bash
-aws logs tail "/ec2/k8s/instances" \
-  --since 1h --format short \
-  --region eu-west-1 --profile dev-account
-```
-
-### 5. Query SSM Bootstrap Logs
-
-```bash
-# Control-plane + worker bootstrap output
-aws logs tail "/ssm/k8s/development/bootstrap" \
-  --since 2h --format short \
-  --region eu-west-1 --profile dev-account
-
-# Or use the justfile shortcut
-just ssm-bootstrap-logs
 ```
 
 ---
@@ -108,34 +141,28 @@ just ssm-bootstrap-logs
 - CloudFormation shows `UPDATE_IN_PROGRESS` on the ASG for >15 minutes
 - Instance is running but `cloud-init status` shows `error` or `degraded`
 
-**Root Cause:** cloud-init failed, so user-data never completed and
-`cfn-signal` was never sent.
-
 **Diagnosis:**
 
 ```bash
-# 1. Get the new instance ID
-aws autoscaling describe-auto-scaling-groups \
-  --auto-scaling-group-names k8s-dev-ctrl-asg \
-  --query "AutoScalingGroups[0].Instances[*].InstanceId" \
-  --region eu-west-1 --profile dev-account
+# 1. Diagnose the stuck CFN stack
+just cfn-troubleshoot ControlPlane-development development
 
-# 2. Check cloud-init
-aws ssm start-session --target <instance-id> \
-  --region eu-west-1 --profile dev-account
-# Then: cloud-init status --long
-# Then: cat /var/log/cloud-init-output.log | tail -200
+# 2. Fetch cloud-init log from the new instance
+just cloud-init-log <instance-id>
 
 # 3. Check instance log group
-aws logs tail "/ec2/k8s/instances" --since 30m --format short \
-  --region eu-west-1 --profile dev-account
+just cw-log-audit development
 ```
+
+**Root Cause:** cloud-init failed, so user-data never completed and
+`cfn-signal` was never sent.
 
 **Resolution:**
 
 - If caused by Python version issue: the virtualenv fix in
   `build-golden-ami-component.ts` resolves this — re-bake the AMI
 - If caused by missing packages: check the Image Builder validate phase logs
+- Validate the component YAML locally: `just test-ami-build`
 
 ### Scenario 2: EBS Volume Not Detached on Instance Replacement
 
@@ -147,16 +174,12 @@ aws logs tail "/ec2/k8s/instances" --since 30m --format short \
 **Diagnosis:**
 
 ```bash
-# 1. Check Lambda logs for detachment events
+# 1. Audit the full volume lifecycle
+just ebs-lifecycle <volume-id>
+
+# 2. Check Lambda logs for detachment events
 aws logs tail "/aws/lambda/k8s-ebs-detach-lifecycle" \
   --since 1h --format short \
-  --region eu-west-1 --profile dev-account
-
-# 2. Check volume state
-aws ec2 describe-volumes \
-  --filters "Name=tag:ManagedBy,Values=MonitoringStack" \
-  --query "Volumes[*].[VolumeId,State,Attachments[0].InstanceId]" \
-  --output table \
   --region eu-west-1 --profile dev-account
 ```
 
@@ -181,13 +204,10 @@ aws ec2 describe-volumes \
 **Diagnosis:**
 
 ```bash
-# 1. Check Image Builder build status
-aws imagebuilder list-image-pipeline-images \
-  --image-pipeline-arn <pipeline-arn> \
-  --query "imageSummaryList[0].[state.status,state.reason]" \
-  --region eu-west-1 --profile dev-account
+# 1. Run local static analysis to catch YAML anti-patterns
+just test-ami-build
 
-# 2. Check Image Builder logs
+# 2. Check Image Builder logs for FATAL errors
 aws logs filter-log-events \
   --log-group-name-prefix "/aws/imagebuilder/" \
   --filter-pattern "FATAL" \
@@ -197,10 +217,6 @@ aws logs filter-log-events \
 
 **Resolution:**
 
-- Run the local unit test to catch YAML anti-patterns:
-  ```bash
-  just test-ami-build
-  ```
 - Fix the component YAML in `build-golden-ami-component.ts`
 - Re-trigger the pipeline via CDK deploy
 
@@ -209,30 +225,29 @@ aws logs filter-log-events \
 **Symptoms:**
 
 - `cloud-init status` shows `error`
-- `/var/log/cloud-init.log` contains `ModuleNotFoundError` or
-  `ImportError` for packages like `jsonschema`, `configobj`
+- `/var/log/cloud-init.log` contains `ModuleNotFoundError`
 
 **Root Cause:** `alternatives --set python3 python3.11` was used, which
 hijacks the system Python 3.9 that cloud-init depends on.
 
-**Diagnosis (on the instance):**
+**Diagnosis:**
 
 ```bash
-python3 --version
-# If this shows 3.11, the system python has been overridden
+# 1. Verify locally that the anti-pattern is caught
+just test-ami-build
 
-# Check cloud-init can import its dependencies
-python3 -c "import cloudinit; print(cloudinit.__version__)"
+# 2. Check on the instance
+just cloud-init-log <instance-id>
+
+# 3. Or connect directly
+just k8s-tunnel-auto
+# Then: python3 --version  (should be 3.9, NOT 3.11)
 ```
 
 **Resolution:**
 
 The fix is already in place: the AMI now uses `/opt/k8s-venv` instead
-of `alternatives`. Re-bake the AMI to pick up the fix. Verify locally:
-
-```bash
-just test-ami-build
-```
+of `alternatives`. Re-bake the AMI to pick up the fix.
 
 ---
 
@@ -242,6 +257,22 @@ just test-ami-build
 | :--- | :--- | :--- | :--- |
 | `k8s-ebs-detach-rule` | `aws.autoscaling` (EC2 Instance-terminate Lifecycle Action) | EBS Detach Lambda | Gracefully detach EBS volumes before instance termination |
 | EIP Failover rule | `aws.autoscaling` (EC2 Instance Launch Successful) | EIP Failover Lambda | Auto-associate Elastic IP to new instances |
+
+---
+
+## Justfile Command Quick Reference
+
+| Command | Purpose | AWS Calls? |
+| :--- | :--- | :---: |
+| `just cloud-init-log <id>` | Fetch cloud-init-output.log via SSM | ✅ |
+| `just ebs-lifecycle <vol-id>` | Audit EBS attach/detach timeline | ✅ |
+| `just cw-log-audit <env>` | Find empty/stale log groups | ✅ |
+| `just cfn-troubleshoot <stack> <env>` | Diagnose stuck CFN operations | ✅ |
+| `just ssm-bootstrap-status` | SSM Automation execution overview | ✅ |
+| `just ssm-bootstrap-logs` | SSM step stdout/stderr | ✅ |
+| `just ssm-s3-sync-status` | Verify S3 script sync timestamps | ✅ |
+| `just test-ami-build` | AMI component YAML validation | ❌ |
+| `just k8s-tunnel-auto` | SSM tunnel to cluster node | ✅ |
 
 ---
 
