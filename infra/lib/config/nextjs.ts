@@ -568,9 +568,14 @@ export const CLOUDFRONT_PATH_PATTERNS = {
 
 /**
  * CloudFront error responses
+ *
+ * NOTE: 404 is intentionally excluded. CloudFront error response overrides
+ * replace the ENTIRE response body — including JSON API responses — with
+ * the HTML page at responsePagePath. This breaks any JSON API that
+ * legitimately returns 404 (e.g. /api/auth/csrf when CSRF is disabled).
+ * Next.js handles its own 404 pages natively via not-found.tsx.
  */
 export const CLOUDFRONT_ERROR_RESPONSES = [
-    { httpStatus: 404, responseHttpStatus: 404, responsePagePath: '/404.html' },
     { httpStatus: 500, responseHttpStatus: 500, responsePagePath: '/500.html' },
 ] as const;
 
