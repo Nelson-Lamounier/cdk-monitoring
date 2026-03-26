@@ -779,3 +779,4 @@ export class KubernetesEdgeStack extends cdk.Stack {
         return reader.getResponseField('Parameter.Value');
     }
 }
+
