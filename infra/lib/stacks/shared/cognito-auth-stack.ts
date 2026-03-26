@@ -129,9 +129,10 @@ export class CognitoAuthStack extends cdk.Stack {
                 sms: false,
                 otp: true,
             },
+            advancedSecurityMode: cognito.AdvancedSecurityMode.ENFORCED,
         });
 
-        // CDK-Nag: Suppress advanced security mode requirement for a
+        // CDK-Nag: Suppress MFA enforcement requirement for a
         // single-user portfolio authentication pool.
         NagSuppressions.addResourceSuppressions(
             this.userPool,

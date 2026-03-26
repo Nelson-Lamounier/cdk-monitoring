@@ -111,6 +111,14 @@ describe('CognitoAuthStack', () => {
                 }),
             });
         });
+
+        it('should enforce advanced security mode', () => {
+            template.hasResourceProperties('AWS::Cognito::UserPool', {
+                UserPoolAddOns: Match.objectLike({
+                    AdvancedSecurityMode: 'ENFORCED',
+                }),
+            });
+        });
     });
 
     // =========================================================================
