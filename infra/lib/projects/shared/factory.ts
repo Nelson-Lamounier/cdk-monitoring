@@ -11,12 +11,14 @@ import * as cdk from 'aws-cdk-lib/core';
 import type { DeployableEnvironment } from '../../config/environments';
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
+import { nextjsSsmPrefix } from '../../config/ssm-paths';
 import {
     IProjectFactory,
     ProjectFactoryContext,
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import { SharedVpcStack } from '../../shared/vpc-stack';
+import { CognitoAuthStack } from '../../stacks/shared/cognito-auth-stack';
 import { CrossplaneStack } from '../../stacks/shared/crossplane-stack';
 import { FinOpsStack } from '../../stacks/shared/finops-stack';
 import { SecurityBaselineStack } from '../../stacks/shared/security-baseline-stack';
@@ -192,6 +194,43 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
 
         stacks.push(crossplaneStack);
         stackMap['crossplane'] = crossplaneStack;
+
+        // =================================================================
+        // Stack 5: Cognito Auth — Admin Authentication
+        //
+        // Managed User Pool with Hosted UI for admin sign-in.
+        // Single pre-seeded admin user via email; self-sign-up disabled.
+        // OAuth Authorization Code flow integrates with next-auth.
+        //
+        // Cost: Free for first 50,000 MAUs (we have ~1 user).
+        // =================================================================
+        const isProduction = env === Environment.PRODUCTION;
+        const domainName = isProduction
+            ? 'https://nelsonlamounier.com'
+            : `https://${env}.nelsonlamounier.com`;
+
+        const cognitoStackName = stackId(this.namespace, 'CognitoAuth', env);
+        const cognitoStack = new CognitoAuthStack(scope, cognitoStackName, {
+            namePrefix: 'portfolio-admin',
+            adminEmail: process.env.ADMIN_EMAIL ?? 'lamounierleao@gmail.com',
+            callbackUrls: [
+                `${domainName}/api/auth/callback/cognito`,
+                'http://localhost:3000/api/auth/callback/cognito',
+            ],
+            logoutUrls: [
+                domainName,
+                'http://localhost:3000',
+            ],
+            ssmPrefix: nextjsSsmPrefix(env),
+            removalPolicy: isProduction
+                ? cdk.RemovalPolicy.RETAIN
+                : cdk.RemovalPolicy.DESTROY,
+            env: cdkEnvironment(this.environment),
+            description: `Cognito admin authentication (User Pool + Hosted UI) - ${env}`,
+        });
+
+        stacks.push(cognitoStack);
+        stackMap['cognitoAuth'] = cognitoStack;
 
         cdk.Annotations.of(scope).addInfo(
             `Shared factory created ${stacks.length} stacks. ` +

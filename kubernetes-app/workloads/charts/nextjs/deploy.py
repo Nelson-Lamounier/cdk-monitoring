@@ -58,11 +58,13 @@ FRONTEND_SECRET_MAP: dict[str, str] = {
     "dynamodb-table-name": "DYNAMODB_TABLE_NAME",
     "assets-bucket-name": "ASSETS_BUCKET_NAME",
     "api-gateway-url": "NEXT_PUBLIC_API_URL",
-    # NextAuth.js admin authentication
+    # Cognito + NextAuth.js admin authentication
     "auth/nextauth-secret": "NEXTAUTH_SECRET",
-    "auth/admin-username": "ADMIN_USERNAME",
-    "auth/admin-password": "ADMIN_PASSWORD",
     "auth/nextauth-url": "NEXTAUTH_URL",
+    "auth/cognito-user-pool-id": "AUTH_COGNITO_USER_POOL_ID",
+    "auth/cognito-client-id": "AUTH_COGNITO_CLIENT_ID",
+    "auth/cognito-issuer-url": "AUTH_COGNITO_ISSUER_URL",
+    "auth/cognito-domain": "AUTH_COGNITO_DOMAIN",
 }
 
 
@@ -205,9 +207,11 @@ _NEXTJS_SECRET_KEYS = [
     "ASSETS_BUCKET_NAME",
     "NEXT_PUBLIC_API_URL",
     "NEXTAUTH_SECRET",
-    "ADMIN_USERNAME",
-    "ADMIN_PASSWORD",
     "NEXTAUTH_URL",
+    "AUTH_COGNITO_USER_POOL_ID",
+    "AUTH_COGNITO_CLIENT_ID",
+    "AUTH_COGNITO_ISSUER_URL",
+    "AUTH_COGNITO_DOMAIN",
     "BEDROCK_AGENT_API_URL",
     "BEDROCK_AGENT_API_KEY",
 ]

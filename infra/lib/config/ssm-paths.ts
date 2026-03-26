@@ -121,14 +121,18 @@ export interface NextjsSsmPaths {
         readonly distributionId: string;
     };
 
-    // --- Authentication (NextAuth.js) ---
+    // --- Authentication (Cognito + NextAuth.js) ---
     readonly auth: {
+        /** Cognito User Pool ID */
+        readonly cognitoUserPoolId: string;
+        /** Cognito User Pool Client ID */
+        readonly cognitoClientId: string;
+        /** Cognito OIDC Issuer URL */
+        readonly cognitoIssuerUrl: string;
+        /** Cognito Hosted UI domain */
+        readonly cognitoDomain: string;
         /** NextAuth.js JWT signing secret */
         readonly nextauthSecret: string;
-        /** Admin username for Credentials provider */
-        readonly adminUsername: string;
-        /** Admin password for Credentials provider */
-        readonly adminPassword: string;
         /** NextAuth.js base URL (e.g., https://nelsonlamounier.com) */
         readonly nextauthUrl: string;
     };
@@ -183,11 +187,13 @@ export function nextjsSsmPaths(
             distributionId: `${prefix}/cloudfront/distribution-id`,
         },
 
-        // Authentication (NextAuth.js)
+        // Authentication (Cognito + NextAuth.js)
         auth: {
+            cognitoUserPoolId: `${prefix}/auth/cognito-user-pool-id`,
+            cognitoClientId: `${prefix}/auth/cognito-client-id`,
+            cognitoIssuerUrl: `${prefix}/auth/cognito-issuer-url`,
+            cognitoDomain: `${prefix}/auth/cognito-domain`,
             nextauthSecret: `${prefix}/auth/nextauth-secret`,
-            adminUsername: `${prefix}/auth/admin-username`,
-            adminPassword: `${prefix}/auth/admin-password`,
             nextauthUrl: `${prefix}/auth/nextauth-url`,
         },
 
