@@ -160,6 +160,15 @@ sns-orphans environment region="eu-west-1":
 cw-log-audit environment region="eu-west-1":
     npx tsx scripts/local/cloudwatch-log-audit.ts --env {{environment}} --profile $(just _profile {{environment}}) --region {{region}}
 
+# Fetch recent CloudWatch log events + SSM Run Command history as JSON
+# Output is printed to terminal and saved to scripts/local/diagnostics/
+# Usage: just cw-last-query /aws/lambda/my-function development
+#        just cw-last-query /aws/eks/my-cluster development --instance-id i-0abc123 --hours 6 --limit 100
+#        just cw-last-query /aws/eks/my-cluster development --region us-east-1
+[group('cdk')]
+cw-last-query log-group environment *EXTRA_ARGS:
+    npx tsx scripts/local/cw-last-query.ts --log-group {{log-group}} --env {{environment}} --profile $(just _profile {{environment}}) {{EXTRA_ARGS}}
+
 # Troubleshoot CloudFormation stack deployments — diagnose slow, stuck, or failed operations
 # Usage: just cfn-troubleshoot ComputeStack-development development
 [group('cdk')]
