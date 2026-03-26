@@ -514,20 +514,10 @@ export class KubernetesEdgeStack extends cdk.Stack {
                     compress: true,
                     description: 'Article images and media',
                 },
-                // API routes
-                {
-                    pathPattern: CLOUDFRONT_PATH_PATTERNS.api,
-                    origin: eipOrigin,
-                    cachePolicy: noCachePolicy,
-                    originRequestPolicy: eipOriginRequestPolicy,
-                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-                    compress: false,
-                    description: 'Next.js API routes (no caching)',
-                },
                 // NextAuth.js callback/session routes — must forward cookies
-                // Placed after /api/* but CloudFront evaluates most-specific path first,
-                // so /api/auth/* takes precedence over /api/* automatically.
+                // IMPORTANT: Must be listed BEFORE /api/* because CloudFront
+                // evaluates behaviours in listed order (first match wins),
+                // NOT by path specificity.
                 {
                     pathPattern: CLOUDFRONT_PATH_PATTERNS.authCallback,
                     origin: eipOrigin,
@@ -548,6 +538,17 @@ export class KubernetesEdgeStack extends cdk.Stack {
                     allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
                     compress: true,
                     description: 'Admin pages (no caching, cookies forwarded for auth)',
+                },
+                // API routes — general (catch-all for /api/* after more specific patterns above)
+                {
+                    pathPattern: CLOUDFRONT_PATH_PATTERNS.api,
+                    origin: eipOrigin,
+                    cachePolicy: noCachePolicy,
+                    originRequestPolicy: eipOriginRequestPolicy,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    compress: false,
+                    description: 'Next.js API routes (no caching)',
                 },
             ],
             errorResponses: CLOUDFRONT_ERROR_RESPONSES.map((err) => ({
