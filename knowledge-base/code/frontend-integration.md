@@ -33,8 +33,9 @@ ArgoCD Image Updater → Auto-detect new SHA tag → Git writeback
 ArgoCD Application (sync-wave 5) → Helm render → K8s manifests
     ↓
 K8s Namespace: nextjs-app
-    ├── Deployment (1 replica, 50m–250m CPU, 64Mi–256Mi)
-    ├── Service
+    ├── **Rollout** (BlueGreen progressive delivery, 1 replica active/preview)
+    ├── Service (Active)
+    ├── Service (Preview)
     ├── NetworkPolicy (Traefik ingress only)
     └── PodDisruptionBudget
 ```
@@ -93,7 +94,7 @@ K8s Namespace: nextjs-app
 | S3 Assets Bucket | `nextjs-article-assets-development` | Static article images/media |
 | Domain | `nelsonlamounier.com` | Production domain |
 
-## ArgoCD Deployment Pattern
+## ArgoCD & Argo Rollouts Deployment Pattern
 
 ### Application Definition
 - **File:** `kubernetes-app/workloads/argocd-apps/nextjs.yaml`
@@ -104,9 +105,14 @@ K8s Namespace: nextjs-app
 
 ### ArgoCD Image Updater
 - **Strategy:** `newest-build` (most recently built image by timestamp)
-- **Tag Filter:** `regexp:^[0-9a-f]{7,40}$` (SHA-format tags only)
+- **Tag Filter:** `regexp:^[0-9a-f]{7,40}-r[0-9]+$` (SHA-format tags with run_attempt suffix only)
 - **Write-Back:** Commits `.argocd-source-nextjs.yaml` to Git (`develop` branch) so selfHeal enforces the updated tag instead of reverting it.
-- **Effect:** Pushing a new image to ECR from CI automatically triggers a K8s rollout — zero manual intervention.
+- **Effect:** Pushing a new image to ECR from CI automatically writes to Git, which triggers a K8s Rollout BlueGreen transition — zero manual intervention.
+
+### Argo Rollouts (BlueGreen)
+- The Next.js workload is a `Rollout` using the `blueGreen` strategy.
+- When an image updates, Argo Rollouts spins up the new replicaset in the background and attaches the `preview` service to it.
+- Traffic remains securely on the `active` service (old replicaset) until the transition logic verifies readiness and cuts over.
 
 ### Kubernetes Resource Allocations
 - **Replicas:** 1 (development)
@@ -147,7 +153,8 @@ K8s Namespace: nextjs-app
 - **Cross-region SSM readers** — Edge stack in us-east-1 reads EIP and bucket name from eu-west-1 SSM via `AwsCustomResource`. Timestamp-based physicalResourceId forces fresh reads on every deploy.
 - **WAF IP allowlist for pre-launch** — `RESTRICT_ACCESS=false` in GitHub Environment variables opens the site. No code change, commit, or PR needed. Just a pipeline re-run.
 - **K8s over Vercel** — Deploying Next.js on self-managed K8s instead of Vercel demonstrates container orchestration, Helm chart authoring, and Traefik ingress configuration. The cost difference is minimal at this scale, but the operational learning is substantial.
-- **ArgoCD Image Updater over CI-triggered kubectl** — Git-based writeback ensures the cluster state is always reconcilable from Git. No imperative `kubectl set image` commands that break GitOps.
+- **Argo Rollouts over CI-triggered kubectl** — Progressive delivery via BlueGreen completely separates deployment from release, eliminating `kubectl rollout restart` hacks.
+- **GitOps image promotion** — Git writeback pattern ensures the deployed image tag is always auditable and reconcilable from version control.
 - **API Gateway over direct Lambda URLs** — Provides stage-level throttling (100 rps dev / 1000 rps prod), structured access logging, request validation, and CORS configuration without custom middleware.
 - **Reusable constructs** — CloudFront (460 lines), API Gateway (480 lines), WAF, ACM — all extraction-ready for multi-project reuse. Avoids repeating boilerplate across stacks.
 - **Separated configuration** — `config/nextjs.ts` centralises all environment-specific values. Stacks consume config, never hardcode. Enables new environments in minutes.

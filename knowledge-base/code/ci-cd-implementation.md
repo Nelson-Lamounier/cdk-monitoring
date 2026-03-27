@@ -57,6 +57,7 @@ GitHub Actions (infrastructure)                ArgoCD (workloads)
 | Image Updater | `argocd-image-updater.yaml` | Watches ECR, commits image updates |
 | Notifications | `argocd-notifications.yaml` | Deployment status notifications |
 | Sync verification | `infra/scripts/cd/verify-argocd-sync.ts` | CI integration test for ArgoCD |
+| **Argo Rollouts** | `kubernetes-app/workloads/charts/nextjs/chart/templates/rollout.yaml` | Orchestrates progressive BlueGreen frontend delivery |
 
 ## Integration Tests in Pipeline
 
@@ -64,8 +65,10 @@ GitHub Actions (infrastructure)                ArgoCD (workloads)
 |------|---------------|-----------|
 | `s3-bootstrap-artefacts.integration.test.ts` | Phase 3 (S3 Verify) | Bucket existence, file counts per S3 prefix |
 | `ssm-automation-runtime.integration.test.ts` | Phase 5 (SSM Verify) | Instance targeting, EC2 health, SSM Agent online |
+| `bluegreen.integration.test.ts` | Local/CI (Post-deploy) | Validate traffic segregation (Active vs Preview) in BlueGreen transition |
+| `edge-stack.integration.test.ts` | Local/CI (Post-deploy) | Verify ECR digest matching and S3 `BUILD_ID` retention sync |
 
-Both tests use the vacuous-pass pattern — assertions pass when resources don't exist yet (Day-0 deployments).
+Both layout tests (`s3` and `ssm`) use the vacuous-pass pattern — assertions pass when resources don't exist yet (Day-0 deployments).
 
 ## Challenges Encountered
 
@@ -73,6 +76,7 @@ Both tests use the vacuous-pass pattern — assertions pass when resources don't
 - **Custom CI Docker image** — the default GitHub Actions runners didn't have `kubectl`, `helm`, or the AWS CLI v2 pre-installed. Built a custom CI image (`build-ci-image.yml`) to reduce pipeline execution time by 30%.
 - **ArgoCD Redis CrashLoop** — ArgoCD's `secret-init` container failed when the redis-initial-password Secret was missing. Fixed by ensuring the ArgoCD namespace and secrets are provisioned before the ArgoCD Helm install.
 - **SSM document proliferation** — separate SSM Automation documents for Next.js and monitoring secrets caused 4-state Step Functions orchestration. Consolidated into a single `k8s-deploy-secrets` document with 2-step sequence, reducing to 2-state (1 lookup + 1 chain).
+- **Broken CSS during Deployments (Zero-Downtime constraints)** — Users encountered `404 Not Found` for static Next.js assets during rollout. CI was executing an imperative `kubectl rollout restart` while executing a destructive `aws s3 sync --delete`. Fixed by implementing an Argo Rollout constraint and a smart S3 sync script (`sync-static-to-s3.ts`) which retains historical chunk mapping for the preceding BUILD_ID.
 
 ## Transferable Skills Demonstrated
 
