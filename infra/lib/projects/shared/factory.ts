@@ -215,6 +215,7 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
             adminEmail: process.env.ADMIN_EMAIL ?? 'lamounierleao@gmail.com',
             callbackUrls: [
                 `${domainName}/api/auth/callback/cognito`,
+                'https://nelsonlamounier.com/api/auth/callback/cognito',
                 'http://localhost:3000/api/auth/callback/cognito',
             ],
             logoutUrls: [
