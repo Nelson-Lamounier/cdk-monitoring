@@ -2178,3 +2178,13 @@ install:
 
 
 
+
+# =============================================================================
+# GITHUB WORKFLOW AUTOMATION
+# =============================================================================
+
+# Commit local changes to .github/ and automatically dispatch a workflow on the current branch.
+# Usage: just gh-dispatch deploy-frontend.yml
+[group('gh')]
+gh-dispatch workflow:
+    npx tsx scripts/local/gh-dispatch.ts {{workflow}}

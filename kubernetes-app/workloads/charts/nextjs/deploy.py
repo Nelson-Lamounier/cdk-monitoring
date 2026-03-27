@@ -62,8 +62,8 @@ FRONTEND_SECRET_MAP: dict[str, str] = {
     "auth/nextauth-secret": "NEXTAUTH_SECRET",
     "auth/nextauth-url": "NEXTAUTH_URL",
     "auth/cognito-user-pool-id": "AUTH_COGNITO_USER_POOL_ID",
-    "auth/cognito-client-id": "AUTH_COGNITO_CLIENT_ID",
-    "auth/cognito-issuer-url": "AUTH_COGNITO_ISSUER_URL",
+    "auth/cognito-client-id": "AUTH_COGNITO_ID",
+    "auth/cognito-issuer-url": "AUTH_COGNITO_ISSUER",
     "auth/cognito-domain": "AUTH_COGNITO_DOMAIN",
 }
 

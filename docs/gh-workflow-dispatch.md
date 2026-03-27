@@ -34,6 +34,17 @@ gh workflow run deploy-org.yml --ref develop -f confirm=DEPLOY-ORG -f stack=dns-
 gh workflow run day-1-orchestration.yml --ref develop
 ```
 
+## Local Automation (New)
+
+To quickly test changes made to `.github/workflows/` without manually committing
+and pushing to your branch or creating PRs, you can use the built-in `just`
+automation:
+
+```bash
+# Commits .github/ changes, pushes to your branch, and triggers the workflow!
+just gh-dispatch deploy-frontend.yml
+```
+
 ## Useful Commands
 
 ```bash
