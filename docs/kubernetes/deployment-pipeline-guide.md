@@ -329,6 +329,27 @@ flowchart TD
 
 ---
 
+---
+
+## Application Deployment: Frontend BlueGreen via Argo Rollouts
+
+While infrastructure and bootstrap phases are handled natively by CDK and AWS SSM, the Next.js frontend has a bespoke, true zero-downtime deployment flow managed directly by GitHub Actions and Argo Rollouts.
+
+**Workflow:** [`deploy-frontend.yml`](.github/workflows/deploy-frontend.yml)
+
+### Delivery Sequence
+1. **Container Build**: A standalone Docker image is built and tagged uniquely with `${{ github.sha }}-r${{ github.run_attempt }}` enabling GitOps deterministic tracking.
+2. **S3 Static Chunk Sync**: The `frontend-ops/sync-static-to-s3.ts` script syncs the new `.next/BUILD_ID` to S3. Crucially, it **retains both the new and previous static chunks** to prevent `404` CSS/JS errors from the Active pod during the transition.
+3. **In-Place Image Test**: The script `edge-stack.integration.test.ts` validates that the image in ECR perfectly aligns with the static chunks uploaded to S3.
+4. **GitOps Trigger**: ArgoCD Image Updater detects the new ECR image tag and commits it back to the cluster repository (`nextjs-values.yaml`).
+5. **Rollout Transition**: Argo Rollouts generates a new Preview ReplicaSet.
+6. **Live Integration Testing**: The pipeline executes `bluegreen.integration.test.ts` over an SSM tunnel to assert that the Kubernetes Services correctly segregate traffic between the stable components and the preview environment.
+7. **Promotion**: Pre-promotion PromQL queries analyze standard metrics; if healthy, Argo Rollouts performs a full cutover and terminates the previous ReplicaSet.
+
+> For deeper details, consult the [Frontend Operations README](../frontend-ops/README.md).
+
+---
+
 ## Related Files
 
 | File | Purpose |
