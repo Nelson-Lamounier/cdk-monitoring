@@ -468,6 +468,12 @@ ci-integration-test project environment *ARGS:
 test-integration project environment *ARGS:
     cd infra && NODE_OPTIONS='--experimental-vm-modules' AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPattern="tests/integration/{{project}}" {{ARGS}}
 
+# Run a specific integration test file locally (with AWS profile)
+# Usage: just test-integration-file tests/integration/kubernetes/bluegreen.integration.test.ts development
+[group('test')]
+test-integration-file path environment *ARGS:
+    cd infra && NODE_OPTIONS='--experimental-vm-modules' AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js {{path}} {{ARGS}}
+
 # Run Golden AMI integration test locally
 # Verifies AMI properties, security posture, tags, and pipeline freshness.
 # Usage: just test-golden-ami development
