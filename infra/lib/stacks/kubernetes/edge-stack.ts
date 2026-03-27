@@ -557,6 +557,7 @@ export class KubernetesEdgeStack extends cdk.Stack {
             })),
             enableLogging: loggingEnabled,
             logPrefix,
+            logIncludeCookies: true,
             priceClass: cfConfig.priceClass,
             httpVersion: cfConfig.httpVersion,
             enableIpv6: true,
