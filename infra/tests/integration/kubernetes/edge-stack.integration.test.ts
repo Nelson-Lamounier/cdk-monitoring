@@ -96,7 +96,7 @@ const ECR_PATHS = sharedEcrPaths(CDK_ENV);
 // =============================================================================
 
 /** Expected CloudFront behaviour count (excluding the default behaviour) */
-const EXPECTED_BEHAVIOUR_COUNT = 6;
+const EXPECTED_BEHAVIOUR_COUNT = 7;
 
 /**
  * Expected ordered path patterns matching the `additionalBehaviors` array
@@ -108,12 +108,13 @@ const EXPECTED_BEHAVIOUR_ORDER = [
     CLOUDFRONT_PATH_PATTERNS.assets.images,    // /images/*
     CLOUDFRONT_PATH_PATTERNS.authCallback,     // /api/auth/*
     CLOUDFRONT_PATH_PATTERNS.admin,            // /admin/*
+    CLOUDFRONT_PATH_PATTERNS.adminApi,         // /api/admin/*
     CLOUDFRONT_PATH_PATTERNS.api,              // /api/*
 ] satisfies readonly string[];
 
 /** Indices for critical ordering assertions */
 const AUTH_CALLBACK_INDEX = 3;
-const API_CATCHALL_INDEX = 5;
+const API_CATCHALL_INDEX = 6;
 
 /** S3-origin path patterns (should be routed to S3 OAC, not EIP) */
 const S3_ORIGIN_PATTERNS = new Set([

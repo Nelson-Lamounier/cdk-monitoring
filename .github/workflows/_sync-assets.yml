@@ -78,12 +78,18 @@ jobs:
           echo "Extracting static assets..."
           TEMP_CONTAINER=$(docker create "$LOADED")
 
-          mkdir -p .next
+          mkdir -p .next public
+          
           if ! docker cp "$TEMP_CONTAINER:/app/.next/static" ".next/"; then
             echo "[FAIL] Failed to extract static assets"
             docker rm "$TEMP_CONTAINER" > /dev/null 2>&1 || true
             exit 1
           fi
+
+          if ! docker cp "$TEMP_CONTAINER:/app/public/." "./public/"; then
+            echo "[WARNING] Failed to extract public assets, continuing anyway"
+          fi
+
           docker rm "$TEMP_CONTAINER" > /dev/null
 
           ASSET_COUNT=$(find .next/static -type f | wc -l | tr -d ' ')

@@ -562,6 +562,8 @@ export const CLOUDFRONT_PATH_PATTERNS = {
     api: '/api/*',
     /** Admin pages — caching disabled, cookies forwarded */
     admin: '/admin/*',
+    /** Admin Backend API routes — caching disabled, cookies forwarded */
+    adminApi: '/api/admin/*',
     /** NextAuth.js callback/session routes — caching disabled, cookies forwarded */
     authCallback: '/api/auth/*',
 } as const;

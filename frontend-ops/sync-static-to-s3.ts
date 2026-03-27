@@ -164,6 +164,35 @@ async function main(): Promise<void> {
 
   logger.success(`Uploaded ${uploaded} files to S3`)
 
+  // Step 3.5: Sync public assets (images, favicon, etc.) to S3
+  const publicDir = join(projectRoot, 'public')
+  if (existsSync(publicDir)) {
+    logger.info('Syncing public directory assets to S3 root...')
+    const publicFiles = getAllFiles(publicDir)
+    let publicUploaded = 0
+    
+    for (const filePath of publicFiles) {
+      const relativePath = relative(publicDir, filePath)
+      const s3Key = relativePath // 'images/logo.png', 'favicon.ico', etc.
+      const contentType = lookup(filePath) || 'application/octet-stream'
+      const fileContent = readFileSync(filePath)
+
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: s3Key,
+          Body: fileContent,
+          ContentType: contentType,
+          // Public items (like images/favicon) are mutated more often than hashed Next.js assets
+          CacheControl: 'public, max-age=86400, must-revalidate', 
+        }),
+      )
+      publicUploaded++
+    }
+    logger.success(`Uploaded ${publicUploaded} public files to S3`)
+    uploaded += publicUploaded
+  }
+
   // -----------------------------------------------------------------------
   // BlueGreen-safe cleanup: preserve the previous build's assets
   //
@@ -323,8 +352,8 @@ async function main(): Promise<void> {
           InvalidationBatch: {
             CallerReference: `sync-${Date.now()}`,
             Paths: {
-              Quantity: 2,
-              Items: ['/_next/static/*', '/_next/data/*'],
+              Quantity: 3,
+              Items: ['/_next/static/*', '/_next/data/*', '/images/*'],
             },
           },
         }),

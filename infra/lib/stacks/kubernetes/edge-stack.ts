@@ -539,6 +539,17 @@ export class KubernetesEdgeStack extends cdk.Stack {
                     compress: true,
                     description: 'Admin pages (no caching, cookies forwarded for auth)',
                 },
+                // Admin API routes — caching disabled, cookies forwarded for session validation
+                {
+                    pathPattern: CLOUDFRONT_PATH_PATTERNS.adminApi,
+                    origin: eipOrigin,
+                    cachePolicy: noCachePolicy,
+                    originRequestPolicy: adminOriginRequestPolicy,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    compress: true,
+                    description: 'Admin API routes (no caching, cookies forwarded for auth)',
+                },
                 // API routes — general (catch-all for /api/* after more specific patterns above)
                 {
                     pathPattern: CLOUDFRONT_PATH_PATTERNS.api,
