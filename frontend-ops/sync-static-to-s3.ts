@@ -238,8 +238,10 @@ async function main(): Promise<void> {
   logger.info(`Keeping build IDs: ${[...buildIdsToKeep].join(', ') || 'none'}`)
 
   // Delete stale files:
-  // - Shared dirs (chunks/css/media): delete files NOT in current build
   // - Build ID dirs: delete entire directories for old build IDs (not current or previous)
+  // - Shared dirs (chunks/css/media): NO LONGER DELETED here! 
+  //   Deleting these immediately breaks old pods during Blue/Green transitions 
+  //   because old HTML relies on old CSS chunk hashes. S3 lifecycle rules should clean these later.
   const staleKeys: string[] = []
 
   for (const key of allS3Keys) {
@@ -247,10 +249,8 @@ async function main(): Promise<void> {
     const topDir = relativePart.split('/')[0]
 
     if (['chunks', 'css', 'media'].includes(topDir)) {
-      // Shared content-hashed dir — safe to remove old files
-      if (!localKeys.has(key)) {
-        staleKeys.push(key)
-      }
+      // KEEP all chunks/css/media to preserve active Blue/Green environments
+      continue
     } else if (!buildIdsToKeep.has(topDir)) {
       // Old build ID directory — safe to remove entirely
       staleKeys.push(key)
