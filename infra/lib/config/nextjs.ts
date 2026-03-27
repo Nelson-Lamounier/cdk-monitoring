@@ -557,6 +557,7 @@ export const CLOUDFRONT_PATH_PATTERNS = {
     },
     assets: {
         images: '/images/*',
+        videos: '/videos/*',
         public: '/public/*',
     },
     api: '/api/*',

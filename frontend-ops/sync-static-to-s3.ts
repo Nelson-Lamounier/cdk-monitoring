@@ -352,8 +352,8 @@ async function main(): Promise<void> {
           InvalidationBatch: {
             CallerReference: `sync-${Date.now()}`,
             Paths: {
-              Quantity: 3,
-              Items: ['/_next/static/*', '/_next/data/*', '/images/*'],
+              Quantity: 4,
+              Items: ['/_next/static/*', '/_next/data/*', '/images/*', '/videos/*'],
             },
           },
         }),

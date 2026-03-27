@@ -121,6 +121,7 @@ const S3_ORIGIN_PATTERNS = new Set([
     CLOUDFRONT_PATH_PATTERNS.nextjs.static,
     CLOUDFRONT_PATH_PATTERNS.nextjs.data,
     CLOUDFRONT_PATH_PATTERNS.assets.images,
+    CLOUDFRONT_PATH_PATTERNS.assets.videos,
 ]);
 
 /** S3 prefix for Next.js static assets */

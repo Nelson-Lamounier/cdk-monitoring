@@ -514,6 +514,16 @@ export class KubernetesEdgeStack extends cdk.Stack {
                     compress: true,
                     description: 'Article images and media',
                 },
+                // Videos
+                {
+                    pathPattern: CLOUDFRONT_PATH_PATTERNS.assets.videos,
+                    origin: s3Origin,
+                    cachePolicy: staticAssetsCachePolicy, // Uses the exact same heavy-cache TTL edge optimization layer
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+                    compress: true,
+                    description: 'Article videos and media',
+                },
                 // NextAuth.js callback/session routes — must forward cookies
                 // IMPORTANT: Must be listed BEFORE /api/* because CloudFront
                 // evaluates behaviours in listed order (first match wins),
