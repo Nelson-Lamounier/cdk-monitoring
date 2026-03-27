@@ -209,8 +209,8 @@ _NEXTJS_SECRET_KEYS = [
     "NEXTAUTH_SECRET",
     "NEXTAUTH_URL",
     "AUTH_COGNITO_USER_POOL_ID",
-    "AUTH_COGNITO_CLIENT_ID",
-    "AUTH_COGNITO_ISSUER_URL",
+    "AUTH_COGNITO_ID",
+    "AUTH_COGNITO_ISSUER",
     "AUTH_COGNITO_DOMAIN",
     "BEDROCK_AGENT_API_URL",
     "BEDROCK_AGENT_API_KEY",
@@ -232,6 +232,11 @@ def create_nextjs_k8s_secrets(v1: object, cfg: NextjsConfig) -> None:
         value = cfg.secrets.get(key, "")
         if value:
             secret_data[key] = value
+
+    # NextAuth.js expects a client secret by default for OIDC providers.
+    # Since we use a Public Client (`generateSecret: false`), we inject
+    # a dummy string to bypass internal crash loops on boot.
+    secret_data["AUTH_COGNITO_SECRET"] = "public-client-no-secret"
 
     # AWS_REGION is always needed for SDK calls — inject from config
     secret_data["AWS_REGION"] = cfg.aws_region
