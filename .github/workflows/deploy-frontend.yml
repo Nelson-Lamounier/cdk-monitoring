@@ -57,7 +57,7 @@ jobs:
     uses: ./.github/workflows/_build-push-image.yml
     with:
       environment: development
-      image-tag: ${{ github.sha }}
+      image-tag: ${{ github.sha }}-r${{ github.run_attempt }}
       ssm-ecr-param: /shared/ecr/development/repository-uri
       frontend-repo: Nelson-Lamounier/frontend-portfolio
       frontend-ref: ${{ github.event.inputs.frontend-ref || github.event.client_payload.ref || 'main' }}
@@ -109,8 +109,8 @@ jobs:
       - name: Resolve Image URI
         id: resolve-image
         run: |
-          # Construct image URI directly from SSM + commit SHA
-          # (bypasses reusable workflow output propagation)
+          # Construct image URI from SSM + composite tag (sha-rN)
+          # Composite tag prevents ECR overwrites on pipeline retries
           ECR_URL=$(aws ssm get-parameter \
             --name "/shared/ecr/${{ env.ENVIRONMENT }}/repository-uri" \
             --query 'Parameter.Value' \
@@ -121,11 +121,12 @@ jobs:
             exit 1
           fi
 
-          IMAGE_URI="${ECR_URL}:${{ github.sha }}"
+          IMAGE_TAG="${{ github.sha }}-r${{ github.run_attempt }}"
+          IMAGE_URI="${ECR_URL}:${IMAGE_TAG}"
           echo "::add-mask::$ECR_URL"
           echo "::add-mask::$IMAGE_URI"
           echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
-          echo "[PASS] Resolved image URI from SSM"
+          echo "[PASS] Resolved image URI from SSM (tag: ${IMAGE_TAG})"
 
       - name: Update SSM for ArgoCD
         run: |
@@ -145,6 +146,8 @@ jobs:
           echo "## Kubernetes Deployment" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: Updated in SSM ✅" >> $GITHUB_STEP_SUMMARY
           echo "- **SSM Parameter Updated**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "ArgoCD Image Updater will detect the new tag and trigger BlueGreen promotion." >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
   # Job 4: Migrate Articles (independent — can run in parallel with deploy)
