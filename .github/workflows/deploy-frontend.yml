@@ -46,7 +46,7 @@ permissions:
 
 env:
   ENVIRONMENT: development
-  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  AWS_REGION: 'eu-west-1'
 
 jobs:
   # ===========================================================================
@@ -61,7 +61,6 @@ jobs:
       ssm-ecr-param: /shared/ecr/development/repository-uri
       frontend-repo: Nelson-Lamounier/frontend-portfolio
       frontend-ref: ${{ github.event.inputs.frontend-ref || github.event.client_payload.ref || 'main' }}
-      api-url: ${{ vars.NEXT_PUBLIC_API_URL || '' }}
       push-to-dockerhub: false
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
