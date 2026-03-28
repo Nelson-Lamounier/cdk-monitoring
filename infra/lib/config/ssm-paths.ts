@@ -453,16 +453,22 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
 // BEDROCK SSM PATHS
 // =============================================================================
 
-/** Bedrock SSM prefix: /bedrock/{environment} */
+/**
+ * Bedrock SSM prefix: /bedrock-{env}
+ *
+ * Uses the `flatName` convention (e.g. `bedrock-dev`) to match
+ * the `namePrefix` used by the Bedrock stacks when publishing
+ * SSM parameters. This aligns with `flatName('bedrock', '', environment)`.
+ */
 export function bedrockSsmPrefix(environment: Environment): string {
-    return `/bedrock/${environment}`;
+    return `/bedrock-${shortEnv(environment)}`;
 }
 
 /**
  * SSM parameter paths for the Bedrock Agent stack.
  */
 export interface BedrockSsmPaths {
-    /** The prefix itself: /bedrock/{environment} */
+    /** The prefix itself: /bedrock-{env} */
     readonly prefix: string;
     /** Bedrock Agent ID */
     readonly agentId: string;
@@ -474,11 +480,32 @@ export interface BedrockSsmPaths {
     readonly apiUrl: string;
     /** S3 data bucket name (for Knowledge Base documents) */
     readonly dataBucketName: string;
+    /** S3 assets bucket name (for draft uploads and published articles) */
+    readonly assetsBucketName: string;
     /** AI Content DynamoDB table name (articles, metadata) */
     readonly contentTableName: string;
     /** AI Content DynamoDB table ARN */
     readonly contentTableArn: string;
-    /** Wildcard path for IAM: /bedrock/{environment}/* */
+    /** Publisher Lambda function ARN */
+    readonly publisherFunctionArn: string;
+    /**
+     * Shared secret for on-demand ISR cache revalidation.
+     *
+     * Used by the Publisher Lambda to call POST /api/revalidate on the
+     * Next.js pod after publishing an article, triggering immediate
+     * cache purge for the articles listing and detail pages.
+     *
+     * @remarks
+     * Created manually via CLI (not CDK-managed):
+     * ```bash
+     * aws ssm put-parameter \
+     *   --name "/bedrock-dev/revalidation-secret" \
+     *   --value "$(openssl rand -base64 32)" \
+     *   --type SecureString
+     * ```
+     */
+    readonly revalidationSecret: string;
+    /** Wildcard path for IAM: /bedrock-{env}/* */
     readonly wildcard: string;
 }
 
@@ -495,8 +522,11 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
         agentAliasId: `${prefix}/agent-alias-id`,
         apiUrl: `${prefix}/api-url`,
         dataBucketName: `${prefix}/data-bucket-name`,
+        assetsBucketName: `${prefix}/assets-bucket-name`,
         contentTableName: `${prefix}/content-table-name`,
         contentTableArn: `${prefix}/content-table-arn`,
+        publisherFunctionArn: `${prefix}/publisher-function-arn`,
+        revalidationSecret: `${prefix}/revalidation-secret`,
         wildcard: `${prefix}/*`,
     };
 }

@@ -179,11 +179,19 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
     except client_error_cls:
         log_info("No Bedrock assets-bucket-name override found; using resolved value")
 
-    # Bedrock Agent: resolve API URL and API key for the chatbot.
-    # api-url is a plain String; agent-api-key is a SecureString.
+    # Bedrock Agent: resolve API URL, API key, and revalidation secret.
+    # api-url is a plain String; agent-api-key and revalidation-secret
+    # are SecureStrings.
+    #
+    # Manual secret creation (one-time):
+    #   aws ssm put-parameter \
+    #     --name "/bedrock-dev/revalidation-secret" \
+    #     --value "$(openssl rand -base64 32)" \
+    #     --type SecureString
     _BEDROCK_AGENT_PARAMS: dict[str, str] = {
         "api-url": "BEDROCK_AGENT_API_URL",
         "agent-api-key": "BEDROCK_AGENT_API_KEY",
+        "revalidation-secret": "REVALIDATION_SECRET",
     }
     for param_suffix, env_var in _BEDROCK_AGENT_PARAMS.items():
         bedrock_path = f"/bedrock-{cfg.short_env}/{param_suffix}"
@@ -195,6 +203,16 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
         except client_error_cls:
             log_warn("Bedrock Agent param not found", env_var=env_var, ssm_path=bedrock_path)
 
+    # Derived config: SSM prefix for Bedrock parameters.
+    # Used by publish-draft API route to locate infrastructure.
+    secrets["SSM_BEDROCK_PREFIX"] = f"/bedrock-{cfg.short_env}"
+
+    # DynamoDB GSI names — constants matching CDK ai-content-stack.ts.
+    # Explicitly injected rather than relying on fallback defaults in
+    # the frontend code (dynamodb-articles.ts).
+    secrets["DYNAMODB_GSI1_NAME"] = "gsi1-status-date"
+    secrets["DYNAMODB_GSI2_NAME"] = "gsi2-tag-date"
+
     return secrets
 
 
@@ -204,6 +222,8 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
 
 _NEXTJS_SECRET_KEYS = [
     "DYNAMODB_TABLE_NAME",
+    "DYNAMODB_GSI1_NAME",
+    "DYNAMODB_GSI2_NAME",
     "ASSETS_BUCKET_NAME",
     "NEXT_PUBLIC_API_URL",
     "NEXTAUTH_SECRET",
@@ -214,6 +234,8 @@ _NEXTJS_SECRET_KEYS = [
     "AUTH_COGNITO_DOMAIN",
     "BEDROCK_AGENT_API_URL",
     "BEDROCK_AGENT_API_KEY",
+    "REVALIDATION_SECRET",
+    "SSM_BEDROCK_PREFIX",
 ]
 
 

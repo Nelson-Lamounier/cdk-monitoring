@@ -433,6 +433,12 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 dynamoWriteTableArns: [
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
                 ],
+                // Admin S3 write — article image and video uploads from admin panel
+                s3WriteBucketArns: [
+                    `arn:aws:s3:::${resourceNames.assetsBucketName}`,
+                ],
+                // Bedrock pipeline SSM — resolve infrastructure for admin publish
+                bedrockSsmPath: `/${bedrockNamePrefix}/*`,
                 dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
             },
         );

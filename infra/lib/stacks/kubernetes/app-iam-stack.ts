@@ -70,8 +70,29 @@ export interface KubernetesAppIamStackProps extends cdk.StackProps {
     /** S3 bucket ARNs to grant read access (static assets) */
     readonly s3ReadBucketArns?: string[];
 
+    /**
+     * S3 bucket ARNs to grant write access (admin media uploads).
+     *
+     * These buckets receive PutObject and DeleteObject permissions
+     * for admin operations such as uploading article images and videos
+     * from the admin panel. Separate from read access to maintain
+     * the principle of least privilege.
+     */
+    readonly s3WriteBucketArns?: string[];
+
     /** SSM parameter path wildcard for Next.js env vars */
     readonly ssmParameterPath?: string;
+
+    /**
+     * SSM parameter path wildcard for Bedrock infrastructure.
+     *
+     * Grants `ssm:GetParameter` for resolving Bedrock resource names
+     * (S3 bucket, DynamoDB table, Lambda ARN) when the admin dashboard
+     * triggers the article publishing pipeline.
+     *
+     * @example '/bedrock-dev/*'
+     */
+    readonly bedrockSsmPath?: string;
 
     /** Secrets Manager path pattern for Next.js auth secrets */
     readonly secretsManagerPathPattern?: string;
@@ -110,7 +131,9 @@ export class KubernetesAppIamStack extends cdk.Stack {
             dynamoWriteTableArns: props.dynamoWriteTableArns,
             dynamoKmsKeySsmPath: props.dynamoKmsKeySsmPath,
             s3ReadBucketArns: props.s3ReadBucketArns,
+            s3WriteBucketArns: props.s3WriteBucketArns,
             ssmParameterPath: props.ssmParameterPath,
+            bedrockSsmPath: props.bedrockSsmPath,
             secretsManagerPathPattern: props.secretsManagerPathPattern,
         });
 
@@ -135,7 +158,9 @@ interface ApplicationIamGrantsProps {
     readonly dynamoWriteTableArns?: string[];
     readonly dynamoKmsKeySsmPath?: string;
     readonly s3ReadBucketArns?: string[];
+    readonly s3WriteBucketArns?: string[];
     readonly ssmParameterPath?: string;
+    readonly bedrockSsmPath?: string;
     readonly secretsManagerPathPattern?: string;
 }
 
@@ -167,6 +192,20 @@ function grantApplicationPermissions(
             ],
             resources: [
                 `arn:aws:ssm:${region}:${account}:parameter${props.ssmParameterPath}`,
+            ],
+        }));
+    }
+
+    if (props.bedrockSsmPath) {
+        role.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SsmBedrockParameterRead',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:GetParameter',
+                'ssm:GetParameters',
+            ],
+            resources: [
+                `arn:aws:ssm:${region}:${account}:parameter${props.bedrockSsmPath}`,
             ],
         }));
     }
@@ -231,6 +270,20 @@ function grantApplicationPermissions(
             resources: [
                 ...props.s3ReadBucketArns,
                 ...props.s3ReadBucketArns.map(arn => `${arn}/*`),
+            ],
+        }));
+    }
+
+    if (props.s3WriteBucketArns && props.s3WriteBucketArns.length > 0) {
+        role.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'S3AdminMediaWrite',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                's3:PutObject',
+                's3:DeleteObject',
+            ],
+            resources: [
+                ...props.s3WriteBucketArns.map(arn => `${arn}/*`),
             ],
         }));
     }
