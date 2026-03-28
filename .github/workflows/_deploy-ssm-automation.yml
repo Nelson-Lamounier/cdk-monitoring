@@ -285,9 +285,14 @@ jobs:
   verify-ssm-automation:
     name: "Phase 5 — Verify SSM Automation"
     needs: [trigger-bootstrap]
+    # Run on success, skipped, OR failure — the integration test reports
+    # execution status diagnostics (TimedOut, Failed, etc.) that are
+    # critical for post-mortem analysis when Automation times out.
     if: >-
       always()
-      && (needs.trigger-bootstrap.result == 'success' || needs.trigger-bootstrap.result == 'skipped')
+      && (needs.trigger-bootstrap.result == 'success'
+       || needs.trigger-bootstrap.result == 'skipped'
+       || needs.trigger-bootstrap.result == 'failure')
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest

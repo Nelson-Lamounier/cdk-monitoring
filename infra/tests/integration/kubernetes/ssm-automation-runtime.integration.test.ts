@@ -34,7 +34,7 @@ import {
     DescribeInstanceInformationCommand,
     GetParameterCommand,
 } from '@aws-sdk/client-ssm';
-import type { InstanceInformation } from '@aws-sdk/client-ssm';
+import type { AutomationExecution, InstanceInformation } from '@aws-sdk/client-ssm';
 
 import type { Environment } from '../../../lib/config';
 import { k8sSsmPrefix } from '../../../lib/config/ssm-paths';
@@ -72,6 +72,20 @@ const EXPECTED_SSM_STATUS = 'Online';
 /** EC2 status check expected value */
 const EXPECTED_STATUS_CHECK = 'ok';
 
+/** SSM Automation execution status indicating success */
+const EXECUTION_STATUS_SUCCESS = 'Success';
+
+/**
+ * SSM Automation execution statuses that indicate a failure.
+ * The test reports the specific terminal status for post-mortem analysis.
+ */
+const EXECUTION_FAILURE_STATUSES = new Set([
+    'Failed',
+    'Cancelled',
+    'TimedOut',
+    'CompletedWithFailure',
+]);
+
 // AWS SDK clients
 const ec2 = new EC2Client({ region: REGION });
 const ssm = new SSMClient({ region: REGION });
@@ -104,6 +118,8 @@ interface RoleData {
     automationTargetInstanceId?: string;
     /** The k8s:bootstrap-role tag value of the automation-targeted instance */
     automationTargetRole?: string;
+    /** Full SSM Automation execution detail (for status + step diagnostics) */
+    automationExecution?: AutomationExecution;
 }
 
 // =============================================================================
@@ -201,18 +217,17 @@ async function getSsmAgentInfo(instanceId: string): Promise<InstanceInformation 
 }
 
 /**
- * Get the instance ID targeted by a specific SSM Automation execution.
+ * Fetch the full SSM Automation execution for a given role.
  *
  * Reads the execution ID from the role-specific SSM parameter
- * (published by trigger-bootstrap.ts), then fetches the execution
- * detail to extract the InstanceId parameter.
+ * (published by trigger-bootstrap.ts), then fetches the full
+ * execution detail including status, parameters, and step data.
  *
- * This avoids ambiguity from the shared worker doc name — each role
- * has its own execution-ID parameter.
+ * Returns undefined if no execution ID exists for this role.
  */
-async function getAutomationTargetFromExecParam(
+async function getAutomationExecution(
     execParam: string,
-): Promise<string | undefined> {
+): Promise<AutomationExecution | undefined> {
     const execId = await getParam(execParam);
     if (!execId) return undefined;
 
@@ -220,7 +235,7 @@ async function getAutomationTargetFromExecParam(
         new GetAutomationExecutionCommand({ AutomationExecutionId: execId }),
     );
 
-    return detail.AutomationExecution?.Parameters?.['InstanceId']?.[0];
+    return detail.AutomationExecution ?? undefined;
 }
 
 /**
@@ -276,14 +291,18 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
                 data.ssmInfo = await getSsmAgentInfo(instanceId);
             }
 
-            // 4. SSM Automation target — which instance did the doc run on?
+            // 4. SSM Automation execution — full detail for status + targeting
             //    Uses the role-specific execution-ID SSM parameter to avoid
             //    shared-doc-name ambiguity between workers.
-            data.automationTargetInstanceId = await getAutomationTargetFromExecParam(
+            data.automationExecution = await getAutomationExecution(
                 target.execParam,
             );
 
-            // 5. Resolve the bootstrap-role tag of the targeted instance
+            // 5. Extract the target instance ID from the execution
+            data.automationTargetInstanceId =
+                data.automationExecution?.Parameters?.['InstanceId']?.[0];
+
+            // 6. Resolve the bootstrap-role tag of the targeted instance
             //    (works even if the instance was terminated by ASG)
             if (data.automationTargetInstanceId) {
                 data.automationTargetRole = await getInstanceBootstrapRole(
@@ -319,6 +338,62 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
                 // the automation's target instance ID will differ from the
                 // current running instance — but the tag must still match.
                 expect(automationTargetRole).toBe(expectedRole);
+            });
+        },
+    );
+
+    // =====================================================================
+    // Execution Status — SSM Automation completed successfully
+    //
+    // Validates that the latest SSM Automation execution for each role
+    // reached a terminal 'Success' status. Reports the specific failure
+    // status (TimedOut, Failed, etc.) for post-mortem analysis.
+    // =====================================================================
+    describe.each(BOOTSTRAP_ROLES)(
+        'Execution Status — $label',
+        (target) => {
+            let executionStatus: string | typeof VACUOUS;
+            let executionId: string | typeof VACUOUS;
+
+            // Depends on: roleDataMap populated in top-level beforeAll
+            beforeAll(() => {
+                const data = roleDataMap.get(target.label) ?? {};
+                executionStatus = data.automationExecution?.AutomationExecutionStatus ?? VACUOUS;
+                executionId = data.automationExecution?.AutomationExecutionId ?? VACUOUS;
+            });
+
+            it('should have completed with Success status', () => {
+                // Log execution context for CI diagnostics
+                console.log(
+                    `[${target.label}] Execution: ${executionId}, Status: ${executionStatus}`,
+                );
+
+                // Vacuous pass when no execution exists (first deploy)
+                if (executionStatus === VACUOUS) {
+                    console.warn(
+                        `[VACUOUS] No execution found for ${target.label} — skipping`,
+                    );
+                    expect(executionStatus).toBe(VACUOUS);
+                    return;
+                }
+
+                // Assert success; report specific failure status for debugging
+                if (EXECUTION_FAILURE_STATUSES.has(executionStatus)) {
+                    // Extract failed step names for diagnostic output
+                    const data = roleDataMap.get(target.label);
+                    const failedSteps = (data?.automationExecution?.StepExecutions ?? [])
+                        .filter((s) => s.StepStatus === 'Failed')
+                        .map((s) => `${s.StepName}: ${s.FailureMessage ?? 'unknown'}`);
+
+                    console.error(
+                        `[FAILED] ${target.label} automation ${executionStatus}` +
+                        (failedSteps.length > 0
+                            ? `\n  Failed steps:\n    ${failedSteps.join('\n    ')}`
+                            : ''),
+                    );
+                }
+
+                expect(executionStatus).toBe(EXECUTION_STATUS_SUCCESS);
             });
         },
     );
