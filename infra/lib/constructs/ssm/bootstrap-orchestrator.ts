@@ -179,6 +179,7 @@ def handler(event, context):
 `),
             timeout: cdk.Duration.seconds(30),
             memorySize: 128,
+            tracing: lambda.Tracing.ACTIVE,
             description: 'Thin router: reads ASG tags and resolves SSM doc names for Step Functions',
         });
 
@@ -437,7 +438,7 @@ def handler(event, context):
 
         // Initialise poll counter to 0
         const initCounter = new sfn.Pass(this, `${id}InitCount`, {
-            result: sfn.Result.fromNumber(0),
+            result: sfn.Result.fromObject({ count: 0 }),
             resultPath: pollCountPath,
         });
 
@@ -465,7 +466,7 @@ def handler(event, context):
             resultPath: pollCountPath,
             parameters: {
                 'count.$': sfn.JsonPath.mathAdd(
-                    sfn.JsonPath.numberAt(pollCountPath),
+                    sfn.JsonPath.numberAt(`${pollCountPath}.count`),
                     1,
                 ),
             },
@@ -486,7 +487,7 @@ def handler(event, context):
         // Check poll count before looping back to wait
         const checkTimeout = new sfn.Choice(this, `${id}CheckTimeout`)
             .when(
-                sfn.Condition.numberGreaterThanEquals(pollCountPath, MAX_POLL_ITERATIONS),
+                sfn.Condition.numberGreaterThanEquals(`${pollCountPath}.count`, MAX_POLL_ITERATIONS),
                 timeoutState,
             )
             .otherwise(waitStep);

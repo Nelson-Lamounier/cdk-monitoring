@@ -260,6 +260,9 @@ def create_nextjs_k8s_secrets(v1: object, cfg: NextjsConfig) -> None:
     # a dummy string to bypass internal crash loops on boot.
     secret_data["AUTH_COGNITO_SECRET"] = "public-client-no-secret"
 
+    # Enable Grafana Faro RUM
+    secret_data["NEXT_PUBLIC_FARO_ENABLED"] = "true"
+
     # AWS_REGION is always needed for SDK calls — inject from config
     secret_data["AWS_REGION"] = cfg.aws_region
 
