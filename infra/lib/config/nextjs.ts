@@ -578,9 +578,22 @@ export const CLOUDFRONT_PATH_PATTERNS = {
  * legitimately returns 404 (e.g. /api/auth/csrf when CSRF is disabled).
  * Next.js handles its own 404 pages natively via not-found.tsx.
  */
-export const CLOUDFRONT_ERROR_RESPONSES = [
-    { httpStatus: 500, responseHttpStatus: 500, responsePagePath: '/500.html' },
-] as const;
+/** Shape of a CloudFront custom error response override */
+interface CloudFrontErrorOverride {
+    readonly httpStatus: number;
+    readonly responseHttpStatus: number;
+    readonly responsePagePath: string;
+}
+
+export const CLOUDFRONT_ERROR_RESPONSES: readonly CloudFrontErrorOverride[] = [
+    // All status-code overrides removed.
+    //
+    // CloudFront error response overrides replace the ENTIRE response body —
+    // including JSON API responses — with the HTML page at responsePagePath.
+    // This breaks any JSON API that returns 4xx/5xx status codes (e.g.
+    // /api/admin/articles/publish returning 500 on DynamoDB errors).
+    // Next.js handles its own error pages natively via error.tsx / not-found.tsx.
+];
 
 // =============================================================================
 // CONFIGURATIONS BY ENVIRONMENT

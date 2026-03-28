@@ -429,6 +429,10 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                     // Bedrock content pipeline — AI-enhanced article metadata
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
                 ],
+                // Admin write access — article publishing and deletion
+                dynamoWriteTableArns: [
+                    `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
+                ],
                 dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
             },
         );

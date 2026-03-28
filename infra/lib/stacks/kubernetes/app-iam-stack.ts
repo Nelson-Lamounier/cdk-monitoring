@@ -54,6 +54,16 @@ export interface KubernetesAppIamStackProps extends cdk.StackProps {
     /** DynamoDB table ARNs to grant read access (SSR queries) */
     readonly dynamoTableArns?: string[];
 
+    /**
+     * DynamoDB table ARNs to grant write access (admin operations).
+     *
+     * These tables receive UpdateItem and DeleteItem permissions
+     * for admin operations such as article publishing and deletion.
+     * This is a separate grant from read access to maintain the
+     * principle of least privilege and clear audit trail.
+     */
+    readonly dynamoWriteTableArns?: string[];
+
     /** SSM path for DynamoDB KMS key ARN (customer-managed key) */
     readonly dynamoKmsKeySsmPath?: string;
 
@@ -97,6 +107,7 @@ export class KubernetesAppIamStack extends cdk.Stack {
             region: this.region,
             account: this.account,
             dynamoTableArns: props.dynamoTableArns,
+            dynamoWriteTableArns: props.dynamoWriteTableArns,
             dynamoKmsKeySsmPath: props.dynamoKmsKeySsmPath,
             s3ReadBucketArns: props.s3ReadBucketArns,
             ssmParameterPath: props.ssmParameterPath,
@@ -121,6 +132,7 @@ interface ApplicationIamGrantsProps {
     readonly region: string;
     readonly account: string;
     readonly dynamoTableArns?: string[];
+    readonly dynamoWriteTableArns?: string[];
     readonly dynamoKmsKeySsmPath?: string;
     readonly s3ReadBucketArns?: string[];
     readonly ssmParameterPath?: string;
@@ -132,6 +144,7 @@ interface ApplicationIamGrantsProps {
  *
  * Permissions (all conditional — no-op if corresponding props are absent):
  * - DynamoDB read (SSR data queries)
+ * - DynamoDB write (admin operations — UpdateItem, DeleteItem)
  * - DynamoDB KMS decrypt (customer-managed keys)
  * - S3 read (static assets)
  * - SSM parameter read (application env vars)
@@ -171,6 +184,21 @@ function grantApplicationPermissions(
             resources: [
                 ...props.dynamoTableArns,
                 ...props.dynamoTableArns.map(arn => `${arn}/index/*`),
+            ],
+        }));
+    }
+
+    if (props.dynamoWriteTableArns && props.dynamoWriteTableArns.length > 0) {
+        role.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'DynamoDbAdminWrite',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'dynamodb:UpdateItem',
+                'dynamodb:DeleteItem',
+            ],
+            resources: [
+                ...props.dynamoWriteTableArns,
+                ...props.dynamoWriteTableArns.map(arn => `${arn}/index/*`),
             ],
         }));
     }
