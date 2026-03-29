@@ -1,6 +1,28 @@
-# GitHub CLI - Managing Secrets and Variables
+---
+title: GitHub CLI — Managing Secrets and Variables
+category: operations
+tags:
+  - github-actions
+  - ci-cd
+  - secrets-management
+  - github-cli
+last_updated: "2026-03-29"
+---
 
-Complete guide for managing GitHub Actions secrets and variables using the GitHub CLI.
+# GitHub CLI — Managing Secrets and Variables
+
+## Summary
+
+Complete operational guide for managing GitHub Actions secrets and variables
+using the GitHub CLI (`gh`). Covers environment-scoped and repository-scoped
+secrets/variables, including creation, listing, deletion, and file-based
+secret injection. Used across all CI/CD workflows in this monorepo for
+configuring AWS OIDC roles, deployment credentials, and environment variables.
+
+## Keywords
+
+GitHub CLI, gh secret set, gh variable set, environment secrets, repository
+secrets, GitHub Actions, CI/CD configuration, OIDC, deployment credentials
 
 ## Table of Contents
 - [Environment Secrets](#environment-secrets)
