@@ -354,12 +354,36 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
         (target) => {
             let executionStatus: string | typeof VACUOUS;
             let executionId: string | typeof VACUOUS;
+            let failedStepsDiagnostic: string;
 
             // Depends on: roleDataMap populated in top-level beforeAll
             beforeAll(() => {
                 const data = roleDataMap.get(target.label) ?? {};
                 executionStatus = data.automationExecution?.AutomationExecutionStatus ?? VACUOUS;
                 executionId = data.automationExecution?.AutomationExecutionId ?? VACUOUS;
+
+                // Pre-compute failure diagnostics (outside it() per jest/no-conditional-in-test)
+                if (executionStatus !== VACUOUS && EXECUTION_FAILURE_STATUSES.has(executionStatus)) {
+                    const failedSteps = (data.automationExecution?.StepExecutions ?? [])
+                        .filter((s) => s.StepStatus === 'Failed')
+                        .map((s) => `${s.StepName}: ${s.FailureMessage ?? 'unknown'}`);
+
+                    failedStepsDiagnostic = failedSteps.length > 0
+                        ? `\n  Failed steps:\n    ${failedSteps.join('\n    ')}`
+                        : '';
+
+                    console.error(
+                        `[FAILED] ${target.label} automation ${executionStatus}${failedStepsDiagnostic}`,
+                    );
+                } else {
+                    failedStepsDiagnostic = '';
+                }
+
+                if (executionStatus === VACUOUS) {
+                    console.warn(
+                        `[VACUOUS] No execution found for ${target.label} \u2014 skipping`,
+                    );
+                }
             });
 
             it('should have completed with Success status', () => {
@@ -368,32 +392,7 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
                     `[${target.label}] Execution: ${executionId}, Status: ${executionStatus}`,
                 );
 
-                // Vacuous pass when no execution exists (first deploy)
-                if (executionStatus === VACUOUS) {
-                    console.warn(
-                        `[VACUOUS] No execution found for ${target.label} — skipping`,
-                    );
-                    expect(executionStatus).toBe(VACUOUS);
-                    return;
-                }
-
-                // Assert success; report specific failure status for debugging
-                if (EXECUTION_FAILURE_STATUSES.has(executionStatus)) {
-                    // Extract failed step names for diagnostic output
-                    const data = roleDataMap.get(target.label);
-                    const failedSteps = (data?.automationExecution?.StepExecutions ?? [])
-                        .filter((s) => s.StepStatus === 'Failed')
-                        .map((s) => `${s.StepName}: ${s.FailureMessage ?? 'unknown'}`);
-
-                    console.error(
-                        `[FAILED] ${target.label} automation ${executionStatus}` +
-                        (failedSteps.length > 0
-                            ? `\n  Failed steps:\n    ${failedSteps.join('\n    ')}`
-                            : ''),
-                    );
-                }
-
-                expect(executionStatus).toBe(EXECUTION_STATUS_SUCCESS);
+                expect([EXECUTION_STATUS_SUCCESS, VACUOUS]).toContain(executionStatus);
             });
         },
     );

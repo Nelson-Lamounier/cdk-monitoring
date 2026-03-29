@@ -31,7 +31,7 @@ function parseEnvironment(raw: string): DeployableEnvironment {
     return raw as DeployableEnvironment;
 }
 
-const CDK_ENV = parseEnvironment(process.env.CDK_ENV ?? 'development');
+const _CDK_ENV = parseEnvironment(process.env.CDK_ENV ?? 'development');
 const NAMESPACE = 'nextjs-app';
 const ROLLOUT_NAME = 'nextjs';
 
