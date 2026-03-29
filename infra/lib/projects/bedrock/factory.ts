@@ -23,7 +23,6 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { getBedrockAllocations } from '../../config/bedrock/allocations';
 import { getBedrockConfigs } from '../../config/bedrock/configurations';
-import { getContentAllocations } from '../../config/bedrock/content-allocations';
 import { getContentConfigs } from '../../config/bedrock/content-configurations';
 import { getPipelineAllocations } from '../../config/bedrock/pipeline-allocations';
 import { getPipelineConfigs } from '../../config/bedrock/pipeline-configurations';
@@ -79,7 +78,6 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         // -------------------------------------------------------------
         const allocs = getBedrockAllocations(this.environment);
         const configs = getBedrockConfigs(this.environment);
-        const contentAllocs = getContentAllocations(this.environment);
         const contentConfigs = getContentConfigs(this.environment);
         const pipelineAllocs = getPipelineAllocations(this.environment);
         const pipelineConfigs = getPipelineConfigs(this.environment);
@@ -187,11 +185,14 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         apiStack.addDependency(agentStack);
 
         // =================================================================
-        // Stack 4: Content (MD-to-Blog Agentic Pipeline)
+        // Stack 5: Content (Data Layer — DynamoDB + SSM Exports)
         //
-        // Event-driven content transformation. References Data stack's
-        // S3 bucket for drafts/ and published/ prefixes.
-        // Independent of Agent/API stacks.
+        // Creates the shared DynamoDB table consumed by both the admin
+        // dashboard (reads) and the Pipeline (writes). SSM exports allow
+        // cross-stack parameter discovery.
+        //
+        // The monolith Lambda publisher has been deprecated. Article
+        // generation is now handled by PipelineStack (Step Functions).
         // =================================================================
         const contentStack = new AiContentStack(
             scope,
@@ -199,26 +200,15 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
             {
                 namePrefix,
                 assetsBucketName: dataStack.bucketName,
-                draftPrefix: contentConfigs.s3.draftPrefix,
                 publishedPrefix: contentConfigs.s3.publishedPrefix,
                 contentPrefix: contentConfigs.s3.contentPrefix,
-                draftSuffix: contentConfigs.s3.draftSuffix,
-                foundationModel: contentAllocs.model.foundationModel,
-                maxTokens: contentAllocs.model.maxTokens,
-                thinkingBudgetTokens: contentAllocs.model.thinkingBudgetTokens,
-                lambdaMemoryMb: contentAllocs.lambda.memoryMb,
-                lambdaTimeoutSeconds: contentAllocs.lambda.timeoutSeconds,
-                lambdaReservedConcurrency: contentAllocs.lambda.reservedConcurrency,
                 logRetention: contentConfigs.logRetention,
                 removalPolicy: contentConfigs.removalPolicy,
-                knowledgeBaseId: kbStack.knowledgeBaseId,
-                knowledgeBaseArn: kbStack.knowledgeBaseArn,
                 environmentName: this.environment,
                 env,
             }
         );
         contentStack.addDependency(dataStack);
-        contentStack.addDependency(kbStack);
 
         // =================================================================
         // Stack 6: Pipeline (Multi-Agent Step Functions)

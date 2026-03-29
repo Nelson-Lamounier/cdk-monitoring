@@ -6,7 +6,6 @@
   },
   "workspaces": [
     "infra",
-    "bedrock-publisher",
     "bedrock-applications/shared",
     "bedrock-applications/article-pipeline",
     "bedrock-applications/self-healing",
