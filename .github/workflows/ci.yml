@@ -86,7 +86,7 @@ jobs:
             any-src:
               - 'infra/lib/**/*.ts'
               - 'bin/**/*.ts'
-              - 'bedrock-publisher/src/**/*.ts'
+
             any-tests:
               - 'infra/tests/**/*.ts'
             k8s-content:
@@ -101,7 +101,7 @@ jobs:
               - 'knowledge-base/**'
               - 'infra/**'
               - 'kubernetes-app/**'
-              - 'bedrock-publisher/**'
+
               - 'bedrock-applications/**'
               - 'mcp-servers/**'
               - 'frontend-ops/**'

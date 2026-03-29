@@ -94,7 +94,7 @@ jobs:
           resolve_param "content-table-name" "table_name"
           resolve_param "content-table-arn" "table_arn"
           resolve_param "assets-bucket-name" "bucket_name"
-          resolve_param "publisher-function-arn" "publisher_arn"
+          resolve_param "pipeline-publish-function-arn" "publisher_arn"
           resolve_param "pipeline-state-machine-arn" "sfn_arn"
 
           echo "" >> $GITHUB_STEP_SUMMARY

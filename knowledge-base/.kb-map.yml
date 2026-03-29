@@ -159,7 +159,6 @@ mappings:
   - name: "Bedrock Content Pipeline"
     code_paths:
       - "infra/lib/stacks/bedrock/**"
-      - "bedrock-publisher/**"
       - "bedrock-applications/**"
       - "knowledge-base/**"
       - ".github/workflows/deploy-bedrock.yml"
