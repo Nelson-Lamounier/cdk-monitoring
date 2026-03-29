@@ -1,12 +1,13 @@
 # @format
 # @description Deploy Bedrock AI Infrastructure to Development
 #
-# Deploys the 5-stack Bedrock architecture in dependency order:
+# Deploys the 6-stack Bedrock architecture in dependency order:
 #   1. Bedrock-Data       — S3 bucket for Knowledge Base documents + drafts
 #   2. Bedrock-Kb         — Bedrock Knowledge Base (Pinecone vector store)
 #   3. Bedrock-Agent      — Bedrock Agent, Knowledge Base, Guardrail
 #   4. Bedrock-Api        — API Gateway + Lambda for agent invocation
-#   5. Bedrock-Content    — MD-to-Blog pipeline (S3 event → Lambda → DynamoDB)
+#   5. Bedrock-Content    — DynamoDB table + legacy monolith publisher
+#   6. Bedrock-Pipeline   — Multi-agent Step Functions (Research → Writer → QA)
 #
 # After deploy, the sync-kb-docs job:
 #   - Syncs knowledge-base/ → S3
@@ -31,7 +32,9 @@ on:
   #     - "infra/lib/stacks/bedrock/**"
   #     - "infra/lib/config/bedrock/**"
   #     - "infra/lib/projects/bedrock/**"
-  #     - "bedrock-publisher/src/**"
+  #     - "bedrock-applications/article-pipeline/**"
+  #     - "bedrock-applications/shared/**"
+  #     - "bedrock-applications/chatbot/**"
   #     - "infra/bin/app.ts"
   #     - ".github/workflows/deploy-bedrock*.yml"
   #     - ".github/workflows/_deploy-stack.yml"
@@ -121,8 +124,11 @@ jobs:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # ===========================================================================
-  # Stack 5: Content (MD-to-Blog Agentic Pipeline + KB-Augmented Mode)
+  # Stack 5: Content (DynamoDB article metadata table + legacy monolith)
   # Depends on: Data (S3 bucket) + KB (Knowledge Base ID for retrieval)
+  #
+  # Creates the shared DynamoDB table consumed by both the monolith publisher
+  # and the multi-agent Pipeline. The monolith Lambda is pending deprecation.
   # ===========================================================================
   deploy-content:
     name: Deploy Content Stack
@@ -130,6 +136,29 @@ jobs:
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Bedrock-Content-development
+      project: bedrock
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+      use-container: false
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+
+  # ===========================================================================
+  # Stack 6: Pipeline (Multi-Agent Step Functions — Research → Writer → QA)
+  # Depends on: Data (S3 bucket) + Content (DynamoDB table for article metadata)
+  #
+  # Deploys the Step Functions state machine and per-agent Lambdas.
+  # Application code: bedrock-applications/article-pipeline/
+  # The admin dashboard triggers executions; this only deploys infrastructure.
+  # ===========================================================================
+  deploy-pipeline:
+    name: Deploy Pipeline Stack
+    needs: [deploy-data, deploy-content]
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Bedrock-Pipeline-development
       project: bedrock
       environment: development
       aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
@@ -162,22 +191,78 @@ jobs:
         run: |
           echo "Validating knowledge-base/ documents..."
           ERRORS=0
-          for f in $(find knowledge-base/ -name '*.md' ! -name 'README.md' ! -name '.gitkeep'); do
+          WARNINGS=0
+
+          # Collect all KB markdown files (exclude README, index, scripts)
+          KB_FILES=$(find knowledge-base/ -name '*.md' \
+            ! -name 'README.md' \
+            ! -name 'index.md' \
+            ! -path '*/scripts/*')
+
+          for f in $KB_FILES; do
+            BASENAME=$(basename "$f")
+
+            # --- Check 1: Minimum file size ---
             SIZE=$(wc -c < "$f" | tr -d ' ')
             if [ "$SIZE" -lt 500 ]; then
               echo "::error file=$f::KB document too small (${SIZE} bytes < 500 min). Enrich before syncing."
               ERRORS=$((ERRORS + 1))
             fi
-            # Check for unfilled placeholder sections (empty HTML comments in Decision/Consequences)
+
+            # --- Check 2: YAML frontmatter presence ---
+            if ! head -1 "$f" | grep -q '^---$'; then
+              echo "::error file=$f::Missing YAML frontmatter. All KB docs require structured metadata."
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # --- Check 3: .metadata.json sidecar file ---
+            SIDECAR="${f}.metadata.json"
+            if [ ! -f "$SIDECAR" ]; then
+              echo "::error file=$f::Missing sidecar file: ${SIDECAR}"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # --- Check 4: Required sections ---
+            if ! grep -q '^## Summary$' "$f"; then
+              echo "::warning file=$f::Missing '## Summary' section — reduces chunk-0 semantic density."
+              WARNINGS=$((WARNINGS + 1))
+            fi
+            if ! grep -q '^## Keywords$' "$f"; then
+              echo "::warning file=$f::Missing '## Keywords' section — reduces search discoverability."
+              WARNINGS=$((WARNINGS + 1))
+            fi
+
+            # --- Check 5: Unfilled placeholder sections ---
             if grep -qP '^\s*<!-- .*(Describe|Fill in|Document|What I gained)' "$f"; then
               echo "::warning file=$f::Contains unfilled placeholder sections — enrich before publishing."
+              WARNINGS=$((WARNINGS + 1))
+            fi
+
+            # --- Check 6: Staleness detection (>90 days) ---
+            LAST_UPDATED=$(grep '^last_updated:' "$f" | head -1 | sed 's/last_updated: *"\{0,1\}\([0-9-]*\)"\{0,1\}/\1/')
+            if [ -n "$LAST_UPDATED" ]; then
+              DOC_EPOCH=$(date -d "$LAST_UPDATED" +%s 2>/dev/null || echo "0")
+              if [ "$DOC_EPOCH" -gt 0 ]; then
+                DAYS_OLD=$(( ($(date +%s) - DOC_EPOCH) / 86400 ))
+                if [ "$DAYS_OLD" -gt 90 ]; then
+                  echo "::warning file=$f::Document is ${DAYS_OLD} days old (last_updated: ${LAST_UPDATED}). Consider reviewing."
+                  WARNINGS=$((WARNINGS + 1))
+                fi
+              fi
             fi
           done
+
+          echo ""
+          echo "=== Validation Summary ==="
+          echo "  Files checked: $(echo "$KB_FILES" | wc -l | tr -d ' ')"
+          echo "  Errors:   ${ERRORS}"
+          echo "  Warnings: ${WARNINGS}"
+
           if [ "$ERRORS" -gt 0 ]; then
-            echo "::error::${ERRORS} KB document(s) below minimum size. Aborting sync."
+            echo "::error::${ERRORS} KB document(s) failed validation. Fix errors before syncing."
             exit 1
           fi
-          echo "All KB documents passed validation."
+          echo "✅ All KB documents passed validation."
 
       - name: Sync KB documents to S3
         id: sync
