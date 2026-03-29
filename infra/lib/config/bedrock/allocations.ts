@@ -14,6 +14,7 @@
  */
 
 import { type DeployableEnvironment, Environment } from '../environments';
+import { MODELS } from '../shared/model-registry';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -92,11 +93,11 @@ export interface BedrockAllocations {
 export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocations> = {
     [Environment.DEVELOPMENT]: {
         agent: {
-            foundationModel: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+            foundationModel: MODELS.CHATBOT_AGENT,
             idleSessionTtlInSeconds: 600, // 10 minutes
         },
         knowledgeBase: {
-            embeddingsModel: 'amazon.titan-embed-text-v2:0',
+            embeddingsModel: MODELS.KB_EMBEDDINGS,
             pineconeConnectionString: 'https://portfolio-kb-79dyhsi.svc.aped-4627-b74a.pinecone.io',
             pineconeNamespace: 'portfolio-dev',
         },
@@ -116,11 +117,11 @@ export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocatio
 
     [Environment.STAGING]: {
         agent: {
-            foundationModel: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+            foundationModel: MODELS.CHATBOT_AGENT,
             idleSessionTtlInSeconds: 900, // 15 minutes
         },
         knowledgeBase: {
-            embeddingsModel: 'amazon.titan-embed-text-v2:0',
+            embeddingsModel: MODELS.KB_EMBEDDINGS,
             pineconeConnectionString: 'https://portfolio-kb-79dyhsi.svc.aped-4627-b74a.pinecone.io',
             pineconeNamespace: 'portfolio-stg',
         },
@@ -140,11 +141,11 @@ export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocatio
 
     [Environment.PRODUCTION]: {
         agent: {
-            foundationModel: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+            foundationModel: MODELS.CHATBOT_AGENT,
             idleSessionTtlInSeconds: 1800, // 30 minutes
         },
         knowledgeBase: {
-            embeddingsModel: 'amazon.titan-embed-text-v2:0',
+            embeddingsModel: MODELS.KB_EMBEDDINGS,
             pineconeConnectionString: 'https://portfolio-kb-79dyhsi.svc.aped-4627-b74a.pinecone.io',
             pineconeNamespace: 'portfolio-prd',
         },

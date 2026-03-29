@@ -13,6 +13,10 @@
   "references": [
     { "path": "infra" },
     { "path": "bedrock-publisher" },
+    { "path": "bedrock-applications/shared" },
+    { "path": "bedrock-applications/article-pipeline" },
+    { "path": "bedrock-applications/self-healing" },
+    { "path": "bedrock-applications/chatbot" },
     { "path": "packages/cdk-governance-aspects" }
   ]
 }

@@ -17,3 +17,4 @@ export * from './kb-stack';
 export * from './agent-stack';
 export * from './api-stack';
 export * from './ai-content-stack';
+export * from './pipeline-stack';

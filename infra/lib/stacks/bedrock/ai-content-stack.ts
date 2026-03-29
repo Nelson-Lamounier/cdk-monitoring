@@ -76,6 +76,12 @@ export interface AiContentStackProps extends cdk.StackProps {
     readonly knowledgeBaseId?: string;
     /** Bedrock Knowledge Base ARN for IAM permissions (optional) */
     readonly knowledgeBaseArn?: string;
+    /** Runtime environment name for EMF metrics dimensions (e.g. 'development') */
+    readonly environmentName: string;
+    /** Enable QA Agent validation (2-agent PoC). Default: false */
+    readonly qaEnabled?: boolean;
+    /** Foundation model for QA Agent (optional, defaults to Haiku 3.5) */
+    readonly qaModel?: string;
 }
 
 // =============================================================================
@@ -259,7 +265,10 @@ export class AiContentStack extends cdk.Stack {
                 FOUNDATION_MODEL: props.foundationModel,
                 MAX_TOKENS: String(props.maxTokens),
                 THINKING_BUDGET_TOKENS: String(props.thinkingBudgetTokens),
+                ENVIRONMENT: props.environmentName,
                 ...(props.knowledgeBaseId ? { KNOWLEDGE_BASE_ID: props.knowledgeBaseId } : {}),
+                ...(props.qaEnabled ? { QA_ENABLED: 'true' } : {}),
+                ...(props.qaModel ? { QA_MODEL: props.qaModel } : {}),
             },
             description: `MD-to-Blog publisher using ${props.foundationModel} for ${namePrefix}`,
             logGroup: new logs.LogGroup(this, 'PublisherLogGroup', {
@@ -278,6 +287,7 @@ export class AiContentStack extends cdk.Stack {
             deadLetterQueue: this.publisherDlq,
             deadLetterQueueEnabled: true,
             retryAttempts: 2,
+            tracing: lambda.Tracing.ACTIVE,
             // FinOps: cap parallel Bedrock invocations
             ...(props.lambdaReservedConcurrency !== undefined
                 ? { reservedConcurrentExecutions: props.lambdaReservedConcurrency }

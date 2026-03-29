@@ -56,6 +56,7 @@ function createContentStack(
             lambdaTimeoutSeconds: 120,
             logRetention: logs.RetentionDays.ONE_WEEK,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
+            environmentName: 'development',
             env: TEST_ENV_EU,
             ...overrides,
         },
@@ -153,6 +154,24 @@ describe('AiContentStack', () => {
         it('should set 120 second timeout', () => {
             template.hasResourceProperties('AWS::Lambda::Function', {
                 Timeout: 120,
+            });
+        });
+
+        it('should enable X-Ray Active tracing', () => {
+            template.hasResourceProperties('AWS::Lambda::Function', {
+                TracingConfig: {
+                    Mode: 'Active',
+                },
+            });
+        });
+
+        it('should configure ENVIRONMENT env var for EMF metrics', () => {
+            template.hasResourceProperties('AWS::Lambda::Function', {
+                Environment: {
+                    Variables: Match.objectLike({
+                        ENVIRONMENT: 'development',
+                    }),
+                },
             });
         });
     });

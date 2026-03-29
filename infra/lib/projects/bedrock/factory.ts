@@ -2,12 +2,13 @@
  * @format
  * Bedrock Project Factory
  *
- * Creates the Amazon Bedrock Agent infrastructure using a 5-stack architecture:
+ * Creates the Amazon Bedrock Agent infrastructure using a 6-stack architecture:
  * - DataStack: S3 bucket for content pipeline documents
  * - KbStack: Bedrock Knowledge Base backed by Pinecone
  * - AgentStack: Bedrock Agent, Guardrail, Action Group
  * - ApiStack: API Gateway + Lambda for agent invocation
  * - ContentStack: MD-to-Blog pipeline (S3 event → Lambda → DynamoDB)
+ * - PipelineStack: Multi-agent Step Functions pipeline (Research → Writer → QA)
  *
  * Stacks created:
  * - Bedrock-Data-{environment}
@@ -15,6 +16,7 @@
  * - Bedrock-Agent-{environment}
  * - Bedrock-Api-{environment}
  * - Bedrock-Content-{environment}
+ * - Bedrock-Pipeline-{environment}
  */
 
 import * as cdk from 'aws-cdk-lib/core';
@@ -23,6 +25,8 @@ import { getBedrockAllocations } from '../../config/bedrock/allocations';
 import { getBedrockConfigs } from '../../config/bedrock/configurations';
 import { getContentAllocations } from '../../config/bedrock/content-allocations';
 import { getContentConfigs } from '../../config/bedrock/content-configurations';
+import { getPipelineAllocations } from '../../config/bedrock/pipeline-allocations';
+import { getPipelineConfigs } from '../../config/bedrock/pipeline-configurations';
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
 import {
@@ -36,6 +40,7 @@ import {
     BedrockAgentStack,
     BedrockApiStack,
     AiContentStack,
+    BedrockPipelineStack,
 } from '../../stacks/bedrock';
 import { stackId, flatName } from '../../utilities/naming';
 
@@ -76,6 +81,8 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         const configs = getBedrockConfigs(this.environment);
         const contentAllocs = getContentAllocations(this.environment);
         const contentConfigs = getContentConfigs(this.environment);
+        const pipelineAllocs = getPipelineAllocations(this.environment);
+        const pipelineConfigs = getPipelineConfigs(this.environment);
 
         // CDK environment: resolved from env vars via config
         const env = cdkEnvironment(this.environment);
@@ -206,13 +213,54 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 removalPolicy: contentConfigs.removalPolicy,
                 knowledgeBaseId: kbStack.knowledgeBaseId,
                 knowledgeBaseArn: kbStack.knowledgeBaseArn,
+                environmentName: this.environment,
                 env,
             }
         );
         contentStack.addDependency(dataStack);
         contentStack.addDependency(kbStack);
 
-        const stacks: cdk.Stack[] = [dataStack, kbStack, agentStack, apiStack, contentStack];
+        // =================================================================
+        // Stack 6: Pipeline (Multi-Agent Step Functions)
+        //
+        // Shadow-mode pipeline running alongside the monolith.
+        // Uses separate Lambdas per agent with Step Functions orchestration.
+        // Will replace ContentStack after validation (Phase 2c).
+        // =================================================================
+        const pipelineStack = new BedrockPipelineStack(
+            scope,
+            stackId(this.namespace, 'Pipeline', this.environment),
+            {
+                namePrefix,
+                assetsBucketName: dataStack.bucketName,
+                tableName: contentStack.tableName,
+                researchModel: pipelineAllocs.research.modelId,
+                writerModel: pipelineAllocs.writer.modelId,
+                qaModel: pipelineAllocs.qa.modelId,
+                writerMaxTokens: pipelineAllocs.writer.maxTokens,
+                writerThinkingBudgetTokens: pipelineAllocs.writer.thinkingBudgetTokens,
+                agentLambdaMemoryMb: pipelineAllocs.lambda.agentMemoryMb,
+                agentLambdaTimeoutSeconds: pipelineAllocs.lambda.agentTimeoutSeconds,
+                triggerLambdaMemoryMb: pipelineAllocs.lambda.triggerMemoryMb,
+                publishLambdaMemoryMb: pipelineAllocs.lambda.publishMemoryMb,
+                logRetention: pipelineConfigs.logRetention,
+                removalPolicy: pipelineConfigs.removalPolicy,
+                knowledgeBaseId: kbStack.knowledgeBaseId,
+                knowledgeBaseArn: kbStack.knowledgeBaseArn,
+                environmentName: this.environment,
+                draftPrefix: pipelineConfigs.s3.draftPrefix,
+                publishedPrefix: pipelineConfigs.s3.publishedPrefix,
+                contentPrefix: pipelineConfigs.s3.contentPrefix,
+                reviewPrefix: pipelineConfigs.s3.reviewPrefix,
+                archivedPrefix: pipelineConfigs.s3.archivedPrefix,
+                isrEndpoint: pipelineConfigs.isrEndpoint,
+                env,
+            }
+        );
+        pipelineStack.addDependency(dataStack);
+        pipelineStack.addDependency(contentStack); // Uses contentStack's DynamoDB table
+
+        const stacks: cdk.Stack[] = [dataStack, kbStack, agentStack, apiStack, contentStack, pipelineStack];
 
         cdk.Annotations.of(scope).addInfo(
             `Bedrock factory created ${stacks.length} stacks for ${this.environment}`,
@@ -226,6 +274,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 agent: agentStack,
                 api: apiStack,
                 content: contentStack,
+                pipeline: pipelineStack,
             },
         };
     }

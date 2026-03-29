@@ -46,6 +46,14 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 
 import { BLOG_PERSONA_SYSTEM_PROMPT } from './prompts/blog-persona.js';
+import {
+    StageTimer,
+    emitPipelineMetrics,
+    emitFailureMetrics,
+} from './metrics.js';
+import type { FailureStage, TokenUsage } from './metrics.js';
+import { validateArticle } from './agents/qa-legacy-bridge.js';
+import type { QaRecommendation, QaValidationResult } from './agents/qa-legacy-bridge.js';
 
 // =============================================================================
 // ENVIRONMENT & CLIENTS
@@ -77,6 +85,12 @@ const THINKING_BUDGET_TOKENS = parseInt(process.env.THINKING_BUDGET_TOKENS ?? '1
 
 /** Knowledge Base ID for KB-augmented mode (empty = disabled). */
 const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID ?? '';
+
+/** Runtime environment for EMF dimension (e.g. 'development', 'production'). */
+const ENVIRONMENT = process.env.ENVIRONMENT ?? 'development';
+
+/** Enable QA Agent validation (2-agent PoC). Set to 'true' to activate. */
+const QA_ENABLED = process.env.QA_ENABLED === 'true';
 
 /** Number of KB passages to retrieve per article brief. */
 const KB_RETRIEVE_COUNT = parseInt(process.env.KB_RETRIEVE_COUNT ?? '15', 10);
@@ -352,6 +366,27 @@ async function writeContentToS3(
  *    Stores all enrichment fields (description, category, complexity, etc.)
  *    for pipeline diagnostics and version history.
  */
+/**
+ * QA validation summary stored alongside article metadata.
+ * Persisted in both the METADATA and CONTENT DynamoDB records.
+ */
+interface QaPersistenceData {
+    /** Weighted overall quality score (0–100) */
+    readonly qaScore: number;
+    /** Publication recommendation */
+    readonly qaRecommendation: QaRecommendation;
+    /** Independent technical confidence override */
+    readonly qaConfidence: number;
+    /** Human-readable review summary */
+    readonly qaSummary: string;
+    /** Per-dimension scores (object map) */
+    readonly qaDimensions: Record<string, number>;
+    /** Total issues found across all dimensions */
+    readonly qaIssueCount: number;
+    /** Count of error-severity issues */
+    readonly qaErrorCount: number;
+}
+
 async function writeMetadataToDynamoDB(
     slug: string,
     metadata: TransformResult['metadata'],
@@ -360,6 +395,7 @@ async function writeMetadataToDynamoDB(
     publishedKey: string,
     complexity: ComplexityAnalysis,
     versionTimestamp: string,
+    qaData?: QaPersistenceData,
 ): Promise<void> {
     const now = versionTimestamp;
     const pk = `ARTICLE#${slug}`;
@@ -398,6 +434,14 @@ async function writeMetadataToDynamoDB(
         processingNote: metadata.processingNote || '',
         skillsDemonstrated: metadata.skillsDemonstrated ?? [],
         shotListCount: shotList.length,
+
+        // QA Agent fields (present when QA_ENABLED=true)
+        ...(qaData ? {
+            qaScore: qaData.qaScore,
+            qaRecommendation: qaData.qaRecommendation,
+            qaConfidence: qaData.qaConfidence,
+            qaSummary: qaData.qaSummary,
+        } : {}),
 
         // Timestamps
         createdAt: now,
@@ -452,6 +496,17 @@ async function writeMetadataToDynamoDB(
             thinkingBudgetUsed: complexity.budgetTokens,
             shotList,
             skillsDemonstrated: metadata.skillsDemonstrated ?? [],
+
+            // QA Agent audit trail (full breakdown)
+            ...(qaData ? {
+                qaScore: qaData.qaScore,
+                qaRecommendation: qaData.qaRecommendation,
+                qaConfidence: qaData.qaConfidence,
+                qaSummary: qaData.qaSummary,
+                qaDimensions: qaData.qaDimensions,
+                qaIssueCount: qaData.qaIssueCount,
+                qaErrorCount: qaData.qaErrorCount,
+            } : {}),
         },
     }));
 }
@@ -812,6 +867,92 @@ async function transformWithBedrock(
     return parseTransformResult(textContent);
 }
 
+/**
+ * Instrumented wrapper around transformWithBedrock that returns both the
+ * parsed result AND the raw token usage from the Bedrock response.
+ *
+ * This enables the handler to emit accurate EMF metrics with the
+ * Writer agent's token consumption.
+ *
+ * @param userMessage - The formatted user message
+ * @param complexity - Complexity analysis driving the thinking budget
+ * @param timer - Stage timer for recording Bedrock Converse duration
+ * @returns Object containing the parsed result and token usage
+ */
+async function transformWithBedrockInstrumented(
+    userMessage: string,
+    complexity: ComplexityAnalysis,
+    timer: StageTimer,
+): Promise<{ result: TransformResult; writerTokenUsage: TokenUsage }> {
+    const command = new ConverseCommand({
+        modelId: FOUNDATION_MODEL,
+        system: BLOG_PERSONA_SYSTEM_PROMPT,
+        messages: [
+            {
+                role: 'user',
+                content: [{ text: userMessage }],
+            },
+        ],
+        inferenceConfig: {
+            maxTokens: MAX_TOKENS,
+        },
+        additionalModelRequestFields: {
+            thinking: {
+                type: 'enabled',
+                budget_tokens: complexity.budgetTokens,
+            },
+        },
+    });
+
+    const response = await bedrockClient.send(command);
+    timer.end('bedrockConverse');
+
+    const stopReason = response.stopReason ?? 'unknown';
+    const usage = response.usage;
+    console.log(`Bedrock response: stopReason=${stopReason}, inputTokens=${usage?.inputTokens}, outputTokens=${usage?.outputTokens}`);
+
+    if (stopReason === 'max_tokens') {
+        throw new Error(
+            `Response truncated — output hit maxTokens limit (${usage?.outputTokens} tokens used). ` +
+            `Increase MAX_TOKENS env var or reduce article complexity.`,
+        );
+    }
+
+    // Extract text from output content blocks (skip thinking blocks)
+    const outputBlocks = response.output?.message?.content ?? [];
+    const textContent = outputBlocks
+        .filter((block): block is { text: string } =>
+            typeof block === 'object' && block !== null && 'text' in block && typeof (block as { text?: unknown }).text === 'string')
+        .map((block) => block.text)
+        .join('');
+
+    if (!textContent) {
+        throw new Error('No text content in Bedrock Converse response');
+    }
+
+    // Count thinking tokens from thinking blocks
+    const thinkingBlocks = outputBlocks.filter(
+        (block) => typeof block === 'object' && block !== null && 'thinking' in block,
+    );
+    const thinkingChars = thinkingBlocks
+        .map((block) => (block as { thinking?: string }).thinking ?? '')
+        .join('').length;
+    // Approximate thinking tokens (avg ~4 chars/token for English text)
+    const estimatedThinkingTokens = Math.ceil(thinkingChars / 4);
+
+    timer.start('parseResponse');
+    const result = parseTransformResult(textContent);
+    timer.end('parseResponse');
+
+    const writerTokenUsage: TokenUsage = {
+        inputTokens: usage?.inputTokens ?? 0,
+        outputTokens: usage?.outputTokens ?? 0,
+        thinkingTokens: estimatedThinkingTokens,
+    };
+
+    return { result, writerTokenUsage };
+}
+
 // =============================================================================
 // LAMBDA HANDLER
 // =============================================================================
@@ -864,13 +1005,19 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
 
         console.log(`Processing draft: s3://${bucket}/${key}`);
 
+        const timer = new StageTimer();
+        let currentStage: FailureStage = 'read-draft';
+
         try {
             // 1. Read the raw markdown from S3
+            timer.start('readDraft');
             const markdownContent = await readDraftFromS3(bucket, key);
+            timer.end('readDraft');
             console.log(`Read ${markdownContent.length} chars from draft`);
 
             // 2. Detect mode: KB-augmented brief vs legacy full transform
             const isKbBrief = markdownContent.length < BRIEF_THRESHOLD && KNOWLEDGE_BASE_ID.length > 0;
+            const mode: 'kb-augmented' | 'legacy-transform' = isKbBrief ? 'kb-augmented' : 'legacy-transform';
             console.log(`Mode: ${isKbBrief ? 'KB-AUGMENTED' : 'LEGACY-TRANSFORM'} (${markdownContent.length} chars, KB=${KNOWLEDGE_BASE_ID ? 'configured' : 'disabled'})`);
 
             // 3. For KB mode, retrieve context; for legacy, use the content directly
@@ -885,8 +1032,11 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
 
             if (isKbBrief) {
                 // KB-Augmented: retrieve context from Pinecone-backed KB
+                currentStage = 'kb-retrieval';
                 console.log(`Retrieving KB context for brief: "${markdownContent.substring(0, 100)}..."`);
+                timer.start('kbRetrieval');
                 const kbContext = await retrieveKnowledgeBaseContext(markdownContent);
+                timer.end('kbRetrieval');
                 console.log(`KB context retrieved: ${kbContext.length} chars`);
 
                 // Guard: reject if KB context is too thin to write a factual article
@@ -899,6 +1049,7 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
                 }
 
                 // Use KB context for complexity analysis (the brief alone is too short)
+                currentStage = 'complexity-analysis';
                 contentForComplexity = kbContext;
 
                 const complexity = analyseComplexity(contentForComplexity);
@@ -909,15 +1060,49 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
                 userMessage = buildKbAugmentedMessage(markdownContent, kbContext, slug, complexity);
 
                 // 5. Transform via Bedrock Converse API
+                currentStage = 'bedrock-converse';
                 console.log(`Invoking ${FOUNDATION_MODEL} in KB-Augmented mode (budget: ${complexity.budgetTokens} tokens)`);
-                const result = await transformWithBedrock(userMessage, complexity);
+                timer.start('bedrockConverse');
+                const { result, writerTokenUsage } = await transformWithBedrockInstrumented(userMessage, complexity, timer);
                 console.log(`Transform complete: "${result.metadata.title}" (${result.metadata.readingTime} min, confidence: ${result.metadata.technicalConfidence}%, shotList: ${result.shotList.length} items)`);
 
+                // 6. QA Agent validation (2-agent PoC)
+                let qaResult: QaValidationResult | undefined;
+                if (QA_ENABLED) {
+                    currentStage = 'qa-validation';
+                    qaResult = await validateArticle({
+                        content: result.content,
+                        metadata: result.metadata,
+                        slug,
+                        mode,
+                    }, timer);
 
-                // Post-processing (shared between both modes)
-                await writePostProcessing(result, slug, key, publishedKey, contentKey, complexity, versionTimestamp);
+                    // Override Writer's self-rated confidence with QA's independent assessment
+                    result.metadata.technicalConfidence = qaResult.confidenceOverride;
+                    console.log(`QA Override: technicalConfidence ${result.metadata.technicalConfidence} → ${qaResult.confidenceOverride}`);
+                }
+
+                // 7. Post-processing (shared between both modes)
+                currentStage = 's3-write';
+                await writePostProcessing(result, slug, key, publishedKey, contentKey, complexity, versionTimestamp, qaResult, timer);
+
+                // 8. Emit EMF success metrics
+                emitPipelineMetrics({
+                    environment: ENVIRONMENT,
+                    model: FOUNDATION_MODEL,
+                    slug,
+                    mode,
+                    tokenUsage: writerTokenUsage,
+                    stageDurations: timer.getDurations(),
+                    complexityTier: complexity.tier,
+                    technicalConfidence: result.metadata.technicalConfidence,
+                    draftSizeBytes: Buffer.byteLength(markdownContent, 'utf-8'),
+                    qaScore: qaResult?.overallScore,
+                    qaDurationMs: timer.getDurations().qaValidationMs,
+                });
             } else {
                 // Legacy Transform: full article → polished MDX
+                currentStage = 'complexity-analysis';
                 const complexity = analyseComplexity(markdownContent);
                 console.log(
                     `Complexity: ${complexity.tier} → ${complexity.budgetTokens} thinking tokens | ${complexity.reason}`,
@@ -926,16 +1111,61 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
                 userMessage = buildLegacyTransformMessage(markdownContent, slug, complexity);
 
                 // 5. Transform via Bedrock Converse API
+                currentStage = 'bedrock-converse';
                 console.log(`Invoking ${FOUNDATION_MODEL} in Legacy-Transform mode (budget: ${complexity.budgetTokens} tokens)`);
-                const result = await transformWithBedrock(userMessage, complexity);
+                timer.start('bedrockConverse');
+                const { result, writerTokenUsage } = await transformWithBedrockInstrumented(userMessage, complexity, timer);
                 console.log(`Transform complete: "${result.metadata.title}" (${result.metadata.readingTime} min, confidence: ${result.metadata.technicalConfidence}%, shotList: ${result.shotList.length} items)`);
 
-                // Post-processing (shared between both modes)
-                await writePostProcessing(result, slug, key, publishedKey, contentKey, complexity, versionTimestamp);
+                // 6. QA Agent validation (2-agent PoC)
+                let qaResult: QaValidationResult | undefined;
+                if (QA_ENABLED) {
+                    currentStage = 'qa-validation';
+                    qaResult = await validateArticle({
+                        content: result.content,
+                        metadata: result.metadata,
+                        slug,
+                        mode,
+                    }, timer);
+
+                    // Override Writer's self-rated confidence with QA's independent assessment
+                    result.metadata.technicalConfidence = qaResult.confidenceOverride;
+                    console.log(`QA Override: technicalConfidence ${result.metadata.technicalConfidence} → ${qaResult.confidenceOverride}`);
+                }
+
+                // 7. Post-processing (shared between both modes)
+                currentStage = 's3-write';
+                await writePostProcessing(result, slug, key, publishedKey, contentKey, complexity, versionTimestamp, qaResult, timer);
+
+                // 8. Emit EMF success metrics
+                emitPipelineMetrics({
+                    environment: ENVIRONMENT,
+                    model: FOUNDATION_MODEL,
+                    slug,
+                    mode,
+                    tokenUsage: writerTokenUsage,
+                    stageDurations: timer.getDurations(),
+                    complexityTier: complexity.tier,
+                    technicalConfidence: result.metadata.technicalConfidence,
+                    draftSizeBytes: Buffer.byteLength(markdownContent, 'utf-8'),
+                    qaScore: qaResult?.overallScore,
+                    qaDurationMs: timer.getDurations().qaValidationMs,
+                });
             }
 
         } catch (error) {
             console.error(`Failed to process ${key}:`, error);
+
+            // Emit EMF failure metrics before re-throwing
+            emitFailureMetrics({
+                environment: ENVIRONMENT,
+                model: FOUNDATION_MODEL,
+                failureStage: currentStage,
+                slug: deriveSlug(key),
+                errorMessage: error instanceof Error ? error.message : String(error),
+                elapsedMs: timer.elapsed(),
+            });
+
             throw error; // Let Lambda retry / send to DLQ
         }
     }
@@ -964,6 +1194,8 @@ async function writePostProcessing(
     contentKey: string,
     complexity: ComplexityAnalysis,
     versionTimestamp: string,
+    qaResult?: QaValidationResult,
+    timer?: StageTimer,
 ): Promise<void> {
     // MermaidChart syntax pre-check (warn but don't block)
     const mermaidWarnings = validateMermaidSyntax(result.content);
@@ -977,10 +1209,38 @@ async function writePostProcessing(
     }
 
     // Write MDX content to S3 (published/ + content/v{n}/)
+    timer?.start('s3Write');
     await writeContentToS3(ASSETS_BUCKET, publishedKey, contentKey, result.content);
+    timer?.end('s3Write');
     console.log(`Content written to s3://${ASSETS_BUCKET}/${publishedKey} + ${contentKey}`);
 
+    // Build QA persistence payload if QA ran
+    let qaData: QaPersistenceData | undefined;
+    if (qaResult) {
+        const totalIssues = Object.values(qaResult.dimensions)
+            .reduce((sum, dim) => sum + dim.issues.length, 0);
+        const errorCount = Object.values(qaResult.dimensions)
+            .reduce((sum, dim) => sum + dim.issues.filter(i => i.severity === 'error').length, 0);
+
+        qaData = {
+            qaScore: qaResult.overallScore,
+            qaRecommendation: qaResult.recommendation,
+            qaConfidence: qaResult.confidenceOverride,
+            qaSummary: qaResult.summary,
+            qaDimensions: {
+                technicalAccuracy: qaResult.dimensions.technicalAccuracy.score,
+                seoCompliance: qaResult.dimensions.seoCompliance.score,
+                mdxStructure: qaResult.dimensions.mdxStructure.score,
+                metadataQuality: qaResult.dimensions.metadataQuality.score,
+                contentQuality: qaResult.dimensions.contentQuality.score,
+            },
+            qaIssueCount: totalIssues,
+            qaErrorCount: errorCount,
+        };
+    }
+
     // Write AI-enhanced metadata + shotList to DynamoDB (Metadata Brain)
+    timer?.start('dynamoWrite');
     await writeMetadataToDynamoDB(
         result.metadata.slug || slug,
         result.metadata,
@@ -989,10 +1249,15 @@ async function writePostProcessing(
         publishedKey,
         complexity,
         versionTimestamp,
+        qaData,
     );
+    timer?.end('dynamoWrite');
     console.log(`Metadata written to ${TABLE_NAME} (pk=ARTICLE#${result.metadata.slug || slug})`);
 
-    // On-demand ISR revalidation (opt-in via REVALIDATION_URL env var)
+    // Log QA results if available
+    if (qaResult) {
+        console.log(`QA Results for ${slug}: score=${qaResult.overallScore}, recommendation=${qaResult.recommendation}`);
+    }
     const revalidationUrl = process.env.REVALIDATION_URL;
     const revalidationSecret = process.env.REVALIDATION_SECRET;
     if (revalidationUrl) {

@@ -1,13 +1,12 @@
 {
-  "name": "@cdk-monitoring/ai-publisher",
+  "name": "@cdk-monitoring/bedrock-applications",
   "version": "1.0.0",
   "private": true,
-  "description": "MD-to-Blog AI publisher using Bedrock Converse API (Claude 4.6 Sonnet)",
-  "main": "src/index.ts",
+  "description": "Centralised Bedrock application logic — article pipeline, self-healing agent, and chatbot handler",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --build",
     "typecheck": "tsc --noEmit",
-    "test": "jest --config jest.config.js"
+    "test": "jest --config jest.config.js --passWithNoTests"
   },
   "devDependencies": {
     "@aws-sdk/client-bedrock-agent-runtime": "^3.1001.0",

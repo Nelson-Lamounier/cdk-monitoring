@@ -175,7 +175,7 @@ export class SelfHealingAgentStack extends cdk.Stack {
         this.agentFunction = new lambdaNode.NodejsFunction(this, 'AgentFunction', {
             functionName: `${namePrefix}-agent`,
             runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'self-healing', 'index.ts'),
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'index.ts'),
             handler: 'handler',
             memorySize: props.lambdaMemoryMb,
             timeout: cdk.Duration.seconds(props.lambdaTimeoutSeconds),

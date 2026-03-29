@@ -131,7 +131,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         const diagnoseAlarmFn = new lambdaNode.NodejsFunction(this, 'DiagnoseAlarmFunction', {
             functionName: `${namePrefix}-tool-diagnose-alarm`,
             runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'self-healing', 'tools', 'diagnose-alarm', 'index.ts'),
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'tools', 'diagnose-alarm', 'index.ts'),
             handler: 'handler',
             memorySize: 256,
             timeout: cdk.Duration.seconds(30),
@@ -217,7 +217,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         const checkNodeHealthFn = new lambdaNode.NodejsFunction(this, 'CheckNodeHealthFunction', {
             functionName: `${namePrefix}-tool-check-node-health`,
             runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'self-healing', 'tools', 'check-node-health', 'index.ts'),
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'tools', 'check-node-health', 'index.ts'),
             handler: 'handler',
             memorySize: 256,
             timeout: cdk.Duration.seconds(60),
@@ -264,7 +264,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         const analyseClusterHealthFn = new lambdaNode.NodejsFunction(this, 'AnalyseClusterHealthFunction', {
             functionName: `${namePrefix}-tool-analyse-cluster-health`,
             runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'self-healing', 'tools', 'analyse-cluster-health', 'index.ts'),
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'tools', 'analyse-cluster-health', 'index.ts'),
             handler: 'handler',
             memorySize: 256,
             timeout: cdk.Duration.seconds(90),

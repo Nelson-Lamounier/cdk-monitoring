@@ -7,6 +7,10 @@
   "workspaces": [
     "infra",
     "bedrock-publisher",
+    "bedrock-applications/shared",
+    "bedrock-applications/article-pipeline",
+    "bedrock-applications/self-healing",
+    "bedrock-applications/chatbot",
     "packages/script-utils",
     "packages/cdk-governance-aspects",
     "kubernetes-app",
