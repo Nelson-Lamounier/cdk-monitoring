@@ -413,6 +413,7 @@ export class BedrockPipelineStack extends cdk.Stack {
             environment: {
                 STATE_MACHINE_ARN: this.stateMachine.stateMachineArn,
                 ASSETS_BUCKET: assetsBucket.bucketName,
+                PIPELINE_TABLE_NAME: contentTable.tableName,
                 ENVIRONMENT: props.environmentName,
             },
             description: `Pipeline Trigger — S3 event → Step Functions`,
@@ -425,8 +426,9 @@ export class BedrockPipelineStack extends cdk.Stack {
             tracing: lambda.Tracing.ACTIVE,
         });
 
-        // Grant trigger Lambda permission to start executions
+        // Grant trigger Lambda permission to start executions + write DynamoDB
         this.stateMachine.grantStartExecution(this.triggerFunction);
+        contentTable.grantWriteData(this.triggerFunction);
 
         NagSuppressions.addResourceSuppressions(
             this.triggerFunction,

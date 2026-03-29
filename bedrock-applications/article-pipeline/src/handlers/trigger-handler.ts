@@ -3,8 +3,9 @@
  * Trigger Handler — S3 Event → Step Functions Execution
  *
  * Lambda handler triggered by S3 event notifications when a new
- * draft is uploaded to the drafts/ prefix. Creates a PipelineContext
- * and starts a Step Functions execution.
+ * draft is uploaded to the drafts/ prefix. Creates a PipelineContext,
+ * writes an initial "processing" record to DynamoDB so the frontend
+ * can track progress, and starts a Step Functions execution.
  *
  * This replaces the direct S3 → monolithic Lambda trigger with
  * S3 → Trigger Lambda → Step Functions → 3 Agent Lambdas.
@@ -12,6 +13,8 @@
 
 import type { S3Event, S3Handler } from 'aws-lambda';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 
 import type { PipelineContext, ResearchHandlerInput } from '../../../shared/src/index.js';
 
@@ -25,14 +28,18 @@ const STATE_MACHINE_ARN = process.env.STATE_MACHINE_ARN ?? '';
 /** S3 bucket name (from event, but validated against env) */
 const ASSETS_BUCKET = process.env.ASSETS_BUCKET ?? '';
 
+/** DynamoDB table for article metadata */
+const TABLE_NAME = process.env.PIPELINE_TABLE_NAME ?? '';
+
 /** Runtime environment */
 const ENVIRONMENT = process.env.ENVIRONMENT ?? 'development';
 
 // =============================================================================
-// CLIENT
+// CLIENTS
 // =============================================================================
 
 const sfnClient = new SFNClient({});
+const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 // =============================================================================
 // HANDLER
@@ -42,8 +49,9 @@ const sfnClient = new SFNClient({});
  * Lambda handler for S3 event → Step Functions trigger.
  *
  * Receives S3 event notifications for new drafts, extracts the
- * slug from the object key, builds a PipelineContext, and starts
- * a Step Functions execution.
+ * slug from the object key, builds a PipelineContext, writes an
+ * initial "processing" record to DynamoDB, and starts a Step
+ * Functions execution.
  *
  * @param event - S3 event notification
  */
@@ -59,12 +67,16 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
             continue;
         }
         const slug = slugMatch[1];
+        const now = new Date().toISOString();
+        const datePrefix = now.slice(0, 10); // YYYY-MM-DD
 
         console.log(`[trigger] New draft detected — slug="${slug}", key="${key}"`);
 
         // Build pipeline context
+        const executionName = `${slug}-${Date.now()}`;
+
         const pipelineContext: PipelineContext = {
-            pipelineId: '', // Will be set to execution ARN
+            pipelineId: executionName,
             slug,
             sourceKey: key,
             bucket: bucket || ASSETS_BUCKET,
@@ -76,17 +88,53 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
             },
             cumulativeCostUsd: 0,
             retryAttempt: 0,
-            startedAt: new Date().toISOString(),
+            startedAt: now,
         };
+
+        // =================================================================
+        // Write initial "processing" record to DynamoDB
+        //
+        // This allows the frontend admin dashboard to immediately show
+        // the article as "processing" while the pipeline runs.
+        // The QA handler will update this record to "review" on completion.
+        // =================================================================
+        if (TABLE_NAME) {
+            console.log(`[trigger] Writing processing record: ARTICLE#${slug}`);
+            await ddbClient.send(new PutCommand({
+                TableName: TABLE_NAME,
+                Item: {
+                    pk: `ARTICLE#${slug}`,
+                    sk: 'METADATA',
+                    status: 'processing',
+                    pipelineId: executionName,
+                    slug,
+                    sourceKey: key,
+                    startedAt: now,
+                    updatedAt: now,
+                    environment: ENVIRONMENT,
+                    // GSI1 — STATUS#processing index for dashboard queries
+                    gsi1pk: 'STATUS#processing',
+                    gsi1sk: `${datePrefix}#${slug}`,
+                },
+                // Only write if no existing record OR if existing status is not "published"
+                // This prevents overwriting a published article if the draft is re-uploaded
+                ConditionExpression: 'attribute_not_exists(pk) OR #status <> :published',
+                ExpressionAttributeNames: { '#status': 'status' },
+                ExpressionAttributeValues: { ':published': 'published' },
+            }));
+        } else {
+            console.warn('[trigger] TABLE_NAME not set — skipping DynamoDB write');
+        }
+
+        // =================================================================
+        // Start Step Functions execution
+        // =================================================================
+        console.log(`[trigger] Starting execution: ${executionName}`);
 
         // Build Step Functions input
         const sfnInput: ResearchHandlerInput = {
             context: pipelineContext,
         };
-
-        // Start Step Functions execution
-        const executionName = `${slug}-${Date.now()}`;
-        console.log(`[trigger] Starting execution: ${executionName}`);
 
         const result = await sfnClient.send(new StartExecutionCommand({
             stateMachineArn: STATE_MACHINE_ARN,
@@ -94,7 +142,6 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
             input: JSON.stringify(sfnInput),
         }));
 
-        // Update pipelineId with the actual execution ARN
         console.log(
             `[trigger] Execution started — arn=${result.executionArn ?? 'unknown'}, ` +
             `slug="${slug}"`,
