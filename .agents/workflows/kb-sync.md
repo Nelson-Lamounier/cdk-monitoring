@@ -189,7 +189,7 @@ done
 
 ---
 
-## Step 7 — Update Knowledge Items (Major Changes Only)
+## Step 7 — Update Knowledge Base(At repository Root Directory) Items (Major Changes Only)
 
 If this session involved **significant architectural changes** (new stacks, major refactoring, deleted services), update the Antigravity knowledge items:
 

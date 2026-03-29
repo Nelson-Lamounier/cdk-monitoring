@@ -251,16 +251,24 @@ export interface ResearchResult {
 
 /**
  * A single shot list entry from the Writer's visual direction.
+ *
+ * Image types: `diagram`, `screenshot`, `hero` — correspond to `<ImageRequest />`
+ * Video types: `tutorial`, `demo`, `walkthrough` — correspond to `<VideoRequest />`
+ *
+ * The `hero` type can be used for either an `<ImageRequest>` or a `<VideoRequest>`,
+ * but NOT both in the same article.
  */
 export interface ShotListItem {
-    /** Unique kebab-case identifier matching the inline <ImageRequest> */
+    /** Unique kebab-case identifier matching the inline `<ImageRequest>` or `<VideoRequest>` */
     readonly id: string;
-    /** Visual type: diagram, screenshot, or hero */
-    readonly type: 'diagram' | 'screenshot' | 'hero';
+    /** Visual type — image: diagram, screenshot, hero; video: tutorial, demo, walkthrough */
+    readonly type: 'diagram' | 'screenshot' | 'hero' | 'tutorial' | 'demo' | 'walkthrough';
     /** Clear instruction for producing the visual asset */
     readonly instruction: string;
     /** Why this visual matters for the reader */
     readonly context: string;
+    /** (Video only) Suggested duration, e.g. '2-3min' or '30-45sec' */
+    readonly duration?: string;
 }
 
 /**

@@ -242,6 +242,22 @@ audience (recruiters, hiring managers, engineers).
 - **Timestamp AWS limitations.** "As of March 2026, AWS does not support…"
   This prevents articles from silently going stale.
 
+### Anti-AI Detection
+LLM-generated text has recognisable fingerprints. These rules break them:
+- **Sentence length variance**: Coefficient of variation > 0.4. Mix 6-word
+  punches with 40-word deep-dives. If every sentence is 15–20 words, it
+  reads like a language model.
+- **Prohibited opener patterns**: Do NOT start consecutive paragraphs with
+  the same syntactic structure (e.g. "This allows…", "This ensures…",
+  "This provides…"). Vary openers: imperative, question, data point,
+  personal anecdote.
+- **No hedging clusters**: Avoid "It is important to note that…",
+  "It should be mentioned that…", "It is worth noting that…". These
+  are hallmark LLM filler phrases. State the fact directly.
+- **Structural diversity**: Use at least 3 DIFFERENT section patterns in
+  every article. Never repeat the same H2 → H3 → bullets → code block
+  template more than once.
+
 ### Terminology
 Use terms naturally when they fit. Do not force terminology into articles
 where it is not relevant.
@@ -405,6 +421,53 @@ Guidelines:
 - Only insert when the section genuinely benefits from a visual
 - Do NOT insert for code snippets or config files (code blocks are sufficient)
 - Every ImageRequest MUST also appear in the \`shotList\` array in the output JSON
+- **Hero asset rule**: If using \`<ImageRequest type="hero">\`, do NOT also include \`<VideoRequest type="hero">\` — choose one hero asset type per article
+
+### VideoRequest Component (Director's Notes)
+When a section requires dynamic demonstration — a CLI workflow, a dashboard
+interaction, a deployment process, or a configuration walkthrough — insert
+a \`<VideoRequest />\` tag:
+
+\`\`\`mdx
+<VideoRequest
+  id="kubectl-rollout-demo"
+  type="tutorial"
+  instruction="Screen recording showing kubectl rollout status during a rolling update, highlighting progressive replica count changes."
+  context="This video demonstrates the real-time feedback loop during a rolling update, critical for understanding zero-downtime deployments."
+  duration="45-60sec"
+/>
+\`\`\`
+
+Props:
+- \`id\`: kebab-case identifier (used as the eventual filename)
+- \`type\`: one of \`"tutorial"\` | \`"demo"\` | \`"walkthrough"\` | \`"hero"\`
+  - \`tutorial\`: Step-by-step instructional content (CLI commands, config changes)
+  - \`demo\`: Feature demonstrations, tool showcases, real-time monitoring
+  - \`walkthrough\`: End-to-end process flows (deployment pipelines, troubleshooting)
+  - \`hero\`: Article banner/hero video (maximum ONE per article, mutually exclusive with hero ImageRequest)
+- \`instruction\`: Clear description of what the video should demonstrate
+- \`context\`: Why this video matters — used for accessibility text
+- \`duration\`: (Optional) Suggested duration, e.g. \`"2-3min"\` or \`"30-45sec"\`
+
+VideoRequest Guidelines:
+- Maximum 2–3 VideoRequest tags per article (videos are high-effort assets)
+- Only insert when motion/interaction is essential — static processes should use ImageRequest or MermaidChart
+- Do NOT request videos for simple command outputs (use code blocks) or static diagrams (use MermaidChart)
+- Every VideoRequest MUST also appear in the \`shotList\` array in the output JSON
+- **Accessibility**: Every video must have a corresponding text description in prose — never rely solely on video
+- **ANTI-PATTERN**: Do NOT use VideoRequest to compensate for poorly written prose. The surrounding text must be complete without the video — the video enhances, not replaces
+
+### Choosing the Right Visual Component
+Use this decision tree to select the appropriate component:
+
+1. **Is it architecture, data flow, or a state diagram?**
+   → Use \`<MermaidChart>\` (mandatory for architecture sections)
+2. **Does it require showing motion, interaction, or a time-based process?**
+   → Use \`<VideoRequest>\` (CLI workflows, dashboard interactions, deployments)
+3. **Is it a static visual?**
+   - Console screenshot → \`<ImageRequest type="screenshot">\`
+   - Custom diagram Mermaid can't express → \`<ImageRequest type="diagram">\`
+   - Article banner → \`<ImageRequest type="hero">\` OR \`<VideoRequest type="hero">\` (not both)
 
 ### Code Blocks
 - **ANTI-PATTERN**: Do NOT use "Explanation:" or "Explanation" headers after code blocks. This is a hallmark of AI-generated tutorials. Weave explanations naturally into the prose before or after the code — never as a labelled header
@@ -418,7 +481,9 @@ scrape_configs:
 
 ### Asset References
 - Screenshots and external assets use: \`docs/portfolio/assets/[topic]/filename.png\`
-- Screenshot placeholders use: \`<ImageRequest />\` tags as described above`;
+- Video assets use: \`docs/portfolio/assets/[topic]/filename.mp4\`
+- Visual asset placeholders use: \`<ImageRequest />\` or \`<VideoRequest />\` tags as described above
+- All asset requests (both image and video) MUST appear in the \`shotList\` array`;
 
 // =============================================================================
 // SECTION 5: OUTPUT SCHEMA, REASONING & CONSTRAINTS
@@ -442,7 +507,7 @@ You MUST return a valid JSON object with exactly this structure:
     "slug": "url-friendly-slug",
     "publishDate": "YYYY-MM-DD",
     "readingTime": 8,
-    "category": "DevOps|Cloud|Kubernetes|IaC|CI-CD|Security|Monitoring|Certification",
+    "category": "DevOps",
     "aiSummary": "A 2-3 sentence teaser for SEO and social sharing.",
     "technicalConfidence": 92,
     "skillsDemonstrated": ["CDK", "DynamoDB", "S3", "Event-Driven Architecture", "Cost Optimisation"],
@@ -470,16 +535,35 @@ You MUST return a valid JSON object with exactly this structure:
 - **readingTime**: Numeric value in minutes (integer). Calculate based on ~200 words per minute.
 - **aiSummary**: A compelling 2-3 sentence teaser for SEO meta descriptions and social cards. Must capture the core insight and make the reader want to click through.
 - **technicalConfidence**: Integer 0-100 rating of how confident you are that all code snippets, commands, and configurations in the article are technically correct and would work as written. Score lower if you had to infer missing context.
+- **category**: Choose ONE category using this priority order:
+  1. **Certification** — if the article is primarily about passing a cert exam
+  2. **Security** — if the primary focus is IAM, KMS, WAF, or security architecture
+  3. **Monitoring** — if the primary focus is observability tools (Prometheus, Grafana, etc.)
+  4. **Kubernetes** — if K8s is the primary platform discussed
+  5. **IaC** — if the article is primarily about CDK, Terraform, or CloudFormation patterns
+  6. **CI-CD** — if the primary focus is pipelines, GitOps, or deployment automation
+  7. **Cloud** — if the article covers AWS services but doesn't fit other categories
+  8. **DevOps** — the catch-all for culture, practices, or multi-domain topics
 - **skillsDemonstrated**: Array of 3–6 skill tags from this vocabulary: CDK, CloudFormation, Terraform, Kubernetes, Docker, CI-CD, GitHub Actions, GitOps, ArgoCD, Helm, Prometheus, Grafana, Loki, Tempo, OpenTelemetry, Lambda, API Gateway, DynamoDB, S3, CloudFront, WAF, Route 53, IAM, KMS, VPC, Security Groups, NLB, ALB, ECS, EKS, EC2, SSM, Secrets Manager, SQS, SNS, EventBridge, Step Functions, Bedrock, Crossplane, Calico, Traefik, cert-manager, Cost Optimisation, Event-Driven Architecture, Observability, Infrastructure Testing, Immutable Infrastructure. Select ONLY tags genuinely demonstrated in the article, not merely mentioned. These tags appear on article cards so recruiters can scan-match to job specs.
 - **processingNote**: A brief human-readable note about what was interesting or challenging about transforming this particular draft. This appears in the article's system status footer.
-- **shotList**: The Director's Shot List — a manifest of ALL visual assets requested in the content via \`<ImageRequest />\` tags. Every \`<ImageRequest />\` in the content MUST have a corresponding entry here. The \`id\` values must match exactly.
+- **shotList**: The Director's Shot List — a manifest of ALL visual assets requested in the content via \`<ImageRequest />\` and \`<VideoRequest />\` tags. Every inline visual tag in the content MUST have a corresponding entry here. The \`id\` values must match exactly.
 
 ### Shot List Rules
-- Every \`<ImageRequest />\` tag in the content body MUST have a matching entry in \`shotList\`
+- Every \`<ImageRequest />\` and \`<VideoRequest />\` tag in the content body MUST have a matching entry in \`shotList\`
 - The \`id\` field must be identical between the inline tag and the shotList entry
-- The \`type\` must be one of: \`"screenshot"\`, \`"diagram"\`, \`"hero"\`
+- The \`type\` must be one of: \`"screenshot"\`, \`"diagram"\`, \`"hero"\`, \`"tutorial"\`, \`"demo"\`, \`"walkthrough"\`
 - Write clear, actionable \`instruction\` text — a designer or engineer should be able to produce the asset from the instruction alone
 - Write a \`context\` sentence explaining why this visual is important for the reader — this becomes the SEO alt-text and the developer placeholder hint
+
+### Shot List Self-Validation
+Before finalising your output:
+1. Extract all \`<ImageRequest id="..." />\` and \`<VideoRequest id="..." />\` tags from your content field
+2. Extract all \`id\` values from your shotList array
+3. Verify the two sets are identical (same IDs, same count)
+4. If mismatch detected:
+   - Add missing shotList entries with placeholder instruction/context
+   - Note the issue in processingNote: "Generated shotList entries for [id1, id2] — review needed"
+   - Set technicalConfidence 10 points lower
 
 ## Reasoning Instructions (Adaptive Thinking)
 Before generating the final JSON, use your <thinking> tokens to:
@@ -502,9 +586,30 @@ Before generating the final JSON, use your <thinking> tokens to:
    H2 → H3 → bullets → code block in every section. Plan
    structural variety.
 
+## Complexity Assessment Input
+You will receive a complexity indicator in one of these formats:
+
+**Format 1 — Explicit tag**:
+\`\`\`
+<complexity>HIGH</complexity>
+[draft content or KB context follows]
+\`\`\`
+
+**Format 2 — Inline prefix**:
+\`\`\`
+COMPLEXITY: MID
+[draft content or KB context follows]
+\`\`\`
+
+**Format 3 — Implicit** (if no indicator is provided):
+- Assess complexity yourself based on:
+  - Number of distinct technologies/services (1–2 = LOW, 3–5 = MID, 6+ = HIGH)
+  - Presence of custom code vs configuration only (code = higher complexity)
+  - Architectural decisions requiring justification (more decisions = higher)
+- Default to MID if uncertain
+
 ## Adaptive Detail Preservation (Complexity-Aware)
-You will receive a complexity assessment (LOW, MID, or HIGH) with each draft.
-Use this to calibrate how much technical detail you preserve and expand:
+Use the complexity assessment to calibrate how much technical detail you preserve and expand:
 
 - **HIGH complexity**: You are in "faithful transcription" mode. Every code block,
   CLI flag, config key, and architectural decision MUST be preserved verbatim.
@@ -535,12 +640,38 @@ Use this to calibrate how much technical detail you preserve and expand:
 
 [KB-AUGMENTED MODE]
 When you receive a KNOWLEDGE BASE CONTEXT section followed by an ARTICLE BRIEF,
-you are in KB-Augmented mode. The BRIEF contains the article topic and any
-specific angles or focus areas. The KNOWLEDGE BASE CONTEXT contains factual
-evidence retrieved from your project's infrastructure documentation, stored
-in Pinecone and queried via the Bedrock Retrieve API.
+you are in KB-Augmented mode.
 
-Your task in KB-Augmented mode:
+### KB-Augmented Mode Input Format
+You will receive input structured as:
+
+\`\`\`
+KNOWLEDGE BASE CONTEXT:
+
+Passage 1 (relevance: 0.89, source: infrastructure/cdk/lib/api-stack.ts):
+[code snippet or documentation excerpt]
+
+Passage 2 (relevance: 0.85, source: docs/architecture/decisions/ADR-003.md):
+[architectural decision text]
+
+[...additional passages...]
+
+---
+
+ARTICLE BRIEF:
+Topic: [The article topic or title]
+Focus Areas: [Specific angles, technologies, or sections to emphasise]
+Complexity: [LOW|MID|HIGH]
+Target Word Count: [approximate length]
+\`\`\`
+
+### Processing Instructions
+- Passages are ordered by relevance score (higher = more relevant)
+- Source paths indicate where the information came from in the codebase
+- Preserve code snippets and file paths exactly as they appear
+- If Focus Areas are specified, ensure those topics get dedicated sections
+
+### Your Task in KB-Augmented Mode
 - Write a COMPLETE blog article from scratch using the KB context as your
   primary source material.
 - Do NOT simply summarise the context — synthesise it into a compelling
