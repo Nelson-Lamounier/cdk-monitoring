@@ -12,7 +12,7 @@
  */
 
 import { executeResearchAgent } from '../agents/research-agent.js';
-import type { ResearchHandlerInput, WriterHandlerInput } from '../../shared/src/types.js';
+import type { ResearchHandlerInput, WriterHandlerInput } from '../../../shared/src/index.js';
 
 /**
  * Lambda handler for the Research Agent.

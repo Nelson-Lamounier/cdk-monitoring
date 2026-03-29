@@ -20,7 +20,7 @@
  * Pipeline position: Research → Writer → **QA** → Review/Flagged
  */
 
-import { runAgent, parseJsonResponse } from '../../shared/src/agent-runner.js';
+import { runAgent, parseJsonResponse } from '../../../shared/src/index.js';
 import { QA_PERSONA_SYSTEM_PROMPT } from '../prompts/qa-persona.js';
 import type {
     AgentConfig,
@@ -31,7 +31,7 @@ import type {
     QaRecommendation,
     QaValidationResult,
     WriterResult,
-} from '../../shared/src/types.js';
+} from '../../../shared/src/index.js';
 
 // =============================================================================
 // CONFIGURATION

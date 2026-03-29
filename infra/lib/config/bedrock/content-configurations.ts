@@ -63,7 +63,7 @@ export const CONTENT_CONFIGS: Record<DeployableEnvironment, ContentConfigs> = {
         },
         logRetention: logs.RetentionDays.ONE_WEEK,
         isProduction: false,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
     },
 
     [Environment.STAGING]: {

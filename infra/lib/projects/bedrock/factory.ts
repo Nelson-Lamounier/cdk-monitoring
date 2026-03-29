@@ -7,7 +7,7 @@
  * - KbStack: Bedrock Knowledge Base backed by Pinecone
  * - AgentStack: Bedrock Agent, Guardrail, Action Group
  * - ApiStack: API Gateway + Lambda for agent invocation
- * - ContentStack: MD-to-Blog pipeline (S3 event → Lambda → DynamoDB)
+ * - ContentStack: Data layer (DynamoDB table + SSM exports)
  * - PipelineStack: Multi-agent Step Functions pipeline (Research → Writer → QA)
  *
  * Stacks created:
@@ -213,9 +213,9 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         // =================================================================
         // Stack 6: Pipeline (Multi-Agent Step Functions)
         //
-        // Shadow-mode pipeline running alongside the monolith.
-        // Uses separate Lambdas per agent with Step Functions orchestration.
-        // Will replace ContentStack after validation (Phase 2c).
+        // Primary article generation pipeline. Multi-agent orchestration
+        // using separate Lambdas per agent with Step Functions.
+        // Triggered by the admin dashboard via API Gateway.
         // =================================================================
         const pipelineStack = new BedrockPipelineStack(
             scope,

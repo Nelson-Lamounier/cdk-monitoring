@@ -13,7 +13,7 @@
 import type { S3Event, S3Handler } from 'aws-lambda';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
 
-import type { PipelineContext, ResearchHandlerInput } from '../../shared/src/types.js';
+import type { PipelineContext, ResearchHandlerInput } from '../../../shared/src/index.js';
 
 // =============================================================================
 // CONFIGURATION

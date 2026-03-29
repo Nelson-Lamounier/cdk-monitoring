@@ -12,7 +12,7 @@
  */
 
 import { executeWriterAgent } from '../agents/writer-agent.js';
-import type { QaHandlerInput, WriterHandlerInput } from '../../shared/src/types.js';
+import type { QaHandlerInput, WriterHandlerInput } from '../../../shared/src/index.js';
 
 /**
  * Lambda handler for the Writer Agent.

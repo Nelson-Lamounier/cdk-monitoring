@@ -18,7 +18,7 @@ import {
 } from '@aws-sdk/client-bedrock-agent-runtime';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 
-import { runAgent, parseJsonResponse } from '../../shared/src/agent-runner.js';
+import { runAgent, parseJsonResponse } from '../../../shared/src/index.js';
 import { RESEARCH_PERSONA_SYSTEM_PROMPT } from '../prompts/research-persona.js';
 import type {
     AgentConfig,
@@ -29,7 +29,7 @@ import type {
     PipelineContext,
     PipelineMode,
     ResearchResult,
-} from '../../shared/src/types.js';
+} from '../../../shared/src/index.js';
 
 // =============================================================================
 // CONFIGURATION

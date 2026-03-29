@@ -12,7 +12,7 @@
  * Pipeline position: Research → **Writer** → QA → Review
  */
 
-import { runAgent, parseJsonResponse } from '../../shared/src/agent-runner.js';
+import { runAgent, parseJsonResponse } from '../../../shared/src/index.js';
 import { BLOG_PERSONA_SYSTEM_PROMPT } from '../prompts/blog-persona.js';
 import type {
     AgentConfig,
@@ -22,7 +22,7 @@ import type {
     ResearchResult,
     ShotListItem,
     WriterResult,
-} from '../../shared/src/types.js';
+} from '../../../shared/src/index.js';
 
 // =============================================================================
 // CONFIGURATION

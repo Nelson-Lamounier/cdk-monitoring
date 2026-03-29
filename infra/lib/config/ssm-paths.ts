@@ -486,8 +486,6 @@ export interface BedrockSsmPaths {
     readonly contentTableName: string;
     /** AI Content DynamoDB table ARN */
     readonly contentTableArn: string;
-    /** Publisher Lambda function ARN */
-    readonly publisherFunctionArn: string;
     /**
      * Shared secret for on-demand ISR cache revalidation.
      *
@@ -525,7 +523,6 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
         assetsBucketName: `${prefix}/assets-bucket-name`,
         contentTableName: `${prefix}/content-table-name`,
         contentTableArn: `${prefix}/content-table-arn`,
-        publisherFunctionArn: `${prefix}/publisher-function-arn`,
         revalidationSecret: `${prefix}/revalidation-secret`,
         wildcard: `${prefix}/*`,
     };

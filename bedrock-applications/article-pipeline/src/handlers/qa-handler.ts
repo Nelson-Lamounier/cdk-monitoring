@@ -23,7 +23,7 @@ import type {
     ArticleStatus,
     PipelineOutput,
     QaHandlerInput,
-} from '../../shared/src/types.js';
+} from '../../../shared/src/index.js';
 
 // =============================================================================
 // CONFIGURATION

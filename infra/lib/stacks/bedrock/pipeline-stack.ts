@@ -21,7 +21,7 @@
  *   - Pipeline-level cost & QA score metrics
  */
 
-import * as path from 'path';
+import * as path from 'node:path';
 
 import { NagSuppressions } from 'cdk-nag';
 
@@ -31,10 +31,11 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
-import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
+import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -142,6 +143,13 @@ export class BedrockPipelineStack extends cdk.Stack {
             encryption: sqs.QueueEncryption.SQS_MANAGED,
             removalPolicy: props.removalPolicy,
         });
+
+        NagSuppressions.addResourceSuppressions(this.pipelineDlq, [
+            {
+                id: 'AwsSolutions-SQS3',
+                reason: 'This queue IS the dead-letter queue — it does not need its own DLQ',
+            },
+        ]);
 
         // =================================================================
         // Lambda entry point path (bedrock-applications/article-pipeline/src/handlers/)
@@ -383,7 +391,7 @@ export class BedrockPipelineStack extends cdk.Stack {
             tracingEnabled: true,
             stateMachineType: sfn.StateMachineType.STANDARD,
             logs: {
-                level: sfn.LogLevel.ERROR,
+                level: sfn.LogLevel.ALL,
                 destination: new logs.LogGroup(this, 'StateMachineLogGroup', {
                     logGroupName: `/aws/vendedlogs/states/${namePrefix}-article-pipeline`,
                     retention: props.logRetention,
@@ -432,22 +440,34 @@ export class BedrockPipelineStack extends cdk.Stack {
         );
 
         // =================================================================
+        // S3 Event Notification — drafts/ prefix → Trigger Lambda
+        //
+        // When the admin uploads a .md draft to s3://bucket/drafts/,
+        // this event triggers the pipeline automatically.
+        // =================================================================
+        assetsBucket.addEventNotification(
+            s3.EventType.OBJECT_CREATED,
+            new s3n.LambdaDestination(this.triggerFunction),
+            { prefix: 'drafts/', suffix: '.md' },
+        );
+
+        // =================================================================
         // SSM — Export pipeline configuration
         // =================================================================
         new ssm.StringParameter(this, 'StateMachineArnParam', {
-            parameterName: `/bedrock/${props.environmentName}/pipeline/state-machine-arn`,
+            parameterName: `/${props.namePrefix}/pipeline-state-machine-arn`,
             stringValue: this.stateMachine.stateMachineArn,
             description: 'ARN of the article pipeline Step Functions state machine',
         });
 
         new ssm.StringParameter(this, 'PublishFunctionArnParam', {
-            parameterName: `/bedrock/${props.environmentName}/pipeline/publish-function-arn`,
+            parameterName: `/${props.namePrefix}/pipeline-publish-function-arn`,
             stringValue: this.publishFunction.functionArn,
             description: 'ARN of the Publish Handler Lambda (for admin dashboard)',
         });
 
         new ssm.StringParameter(this, 'TriggerFunctionArnParam', {
-            parameterName: `/bedrock/${props.environmentName}/pipeline/trigger-function-arn`,
+            parameterName: `/${props.namePrefix}/pipeline-trigger-function-arn`,
             stringValue: this.triggerFunction.functionArn,
             description: 'ARN of the Trigger Handler Lambda (for S3 events)',
         });
