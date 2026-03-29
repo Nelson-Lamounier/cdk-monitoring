@@ -1,0 +1,236 @@
+# =============================================================================
+# Knowledge Base ↔ Codebase Mapping
+# =============================================================================
+#
+# Maps code paths (glob patterns) to the KB documents that describe them.
+# Consumed by:
+#   - .agents/workflows/kb-sync.md  (AI agent workflow)
+#   - scripts/kb-drift-check.sh     (CI drift detection)
+#   - .github/workflows/kb-staleness-audit.yml (monthly audit)
+#
+# Conventions:
+#   - code_paths use glob syntax relative to repo root
+#   - kb_docs are relative to knowledge-base/
+#   - A change to ANY file matching a code_path triggers review of ALL listed kb_docs
+#   - Files not covered by any mapping are flagged as "unmapped" in CI
+#
+# Maintenance:
+#   - When adding a new CDK stack   → add a mapping entry here
+#   - When adding a new KB document → add it to the relevant mapping(s)
+#   - When deleting a service       → remove the mapping AND archive/delete the KB doc
+# =============================================================================
+
+mappings:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # INFRASTRUCTURE — CDK stacks, networking, security
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: "CDK Stack Architecture"
+    code_paths:
+      - "infra/lib/stacks/**/*.ts"
+      - "infra/bin/**/*.ts"
+      - "infra/lib/config/**/*.ts"
+    kb_docs:
+      - "infrastructure/stack-overview.md"
+
+  - name: "Networking & Edge"
+    code_paths:
+      - "infra/lib/stacks/kubernetes/edge-stack.ts"
+      - "infra/lib/stacks/kubernetes/base-stack.ts"
+      - "infra/lib/stacks/shared/security-baseline-stack.ts"
+    kb_docs:
+      - "infrastructure/networking-implementation.md"
+      - "infrastructure/security-implementation.md"
+      - "infrastructure/security-posture.md"
+
+  - name: "Infrastructure Topology"
+    code_paths:
+      - "infra/lib/stacks/kubernetes/control-plane-stack.ts"
+      - "infra/lib/stacks/kubernetes/app-worker-stack.ts"
+      - "infra/lib/stacks/kubernetes/argocd-worker-stack.ts"
+      - "infra/lib/stacks/kubernetes/monitoring-worker-stack.ts"
+    kb_docs:
+      - "infrastructure/infrastructure-topology.md"
+      - "infrastructure/aws-resource-inventory.md"
+
+  - name: "CDK over Terraform (ADR)"
+    code_paths:
+      - "infra/**/*.ts"
+    kb_docs:
+      - "infrastructure/adrs/cdk-over-terraform.md"
+
+  - name: "Step Functions Orchestration (ADR)"
+    code_paths:
+      - "infra/lib/stacks/self-healing/**"
+      - "infra/lib/stacks/kubernetes/ssm-automation-stack.ts"
+    kb_docs:
+      - "infrastructure/adrs/step-functions-over-lambda-orchestration.md"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # KUBERNETES — Bootstrap, GitOps, Crossplane
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: "K8s Bootstrap Pipeline"
+    code_paths:
+      - "infra/lib/stacks/kubernetes/golden-ami-stack.ts"
+      - "infra/lib/stacks/kubernetes/ssm-automation-stack.ts"
+      - "scripts/k8s-*"
+      - "scripts/bootstrap-*"
+    kb_docs:
+      - "kubernetes/bootstrap-pipeline.md"
+      - "kubernetes/bootstrap-system-scripts.md"
+
+  - name: "K8s Application Platform"
+    code_paths:
+      - "kubernetes-app/**"
+    kb_docs:
+      - "kubernetes/bootstrap-system-scripts.md"
+
+  - name: "Crossplane"
+    code_paths:
+      - "kubernetes-app/platform/charts/crossplane-providers/**"
+      - "kubernetes-app/platform/charts/crossplane-xrds/**"
+      - "infra/lib/stacks/shared/crossplane-stack.ts"
+    kb_docs:
+      - "kubernetes/crossplane-implementation.md"
+      - "kubernetes/adrs/crossplane-for-app-level-iac.md"
+
+  - name: "Argo Rollouts & Deployments"
+    code_paths:
+      - "kubernetes-app/apps/**"
+      - ".github/workflows/deploy-frontend.yml"
+      - ".github/workflows/gitops-k8s.yml"
+    kb_docs:
+      - "kubernetes/adrs/argo-rollouts-zero-downtime.md"
+      - "kubernetes/runbooks/bluegreen-rollout-stuck.md"
+
+  - name: "ArgoCD & GitOps"
+    code_paths:
+      - "kubernetes-app/platform/**"
+      - ".github/workflows/gitops-k8s.yml"
+    kb_docs:
+      - "kubernetes/adrs/argocd-over-flux.md"
+
+  - name: "Traefik Ingress"
+    code_paths:
+      - "kubernetes-app/platform/charts/monitoring/chart/templates/ingressroute*"
+      - "infra/lib/stacks/kubernetes/edge-stack.ts"
+    kb_docs:
+      - "kubernetes/adrs/traefik-over-nginx-alb.md"
+
+  - name: "Self-Managed K8s (ADR)"
+    code_paths:
+      - "infra/lib/stacks/kubernetes/**"
+    kb_docs:
+      - "kubernetes/adrs/self-managed-k8s-vs-eks.md"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # OBSERVABILITY — Monitoring, dashboards, RUM
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: "Monitoring Stack"
+    code_paths:
+      - "kubernetes-app/platform/charts/monitoring/**"
+      - "infra/lib/stacks/kubernetes/observability-stack.ts"
+    kb_docs:
+      - "observability/observability-implementation.md"
+
+  - name: "Grafana Dashboards"
+    code_paths:
+      - "kubernetes-app/platform/charts/monitoring/chart/dashboards/*.json"
+    kb_docs:
+      - "observability/frontend-performance.md"
+      - "observability/rum-dashboard-review.md"
+
+  - name: "Faro / RUM Pipeline"
+    code_paths:
+      - "kubernetes-app/platform/charts/monitoring/chart/templates/alloy*"
+      - "frontend-ops/src/lib/faro*"
+      - "frontend-ops/src/instrumentation*"
+    kb_docs:
+      - "observability/runbooks/faro-rum-no-data.md"
+      - "observability/rum-dashboard-review.md"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # AI / ML — Bedrock, Self-Healing
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: "Bedrock Content Pipeline"
+    code_paths:
+      - "infra/lib/stacks/bedrock/**"
+      - "bedrock-publisher/**"
+      - "bedrock-applications/**"
+      - "knowledge-base/**"
+      - ".github/workflows/deploy-bedrock.yml"
+      - ".github/workflows/publish-article.yml"
+    kb_docs:
+      - "ai-ml/bedrock-implementation.md"
+
+  - name: "Self-Healing Agent"
+    code_paths:
+      - "infra/lib/stacks/self-healing/**"
+    kb_docs:
+      - "ai-ml/self-healing-agent.md"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # FRONTEND — Next.js, CloudFront
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: "Frontend Integration"
+    code_paths:
+      - "frontend-ops/**"
+      - "infra/lib/stacks/kubernetes/edge-stack.ts"
+      - ".github/workflows/deploy-frontend.yml"
+      - ".github/workflows/_build-push-image.yml"
+      - ".github/workflows/_sync-assets.yml"
+    kb_docs:
+      - "frontend/frontend-integration.md"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # OPERATIONS — CI/CD, MCP Servers
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: "CI/CD & GitOps Pipelines"
+    code_paths:
+      - ".github/workflows/**"
+      - "scripts/deploy-*"
+    kb_docs:
+      - "operations/ci-cd-implementation.md"
+
+  - name: "MCP Servers"
+    code_paths:
+      - "mcp-servers/**"
+      - ".agents/**"
+    kb_docs:
+      - "operations/adrs/mcp-for-operations.md"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # FINOPS — Cost tracking
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: "Cost Breakdown"
+    code_paths:
+      - "infra/lib/stacks/**"
+      - "infra/lib/stacks/shared/finops-stack.ts"
+    kb_docs:
+      - "finops/cost-breakdown.md"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # K8s RUNBOOKS (code patterns that relate to troubleshooting)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - name: "Pod Troubleshooting"
+    code_paths:
+      - "kubernetes-app/apps/**/deployment.yaml"
+      - "kubernetes-app/apps/**/values.yaml"
+    kb_docs:
+      - "kubernetes/runbooks/pod-crashloop.md"
+
+  - name: "Instance Recovery"
+    code_paths:
+      - "infra/lib/stacks/self-healing/**"
+      - "infra/lib/stacks/kubernetes/ssm-automation-stack.ts"
+      - "infra/lib/stacks/kubernetes/golden-ami-stack.ts"
+    kb_docs:
+      - "kubernetes/runbooks/instance-terminated.md"
