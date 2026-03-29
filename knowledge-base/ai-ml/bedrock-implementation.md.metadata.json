@@ -2,7 +2,7 @@
   "metadataAttributes": {
     "doc_type": "code-analysis",
     "domain": "ai-ml",
-    "tags": "bedrock,lambda,pinecone,rag,converse-api,dynamodb,content-generation",
-    "status": "accepted"
+    "title": "Bedrock AI Content Pipeline Implementation",
+    "tags": "bedrock,step-functions,lambda,pinecone,rag,converse-api,dynamodb,content-generation,s3-event-notification,multi-agent"
   }
 }
