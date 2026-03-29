@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "code-analysis",
+    "domain": "observability",
+    "tags": "prometheus,grafana,loki,tempo,alloy,faro,alerting,monitoring",
+    "status": "accepted"
+  }
+}

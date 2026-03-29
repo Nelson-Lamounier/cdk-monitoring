@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "code-analysis",
+    "domain": "operations",
+    "tags": "github-actions,argocd,ci-cd,gitops,ssm-automation,reusable-workflows,day-1",
+    "status": "accepted"
+  }
+}

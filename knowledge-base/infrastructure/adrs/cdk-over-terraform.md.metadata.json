@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "adr",
+    "domain": "infrastructure",
+    "tags": "cdk,terraform,iac,typescript,cloudformation",
+    "status": "accepted"
+  }
+}

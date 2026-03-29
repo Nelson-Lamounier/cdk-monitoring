@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "cost",
+    "domain": "finops",
+    "tags": "cost,finops,ec2,spot,s3,cloudfront,lambda,budget",
+    "status": "accepted"
+  }
+}

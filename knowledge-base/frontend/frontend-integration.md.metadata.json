@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "code-analysis",
+    "domain": "frontend",
+    "tags": "nextjs,cloudfront,waf,argo-rollouts,bluegreen,api-gateway,traefik,ecr",
+    "status": "accepted"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "runbook",
+    "domain": "kubernetes",
+    "tags": "ec2,asg,bootstrap,self-healing,step-functions,ssm-automation,eip-failover",
+    "status": "accepted"
+  }
+}

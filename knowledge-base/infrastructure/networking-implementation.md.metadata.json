@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "code-analysis",
+    "domain": "infrastructure",
+    "tags": "vpc,security-groups,nlb,traefik,route53,cloudfront,calico,networking",
+    "status": "accepted"
+  }
+}

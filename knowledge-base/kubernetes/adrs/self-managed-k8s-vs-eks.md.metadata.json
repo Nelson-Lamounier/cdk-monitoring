@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "adr",
+    "domain": "kubernetes",
+    "tags": "kubernetes,eks,kubeadm,self-managed,cost-optimisation,ec2,golden-ami",
+    "status": "accepted"
+  }
+}

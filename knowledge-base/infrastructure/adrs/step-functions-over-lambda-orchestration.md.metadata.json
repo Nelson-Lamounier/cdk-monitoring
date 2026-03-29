@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "adr",
+    "domain": "infrastructure",
+    "tags": "step-functions,lambda,bootstrap,ssm-automation,event-driven,orchestration",
+    "status": "accepted"
+  }
+}

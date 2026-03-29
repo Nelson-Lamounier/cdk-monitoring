@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "runbook",
+    "domain": "kubernetes",
+    "tags": "argo-rollouts,bluegreen,troubleshooting,nextjs,argocd,image-updater",
+    "status": "accepted"
+  }
+}

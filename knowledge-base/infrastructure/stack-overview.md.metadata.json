@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "architecture",
+    "domain": "infrastructure",
+    "tags": "cdk,cloudformation,stack-architecture,12-stacks,aws,kubernetes,bedrock",
+    "status": "accepted"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "implementation",
+    "domain": "kubernetes",
+    "tags": "bootstrap,argocd,tls,etcd,disaster-recovery,python,shell,ssm,deploy-helpers",
+    "status": "accepted"
+  }
+}

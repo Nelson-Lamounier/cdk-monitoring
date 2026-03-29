@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "adr",
+    "domain": "operations",
+    "tags": "mcp,model-context-protocol,ai-operations,developer-tooling,kubernetes,dynamodb,ssm",
+    "status": "accepted"
+  }
+}
