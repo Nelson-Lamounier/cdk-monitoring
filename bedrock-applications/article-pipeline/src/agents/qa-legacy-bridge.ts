@@ -43,7 +43,7 @@ function requireQaModel(): string {
 }
 
 const QA_MODEL = requireQaModel();
-const QA_MAX_TOKENS = parseInt(process.env.QA_MAX_TOKENS ?? '4096', 10);
+const QA_MAX_TOKENS = parseInt(process.env.QA_MAX_TOKENS ?? '8192', 10);
 const QA_THINKING_BUDGET = parseInt(process.env.QA_THINKING_BUDGET ?? '4096', 10);
 
 // =============================================================================

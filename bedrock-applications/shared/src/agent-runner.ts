@@ -240,6 +240,18 @@ export async function runAgent<T>(options: RunAgentOptions<T>): Promise<AgentRes
     const { config, userMessage, parseResponse, pipelineContext } = options;
     const { agentName, modelId, maxTokens, thinkingBudget, systemPrompt } = config;
 
+    // =========================================================================
+    // VALIDATION: Extended Thinking requires maxTokens > budget_tokens
+    // See: https://docs.claude.com/en/docs/build-with-claude/extended-thinking
+    // =========================================================================
+    if (thinkingBudget > 0 && maxTokens <= thinkingBudget) {
+        throw new Error(
+            `[${agentName}] Invalid config: maxTokens (${maxTokens}) must be ` +
+            `strictly greater than thinkingBudget (${thinkingBudget}). ` +
+            `Hint: set maxTokens to at least ${thinkingBudget + 1024}.`,
+        );
+    }
+
     console.log(
         `[${agentName}] Starting agent execution — model=${modelId}, ` +
         `maxTokens=${maxTokens}, thinkingBudget=${thinkingBudget}, ` +

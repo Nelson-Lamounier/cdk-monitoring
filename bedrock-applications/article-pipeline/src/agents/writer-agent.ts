@@ -34,8 +34,8 @@ import type {
  */
 const WRITER_MODEL = process.env.FOUNDATION_MODEL ?? 'eu.anthropic.claude-sonnet-4-6-20260310-v1:0';
 
-/** Maximum output tokens for Writer Agent response */
-const WRITER_MAX_TOKENS = parseInt(process.env.MAX_TOKENS ?? '8192', 10);
+/** Maximum output tokens for Writer Agent response (full MDX articles need substantial headroom) */
+const WRITER_MAX_TOKENS = parseInt(process.env.MAX_TOKENS ?? '32768', 10);
 
 /** Default thinking budget (overridden by Research Agent complexity tier) */
 const DEFAULT_THINKING_BUDGET = parseInt(process.env.THINKING_BUDGET_TOKENS ?? '16000', 10);

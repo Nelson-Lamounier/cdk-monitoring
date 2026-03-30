@@ -48,7 +48,7 @@ if (!RESEARCH_MODEL) {
 }
 
 /** Maximum output tokens for Research Agent response */
-const RESEARCH_MAX_TOKENS = 4096;
+const RESEARCH_MAX_TOKENS = 8192;
 
 /** Thinking budget for Research Agent — moderate for analysis tasks */
 const RESEARCH_THINKING_BUDGET = 4096;

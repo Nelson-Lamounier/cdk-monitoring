@@ -47,8 +47,8 @@ import type {
  */
 const QA_MODEL = process.env.QA_MODEL ?? 'eu.anthropic.claude-sonnet-4-6-20260310-v1:0';
 
-/** Maximum output tokens for QA response (structured JSON, typically < 3000 tokens) */
-const QA_MAX_TOKENS = 4096;
+/** Maximum output tokens for QA response (structured JSON with dimension scores and issues) */
+const QA_MAX_TOKENS = 16384;
 
 /** Thinking budget for QA agent — moderate for evaluation + tech accuracy */
 const QA_THINKING_BUDGET = 8192;
