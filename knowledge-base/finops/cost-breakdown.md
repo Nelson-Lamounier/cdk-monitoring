@@ -14,7 +14,7 @@ tags:
 related_docs:
   - infrastructure/stack-overview.md
   - kubernetes/adrs/self-managed-k8s-vs-eks.md
-last_updated: "2026-03-22"
+last_updated: "2026-03-29"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -165,7 +165,8 @@ Lambda free tier includes 1M requests and 400,000 GB-s per month — this worklo
 
 | Indicator | Status | Evidence |
 |:---|:---|:---|
-| OpenCost | ✅ Deployed | `kubernetes-app/platform/argocd-apps/opencost.yaml` |
+| OpenCost | ✅ Deployed | `kubernetes-app/platform/argocd-apps/opencost.yaml` — **K8s cost attribution only** (on-demand pricing via AWS Price List API). Does not cover Lambda, Bedrock, DynamoDB, Reserved Instances, or Savings Plans. RI-aware pricing requires CUR → Athena integration (not configured). |
+| Bedrock EMF Cost Tracking | ✅ Implemented | `EstimatedCostUSD` metric in `BedrockPublisher` namespace — per-invocation token cost estimates via EMF logs |
 | AWS Budget Alerts | ✅ Implemented | `infra/lib/stacks/shared/finops-stack.ts`, `infra/lib/constructs/finops/budget-construct.ts` |
 | Cost tagging | ✅ Implemented | CDK `Tags.of()` applied globally in `app.ts` |
 | Right-sizing analysis | ✅ Documented | This breakdown + CloudWatch CPU/memory metrics |
@@ -182,8 +183,8 @@ Lambda free tier includes 1M requests and 400,000 GB-s per month — this worklo
 *Pricing data retrieved from AWS Price List API via aws-pricing MCP server, 2026-03-23. Converted at 1 USD = 0.92 EUR.*
 ## Summary
 
-This document provides a detailed cost analysis of the entire cdk-monitoring infrastructure, breaking down monthly spend across EC2 instances (Spot vs On-Demand), S3 storage, CloudFront distribution, Lambda functions, and supporting AWS services. It demonstrates FinOps thinking by comparing the self-managed Kubernetes cost against equivalent managed service pricing.
+This document provides a detailed cost analysis of the entire cdk-monitoring infrastructure, breaking down monthly spend across EC2 instances (Spot vs On-Demand), S3 storage, CloudFront distribution, Lambda functions, and supporting AWS services. It demonstrates FinOps thinking by comparing the self-managed Kubernetes cost against equivalent managed service pricing. OpenCost provides K8s-only cost attribution (on-demand rates); managed service costs (Lambda, Bedrock, DynamoDB) are tracked separately via AWS Cost Explorer and EMF custom metrics.
 
 ## Keywords
 
-cost, finops, ec2, spot, s3, cloudfront, lambda, budget, pricing, cost-optimisation, self-managed, eks-comparison
+cost, finops, ec2, spot, s3, cloudfront, lambda, budget, pricing, cost-optimisation, self-managed, eks-comparison, opencost, reserved-instances, emf

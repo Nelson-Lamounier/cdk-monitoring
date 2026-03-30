@@ -15,7 +15,7 @@ related_docs:
   - observability/rum-dashboard-review.md
   - observability/frontend-performance.md
   - observability/runbooks/faro-rum-no-data.md
-last_updated: "2026-03-23"
+last_updated: "2026-03-29"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -23,7 +23,7 @@ status: accepted
 # Observability Implementation — Prometheus, Grafana, CloudWatch, Loki, Tempo, Alloy
 
 **Project:** cdk-monitoring
-**Last Updated:** 2026-03-23
+**Last Updated:** 2026-03-29
 
 ## Architecture
 
@@ -32,7 +32,7 @@ Observability runs on a dedicated monitoring worker node (t3.medium Spot in deve
 The monitoring stack includes 11 services deployed via a **custom Helm chart** (`kubernetes-app/platform/charts/monitoring/chart/`), managed by ArgoCD:
 
 - **Prometheus** — metrics collection (native `scrape_configs`, not Prometheus Operator)
-- **Grafana** — dashboards (13 dashboards), alerting (11 rules), and federated datasources (6 sources)
+- **Grafana** — dashboards (14 dashboards), alerting (11 rules), and federated datasources (6 sources)
 - **Loki** — log aggregation (TSDB store, v13 schema, 7d retention in dev)
 - **Tempo** — distributed tracing with metrics generator (span-metrics → Prometheus remote write)
 - **Alloy** — Grafana Faro collector for browser Real User Monitoring (RUM)
@@ -69,7 +69,7 @@ chart/templates/
 
 Prometheus is deployed as a single-replica Deployment with native `scrape_configs` in a ConfigMap — not Prometheus Operator, not ServiceMonitor CRDs.
 
-12 scrape jobs covering the full cluster surface:
+13 scrape jobs covering the full cluster surface:
 
 | Job | Target | Discovery |
 |---|---|---|
@@ -86,6 +86,7 @@ Prometheus is deployed as a single-replica Deployment with native `scrape_config
 | `traefik` | Ingress controller | K8s SD (pod role) |
 | `nextjs-app` | Application metrics | Static |
 | `alloy` | Faro collector | Static |
+| `opencost` | FinOps cost metrics | Static |
 
 Configuration: 15d retention, 30s scrape interval, ClusterRole RBAC for cross-namespace discovery.
 
@@ -127,7 +128,7 @@ Three-pillar cross-linking:
 - **Tempo → Loki**: `tracesToLogs` configuration links traces to associated logs
 - **Tempo → Prometheus**: `serviceMap` connects service graph to metric queries
 
-13 dashboards loaded via external JSON dashboard pattern (sidecar with `grafana_dashboard: "1"` label).
+14 dashboards loaded via external JSON dashboard pattern (sidecar with `grafana_dashboard: "1"` label).
 
 ## Alerting — Grafana Unified Alerting to SNS
 
@@ -155,6 +156,19 @@ All monitoring services use standard ClusterIP services with Traefik IngressRout
 - External via Traefik: Grafana (3000), Prometheus (9090), Alloy (12347) — `ipBlock: 0.0.0.0/0` due to `hostNetwork`
 
 **ResourceQuota** (development): 1.5 CPU requests / 2Gi memory requests / 3 CPU limits / 4Gi memory limits / 6 PVCs.
+
+### Bedrock Content Pipeline Dashboard
+
+The Bedrock Content Pipeline dashboard (`bedrock-pipeline`) visualises the multi-agent article pipeline using two metric sources:
+
+1. **EMF Custom Metrics** (namespace: `BedrockPublisher`) — emitted by the Publish Lambda via structured JSON logs. Includes: `ArticlesPublished`, `ArticlesFailed`, `InputTokens`, `OutputTokens`, `ThinkingTokens`, `EstimatedCostUSD`, `TechnicalConfidence`, `QaScore`.
+2. **AWS Native Metrics** — `AWS/Lambda` (invocations, errors, duration), `AWS/Bedrock` (invocation latency, throttles), `AWS/DynamoDB` (RCU/WCU, throttles).
+
+> **Naming convention**: Bedrock resources use `bedrock-dev-*` prefix (abbreviated environment), NOT `bedrock-development-*`. Always verify against `aws lambda list-functions` or `pipeline-stack.ts`.
+
+### FinOps / OpenCost Dashboard
+
+The FinOps Cost Visibility dashboard (`finops-cost`) uses Prometheus metrics from OpenCost to provide per-namespace and per-workload cost attribution. OpenCost is deployed via ArgoCD with a static Prometheus scrape job (ServiceMonitor CRDs are not supported).
 
 ## CloudWatch
 
@@ -199,8 +213,8 @@ The `BedrockObservabilityConstruct` creates:
 - `infra/scripts/cd/deploy-monitoring-secrets.ts` — CI/CD secrets deployment pipeline
 ## Summary
 
-This document analyses the Kubernetes-native monitoring stack: Prometheus with custom Helm chart and native scrape_configs (12 jobs), Grafana with 13 dashboards and unified alerting to SNS, Loki for log aggregation, Tempo for distributed tracing, Alloy as the Faro RUM collector, and Promtail DaemonSet for pod log shipping.
+This document analyses the Kubernetes-native monitoring stack: Prometheus with custom Helm chart and native scrape_configs (13 jobs including OpenCost), Grafana with 14 dashboards and unified alerting to SNS, Loki for log aggregation, Tempo for distributed tracing, Alloy as the Faro RUM collector, and Promtail DaemonSet for pod log shipping.
 
 ## Keywords
 
-prometheus, grafana, loki, tempo, alloy, faro, alerting, monitoring, scrape-configs, dashboards, rum, promtail
+prometheus, grafana, loki, tempo, alloy, faro, alerting, monitoring, scrape-configs, dashboards, rum, promtail, opencost, finops, bedrock, emf

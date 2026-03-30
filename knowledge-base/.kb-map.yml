@@ -142,6 +142,23 @@ mappings:
     kb_docs:
       - "observability/frontend-performance.md"
       - "observability/rum-dashboard-review.md"
+      - "observability/observability-implementation.md"
+
+  - name: "OpenCost / FinOps Dashboard"
+    code_paths:
+      - "kubernetes-app/platform/argocd-apps/opencost.yaml"
+      - "kubernetes-app/platform/charts/monitoring/chart/dashboards/finops*.json"
+    kb_docs:
+      - "finops/cost-breakdown.md"
+      - "observability/observability-implementation.md"
+
+  - name: "Bedrock Dashboard"
+    code_paths:
+      - "kubernetes-app/platform/charts/monitoring/chart/dashboards/bedrock*.json"
+      - "bedrock-applications/shared/src/metrics.ts"
+    kb_docs:
+      - "observability/observability-implementation.md"
+      - "ai-ml/bedrock-implementation.md"
 
   - name: "Faro / RUM Pipeline"
     code_paths:
