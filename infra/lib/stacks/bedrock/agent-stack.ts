@@ -201,6 +201,7 @@ export class BedrockAgentStack extends cdk.Stack {
             foundationModel: agentModel,
             instruction: props.agentInstruction,
             idleSessionTTL: cdk.Duration.seconds(props.idleSessionTtlInSeconds),
+            forceDelete: true,
         });
 
         // Wire Guardrail and Knowledge Base via methods
