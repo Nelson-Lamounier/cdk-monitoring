@@ -60,13 +60,14 @@ Monitoring, logging, tracing, and real-user monitoring dashboards.
 | [RUM Dashboard Review](observability/rum-dashboard-review.md) | Implementation | Faro Web SDK: Core Web Vitals, error tracking, sessions |
 | [Faro RUM No Data](observability/runbooks/faro-rum-no-data.md) | Runbook | Fixing missing RUM data in Grafana dashboards |
 
-## AI/ML (2 documents)
+## AI/ML (3 documents)
 
-Bedrock AI content pipeline and self-healing infrastructure agent.
+Bedrock AI content pipeline, job strategist, and self-healing infrastructure agent.
 
 | Document | Type | Description |
 |:---|:---|:---|
-| [Bedrock Implementation](ai-ml/bedrock-implementation.md) | Code Analysis | Publisher Lambda, Claude Converse API, Pinecone RAG |
+| [Bedrock Implementation](ai-ml/bedrock-implementation.md) | Code Analysis | Multi-agent article pipeline: Research, Writer, QA agents |
+| [Strategist Pipeline](ai-ml/strategist-pipeline.md) | Code Analysis | Job Strategist: 3-agent JD analysis, cover letter, interview prep |
 | [Self-Healing Agent](ai-ml/self-healing-agent.md) | Code Analysis | CloudWatch → EventBridge → Bedrock tool-use remediation |
 
 ## Frontend (1 document)
@@ -106,7 +107,7 @@ Professional development, certifications, and learning methodology.
 
 ## Summary
 
-This knowledge base contains 32 documents across 8 domains, covering the full cdk-monitoring portfolio infrastructure from AWS CDK stacks through self-managed Kubernetes to AI-powered content generation and self-healing agents.
+This knowledge base contains 33 documents across 8 domains, covering the full cdk-monitoring portfolio infrastructure from AWS CDK stacks through self-managed Kubernetes to AI-powered content generation, job strategy analysis, and self-healing agents.
 
 ## Keywords
 

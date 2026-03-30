@@ -16,7 +16,8 @@ tags:
 related_docs:
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
   - ai-ml/self-healing-agent.md
-last_updated: "2026-03-29"
+  - ai-ml/strategist-pipeline.md
+last_updated: "2026-03-30"
 author: Nelson Lamounier
 status: active
 ---
@@ -24,7 +25,7 @@ status: active
 # Bedrock AI Content Pipeline Implementation
 
 **Project:** cdk-monitoring
-**Last Updated:** 2026-03-29
+**Last Updated:** 2026-03-30
 
 ## Architecture
 
@@ -110,11 +111,13 @@ The frontend (separate repository) integrates via:
 
 ## CDK Stack Architecture
 
-The pipeline is deployed as `Bedrock-Pipeline-development`, the sixth stack in the Bedrock dependency chain:
+The Article pipeline is deployed as `Bedrock-Pipeline-development`, the sixth stack in the Bedrock dependency chain:
 
 ```
-Data → Kb → Agent → Api → Content → Pipeline
+Data → KB → Agent → Api → Content → Pipeline → StrategistData → StrategistPipeline
 ```
+
+> **Note:** The Job Strategist pipeline extends this chain with 2 additional stacks. See [Strategist Pipeline](strategist-pipeline.md) for full documentation.
 
 ### Infrastructure Highlights
 

@@ -186,6 +186,18 @@ mappings:
     kb_docs:
       - "ai-ml/bedrock-implementation.md"
 
+  - name: "Job Strategist Pipeline"
+    code_paths:
+      - "bedrock-applications/job-strategist/**"
+      - "bedrock-applications/shared/src/strategist-types.ts"
+      - "infra/lib/stacks/bedrock/strategist-*.ts"
+      - "infra/lib/config/bedrock/strategist-*.ts"
+      - "infra/tests/unit/stacks/bedrock/strategist-*.test.ts"
+      - "docs/bedrock/strategist-frontend-design.md"
+    kb_docs:
+      - "ai-ml/strategist-pipeline.md"
+      - "ai-ml/bedrock-implementation.md"
+
   - name: "Self-Healing Agent"
     code_paths:
       - "infra/lib/stacks/self-healing/**"

@@ -6,7 +6,7 @@ tags:
   - cdk
   - cloudformation
   - stack-architecture
-  - 12-stacks
+  - 14-stacks
   - aws
   - kubernetes
   - bedrock
@@ -15,7 +15,7 @@ related_docs:
   - infrastructure/networking-implementation.md
   - infrastructure/security-implementation.md
   - infrastructure/infrastructure-topology.md
-last_updated: "2026-03-22"
+last_updated: "2026-03-30"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -24,9 +24,14 @@ status: accepted
 
 **Project:** cdk-monitoring
 **Author:** Nelson Lamounier
-**Last Updated:** 2026-03-22
+**Last Updated:** 2026-03-30
 
-## 12-Stack Architecture
+## Multi-Project Architecture
+
+The infrastructure is organised as two independent factory-driven projects, totalling 20 CDK stacks:
+
+- **Kubernetes Project** — 12 stacks (VPC, compute, edge, observability)
+- **Bedrock Project** — 8 stacks (AI/ML pipelines, knowledge base, API)
 
 The Kubernetes platform is deployed as 12 independent CloudFormation stacks, orchestrated by a factory pattern in `infra/lib/projects/kubernetes/factory.ts`. Stacks are decoupled through SSM parameters — no cross-stack CloudFormation exports.
 
@@ -45,6 +50,21 @@ The Kubernetes platform is deployed as 12 independent CloudFormation stacks, orc
 5. Kubernetes-API           → API Gateway + Lambda (email subscriptions)
 6. Kubernetes-Edge          → ACM + WAF + CloudFront (us-east-1), Route 53 alias
 7. Kubernetes-Observability → CloudWatch pre-deployment dashboard
+```
+
+### Bedrock Stack Dependency Graph
+
+The Bedrock AI/ML stacks are deployed as a separate project via `infra/lib/projects/bedrock/factory.ts`:
+
+```
+1. Bedrock-Data              → S3 assets bucket, DynamoDB content table
+2. Bedrock-Kb                → Bedrock Knowledge Base, Pinecone integration
+3. Bedrock-Agent             → Bedrock Agent with KB data source
+4. Bedrock-Api               → API Gateway (chatbot), Lambda handlers
+5. Bedrock-Content           → DynamoDB content pipeline table, S3 event config
+6. Bedrock-Pipeline          → Step Functions (3-agent article pipeline), 5 Lambdas
+7. Bedrock-StrategistData    → DynamoDB job strategist table + GSI
+8. Bedrock-StrategistPipeline → Step Functions (3-agent job strategist), 4 Lambdas
 ```
 
 ### Why 12 Stacks?

@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "code-analysis",
+    "domain": "ai-ml",
+    "title": "Job Strategist Multi-Agent Pipeline",
+    "tags": "bedrock,step-functions,lambda,dynamodb,multi-agent,job-application,interview-coaching,converse-api,knowledge-base,career-strategy"
+  }
+}
