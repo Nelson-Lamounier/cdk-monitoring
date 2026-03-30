@@ -19,7 +19,7 @@
  * @example
  * ```typescript
  * const result = await runAgent<ResearchResult>({
- *   config: { agentName: 'research', modelId: 'eu.anthropic.claude-haiku-3-5-...', ... },
+ *   config: { agentName: 'research', modelId: 'eu.anthropic.claude-haiku-4-5-...', ... },
  *   userMessage: 'Analyse this draft...',
  *   parseResponse: (text) => JSON.parse(text),
  *   pipelineContext: ctx,

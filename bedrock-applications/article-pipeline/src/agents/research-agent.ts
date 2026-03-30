@@ -6,7 +6,7 @@
  * retrieves context from the Bedrock Knowledge Base (Pinecone), classifies
  * content complexity, and produces a structured research brief.
  *
- * Uses Haiku 3.5 for cost efficiency — the research task is extraction
+ * Uses Haiku 4.5 for cost efficiency — the research task is extraction
  * and analysis, not creative generation.
  *
  * Pipeline position: S3 Event → **Research** → Writer → QA → Review
@@ -36,10 +36,16 @@ import type {
 // =============================================================================
 
 /**
- * Research Agent model — uses Haiku 3.5 for cost-efficient extraction.
- * Falls back to cross-region Haiku profile if not set.
+ * Research Agent model — set by CDK via RESEARCH_MODEL environment variable.
+ * Must not be hardcoded to ensure the model registry remains the single source of truth.
  */
-const RESEARCH_MODEL = process.env.RESEARCH_MODEL ?? 'eu.anthropic.claude-haiku-3-5-20241022-v1:0';
+const RESEARCH_MODEL = process.env.RESEARCH_MODEL;
+if (!RESEARCH_MODEL) {
+    throw new Error(
+        'Missing required environment variable RESEARCH_MODEL. ' +
+        'This must be set by CDK infrastructure (e.g. eu.anthropic.claude-haiku-4-5-20251001-v1:0)',
+    );
+}
 
 /** Maximum output tokens for Research Agent response */
 const RESEARCH_MAX_TOKENS = 4096;

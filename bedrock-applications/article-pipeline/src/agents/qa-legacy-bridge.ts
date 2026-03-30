@@ -15,17 +15,34 @@ import {
 } from '@aws-sdk/client-bedrock-runtime';
 
 import { QA_PERSONA_SYSTEM_PROMPT } from '../prompts/qa-persona.js';
-import { estimateInvocationCost } from '../../shared/src/metrics.js';
-import type { TokenUsage } from '../../shared/src/metrics.js';
+import { estimateInvocationCost } from '../../../shared/src/metrics.js';
+import type { TokenUsage } from '../../../shared/src/metrics.js';
 
 // Re-export types for the monolith
-export type { QaValidationResult, QaRecommendation, QaIssue, IssueSeverity, DimensionResult } from '../../shared/src/types.js';
+export type { QaValidationResult, QaRecommendation, QaIssue, IssueSeverity, DimensionResult } from '../../../shared/src/types.js';
 
 // =============================================================================
 // CONFIGURATION
 // =============================================================================
 
-const QA_MODEL = process.env.QA_MODEL ?? 'eu.anthropic.claude-haiku-3-5-20241022-v1:0';
+/**
+ * Validates and returns the QA_MODEL environment variable.
+ *
+ * @returns The validated model identifier
+ * @throws {Error} If the environment variable is not set
+ */
+function requireQaModel(): string {
+    const model = process.env.QA_MODEL;
+    if (!model) {
+        throw new Error(
+            'Missing required environment variable QA_MODEL. ' +
+            'This must be set by CDK infrastructure (e.g. eu.anthropic.claude-haiku-4-5-20251001-v1:0)',
+        );
+    }
+    return model;
+}
+
+const QA_MODEL = requireQaModel();
 const QA_MAX_TOKENS = parseInt(process.env.QA_MAX_TOKENS ?? '4096', 10);
 const QA_THINKING_BUDGET = parseInt(process.env.QA_THINKING_BUDGET ?? '4096', 10);
 
@@ -75,7 +92,7 @@ interface StageTimer {
 // LEGACY FUNCTION
 // =============================================================================
 
-import type { QaValidationResult } from '../../shared/src/types.js';
+import type { QaValidationResult } from '../../../shared/src/types.js';
 
 const bedrockClient = new BedrockRuntimeClient({});
 

@@ -112,7 +112,7 @@ export interface AgentConfig {
     /** Agent identifier for logging and metrics */
     readonly agentName: AgentName;
 
-    /** Bedrock model ID (e.g. 'eu.anthropic.claude-haiku-3-5-20241022-v1:0') */
+    /** Bedrock model ID (e.g. 'eu.anthropic.claude-haiku-4-5-20251001-v1:0') */
     readonly modelId: string;
 
     /** Maximum output tokens for the Converse API call */
