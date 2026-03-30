@@ -56,8 +56,7 @@ security-reports/
 # ── AI Tooling ───────────────────────────────────────────────────────────────
 .gemini/
 .agent/
-.agents/rules/
-.agents/agents/
+.agents/
 
 # ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
