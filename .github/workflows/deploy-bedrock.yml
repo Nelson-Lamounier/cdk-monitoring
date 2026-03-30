@@ -9,7 +9,7 @@
 #   5. Bedrock-Content            — DynamoDB table + legacy monolith publisher
 #   6. Bedrock-Pipeline           — Multi-agent Step Functions (Research → Writer → QA)
 #   7. Bedrock-Strategist-Data    — Job Strategist DynamoDB table
-#   8. Bedrock-Strategist-Pipeline — Job Strategist pipeline (Research → Strategist → Coach)
+#   8. Bedrock-Strategist-Pipeline — Job Strategist (Analysis SM + Coaching SM)
 #
 # For KB document syncing (without deploying stacks), use sync-kb-docs.yml.
 
@@ -182,10 +182,12 @@ jobs:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # ===========================================================================
-  # Stack 8: Strategist Pipeline (Multi-Agent Step Functions)
-  # Depends on: Data (S3 bucket) + Strategist Data (DynamoDB) + Content (resume)
+  # Stack 8: Strategist Pipeline (Iterative Two-Pipeline Step Functions)
+  # Depends on: Data (S3) + Strategist Data (DynamoDB) + Content (resume)
   #
-  # 3-agent pipeline: Research → Strategist → Interview Coach.
+  # 2 state machines:
+  #   Analysis SM: Research → Strategist → AnalysisPersist
+  #   Coaching SM: CoachLoader → Coach
   # Application code: bedrock-applications/job-strategist/
   # ===========================================================================
   deploy-strategist-pipeline:
