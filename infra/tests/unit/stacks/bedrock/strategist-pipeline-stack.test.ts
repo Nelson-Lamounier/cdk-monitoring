@@ -61,7 +61,7 @@ const DEFAULT_PROPS: StrategistPipelineStackProps = {
     namePrefix: NAME_PREFIX,
     assetsBucketName: TEST_BUCKET_NAME,
     tableName: TABLE_NAME,
-    researchModel: 'eu.anthropic.claude-haiku-3-5-20241022-v1:0',
+    researchModel: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
     strategistModel: 'eu.anthropic.claude-sonnet-4-6-20260313-v1:0',
     strategistMaxTokens: 16384,
     strategistThinkingBudgetTokens: 8192,
