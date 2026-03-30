@@ -27,6 +27,7 @@
     { "path": "shared" },
     { "path": "article-pipeline" },
     { "path": "self-healing" },
-    { "path": "chatbot" }
+    { "path": "chatbot" },
+    { "path": "job-strategist" }
   ]
 }

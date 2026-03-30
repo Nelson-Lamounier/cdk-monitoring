@@ -104,6 +104,14 @@ export const MODELS = {
     /** Strands agent: K8s diagnosis and remediation */
     SELF_HEALING_AGENT: CLAUDE_SONNET_4_6,
 
+    // ── Job Strategist Pipeline ─────────────────────────────────
+    /** Research agent: KB retrieval, resume parsing, gap analysis */
+    JOB_STRATEGIST_RESEARCH: CLAUDE_HAIKU_3_5,
+    /** Strategist agent: strategy generation, document crafting */
+    JOB_STRATEGIST_WRITER: CLAUDE_SONNET_4_6,
+    /** Interview Coach agent: stage-specific preparation */
+    JOB_STRATEGIST_COACH: CLAUDE_HAIKU_4_5,
+
     // ── Knowledge Base ──────────────────────────────────────────
     /** Document embedding for Pinecone vector store */
     KB_EMBEDDINGS: TITAN_EMBED_TEXT_V2,

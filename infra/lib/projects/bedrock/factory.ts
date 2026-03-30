@@ -2,13 +2,15 @@
  * @format
  * Bedrock Project Factory
  *
- * Creates the Amazon Bedrock Agent infrastructure using a 6-stack architecture:
+ * Creates the Amazon Bedrock Agent infrastructure using an 8-stack architecture:
  * - DataStack: S3 bucket for content pipeline documents
  * - KbStack: Bedrock Knowledge Base backed by Pinecone
  * - AgentStack: Bedrock Agent, Guardrail, Action Group
  * - ApiStack: API Gateway + Lambda for agent invocation
  * - ContentStack: Data layer (DynamoDB table + SSM exports)
  * - PipelineStack: Multi-agent Step Functions pipeline (Research → Writer → QA)
+ * - StrategistDataStack: Job strategist data layer (DynamoDB)
+ * - StrategistPipelineStack: Job strategist pipeline (Research → Strategist → Coach)
  *
  * Stacks created:
  * - Bedrock-Data-{environment}
@@ -17,6 +19,8 @@
  * - Bedrock-Api-{environment}
  * - Bedrock-Content-{environment}
  * - Bedrock-Pipeline-{environment}
+ * - Bedrock-Strategist-Data-{environment}
+ * - Bedrock-Strategist-Pipeline-{environment}
  */
 
 import * as cdk from 'aws-cdk-lib/core';
@@ -26,6 +30,8 @@ import { getBedrockConfigs } from '../../config/bedrock/configurations';
 import { getContentConfigs } from '../../config/bedrock/content-configurations';
 import { getPipelineAllocations } from '../../config/bedrock/pipeline-allocations';
 import { getPipelineConfigs } from '../../config/bedrock/pipeline-configurations';
+import { getStrategistAllocations } from '../../config/bedrock/strategist-allocations';
+import { getStrategistConfigs } from '../../config/bedrock/strategist-configurations';
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
 import {
@@ -40,6 +46,8 @@ import {
     BedrockApiStack,
     AiContentStack,
     BedrockPipelineStack,
+    StrategistDataStack,
+    StrategistPipelineStack,
 } from '../../stacks/bedrock';
 import { stackId, flatName } from '../../utilities/naming';
 
@@ -81,6 +89,8 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         const contentConfigs = getContentConfigs(this.environment);
         const pipelineAllocs = getPipelineAllocations(this.environment);
         const pipelineConfigs = getPipelineConfigs(this.environment);
+        const strategistAllocs = getStrategistAllocations(this.environment);
+        const strategistConfigs = getStrategistConfigs(this.environment);
 
         // CDK environment: resolved from env vars via config
         const env = cdkEnvironment(this.environment);
@@ -248,7 +258,71 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         pipelineStack.addDependency(dataStack);
         pipelineStack.addDependency(contentStack); // Uses contentStack's DynamoDB table
 
-        const stacks: cdk.Stack[] = [dataStack, kbStack, agentStack, apiStack, contentStack, pipelineStack];
+        // =================================================================
+        // Stack 7: Strategist Data (DynamoDB for job applications)
+        //
+        // Stateful resources for the job strategist pipeline.
+        // Independent lifecycle from pipeline Lambdas.
+        // =================================================================
+        const strategistDataStack = new StrategistDataStack(
+            scope,
+            stackId(this.namespace, 'Strategist-Data', this.environment),
+            {
+                namePrefix,
+                assetsBucketName: dataStack.bucketName,
+                removalPolicy: strategistConfigs.removalPolicy,
+                environmentName: this.environment,
+                env,
+            }
+        );
+        strategistDataStack.addDependency(dataStack);
+
+        // =================================================================
+        // Stack 8: Strategist Pipeline (Multi-Agent Step Functions)
+        //
+        // 3-agent pipeline: Research → Strategist → Interview Coach.
+        // Triggered by the admin dashboard via API Gateway.
+        // =================================================================
+        const strategistPipelineStack = new StrategistPipelineStack(
+            scope,
+            stackId(this.namespace, 'Strategist-Pipeline', this.environment),
+            {
+                namePrefix,
+                assetsBucketName: dataStack.bucketName,
+                tableName: strategistDataStack.tableName,
+                researchModel: strategistAllocs.research.modelId,
+                strategistModel: strategistAllocs.strategist.modelId,
+                strategistMaxTokens: strategistAllocs.strategist.maxTokens,
+                strategistThinkingBudgetTokens: strategistAllocs.strategist.thinkingBudgetTokens,
+                coachModel: strategistAllocs.interviewCoach.modelId,
+                coachMaxTokens: strategistAllocs.interviewCoach.maxTokens,
+                coachThinkingBudgetTokens: strategistAllocs.interviewCoach.thinkingBudgetTokens,
+                agentLambdaMemoryMb: strategistAllocs.lambda.agentMemoryMb,
+                agentLambdaTimeoutSeconds: strategistAllocs.lambda.agentTimeoutSeconds,
+                triggerLambdaMemoryMb: strategistAllocs.lambda.triggerMemoryMb,
+                logRetention: strategistConfigs.logRetention,
+                removalPolicy: strategistConfigs.removalPolicy,
+                knowledgeBaseId: kbStack.knowledgeBaseId,
+                knowledgeBaseArn: kbStack.knowledgeBaseArn,
+                environmentName: this.environment,
+                contentTableName: contentStack.tableName,
+                env,
+            }
+        );
+        strategistPipelineStack.addDependency(dataStack);
+        strategistPipelineStack.addDependency(strategistDataStack);
+        strategistPipelineStack.addDependency(contentStack); // Resume source
+
+        const stacks: cdk.Stack[] = [
+            dataStack,
+            kbStack,
+            agentStack,
+            apiStack,
+            contentStack,
+            pipelineStack,
+            strategistDataStack,
+            strategistPipelineStack,
+        ];
 
         cdk.Annotations.of(scope).addInfo(
             `Bedrock factory created ${stacks.length} stacks for ${this.environment}`,
@@ -263,6 +337,8 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 api: apiStack,
                 content: contentStack,
                 pipeline: pipelineStack,
+                strategistData: strategistDataStack,
+                strategistPipeline: strategistPipelineStack,
             },
         };
     }

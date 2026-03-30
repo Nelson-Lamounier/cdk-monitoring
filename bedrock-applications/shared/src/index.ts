@@ -88,3 +88,46 @@ export type { LogLevel, LogFunction } from './logger.js';
 export { emitEmfMetric } from './emf.js';
 
 export type { EmfMetricEntry } from './emf.js';
+
+// ─── Strategist Pipeline Types ───────────────────────────────────────────────
+export type {
+    // Domain types
+    InterviewStage,
+    ApplicationStatus,
+    FitRating,
+    ApplicationRecommendation,
+    SkillDepth,
+    GapType,
+    GapSeverity,
+
+    // Pipeline context
+    StrategistPipelineContext,
+
+    // Research Agent
+    VerifiedMatch,
+    PartialMatch,
+    SkillGap,
+    JobRequirement,
+    TechnologyInventory,
+    ExperienceSignals,
+    StrategistResearchResult,
+
+    // Strategist Agent
+    StrategistAnalysisResult,
+
+    // Interview Coach
+    InterviewQuestion,
+    DifficultQuestion,
+    TechnicalPrepItem,
+    QuestionToAsk,
+    InterviewCoachResult,
+
+    // DynamoDB Entity
+    JobApplicationRecord,
+
+    // Step Functions state shapes
+    StrategistResearchHandlerInput,
+    StrategistWriterHandlerInput,
+    StrategistCoachHandlerInput,
+    StrategistPipelineOutput,
+} from './strategist-types.js';

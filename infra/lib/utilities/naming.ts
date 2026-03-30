@@ -55,6 +55,8 @@ export const STACK_REGISTRY = {
         api: 'Api',
         content: 'Content',
         pipeline: 'Pipeline',
+        strategistData: 'Strategist-Data',
+        strategistPipeline: 'Strategist-Pipeline',
     },
     selfHealing: {
         gateway: 'Gateway',

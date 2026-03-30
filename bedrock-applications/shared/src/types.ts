@@ -92,9 +92,14 @@ export interface PipelineContext {
 // =============================================================================
 
 /**
- * Agent name identifiers for the lean 3-agent pipeline.
+ * Agent name identifiers for all Bedrock pipelines.
+ *
+ * Includes both the article pipeline (research/writer/qa) and the
+ * Job Strategist pipeline (strategist-research/strategist-writer/strategist-coach).
  */
-export type AgentName = 'research' | 'writer' | 'qa';
+export type AgentName =
+    | 'research' | 'writer' | 'qa'
+    | 'strategist-research' | 'strategist-writer' | 'strategist-coach';
 
 /**
  * Model-agnostic configuration for a single agent.
