@@ -14,6 +14,8 @@ tags:
   - s3-event-notification
   - multi-agent
   - model-registry
+  - error-handling
+  - dynamodb-update-item
 related_docs:
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
   - ai-ml/self-healing-agent.md
@@ -53,6 +55,7 @@ Admin Approve/Reject (Lambda.invoke)
 | Status | Written by | When |
 |--------|-----------|------|
 | `processing` | Trigger Lambda | Draft uploaded to S3 |
+| `failed` | SM DynamoUpdateItem Catch | Any Lambda task error during pipeline execution |
 | `review` | QA Handler | Pipeline completes (all 3 agents finish) |
 | `published` | Publish Lambda | Admin approves |
 | `rejected` | Publish Lambda | Admin rejects |
@@ -123,6 +126,7 @@ Data → KB → Agent → Api → Content → Pipeline → StrategistData → St
 ### Infrastructure Highlights
 
 - **Step Functions**: Standard workflow with Lambda task integrations for each agent
+- **Error handling**: SF-native `Catch → DynamoUpdateItem → Fail` chain writes `status='failed'` and `errorMessage` to DDB on task failure
 - **Dead Letter Queue**: SQS DLQ with 14-day retention for failed executions
 - **S3 Event Notification**: `OBJECT_CREATED` on `drafts/*.md` → Trigger Lambda
 - **Logging**: Step Functions `ALL` log level; each Lambda has a dedicated CloudWatch log group
@@ -159,8 +163,8 @@ Data → KB → Agent → Api → Content → Pipeline → StrategistData → St
 
 ## Summary
 
-This document analyses the Bedrock multi-agent content pipeline that transforms draft markdown articles into polished MDX portfolio content using three specialised AI agents (Research, Writer, QA) orchestrated by AWS Step Functions. The pipeline is triggered automatically via S3 event notifications, tracks article status through a `processing → review → published/rejected` lifecycle in DynamoDB, and provides a Publish Lambda for admin approve/reject actions with ISR revalidation.
+This document analyses the Bedrock multi-agent content pipeline that transforms draft markdown articles into polished MDX portfolio content using three specialised AI agents (Research, Writer, QA) orchestrated by AWS Step Functions. The pipeline is triggered automatically via S3 event notifications, tracks article status through a `processing → failed → review → published/rejected` lifecycle in DynamoDB, and provides a Publish Lambda for admin approve/reject actions with ISR revalidation. SF-native DynamoUpdateItem error handlers ensure pipeline failures are immediately written to DDB as `status='failed'`, preventing stuck processing records.
 
 ## Keywords
 
-bedrock, step-functions, lambda, pinecone, rag, converse-api, dynamodb, content-generation, claude, mdx, publishing, s3-trigger, multi-agent, event-driven, pipeline, article-lifecycle
+bedrock, step-functions, lambda, pinecone, rag, converse-api, dynamodb, content-generation, claude, mdx, publishing, s3-trigger, multi-agent, event-driven, pipeline, article-lifecycle, error-handling, dynamodb-update-item, catch-handler, model-registry

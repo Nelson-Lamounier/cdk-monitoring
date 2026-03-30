@@ -20,6 +20,8 @@ tags:
   - cachePoint
   - zod-validation
   - runtime-type-safety
+  - error-handling
+  - dynamodb-update-item
 related_docs:
   - ai-ml/bedrock-implementation.md
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
@@ -219,6 +221,7 @@ Throws a descriptive error if no analysis exists, directing the user to run the 
 | Status | Written by | Trigger |
 |--------|-----------|---------|
 | `analysing` | Trigger Lambda | User submits JD (operation='analyse') |
+| `failed` | SM DynamoUpdateItem Catch | Any Lambda task error in Analysis or Coaching SM |
 | `analysis-ready` | Analysis Persist Handler | Analysis Pipeline completes |
 | `interviewing` | Coach Handler | User requests coaching (operation='coach') |
 | `applied` | Admin action | Application submitted |
@@ -275,11 +278,17 @@ Throws a descriptive error if no analysis exists, directing the user to run the 
 
 ```
 APPLICATION#acme-sre → METADATA        (analysing → analysis-ready → interviewing)
+                                        (→ failed, on any SM task error)
                      → ANALYSIS#<id1>   (versioned — first analysis run)
                      → ANALYSIS#<id2>   (versioned — re-analysis after resume update)
                      → INTERVIEW#phone  (coaching for phone screen stage)
                      → INTERVIEW#onsite (coaching for onsite interview stage)
 ```
+
+When a Step Functions task fails, the SM Catch block writes `status='failed'` and
+`errorMessage` to the METADATA record via a native `DynamoUpdateItem` task before
+transitioning to a `Fail` state. The `gsi1pk` is updated to `APP_STATUS#failed`,
+enabling GSI queries for all failed applications.
 
 ## CDK Stack Architecture
 
@@ -304,7 +313,7 @@ Data → KB → Agent → Api → Content → Pipeline → StrategistData → St
 | Test Suite | Tests | Coverage |
 |-----------|-------|---------|
 | `strategist-data-stack.test.ts` | 23 | DynamoDB schema, GSI, SSM, grants, removal policy |
-| `strategist-pipeline-stack.test.ts` | 45 | 6 Lambdas, 2 SMs, env vars, SQS, IAM, 3 SSM params |
+| `strategist-pipeline-stack.test.ts` | 48 | 6 Lambdas, 2 SMs, env vars, SQS, IAM, 3 SSM params, DDB error handlers |
 
 ## Frontend Integration Design
 
@@ -429,6 +438,18 @@ const techInv = research.technologyInventory;
 
 **Fix:** Removed `CLAUDE_HAIKU_3_5` entirely from `model-registry.ts`. Migrated both Research agent role assignments to `CLAUDE_HAIKU_4_5` (`eu.anthropic.claude-haiku-4-5-20251001-v1:0`), which has a verified EU cross-region inference profile. Removed the stale Haiku 3.5 pricing entry from `shared/src/metrics.ts`.
 
+---
+
+### Pipeline failures leave DDB METADATA stuck at processing/analysing
+
+**What happened:** When any Lambda task (Research, Strategist, Coach, etc.) threw an error during Step Functions execution, the SM caught the error and transitioned to a `Fail` state, but the DynamoDB METADATA record was never updated. The record remained permanently stuck at its last status (`processing`, `analysing`, `coaching`), causing the frontend polling to time out.
+
+**Why:** The original SM definition had Catch blocks that routed directly to `Fail` states without writing error status to DynamoDB first. The frontend relied on DDB polling for status updates, so a SM-level failure was invisible to the user.
+
+**Fix:** Implemented SF-native `Catch → DynamoUpdateItem → Fail` chains on all three state machines (Article Pipeline, Analysis SM, Coaching SM). Each `DynamoUpdateItem` task writes `status='failed'`, `errorMessage` (from `$.error.Cause`), and `gsi1pk = STATUS#failed` / `APP_STATUS#failed` to the METADATA record before the SM enters the `Fail` state. Uses `resultPath: '$.error'` to preserve original pipeline context for dynamic DDB key resolution. Zero additional Lambdas — fully infrastructure-level error handling.
+
+Affected files: `pipeline-stack.ts`, `strategist-pipeline-stack.ts`, `strategist-pipeline-stack.test.ts` (3 new test assertions).
+
 ## Transferable Skills Demonstrated
 
 - **Iterative multi-agent AI orchestration** — Designing a two-pipeline architecture where analysis and coaching execute independently, enabling iterative refinement at each application lifecycle stage.
@@ -442,8 +463,8 @@ const techInv = research.technologyInventory;
 
 ## Summary
 
-This document analyses the Job Strategist multi-agent pipeline — an iterative, stage-driven AI application that uses two independent Step Functions state machines to separate resume analysis from interview coaching. The Analysis Pipeline (Research → Strategist → AnalysisPersist) produces comprehensive application strategies using a 5-phase framework. The Coaching Pipeline (CoachLoader → Coach) generates stage-specific interview preparation by loading existing analysis from DynamoDB. Two Claude models (Haiku 4.5 for research/coaching, Sonnet 4.6 for strategy) are strategically assigned from a centralised model registry based on reasoning requirements. All handler external boundaries are Zod-validated — no unsafe `as` casts on user input, DynamoDB records, or environment variables. The pipeline is deployed as 2 CDK stacks (StrategistData + StrategistPipeline) with 6 Lambda functions, 68 unit tests, and 5 SSM parameter exports wired to the Next.js frontend via K8s secrets.
+This document analyses the Job Strategist multi-agent pipeline — an iterative, stage-driven AI application that uses two independent Step Functions state machines to separate resume analysis from interview coaching. The Analysis Pipeline (Research → Strategist → AnalysisPersist) produces comprehensive application strategies using a 5-phase framework. The Coaching Pipeline (CoachLoader → Coach) generates stage-specific interview preparation by loading existing analysis from DynamoDB. Two Claude models (Haiku 4.5 for research/coaching, Sonnet 4.6 for strategy) are strategically assigned from a centralised model registry based on reasoning requirements. All handler external boundaries are Zod-validated — no unsafe `as` casts on user input, DynamoDB records, or environment variables. Both SMs use SF-native DynamoUpdateItem error handlers that write `status='failed'` to DDB on any task failure, ensuring the frontend immediately reflects pipeline errors. The pipeline is deployed as 2 CDK stacks (StrategistData + StrategistPipeline) with 6 Lambda functions, 71 unit tests, and 5 SSM parameter exports wired to the Next.js frontend via K8s secrets.
 
 ## Keywords
 
-bedrock, step-functions, lambda, dynamodb, multi-agent, job-application, interview-coaching, converse-api, knowledge-base, career-strategy, gap-analysis, cover-letter, resume-tailoring, claude, strategist, iterative-pipeline, two-pipeline, analysis-persist, coach-loader, prompt-engineering, extended-thinking, haiku, sonnet, null-safety, defensive-parsing, cachePoint, system-content-block, zod, runtime-validation, model-registry, import-path-resolution
+bedrock, step-functions, lambda, dynamodb, multi-agent, job-application, interview-coaching, converse-api, knowledge-base, career-strategy, gap-analysis, cover-letter, resume-tailoring, claude, strategist, iterative-pipeline, two-pipeline, analysis-persist, coach-loader, prompt-engineering, extended-thinking, haiku, sonnet, null-safety, defensive-parsing, cachePoint, system-content-block, zod, runtime-validation, model-registry, import-path-resolution, error-handling, dynamodb-update-item, catch-handler, fail-fast
