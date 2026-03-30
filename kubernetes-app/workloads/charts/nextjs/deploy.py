@@ -193,6 +193,9 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
         "agent-api-key": "BEDROCK_AGENT_API_KEY",
         "revalidation-secret": "REVALIDATION_SECRET",
         "pipeline-publish-function-arn": "PUBLISH_LAMBDA_ARN",
+        # Job Strategist pipeline (Stacks 7 & 8)
+        "strategist-table-name": "STRATEGIST_TABLE_NAME",
+        "strategist-trigger-function-arn": "STRATEGIST_TRIGGER_ARN",
     }
     for param_suffix, env_var in _BEDROCK_AGENT_PARAMS.items():
         bedrock_path = f"/bedrock-{cfg.short_env}/{param_suffix}"
@@ -238,6 +241,9 @@ _NEXTJS_SECRET_KEYS = [
     "REVALIDATION_SECRET",
     "SSM_BEDROCK_PREFIX",
     "PUBLISH_LAMBDA_ARN",
+    # Job Strategist pipeline
+    "STRATEGIST_TABLE_NAME",
+    "STRATEGIST_TRIGGER_ARN",
 ]
 
 
