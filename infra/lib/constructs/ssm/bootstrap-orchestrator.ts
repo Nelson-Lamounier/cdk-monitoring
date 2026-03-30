@@ -436,10 +436,14 @@ def handler(event, context):
             resultPath: `$.${id}Result`,
         });
 
-        // Initialise poll counter to 0
-        const initCounter = new sfn.Pass(this, `${id}InitCount`, {
-            result: sfn.Result.fromObject({ count: 0 }),
-            resultPath: pollCountPath,
+        // Initialise poll counter to { value: 0 }
+        // Uses CustomState for consistency with IncrCount (same CDK synthesis workaround)
+        const initCounter = new sfn.CustomState(this, `${id}InitCount`, {
+            stateJson: {
+                Type: 'Pass',
+                Result: { value: 0 },
+                ResultPath: pollCountPath,
+            },
         });
 
         const waitStep = new sfn.Wait(this, `${id}Wait`, {
@@ -461,14 +465,27 @@ def handler(event, context):
             resultPath: `$.${id}Status`,
         });
 
-        // Increment poll counter using States.MathAdd intrinsic
-        const incrPollCount = new sfn.Pass(this, `${id}IncrCount`, {
-            resultPath: pollCountPath,
-            parameters: {
-                'count.$': sfn.JsonPath.mathAdd(
-                    sfn.JsonPath.numberAt(`${pollCountPath}.count`),
-                    1,
-                ),
+        /**
+         * Increment poll counter using States.MathAdd intrinsic.
+         *
+         * Uses {@link sfn.CustomState} instead of {@link sfn.Pass} with `parameters`
+         * because CDK's token resolution chain corrupts the synthesised ASL:
+         *   - `sfn.JsonPath.numberAt()` inside `sfn.JsonPath.mathAdd()` drops the
+         *     path suffix (e.g. `.count`), producing `States.MathAdd($.X, 1)`
+         *     instead of `States.MathAdd($.X.count, 1)`.
+         *   - The `'key.$'` notation in `parameters` is emitted as a literal key
+         *     name (`count.$`) rather than a JSONPath assignment (`count`).
+         *
+         * Raw ASL via CustomState bypasses both issues.
+         * @see https://github.com/aws/aws-cdk/issues/23387
+         */
+        const incrPollCount = new sfn.CustomState(this, `${id}IncrCount`, {
+            stateJson: {
+                Type: 'Pass',
+                Parameters: {
+                    'value.$': `States.MathAdd(${pollCountPath}.value, 1)`,
+                },
+                ResultPath: pollCountPath,
             },
         });
 
@@ -487,7 +504,7 @@ def handler(event, context):
         // Check poll count before looping back to wait
         const checkTimeout = new sfn.Choice(this, `${id}CheckTimeout`)
             .when(
-                sfn.Condition.numberGreaterThanEquals(`${pollCountPath}.count`, MAX_POLL_ITERATIONS),
+                sfn.Condition.numberGreaterThanEquals(`${pollCountPath}.value`, MAX_POLL_ITERATIONS),
                 timeoutState,
             )
             .otherwise(waitStep);
