@@ -59,6 +59,7 @@ jobs:
       any-tests: ${{ steps.filter.outputs.any-tests }}
       k8s-content: ${{ steps.filter.outputs.k8s-content }}
       frontend-ops: ${{ steps.filter.outputs.frontend-ops }}
+      kb-content: ${{ steps.filter.outputs.kb-content }}
       # Computed: should we run all tests?
       run-all: ${{ steps.compute.outputs.run-all }}
 

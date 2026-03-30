@@ -274,6 +274,17 @@ function findBehaviourByPattern(
 }
 
 /**
+ * Check if a cookie name contains wildcard characters.
+ * Extracted to module level to avoid conditionals inside it() blocks.
+ *
+ * @param cookie - The cookie name string
+ * @returns true if the cookie contains '*' or '?'
+ */
+function isWildcardCookie(cookie: string): boolean {
+    return cookie.includes('*') || cookie.includes('?');
+}
+
+/**
  * Check if kubectl is available and connected to a cluster.
  *
  * @returns true if kubectl can reach a cluster, false otherwise
@@ -526,12 +537,16 @@ describe('CloudFront — Auth Cookie Forwarding', () => {
     /** Map of auth-sensitive pattern → resolved OriginRequestPolicyConfig */
     let authOriginRequestPolicies: Map<string, OriginRequestPolicyConfig>;
 
+    /** Map of auth-sensitive pattern → wildcard cookies found (pre-computed) */
+    let authOriginRequestWildcards: Map<string, string[]>;
+
     /** CachePolicyConfig for the /api/* catch-all */
     let apiCatchallCachePolicy: CachePolicyConfig | undefined;
 
     beforeAll(async () => {
         authCachePolicies = new Map();
         authOriginRequestPolicies = new Map();
+        authOriginRequestWildcards = new Map();
 
         // Resolve CachePolicy and OriginRequestPolicy for each auth-sensitive behaviour
         for (const behaviour of behaviours) {
@@ -570,6 +585,13 @@ describe('CloudFront — Auth Cookie Forwarding', () => {
                 }
             }
         }
+
+        // Pre-compute wildcard cookies for each auth-sensitive pattern (Rule 11)
+        for (const pattern of AUTH_SENSITIVE_PATTERNS) {
+            const policy = authOriginRequestPolicies.get(pattern);
+            const cookies = policy?.CookiesConfig?.Cookies?.Items ?? [];
+            authOriginRequestWildcards.set(pattern, cookies.filter(isWildcardCookie));
+        }
     }, 30_000);
 
     it.each(
@@ -590,11 +612,9 @@ describe('CloudFront — Auth Cookie Forwarding', () => {
     it.each(
         Array.from(AUTH_SENSITIVE_PATTERNS).map((pattern) => ({ pattern })),
     )('should have no wildcard cookies in OriginRequestPolicy for "$pattern"', ({ pattern }) => {
-        const policy = authOriginRequestPolicies.get(pattern);
-        expect(policy).toBeDefined();
-        const cookies = policy!.CookiesConfig?.Cookies?.Items ?? [];
-        const wildcardCookies = cookies.filter((c) => c.includes('*') || c.includes('?'));
-        expect(wildcardCookies).toHaveLength(0);
+        const wildcards = authOriginRequestWildcards.get(pattern);
+        expect(wildcards).toBeDefined();
+        expect(wildcards!).toHaveLength(0);
     });
 
     it('should list all auth-sensitive patterns BEFORE the /api/* catch-all', () => {
