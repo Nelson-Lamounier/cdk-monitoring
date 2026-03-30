@@ -81,6 +81,103 @@ export type GapType = 'hard' | 'soft';
  */
 export type GapSeverity = 'blocking' | 'significant' | 'minor';
 
+/**
+ * Pipeline operation type — determines which state machine branch to execute.
+ *
+ * - `analyse`: Research → Strategist → Persist (resume tailoring, gap analysis, cover letter)
+ * - `coach`: Load Analysis → Coach → Persist (stage-specific interview preparation)
+ */
+export type PipelineOperation = 'analyse' | 'coach';
+
+// =============================================================================
+// STRUCTURED RESUME DATA
+// =============================================================================
+
+/**
+ * Profile/contact information from the resume.
+ */
+export interface ResumeProfile {
+    readonly name: string;
+    readonly title: string;
+    readonly email: string;
+    readonly location: string;
+    readonly linkedin?: string;
+    readonly github?: string;
+    readonly website?: string;
+}
+
+/**
+ * A single professional experience entry.
+ */
+export interface ResumeExperience {
+    readonly company: string;
+    readonly title: string;
+    readonly period: string;
+    readonly highlights: string[];
+}
+
+/**
+ * A skill category with grouped skills.
+ */
+export interface ResumeSkillCategory {
+    readonly category: string;
+    readonly skills: string[];
+}
+
+/**
+ * Education entry.
+ */
+export interface ResumeEducation {
+    readonly degree: string;
+    readonly institution: string;
+    readonly period: string;
+}
+
+/**
+ * Certification entry.
+ */
+export interface ResumeCertification {
+    readonly name: string;
+    readonly year: string;
+    readonly issuer: string;
+}
+
+/**
+ * Project entry.
+ */
+export interface ResumeProject {
+    readonly name: string;
+    readonly description: string;
+    readonly github?: string;
+}
+
+/**
+ * Key achievement entry.
+ */
+export interface ResumeAchievement {
+    readonly achievement: string;
+}
+
+/**
+ * Structured resume data — the canonical schema for DynamoDB resume records.
+ *
+ * Written by the admin UI, read by the Trigger Lambda, and passed through
+ * the entire pipeline as structured JSON. Each field maps directly to a
+ * resume section.
+ *
+ * DynamoDB key pattern: pk = 'RESUME#<id>', sk = 'METADATA'
+ */
+export interface StructuredResumeData {
+    readonly profile: ResumeProfile;
+    readonly summary: string;
+    readonly experience: ResumeExperience[];
+    readonly skills: ResumeSkillCategory[];
+    readonly education: ResumeEducation[];
+    readonly certifications: ResumeCertification[];
+    readonly projects: ResumeProject[];
+    readonly keyAchievements: ResumeAchievement[];
+}
+
 // =============================================================================
 // STRATEGIST PIPELINE CONTEXT
 // =============================================================================
@@ -94,10 +191,13 @@ export interface StrategistPipelineContext {
     /** Unique pipeline execution ID */
     readonly pipelineId: string;
 
+    /** Pipeline operation: 'analyse' (Research+Strategist) or 'coach' (Coach only) */
+    readonly operation: PipelineOperation;
+
     /** Job application slug (kebab-case, e.g. 'acme-senior-devops-2026-03') */
     readonly applicationSlug: string;
 
-    /** Raw job description text (user input) */
+    /** Raw job description text (only required for 'analyse' operation) */
     readonly jobDescription: string;
 
     /** Target company name (extracted or provided) */
@@ -105,6 +205,12 @@ export interface StrategistPipelineContext {
 
     /** Target role title */
     readonly targetRole: string;
+
+    /** Resume ID selected by the user in the admin UI (only for 'analyse' operation) */
+    readonly resumeId: string;
+
+    /** Structured resume data fetched by the Trigger Lambda (only for 'analyse' operation) */
+    readonly resumeData: StructuredResumeData | null;
 
     /** Current interview stage (for Coach Agent) */
     readonly interviewStage: InterviewStage;
@@ -251,11 +357,77 @@ export interface StrategistResearchResult {
     /** One-paragraph honest assessment */
     readonly fitSummary: string;
 
-    /** Raw resume text retrieved from DynamoDB */
-    readonly resumeData: string;
+    /** Structured resume data passed through pipeline context (source of truth) */
+    readonly resumeData: StructuredResumeData | null;
 
     /** Concatenated KB passages with source citations */
     readonly kbContext: string;
+}
+
+// =============================================================================
+// RESUME SUGGESTION TYPES
+// =============================================================================
+
+/**
+ * A single resume addition suggestion — maps to <addition> in the
+ * Strategist Agent's XML output.
+ *
+ * Tells the user which section to add a bullet to, what text to add,
+ * and which KB project citation backs the claim.
+ */
+export interface ResumeAdditionSuggestion {
+    /** Resume section target (e.g. "Experience — DevOps at Acme") */
+    readonly section: string;
+    /** Suggested bullet point text */
+    readonly suggestedBullet: string;
+    /** KB source citation backing the claim */
+    readonly sourceCitation: string;
+}
+
+/**
+ * A single resume reframe suggestion — maps to <reframe> in the
+ * Strategist Agent's XML output.
+ *
+ * Proposes replacing an existing bullet with improved wording
+ * that better aligns with the target job description.
+ */
+export interface ResumeReframeSuggestion {
+    /** Original resume text to replace */
+    readonly original: string;
+    /** Suggested replacement text */
+    readonly suggested: string;
+    /** Why this reframe improves the application */
+    readonly rationale: string;
+}
+
+/**
+ * A single ESL correction — maps to <correction> in the
+ * Strategist Agent's XML output.
+ *
+ * Fixes grammar, spelling, or phrasing issues that may
+ * undermine professionalism.
+ */
+export interface ResumeEslCorrection {
+    /** Original text with error */
+    readonly original: string;
+    /** Corrected text */
+    readonly corrected: string;
+}
+
+/**
+ * Structured resume tailoring suggestions with per-item detail.
+ *
+ * Parsed from the `<resume_tailoring>` XML section of the
+ * Strategist Agent's output. Provides actionable, section-level
+ * suggestions for the admin UI.
+ */
+export interface ResumeSuggestions {
+    /** New bullet points to add (with section target and KB citation) */
+    readonly additions: ResumeAdditionSuggestion[];
+    /** Existing bullets to reword (with original, replacement, and rationale) */
+    readonly reframes: ResumeReframeSuggestion[];
+    /** Grammar/spelling corrections */
+    readonly eslCorrections: ResumeEslCorrection[];
 }
 
 // =============================================================================
@@ -285,9 +457,25 @@ export interface StrategistAnalysisResult {
     /** Generated cover letter (extracted from XML for convenience) */
     readonly coverLetter: string;
 
-    /** Resume tailoring suggestions count */
+    /** Structured per-item resume tailoring suggestions (parsed from XML) */
+    readonly resumeSuggestions: ResumeSuggestions;
+
+    /**
+     * Resume addition count.
+     * @deprecated Use `resumeSuggestions.additions.length` — kept for backward compatibility.
+     */
     readonly resumeAdditions: number;
+
+    /**
+     * Resume reframe count.
+     * @deprecated Use `resumeSuggestions.reframes.length` — kept for backward compatibility.
+     */
     readonly resumeReframes: number;
+
+    /**
+     * ESL correction count.
+     * @deprecated Use `resumeSuggestions.eslCorrections.length` — kept for backward compatibility.
+     */
     readonly eslCorrections: number;
 }
 
@@ -438,7 +626,7 @@ export interface JobApplicationRecord {
 }
 
 // =============================================================================
-// STEP FUNCTIONS STATE SHAPES
+// STEP FUNCTIONS STATE SHAPES — ANALYSIS PIPELINE
 // =============================================================================
 
 /**
@@ -457,22 +645,68 @@ export interface StrategistWriterHandlerInput {
 }
 
 /**
- * Output from Strategist Handler, input to Coach Handler.
+ * Output from Strategist Handler, input to Analysis Persist Handler.
  */
-export interface StrategistCoachHandlerInput {
+export interface StrategistAnalysisPersistInput {
     readonly context: StrategistPipelineContext;
     readonly research: AgentResult<StrategistResearchResult>;
     readonly analysis: AgentResult<StrategistAnalysisResult>;
 }
 
 /**
- * Terminal output from the Strategist Pipeline.
+ * Terminal output from the Analysis Pipeline.
  */
-export interface StrategistPipelineOutput {
+export interface StrategistAnalysisPipelineOutput {
     readonly context: StrategistPipelineContext;
     readonly research: AgentResult<StrategistResearchResult>;
     readonly analysis: AgentResult<StrategistAnalysisResult>;
+    /** Final application status written to DynamoDB */
+    readonly applicationStatus: ApplicationStatus;
+}
+
+// =============================================================================
+// STEP FUNCTIONS STATE SHAPES — COACHING PIPELINE
+// =============================================================================
+
+/**
+ * Input to the Coach Loader Handler.
+ *
+ * Minimal context — the loader fetches the latest analysis from DDB.
+ */
+export interface StrategistCoachLoaderInput {
+    readonly context: StrategistPipelineContext;
+}
+
+/**
+ * Output from Coach Loader, input to Coach Handler.
+ *
+ * The analysis is loaded from DynamoDB (not piped from the analysis chain).
+ */
+export interface StrategistCoachHandlerInput {
+    readonly context: StrategistPipelineContext;
+    readonly analysis: AgentResult<StrategistAnalysisResult>;
+}
+
+/**
+ * Terminal output from the Coaching Pipeline.
+ */
+export interface StrategistCoachPipelineOutput {
+    readonly context: StrategistPipelineContext;
     readonly coaching: AgentResult<InterviewCoachResult>;
     /** Final application status written to DynamoDB */
     readonly applicationStatus: ApplicationStatus;
 }
+
+// =============================================================================
+// LEGACY — COMBINED PIPELINE OUTPUT
+// =============================================================================
+
+/**
+ * Union output — the trigger returns whichever pipeline was executed.
+ *
+ * Discriminated by `applicationStatus`: 'analysis-ready' for analysis,
+ * 'interviewing' for coaching.
+ */
+export type StrategistPipelineOutput =
+    | StrategistAnalysisPipelineOutput
+    | StrategistCoachPipelineOutput;

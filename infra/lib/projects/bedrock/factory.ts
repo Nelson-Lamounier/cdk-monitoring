@@ -305,13 +305,11 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 knowledgeBaseId: kbStack.knowledgeBaseId,
                 knowledgeBaseArn: kbStack.knowledgeBaseArn,
                 environmentName: this.environment,
-                contentTableName: contentStack.tableName,
                 env,
             }
         );
         strategistPipelineStack.addDependency(dataStack);
         strategistPipelineStack.addDependency(strategistDataStack);
-        strategistPipelineStack.addDependency(contentStack); // Resume source
 
         const stacks: cdk.Stack[] = [
             dataStack,

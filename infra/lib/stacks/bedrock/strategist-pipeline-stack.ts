@@ -1,16 +1,26 @@
 /**
  * @format
- * Strategist Pipeline Stack — Multi-Agent Step Functions Pipeline
+ * Strategist Pipeline Stack — Iterative Multi-Agent Step Functions Pipeline
  *
- * Creates the Step Functions state machine and 4 Lambda functions
- * for the 3-agent job strategist pipeline.
+ * Creates two Step Functions state machines and 6 Lambda functions
+ * for the iterative job strategist pipeline.
  *
  * Architecture:
- *   Admin Dashboard → API Gateway → Trigger Lambda → Step Functions
- *     → Research Lambda (Haiku 3.5) — KB retrieval, resume, gap analysis
- *     → Strategist Lambda (Sonnet 4.6) — 5-phase XML analysis
- *     → Coach Lambda (Haiku 4.5) — Stage-specific interview prep
- *     → DynamoDB (results) + S3 (analysis artefacts)
+ *   Admin Dashboard → API Gateway → Trigger Lambda
+ *     ↓ operation='analyse'
+ *     Analysis State Machine:
+ *       → Research Lambda (Haiku 3.5) — KB retrieval, resume, gap analysis
+ *       → Strategist Lambda (Sonnet 4.6) — 5-phase XML analysis
+ *       → Analysis Persist Lambda — DynamoDB persistence
+ *
+ *     ↓ operation='coach'
+ *     Coaching State Machine:
+ *       → Coach Loader Lambda — Load existing analysis from DDB
+ *       → Coach Lambda (Haiku 4.5) — Stage-specific interview prep
+ *
+ * DDB Record Lifecycle:
+ *   Iteration 1 (analyse): APPLICATION#slug → METADATA + ANALYSIS#<pipelineId>
+ *   Iteration N (coach):   APPLICATION#slug → METADATA update + INTERVIEW#<stage>
  *
  * Observability:
  *   - Per-agent EMF metrics in BedrockMultiAgent namespace
@@ -81,8 +91,6 @@ export interface StrategistPipelineStackProps extends cdk.StackProps {
     readonly knowledgeBaseArn?: string;
     /** Runtime environment name */
     readonly environmentName: string;
-    /** DynamoDB table name for the article content table (resume source) */
-    readonly contentTableName: string;
 }
 
 // =============================================================================
@@ -90,17 +98,21 @@ export interface StrategistPipelineStackProps extends cdk.StackProps {
 // =============================================================================
 
 /**
- * Multi-Agent Strategist Pipeline Stack — Step Functions Orchestration.
+ * Iterative Multi-Agent Strategist Pipeline Stack.
  *
- * Creates a 3-stage Step Functions pipeline:
- *   Research → Strategist → Interview Coach
+ * Creates two independent Step Functions state machines:
+ *   1. Analysis Pipeline: Research → Strategist → Persist
+ *   2. Coaching Pipeline: Load Analysis → Coach (with DDB write)
  *
- * The pipeline is triggered by the admin dashboard via API Gateway.
- * Results are persisted to DynamoDB and S3.
+ * The trigger Lambda routes to the correct state machine based on
+ * the `operation` field in the API request body.
  */
 export class StrategistPipelineStack extends cdk.Stack {
-    /** Step Functions state machine */
-    public readonly stateMachine: sfn.StateMachine;
+    /** Analysis Step Functions state machine */
+    public readonly analysisStateMachine: sfn.StateMachine;
+
+    /** Coaching Step Functions state machine */
+    public readonly coachingStateMachine: sfn.StateMachine;
 
     /** Trigger Handler Lambda (API Gateway → Step Functions) */
     public readonly triggerFunction: lambdaNode.NodejsFunction;
@@ -124,12 +136,6 @@ export class StrategistPipelineStack extends cdk.Stack {
             this,
             'ImportedStrategistTable',
             props.tableName,
-        );
-
-        const contentTable = dynamodb.TableV2.fromTableName(
-            this,
-            'ImportedContentTable',
-            props.contentTableName,
         );
 
         // =================================================================
@@ -165,7 +171,7 @@ export class StrategistPipelineStack extends cdk.Stack {
         };
 
         // =================================================================
-        // Lambda — Research Handler
+        // Lambda — Research Handler (Analysis Pipeline Stage 1)
         // =================================================================
         const researchFn = new lambdaNode.NodejsFunction(this, 'ResearchFunction', {
             functionName: `${namePrefix}-strategist-research`,
@@ -178,7 +184,6 @@ export class StrategistPipelineStack extends cdk.Stack {
                 RESEARCH_MODEL: props.researchModel,
                 ASSETS_BUCKET: assetsBucket.bucketName,
                 TABLE_NAME: strategistTable.tableName,
-                CONTENT_TABLE_NAME: contentTable.tableName,
                 ENVIRONMENT: props.environmentName,
                 ...(props.knowledgeBaseId ? { KNOWLEDGE_BASE_ID: props.knowledgeBaseId } : {}),
             },
@@ -193,7 +198,7 @@ export class StrategistPipelineStack extends cdk.Stack {
         });
 
         // =================================================================
-        // Lambda — Strategist Handler
+        // Lambda — Strategist Handler (Analysis Pipeline Stage 2)
         // =================================================================
         const strategistFn = new lambdaNode.NodejsFunction(this, 'StrategistFunction', {
             functionName: `${namePrefix}-strategist-writer`,
@@ -220,7 +225,55 @@ export class StrategistPipelineStack extends cdk.Stack {
         });
 
         // =================================================================
-        // Lambda — Interview Coach Handler
+        // Lambda — Analysis Persist Handler (Analysis Pipeline Stage 3)
+        // =================================================================
+        const analysisPersistFn = new lambdaNode.NodejsFunction(this, 'AnalysisPersistFunction', {
+            functionName: `${namePrefix}-strategist-analysis-persist`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(handlersDir, 'analysis-persist-handler.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.seconds(30),
+            environment: {
+                TABLE_NAME: strategistTable.tableName,
+                ENVIRONMENT: props.environmentName,
+            },
+            description: 'Strategist Analysis Persist — DynamoDB writer',
+            logGroup: new logs.LogGroup(this, 'AnalysisPersistLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-strategist-analysis-persist`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            bundling: bundlingConfig,
+            tracing: lambda.Tracing.ACTIVE,
+        });
+
+        // =================================================================
+        // Lambda — Coach Loader Handler (Coaching Pipeline Stage 1)
+        // =================================================================
+        const coachLoaderFn = new lambdaNode.NodejsFunction(this, 'CoachLoaderFunction', {
+            functionName: `${namePrefix}-strategist-coach-loader`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(handlersDir, 'coach-loader-handler.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.seconds(30),
+            environment: {
+                TABLE_NAME: strategistTable.tableName,
+                ENVIRONMENT: props.environmentName,
+            },
+            description: 'Strategist Coach Loader — DDB analysis retrieval',
+            logGroup: new logs.LogGroup(this, 'CoachLoaderLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-strategist-coach-loader`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            bundling: bundlingConfig,
+            tracing: lambda.Tracing.ACTIVE,
+        });
+
+        // =================================================================
+        // Lambda — Interview Coach Handler (Coaching Pipeline Stage 2)
         // =================================================================
         const coachFn = new lambdaNode.NodejsFunction(this, 'CoachFunction', {
             functionName: `${namePrefix}-strategist-coach`,
@@ -253,7 +306,6 @@ export class StrategistPipelineStack extends cdk.Stack {
         // Research: S3 read, Bedrock InvokeModel, KB Retrieve, DynamoDB read/write
         assetsBucket.grantRead(researchFn);
         strategistTable.grantWriteData(researchFn);
-        contentTable.grantReadData(researchFn);
         researchFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
             resources: ['*'], // Model ARNs are region-specific inference profiles
@@ -272,6 +324,12 @@ export class StrategistPipelineStack extends cdk.Stack {
         }));
         strategistTable.grantWriteData(strategistFn);
 
+        // Analysis Persist: DynamoDB read/write
+        strategistTable.grantReadWriteData(analysisPersistFn);
+
+        // Coach Loader: DynamoDB read (query ANALYSIS# records)
+        strategistTable.grantReadData(coachLoaderFn);
+
         // Coach: Bedrock InvokeModel, DynamoDB read/write
         coachFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
@@ -280,7 +338,7 @@ export class StrategistPipelineStack extends cdk.Stack {
         strategistTable.grantReadWriteData(coachFn);
 
         // CDK-Nag suppression for NODEJS_22_X
-        const allFunctions = [researchFn, strategistFn, coachFn];
+        const allFunctions = [researchFn, strategistFn, analysisPersistFn, coachLoaderFn, coachFn];
         for (const fn of allFunctions) {
             NagSuppressions.addResourceSuppressions(
                 fn,
@@ -303,10 +361,9 @@ export class StrategistPipelineStack extends cdk.Stack {
         ]);
 
         // =================================================================
-        // Step Functions — Pipeline State Machine
+        // Step Functions — Analysis Pipeline State Machine
         // =================================================================
 
-        // Lambda invoke tasks
         const researchTask = new tasks.LambdaInvoke(this, 'ResearchTask', {
             lambdaFunction: researchFn,
             outputPath: '$.Payload',
@@ -321,6 +378,65 @@ export class StrategistPipelineStack extends cdk.Stack {
             comment: 'Strategist Agent: 5-phase XML analysis and document generation',
         });
 
+        const analysisPersistTask = new tasks.LambdaInvoke(this, 'AnalysisPersistTask', {
+            lambdaFunction: analysisPersistFn,
+            outputPath: '$.Payload',
+            resultPath: '$',
+            comment: 'Persist analysis results to DynamoDB',
+        });
+
+        // Error handling for analysis pipeline
+        const analysisFailed = new sfn.Fail(this, 'AnalysisPipelineFailed', {
+            error: 'AnalysisPipelineExecutionFailed',
+            cause: 'One of the analysis pipeline agents threw an unrecoverable error',
+        });
+
+        // Chain: Research → Strategist → Persist
+        const analysisDefinition = researchTask
+            .addCatch(analysisFailed, {
+                errors: ['States.ALL'],
+                resultPath: '$.error',
+            })
+            .next(
+                strategistTask.addCatch(analysisFailed, {
+                    errors: ['States.ALL'],
+                    resultPath: '$.error',
+                }),
+            )
+            .next(
+                analysisPersistTask.addCatch(analysisFailed, {
+                    errors: ['States.ALL'],
+                    resultPath: '$.error',
+                }),
+            );
+
+        this.analysisStateMachine = new sfn.StateMachine(this, 'AnalysisPipelineStateMachine', {
+            stateMachineName: `${namePrefix}-strategist-analysis`,
+            definitionBody: sfn.DefinitionBody.fromChainable(analysisDefinition),
+            timeout: cdk.Duration.minutes(30),
+            tracingEnabled: true,
+            stateMachineType: sfn.StateMachineType.STANDARD,
+            logs: {
+                level: sfn.LogLevel.ALL,
+                destination: new logs.LogGroup(this, 'AnalysisStateMachineLogGroup', {
+                    logGroupName: `/aws/vendedlogs/states/${namePrefix}-strategist-analysis`,
+                    retention: props.logRetention,
+                    removalPolicy: props.removalPolicy,
+                }),
+            },
+        });
+
+        // =================================================================
+        // Step Functions — Coaching Pipeline State Machine
+        // =================================================================
+
+        const coachLoaderTask = new tasks.LambdaInvoke(this, 'CoachLoaderTask', {
+            lambdaFunction: coachLoaderFn,
+            outputPath: '$.Payload',
+            resultPath: '$',
+            comment: 'Coach Loader: Load existing analysis from DynamoDB',
+        });
+
         const coachTask = new tasks.LambdaInvoke(this, 'CoachTask', {
             lambdaFunction: coachFn,
             outputPath: '$.Payload',
@@ -328,41 +444,35 @@ export class StrategistPipelineStack extends cdk.Stack {
             comment: 'Interview Coach: stage-specific interview preparation',
         });
 
-        // Error handling: catch all and fail state
-        const pipelineFailed = new sfn.Fail(this, 'PipelineFailed', {
-            error: 'StrategistPipelineExecutionFailed',
-            cause: 'One of the strategist pipeline agents threw an unrecoverable error',
+        // Error handling for coaching pipeline
+        const coachingFailed = new sfn.Fail(this, 'CoachingPipelineFailed', {
+            error: 'CoachingPipelineExecutionFailed',
+            cause: 'The coaching pipeline threw an unrecoverable error',
         });
 
-        // Chain: Research → Strategist → Coach
-        const definition = researchTask
-            .addCatch(pipelineFailed, {
+        // Chain: Load → Coach
+        const coachingDefinition = coachLoaderTask
+            .addCatch(coachingFailed, {
                 errors: ['States.ALL'],
                 resultPath: '$.error',
             })
             .next(
-                strategistTask.addCatch(pipelineFailed, {
-                    errors: ['States.ALL'],
-                    resultPath: '$.error',
-                }),
-            )
-            .next(
-                coachTask.addCatch(pipelineFailed, {
+                coachTask.addCatch(coachingFailed, {
                     errors: ['States.ALL'],
                     resultPath: '$.error',
                 }),
             );
 
-        this.stateMachine = new sfn.StateMachine(this, 'PipelineStateMachine', {
-            stateMachineName: `${namePrefix}-strategist-pipeline`,
-            definitionBody: sfn.DefinitionBody.fromChainable(definition),
-            timeout: cdk.Duration.minutes(30),
+        this.coachingStateMachine = new sfn.StateMachine(this, 'CoachingPipelineStateMachine', {
+            stateMachineName: `${namePrefix}-strategist-coaching`,
+            definitionBody: sfn.DefinitionBody.fromChainable(coachingDefinition),
+            timeout: cdk.Duration.minutes(15),
             tracingEnabled: true,
             stateMachineType: sfn.StateMachineType.STANDARD,
             logs: {
                 level: sfn.LogLevel.ALL,
-                destination: new logs.LogGroup(this, 'StateMachineLogGroup', {
-                    logGroupName: `/aws/vendedlogs/states/${namePrefix}-strategist-pipeline`,
+                destination: new logs.LogGroup(this, 'CoachingStateMachineLogGroup', {
+                    logGroupName: `/aws/vendedlogs/states/${namePrefix}-strategist-coaching`,
                     retention: props.logRetention,
                     removalPolicy: props.removalPolicy,
                 }),
@@ -380,11 +490,12 @@ export class StrategistPipelineStack extends cdk.Stack {
             memorySize: props.triggerLambdaMemoryMb,
             timeout: cdk.Duration.seconds(30),
             environment: {
-                STATE_MACHINE_ARN: this.stateMachine.stateMachineArn,
+                ANALYSIS_STATE_MACHINE_ARN: this.analysisStateMachine.stateMachineArn,
+                COACHING_STATE_MACHINE_ARN: this.coachingStateMachine.stateMachineArn,
                 TABLE_NAME: strategistTable.tableName,
                 ENVIRONMENT: props.environmentName,
             },
-            description: `Strategist Trigger — API Gateway → Step Functions`,
+            description: 'Strategist Trigger — API Gateway → Step Functions (analyse/coach)',
             logGroup: new logs.LogGroup(this, 'TriggerLogGroup', {
                 logGroupName: `/aws/lambda/${namePrefix}-strategist-trigger`,
                 retention: props.logRetention,
@@ -394,9 +505,10 @@ export class StrategistPipelineStack extends cdk.Stack {
             tracing: lambda.Tracing.ACTIVE,
         });
 
-        // Grant trigger Lambda permission to start executions + write DynamoDB
-        this.stateMachine.grantStartExecution(this.triggerFunction);
-        strategistTable.grantWriteData(this.triggerFunction);
+        // Grant trigger Lambda permission to start executions on both state machines
+        this.analysisStateMachine.grantStartExecution(this.triggerFunction);
+        this.coachingStateMachine.grantStartExecution(this.triggerFunction);
+        strategistTable.grantReadWriteData(this.triggerFunction);
 
         NagSuppressions.addResourceSuppressions(
             this.triggerFunction,
@@ -412,10 +524,16 @@ export class StrategistPipelineStack extends cdk.Stack {
         // =================================================================
         // SSM — Export pipeline configuration
         // =================================================================
-        new ssm.StringParameter(this, 'StateMachineArnParam', {
-            parameterName: `/${namePrefix}/strategist-state-machine-arn`,
-            stringValue: this.stateMachine.stateMachineArn,
-            description: 'ARN of the strategist pipeline Step Functions state machine',
+        new ssm.StringParameter(this, 'AnalysisStateMachineArnParam', {
+            parameterName: `/${namePrefix}/strategist-analysis-state-machine-arn`,
+            stringValue: this.analysisStateMachine.stateMachineArn,
+            description: 'ARN of the strategist analysis pipeline Step Functions state machine',
+        });
+
+        new ssm.StringParameter(this, 'CoachingStateMachineArnParam', {
+            parameterName: `/${namePrefix}/strategist-coaching-state-machine-arn`,
+            stringValue: this.coachingStateMachine.stateMachineArn,
+            description: 'ARN of the strategist coaching pipeline Step Functions state machine',
         });
 
         new ssm.StringParameter(this, 'TriggerFunctionArnParam', {

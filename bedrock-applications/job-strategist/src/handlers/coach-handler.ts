@@ -1,13 +1,13 @@
 /**
  * @format
- * Coach Handler — Step Functions Terminal Stage
+ * Coach Handler — Step Functions Terminal Stage (Coaching Pipeline)
  *
- * Lambda handler invoked by Step Functions as the final stage.
- * Receives the full analysis, executes the Interview Coach Agent,
- * persists results to DynamoDB, and returns the pipeline output.
+ * Lambda handler invoked by Step Functions as the final stage of the
+ * coaching pipeline. Receives the loaded analysis, executes the
+ * Interview Coach Agent, and persists coaching results to DynamoDB.
  *
- * Input: { context, research, analysis }
- * Output: StrategistPipelineOutput
+ * Input:  { context, analysis }
+ * Output: StrategistCoachPipelineOutput
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -16,7 +16,7 @@ import { DynamoDBDocumentClient, UpdateCommand, PutCommand } from '@aws-sdk/lib-
 import { executeCoachAgent } from '../agents/coach-agent.js';
 import type {
     StrategistCoachHandlerInput,
-    StrategistPipelineOutput,
+    StrategistCoachPipelineOutput,
 } from '../../../shared/src/index.js';
 
 // =============================================================================
@@ -39,18 +39,17 @@ const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 /**
  * Lambda handler for the Interview Coach Agent.
  *
- * Executes coaching preparation, persists:
- * 1. Updated METADATA record with status and fit rating
- * 2. ANALYSIS#<pipelineId> record with full XML
- * 3. INTERVIEW#<stage> record with coaching data
+ * Executes coaching preparation and persists:
+ * 1. Updated METADATA record with status='interviewing' and new stage
+ * 2. INTERVIEW#<stage> record with coaching data
  *
- * @param event - Step Functions input with research and analysis
- * @returns Complete pipeline output
+ * @param event - Step Functions input with analysis (loaded from DDB or piped)
+ * @returns Coaching pipeline output with final status
  */
 export const handler = async (
     event: StrategistCoachHandlerInput,
-): Promise<StrategistPipelineOutput> => {
-    const { context, research, analysis } = event;
+): Promise<StrategistCoachPipelineOutput> => {
+    const { context, analysis } = event;
     const now = new Date().toISOString();
     const datePrefix = now.slice(0, 10);
 
@@ -64,7 +63,7 @@ export const handler = async (
 
     // Persist to DynamoDB
     if (TABLE_NAME) {
-        // 1. Update METADATA record
+        // 1. Update METADATA record — advance stage and status
         console.log(`[strategist-coach-handler] Updating APPLICATION#${context.applicationSlug} METADATA`);
         await ddbClient.send(new UpdateCommand({
             TableName: TABLE_NAME,
@@ -72,43 +71,25 @@ export const handler = async (
                 pk: `APPLICATION#${context.applicationSlug}`,
                 sk: 'METADATA',
             },
-            UpdateExpression: `SET #status = :status, fitRating = :fitRating, 
-                recommendation = :recommendation, updatedAt = :now,
-                pipelineId = :pipelineId, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk,
-                totalCostUsd = :cost, totalTokens = :tokens`,
+            UpdateExpression: `SET #status = :status, interviewStage = :stage,
+                updatedAt = :now, pipelineId = :pipelineId,
+                gsi1pk = :gsi1pk, gsi1sk = :gsi1sk,
+                totalCostUsd = totalCostUsd + :cost,
+                totalCoachingTokens = :tokens`,
             ExpressionAttributeNames: { '#status': 'status' },
             ExpressionAttributeValues: {
-                ':status': 'analysis-ready',
-                ':fitRating': analysis.data.metadata.overallFitRating,
-                ':recommendation': analysis.data.metadata.applicationRecommendation,
+                ':status': 'interviewing',
+                ':stage': context.interviewStage,
                 ':now': now,
                 ':pipelineId': context.pipelineId,
-                ':gsi1pk': 'APP_STATUS#analysis-ready',
+                ':gsi1pk': 'APP_STATUS#interviewing',
                 ':gsi1sk': `${datePrefix}#${context.applicationSlug}`,
                 ':cost': context.cumulativeCostUsd,
                 ':tokens': context.cumulativeTokens,
             },
         }));
 
-        // 2. Store full analysis XML
-        console.log(`[strategist-coach-handler] Storing ANALYSIS#${context.pipelineId}`);
-        await ddbClient.send(new PutCommand({
-            TableName: TABLE_NAME,
-            Item: {
-                pk: `APPLICATION#${context.applicationSlug}`,
-                sk: `ANALYSIS#${context.pipelineId}`,
-                analysisXml: analysis.data.analysisXml,
-                coverLetter: analysis.data.coverLetter,
-                metadata: analysis.data.metadata,
-                resumeAdditions: analysis.data.resumeAdditions,
-                resumeReframes: analysis.data.resumeReframes,
-                eslCorrections: analysis.data.eslCorrections,
-                createdAt: now,
-                environment: context.environment,
-            },
-        }));
-
-        // 3. Store interview coaching data
+        // 2. Store interview coaching data for this specific stage
         console.log(`[strategist-coach-handler] Storing INTERVIEW#${context.interviewStage}`);
         await ddbClient.send(new PutCommand({
             TableName: TABLE_NAME,
@@ -126,17 +107,16 @@ export const handler = async (
         }));
     }
 
-    const output: StrategistPipelineOutput = {
+    const output: StrategistCoachPipelineOutput = {
         context,
-        research,
-        analysis,
         coaching,
-        applicationStatus: 'analysis-ready',
+        applicationStatus: 'interviewing',
     };
 
     console.log(
-        `[strategist-coach-handler] Pipeline complete — ` +
-        `fit="${analysis.data.metadata.overallFitRating}", ` +
+        `[strategist-coach-handler] Coaching complete — ` +
+        `stage="${context.interviewStage}", ` +
+        `technical=${coaching.data.technicalQuestions.length}, ` +
         `cost=$${context.cumulativeCostUsd.toFixed(4)}`,
     );
 

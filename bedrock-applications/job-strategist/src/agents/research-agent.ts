@@ -17,15 +17,15 @@ import {
     BedrockAgentRuntimeClient,
     RetrieveCommand,
 } from '@aws-sdk/client-bedrock-agent-runtime';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 
 import { runAgent, parseJsonResponse } from '../../../shared/src/index.js';
+import { formatResumeForPrompt } from '../services/resume-service.js';
 import { RESEARCH_PERSONA_SYSTEM_PROMPT } from '../prompts/research-persona.js';
 import { sanitiseInput } from '../security/input-sanitiser.js';
 import type {
     AgentConfig,
     AgentResult,
+    StructuredResumeData,
     StrategistPipelineContext,
     StrategistResearchResult,
 } from '../../../shared/src/index.js';
@@ -49,15 +49,11 @@ const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID ?? '';
 /** Maximum KB passages to retrieve */
 const MAX_KB_PASSAGES = 15;
 
-/** DynamoDB table for resume data (AI content table) */
-const CONTENT_TABLE_NAME = process.env.CONTENT_TABLE_NAME ?? '';
-
 // =============================================================================
 // CLIENTS
 // =============================================================================
 
 const bedrockAgentClient = new BedrockAgentRuntimeClient({});
-const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 // =============================================================================
 // KNOWLEDGE BASE RETRIEVAL
@@ -124,71 +120,24 @@ async function queryKnowledgeBase(jobDescription: string): Promise<string> {
 }
 
 // =============================================================================
-// RESUME RETRIEVAL (DynamoDB)
-// =============================================================================
-
-/**
- * Fetch the latest resume data from the AI content DynamoDB table.
- *
- * Queries for ARTICLE#resume / METADATA entries which contain the
- * most recently published resume content.
- *
- * @returns Resume text if found, empty string otherwise
- */
-async function fetchResumeFromDynamoDB(): Promise<string> {
-    if (!CONTENT_TABLE_NAME) {
-        console.log('[strategist-research] Resume fetch skipped — no CONTENT_TABLE_NAME configured');
-        return '';
-    }
-
-    console.log(`[strategist-research] Fetching resume from DynamoDB: ${CONTENT_TABLE_NAME}`);
-
-    const response = await ddbClient.send(new QueryCommand({
-        TableName: CONTENT_TABLE_NAME,
-        KeyConditionExpression: 'pk = :pk AND sk = :sk',
-        ExpressionAttributeValues: {
-            ':pk': 'ARTICLE#resume',
-            ':sk': 'METADATA',
-        },
-        Limit: 1,
-    }));
-
-    const items = response.Items ?? [];
-    if (items.length === 0) {
-        console.warn('[strategist-research] No resume record found in DynamoDB');
-        return '';
-    }
-
-    // The resume content may be stored as aiSummary, content, or body
-    const item = items[0];
-    const resumeContent = (item['content'] as string)
-        ?? (item['aiSummary'] as string)
-        ?? (item['body'] as string)
-        ?? '';
-
-    console.log(`[strategist-research] Resume retrieved: ${resumeContent.length} chars`);
-    return resumeContent;
-}
-
-// =============================================================================
 // USER MESSAGE BUILDER
 // =============================================================================
 
 /**
  * Build the user message for the Research Agent.
  *
- * Assembles the job description, KB context, and resume data into
- * a structured prompt for analysis.
+ * Assembles the job description, KB context, and structured resume data into
+ * a prompt with clearly delimited sections for analysis.
  *
  * @param jobDescription - Sanitised job description text
  * @param kbContext - Concatenated KB passages
- * @param resumeData - Resume text from DynamoDB
+ * @param resumeData - Structured resume data from pipeline context (may be null)
  * @returns Formatted user message
  */
 function buildResearchMessage(
     jobDescription: string,
     kbContext: string,
-    resumeData: string,
+    resumeData: StructuredResumeData | null,
 ): string {
     const sections: string[] = [
         '## Job Description',
@@ -200,9 +149,10 @@ function buildResearchMessage(
 
     if (resumeData) {
         sections.push(
-            '## Current Resume',
+            '## Current Resume (Source of Truth — DynamoDB)',
+            'This is the candidate\u2019s canonical resume. Layout and wording are authoritative.',
             '--- BEGIN RESUME ---',
-            resumeData,
+            formatResumeForPrompt(resumeData),
             '--- END RESUME ---',
             '',
         );
@@ -211,7 +161,9 @@ function buildResearchMessage(
     if (kbContext) {
         sections.push(
             '## Knowledge Base — Portfolio & Project Evidence',
-            'The following passages were retrieved from the candidate\'s portfolio documentation:',
+            'The following passages were retrieved from the candidate\'s portfolio documentation.',
+            'Use these to SUPPLEMENT the resume with verifiable project evidence.',
+            'KB evidence may ADD skills to the resume when project proof exists, but must NOT override resume wording.',
             '',
             kbContext,
             '',
@@ -243,10 +195,10 @@ const RESEARCH_CONFIG: AgentConfig = {
  *
  * 1. Sanitises the job description input
  * 2. Queries the Pinecone KB for portfolio evidence
- * 3. Fetches the latest resume from DynamoDB
+ * 3. Reads structured resume data from the pipeline context (fetched by trigger)
  * 4. Runs Haiku 3.5 to produce a structured research brief
  *
- * @param ctx - Pipeline context with job description
+ * @param ctx - Pipeline context with job description and resumeData
  * @returns Research result with verified/partial/gap skill classification
  */
 export async function executeResearchAgent(
@@ -263,16 +215,21 @@ export async function executeResearchAgent(
         console.warn(`[strategist-research] ${warning}`);
     }
 
-    // 2. Query Knowledge Base (parallel with resume fetch)
-    const [kbContext, resumeData] = await Promise.all([
-        queryKnowledgeBase(sanitised),
-        fetchResumeFromDynamoDB(),
-    ]);
+    // 2. Query Knowledge Base for portfolio evidence
+    const kbContext = await queryKnowledgeBase(sanitised);
 
-    // 3. Build user message
+    // 3. Read resume from pipeline context (fetched at trigger time)
+    const resumeData = ctx.resumeData;
+    if (!resumeData) {
+        console.warn('[strategist-research] No resume data in pipeline context — analysis will proceed without resume baseline');
+    } else {
+        console.log(`[strategist-research] Resume loaded from context: ${resumeData.profile.name}`);
+    }
+
+    // 4. Build user message
     const userMessage = buildResearchMessage(sanitised, kbContext, resumeData);
 
-    // 4. Run agent
+    // 5. Run agent
     const result = await runAgent<StrategistResearchResult>({
         config: RESEARCH_CONFIG,
         userMessage,

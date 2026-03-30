@@ -1,10 +1,11 @@
 /**
  * @format
- * Strategist Handler — Step Functions Stage 2
+ * Strategist Handler — Analysis Pipeline Stage 2
  *
- * Lambda handler invoked by Step Functions as the second stage.
- * Receives research results, executes the Strategist Agent for
- * the 5-phase analysis, and returns results for the Coach Handler.
+ * Lambda handler invoked by Step Functions as the second stage
+ * of the analysis pipeline. Receives research results, executes
+ * the Strategist Agent for the 5-phase analysis, and returns
+ * results for the Analysis Persist Handler.
  *
  * Input: { context, research }
  * Output: { context, research, analysis }
@@ -13,18 +14,18 @@
 import { executeStrategistAgent } from '../agents/strategist-agent.js';
 import type {
     StrategistWriterHandlerInput,
-    StrategistCoachHandlerInput,
+    StrategistAnalysisPersistInput,
 } from '../../../shared/src/index.js';
 
 /**
  * Lambda handler for the Strategist Agent.
  *
  * @param event - Step Functions input with research results
- * @returns Updated context with full XML analysis
+ * @returns Updated context with full XML analysis for the persist handler
  */
 export const handler = async (
     event: StrategistWriterHandlerInput,
-): Promise<StrategistCoachHandlerInput> => {
+): Promise<StrategistAnalysisPersistInput> => {
     console.log(
         `[strategist-writer-handler] Pipeline ${event.context.pipelineId} ` +
         `— generating analysis for "${event.context.targetRole}"`,

@@ -13,11 +13,16 @@
  */
 
 import { runAgent } from '../../../shared/src/index.js';
+import { formatResumeForPrompt } from '../services/resume-service.js';
 import { STRATEGIST_PERSONA_SYSTEM_PROMPT } from '../prompts/strategist-persona.js';
 import { sanitiseOutput } from '../security/output-sanitiser.js';
 import type {
     AgentConfig,
     AgentResult,
+    ResumeAdditionSuggestion,
+    ResumeReframeSuggestion,
+    ResumeEslCorrection,
+    ResumeSuggestions,
     StrategistPipelineContext,
     StrategistResearchResult,
     StrategistAnalysisResult,
@@ -115,12 +120,13 @@ function buildStrategistMessage(
         sections.push(`- **${gap.skill}** [${gap.gapType}/${gap.impactSeverity}]: ${gap.disqualifyingAssessment}`);
     }
 
-    // Resume data
+    // Resume data (structured JSON from pipeline context, formatted as sectioned text)
     if (research.resumeData) {
         sections.push(
-            '', '### Current Resume Content',
+            '', '### Current Resume Content (Source of Truth)',
+            'This is the candidate\u2019s canonical resume. Preserve layout and wording unless KB evidence warrants an addition.',
             '--- BEGIN RESUME ---',
-            research.resumeData,
+            formatResumeForPrompt(research.resumeData),
             '--- END RESUME ---',
         );
     }
@@ -192,6 +198,91 @@ function countXmlElements(xml: string, tag: string): number {
     return count;
 }
 
+/**
+ * Extract structured addition suggestions from the XML analysis.
+ *
+ * Parses `<addition>` elements within `<resume_tailoring>`, extracting
+ * the target section, suggested bullet text, and KB citation.
+ *
+ * @param xml - Raw XML analysis output
+ * @returns Array of structured addition suggestions
+ */
+function extractAdditions(xml: string): ResumeAdditionSuggestion[] {
+    const additions: ResumeAdditionSuggestion[] = [];
+    const regex = /<addition>\s*<section>(.*?)<\/section>\s*<suggested_bullet>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/suggested_bullet>\s*<source_citation>(.*?)<\/source_citation>\s*<\/addition>/gs;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(xml)) !== null) {
+        additions.push({
+            section: match[1].trim(),
+            suggestedBullet: match[2].trim(),
+            sourceCitation: match[3].trim(),
+        });
+    }
+    return additions;
+}
+
+/**
+ * Extract structured reframe suggestions from the XML analysis.
+ *
+ * Parses `<reframe>` elements within `<resume_tailoring>`, extracting
+ * the original text, suggested replacement, and rationale.
+ *
+ * @param xml - Raw XML analysis output
+ * @returns Array of structured reframe suggestions
+ */
+function extractReframes(xml: string): ResumeReframeSuggestion[] {
+    const reframes: ResumeReframeSuggestion[] = [];
+    const regex = /<reframe>\s*<original>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/original>\s*<suggested>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/suggested>\s*<rationale>(.*?)<\/rationale>\s*<\/reframe>/gs;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(xml)) !== null) {
+        reframes.push({
+            original: match[1].trim(),
+            suggested: match[2].trim(),
+            rationale: match[3].trim(),
+        });
+    }
+    return reframes;
+}
+
+/**
+ * Extract structured ESL corrections from the XML analysis.
+ *
+ * Parses `<correction>` elements within `<esl_corrections>`, extracting
+ * the original error and corrected text.
+ *
+ * @param xml - Raw XML analysis output
+ * @returns Array of structured ESL corrections
+ */
+function extractEslCorrections(xml: string): ResumeEslCorrection[] {
+    const corrections: ResumeEslCorrection[] = [];
+    const regex = /<correction>\s*<original>(.*?)<\/original>\s*<corrected>(.*?)<\/corrected>\s*<\/correction>/gs;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(xml)) !== null) {
+        corrections.push({
+            original: match[1].trim(),
+            corrected: match[2].trim(),
+        });
+    }
+    return corrections;
+}
+
+/**
+ * Build the complete ResumeSuggestions object from XML.
+ *
+ * Extracts all structured suggestion data from the `<resume_tailoring>`
+ * section of the Strategist Agent's XML output.
+ *
+ * @param xml - Raw XML analysis output
+ * @returns Structured resume suggestions
+ */
+function buildResumeSuggestions(xml: string): ResumeSuggestions {
+    return {
+        additions: extractAdditions(xml),
+        reframes: extractReframes(xml),
+        eslCorrections: extractEslCorrections(xml),
+    };
+}
+
 // =============================================================================
 // AGENT EXECUTION
 // =============================================================================
@@ -238,14 +329,16 @@ export async function executeStrategistAgent(
             // Extract metadata from XML for quick DynamoDB queries
             const metadata = extractMetadataFromXml(sanitisedXml);
             const coverLetter = extractCoverLetter(sanitisedXml);
+            const resumeSuggestions = buildResumeSuggestions(sanitisedXml);
 
             return {
                 analysisXml: sanitisedXml,
                 metadata,
                 coverLetter,
-                resumeAdditions: countXmlElements(sanitisedXml, 'addition'),
-                resumeReframes: countXmlElements(sanitisedXml, 'reframe'),
-                eslCorrections: countXmlElements(sanitisedXml, 'correction'),
+                resumeSuggestions,
+                resumeAdditions: resumeSuggestions.additions.length,
+                resumeReframes: resumeSuggestions.reframes.length,
+                eslCorrections: resumeSuggestions.eslCorrections.length,
             };
         },
         pipelineContext: {

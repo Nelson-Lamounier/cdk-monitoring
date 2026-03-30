@@ -100,7 +100,18 @@ export type {
     GapType,
     GapSeverity,
 
-    // Pipeline context
+    // Structured Resume Data
+    ResumeProfile,
+    ResumeExperience,
+    ResumeSkillCategory,
+    ResumeEducation,
+    ResumeCertification,
+    ResumeProject,
+    ResumeAchievement,
+    StructuredResumeData,
+
+    // Pipeline operation & context
+    PipelineOperation,
     StrategistPipelineContext,
 
     // Research Agent
@@ -113,6 +124,10 @@ export type {
     StrategistResearchResult,
 
     // Strategist Agent
+    ResumeAdditionSuggestion,
+    ResumeReframeSuggestion,
+    ResumeEslCorrection,
+    ResumeSuggestions,
     StrategistAnalysisResult,
 
     // Interview Coach
@@ -125,9 +140,17 @@ export type {
     // DynamoDB Entity
     JobApplicationRecord,
 
-    // Step Functions state shapes
+    // Step Functions state shapes — Analysis Pipeline
     StrategistResearchHandlerInput,
     StrategistWriterHandlerInput,
+    StrategistAnalysisPersistInput,
+    StrategistAnalysisPipelineOutput,
+
+    // Step Functions state shapes — Coaching Pipeline
+    StrategistCoachLoaderInput,
     StrategistCoachHandlerInput,
+    StrategistCoachPipelineOutput,
+
+    // Union output
     StrategistPipelineOutput,
 } from './strategist-types.js';
