@@ -3,6 +3,6 @@
     "doc_type": "code-analysis",
     "domain": "ai-ml",
     "title": "Bedrock AI Content Pipeline Implementation",
-    "tags": "bedrock,step-functions,lambda,pinecone,rag,converse-api,dynamodb,content-generation,s3-event-notification,multi-agent"
+    "tags": "bedrock, step-functions, lambda, pinecone, rag, converse-api, dynamodb, content-generation, s3-event-notification, multi-agent, model-registry"
   }
 }

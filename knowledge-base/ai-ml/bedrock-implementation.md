@@ -13,6 +13,7 @@ tags:
   - content-generation
   - s3-event-notification
   - multi-agent
+  - model-registry
 related_docs:
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
   - ai-ml/self-healing-agent.md
@@ -133,7 +134,8 @@ Data → KB → Agent → Api → Content → Pipeline → StrategistData → St
 - **JSON extraction from LLM output** — Claude sometimes wraps JSON in markdown code blocks or adds preamble text. Solved by extracting the first `{` to last `}` substring, not expecting clean JSON.
 - **Mermaid syntax validation** — LLM-generated Mermaid diagrams frequently had syntax errors (YAML frontmatter leaking, empty chart bodies). Added `validateMermaidSyntax()` post-processing to catch these before publishing.
 - **Cost control** — Early prompts generated 3,000+ word articles at $0.15+ per invocation. The word budget table in the system prompt constrains output to 1,200-1,800 words at ~$0.03-$0.05 per article.
-- **Import path fragility** — Deep relative imports between `article-pipeline/` and `shared/` broke during esbuild bundling. Solved by creating a barrel export (`shared/src/index.ts`) and standardising all handler imports to a single `../../../shared/src/index.js` path.
+- **Import path fragility** — Deep relative imports between `article-pipeline/` and `shared/` broke during esbuild bundling. Solved by creating a barrel export (`shared/src/index.ts`) and standardising all handler imports to a single `../../../shared/src/index.js` path. Files at `src/agents/` depth (3 levels below `bedrock-applications/`) must use `../../../shared/src/` — using `../../` (2 levels) resolves to the non-existent `article-pipeline/shared/src/` instead.
+- **Centralised model registry** — All Bedrock model IDs are sourced from `infra/lib/config/shared/model-registry.ts`. When a model is deprecated (e.g. Haiku 3.5 → 4.5), change the constant once and all projects (ChatBot, Article Pipeline, Job Strategist, Self-Healing) pick up the new identifier. Environment variable validation wraps `process.env` reads in typed helper functions (e.g. `requireQaModel()`) to ensure TypeScript narrows the type to `string`.
 - **Missing S3 event notification** — The trigger Lambda was built to receive S3 events but no `addEventNotification` was wired in CDK. Uploading a draft to S3 did nothing until the notification was added to `pipeline-stack.ts`.
 
 ## Transferable Skills Demonstrated

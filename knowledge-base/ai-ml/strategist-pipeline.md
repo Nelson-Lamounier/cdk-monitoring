@@ -18,6 +18,8 @@ tags:
   - null-safety
   - defensive-parsing
   - cachePoint
+  - zod-validation
+  - runtime-type-safety
 related_docs:
   - ai-ml/bedrock-implementation.md
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
@@ -90,11 +92,11 @@ Each agent has a distinct reasoning requirement that maps to a specific Claude m
 
 | Agent | Model | Reasoning Profile | Token Budget | Why This Model |
 |-------|-------|--------------------|-------------|----------------|
-| Research | Haiku 3.5 | Extraction & classification | 8,192 / 4,096 thinking | Cost-efficient for structured data retrieval — no creative reasoning needed |
+| Research | Haiku 4.5 | Extraction & classification | 8,192 / 4,096 thinking | Cost-efficient for structured data retrieval with Adaptive Thinking support |
 | Strategist | Sonnet 4.6 | Complex analysis & writing | 16,384 / 8,192 thinking | Deep reasoning for 5-phase analysis, cover letter crafting, and resume tailoring |
 | Coach | Haiku 4.5 | Conversational preparation | 8,192 / 4,096 thinking | Fast, structured output for interview Q&A and coaching scenarios |
 
-The model selection is intentional: expensive models (Sonnet) are reserved for the phase requiring the deepest reasoning, whilst cheaper models (Haiku) handle extraction and conversational output. This reduces per-pipeline cost by ~60% compared to using Sonnet for all three agents.
+All model IDs are sourced from the centralised `infra/lib/config/shared/model-registry.ts` — when upgrading models, change the constant there and all projects pick up the new identifier. The model selection is intentional: expensive models (Sonnet) are reserved for the phase requiring the deepest reasoning, whilst cheaper models (Haiku) handle extraction and conversational output. This reduces per-pipeline cost by ~60% compared to using Sonnet for all three agents.
 
 ### Research Agent — KB Retrieval & Gap Analysis
 
@@ -163,18 +165,37 @@ All three agents enforce strict guardrails:
 
 ## Handler Decomposition
 
+### Zod Schema Security Architecture
+
+All handler external boundaries are protected by Zod runtime validation. This eliminates unsafe `as` type assertions on user-supplied data and DynamoDB records:
+
+| Schema | File | Validates |
+|--------|------|-----------|
+| `TriggerRequestSchema` | `schemas/trigger.schema.ts` | API Gateway request body (discriminated union on `operation`) |
+| `StructuredResumeDataSchema` | `schemas/resume-data.schema.ts` | Resume JSON structure from DynamoDB |
+| `AnalysisRecordSchema` | `schemas/dynamo-record.schema.ts` | DynamoDB ANALYSIS# record fields |
+| `ApplicationMetadataRecordSchema` | `schemas/dynamo-record.schema.ts` | DynamoDB METADATA record structure |
+| `FitRatingSchema` | `schemas/dynamo-record.schema.ts` | Enum validation for overallFitRating |
+| `ApplicationRecommendationSchema` | `schemas/dynamo-record.schema.ts` | Enum validation for recommendation |
+| `TriggerEnvSchema` | `schemas/environment.schema.ts` | Trigger Lambda environment variables |
+| `DdbHandlerEnvSchema` | `schemas/environment.schema.ts` | DDB handler environment variables |
+
+**Design principle:** Validate at the boundary, trust internally. All `process.env` reads and DynamoDB record accesses go through Zod schemas that fail fast with descriptive errors on cold start or first access.
+
 ### Trigger Handler — Dual-Operation Routing
 
-The single entry point receives requests from the Next.js admin dashboard and routes to the appropriate state machine:
+The single entry point receives requests from the Next.js admin dashboard and routes to the appropriate state machine. Request bodies are validated via `TriggerRequestSchema` — a Zod discriminated union on the `operation` field:
 
 | Operation | State Machine | Required Fields |
 |-----------|--------------|-----------------|
 | `analyse` | Analysis SM | `jobDescription`, `targetCompany`, `targetRole`, `resumeId` |
 | `coach` | Coaching SM | `applicationSlug`, `interviewStage` |
 
-For `analyse`, the trigger handler resolves `resumeId` to full `ResumeData` JSON, creates the initial METADATA record in DynamoDB (status: `analysing`), generates a URL-safe `applicationSlug`, and starts the Analysis State Machine.
+For `analyse`, the trigger handler resolves `resumeId` to full `ResumeData` JSON (Zod-validated via `StructuredResumeDataSchema`), creates the initial METADATA record in DynamoDB (status: `analysing`), generates a URL-safe `applicationSlug`, and starts the Analysis State Machine.
 
 For `coach`, it starts the Coaching State Machine directly — the Coach Loader will fetch the analysis from DynamoDB.
+
+`ZodError` exceptions are caught at the handler level and returned as `400 Bad Request` with structured validation error messages.
 
 ### Analysis Persist Handler — Pipeline Terminal Stage
 
@@ -188,6 +209,8 @@ The pipelineId-based versioning enables comparison across re-analysis iterations
 ### Coach Loader Handler — DynamoDB Context Fetch
 
 First Lambda in the Coaching Pipeline. Issues a DynamoDB `Query` with `begins_with(sk, 'ANALYSIS#')` and `ScanIndexForward: false` to retrieve the newest analysis record. This ensures coaching always uses the latest resume strategy.
+
+The DynamoDB record is validated via `AnalysisRecordSchema` (Zod) — replacing 8 unsafe `record['field'] as Type` casts with structured validation. Environment variables are validated via `DdbHandlerEnvSchema` on cold start.
 
 Throws a descriptive error if no analysis exists, directing the user to run the `analyse` operation first.
 
@@ -386,20 +409,41 @@ const techInv = research.technologyInventory;
 
 **Design principle:** Always provide defaults at the `parseResponse` boundary for any LLM-generated JSON, and add secondary safety guards in downstream consumers.
 
+---
+
+### Wrong relative import depth breaks cross-package type resolution
+
+**What happened:** TypeScript compilation of `qa-legacy-bridge.ts` failed with `Cannot find module '../../shared/src/types.js'`. The error affected all four `../../shared/src/` imports in the file.
+
+**Why:** The file is at `article-pipeline/src/agents/` — 3 directories below `bedrock-applications/`. The imports used `../../` (2 levels up, resolving to `article-pipeline/shared/src/`) instead of `../../../` (3 levels up, resolving to the correct `bedrock-applications/shared/src/`). Every other file in `src/agents/` and `src/handlers/` correctly used `../../../`.
+
+**Fix:** Updated all four import paths from `../../shared/src/` to `../../../shared/src/`. Also wrapped the `QA_MODEL` environment variable access in a `requireQaModel()` validation function to ensure TypeScript narrows the type to `string` (not `string | undefined`).
+
+---
+
+### Deprecated Haiku 3.5 model identifier causes Bedrock AgentExecutionError
+
+**What happened:** Bedrock `AgentExecutionError` failures on Article Pipeline Research and Job Strategist Research agents after EU cross-region inference profile validation was tightened.
+
+**Why:** The model registry contained `CLAUDE_HAIKU_3_5 = 'eu.anthropic.claude-haiku-3-5-20241022-v1:0'` which is not a valid EU cross-region inference profile. The identifier was used by `ARTICLE_RESEARCH` and `JOB_STRATEGIST_RESEARCH` role assignments.
+
+**Fix:** Removed `CLAUDE_HAIKU_3_5` entirely from `model-registry.ts`. Migrated both Research agent role assignments to `CLAUDE_HAIKU_4_5` (`eu.anthropic.claude-haiku-4-5-20251001-v1:0`), which has a verified EU cross-region inference profile. Removed the stale Haiku 3.5 pricing entry from `shared/src/metrics.ts`.
+
 ## Transferable Skills Demonstrated
 
 - **Iterative multi-agent AI orchestration** — Designing a two-pipeline architecture where analysis and coaching execute independently, enabling iterative refinement at each application lifecycle stage.
 - **Career-domain AI application** — Applying LLM capabilities to a real-world career strategy use case: job description analysis, gap identification, resume tailoring, and stage-specific interview preparation.
-- **Model selection optimisation** — Strategic assignment of Claude variants (Haiku 3.5 for extraction, Sonnet 4.6 for reasoning, Haiku 4.5 for coaching) to balance cost and quality across agents.
+- **Model selection optimisation** — Strategic assignment of Claude variants (Haiku 4.5 for extraction, Sonnet 4.6 for reasoning, Haiku 4.5 for coaching) to balance cost and quality across agents, sourced from a centralised model registry.
 - **Truthfulness-first prompt engineering** — Designing system prompts with strict guardrails against fabrication, source citation requirements, honest gap assessment, and override-if-true framing.
 - **Single-table DynamoDB design** — Implementing a multi-entity schema with composite keys and GSIs for efficient admin listing, with versioned analysis records for iteration comparison.
 - **Infrastructure testing** — 68 unit tests covering DynamoDB schema, Lambda configuration, Step Functions orchestration, and IAM permissions across both stacks.
 - **Defensive LLM response parsing** — Implementing belt-and-braces null-safety at both the parsing boundary and downstream consumers to handle incomplete or malformed AI-generated JSON.
+- **Zod boundary validation** — Eliminating unsafe `as` casts on all external data boundaries (API Gateway, DynamoDB, environment variables) with fail-fast Zod schemas that produce descriptive error messages.
 
 ## Summary
 
-This document analyses the Job Strategist multi-agent pipeline — an iterative, stage-driven AI application that uses two independent Step Functions state machines to separate resume analysis from interview coaching. The Analysis Pipeline (Research → Strategist → AnalysisPersist) produces comprehensive application strategies using a 5-phase framework. The Coaching Pipeline (CoachLoader → Coach) generates stage-specific interview preparation by loading existing analysis from DynamoDB. Three Claude models (Haiku 3.5, Sonnet 4.6, Haiku 4.5) are strategically assigned based on reasoning requirements. The pipeline includes defensive null-safety guards at both the parsing boundary and downstream consumers to handle incomplete LLM outputs. The pipeline is deployed as 2 CDK stacks (StrategistData + StrategistPipeline) with 6 Lambda functions, 68 unit tests, and 5 SSM parameter exports wired to the Next.js frontend via K8s secrets.
+This document analyses the Job Strategist multi-agent pipeline — an iterative, stage-driven AI application that uses two independent Step Functions state machines to separate resume analysis from interview coaching. The Analysis Pipeline (Research → Strategist → AnalysisPersist) produces comprehensive application strategies using a 5-phase framework. The Coaching Pipeline (CoachLoader → Coach) generates stage-specific interview preparation by loading existing analysis from DynamoDB. Two Claude models (Haiku 4.5 for research/coaching, Sonnet 4.6 for strategy) are strategically assigned from a centralised model registry based on reasoning requirements. All handler external boundaries are Zod-validated — no unsafe `as` casts on user input, DynamoDB records, or environment variables. The pipeline is deployed as 2 CDK stacks (StrategistData + StrategistPipeline) with 6 Lambda functions, 68 unit tests, and 5 SSM parameter exports wired to the Next.js frontend via K8s secrets.
 
 ## Keywords
 
-bedrock, step-functions, lambda, dynamodb, multi-agent, job-application, interview-coaching, converse-api, knowledge-base, career-strategy, gap-analysis, cover-letter, resume-tailoring, claude, strategist, iterative-pipeline, two-pipeline, analysis-persist, coach-loader, prompt-engineering, extended-thinking, haiku, sonnet, null-safety, defensive-parsing, cachePoint, system-content-block
+bedrock, step-functions, lambda, dynamodb, multi-agent, job-application, interview-coaching, converse-api, knowledge-base, career-strategy, gap-analysis, cover-letter, resume-tailoring, claude, strategist, iterative-pipeline, two-pipeline, analysis-persist, coach-loader, prompt-engineering, extended-thinking, haiku, sonnet, null-safety, defensive-parsing, cachePoint, system-content-block, zod, runtime-validation, model-registry, import-path-resolution
