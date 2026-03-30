@@ -14,7 +14,7 @@ related_docs:
   - kubernetes/adrs/argocd-over-flux.md
   - kubernetes/adrs/argo-rollouts-zero-downtime.md
   - kubernetes/bootstrap-pipeline.md
-last_updated: "2026-03-25"
+last_updated: "2026-03-30"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -22,7 +22,7 @@ status: accepted
 # CI/CD & GitOps Pipeline Implementation
 
 **Project:** cdk-monitoring
-**Last Updated:** 2026-03-25
+**Last Updated:** 2026-03-30
 
 ## Architecture
 
@@ -87,7 +87,8 @@ GitHub Actions (infrastructure)                ArgoCD (workloads)
 | `s3-bootstrap-artefacts.integration.test.ts` | Phase 3 (S3 Verify) | Bucket existence, file counts per S3 prefix |
 | `ssm-automation-runtime.integration.test.ts` | Phase 5 (SSM Verify) | Instance targeting, EC2 health, SSM Agent online |
 | `bluegreen.integration.test.ts` | Local/CI (Post-deploy) | Validate traffic segregation (Active vs Preview) in BlueGreen transition |
-| `edge-stack.integration.test.ts` | Local/CI (Post-deploy) | Verify ECR digest matching and S3 `BUILD_ID` retention sync |
+| `edge-stack.integration.test.ts` | Local/CI (Post-deploy) | Verify ECR digest matching, S3 `BUILD_ID` retention sync, and CloudFront auth cookie forwarding (behaviour ordering, CookieBehavior, wildcard cookies) |
+| `edge-stack.integration.test.ts` | `verify-edge-stack` CI job (Post-Edge deploy) | Validates live CloudFront distribution configuration: auth behaviours use `CookieBehavior: all`, API catch-all uses `none`, no wildcard cookies in OriginRequestPolicy, and auth paths listed before `/api/*` |
 
 Both layout tests (`s3` and `ssm`) use the vacuous-pass pattern — assertions pass when resources don't exist yet (Day-0 deployments).
 

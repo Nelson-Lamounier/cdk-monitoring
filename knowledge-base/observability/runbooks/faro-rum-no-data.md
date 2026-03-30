@@ -13,14 +13,14 @@ tags:
 related_docs:
   - observability/rum-dashboard-review.md
   - observability/observability-implementation.md
-last_updated: "2026-03-22"
+last_updated: "2026-03-30"
 author: Nelson Lamounier
 status: accepted
 ---
 
 # Runbook: Grafana Faro RUM Dashboard Shows "No Data"
 
-**Last Updated:** 2026-03-28
+**Last Updated:** 2026-03-30
 **Operator:** Solo — infrastructure owner
 
 ## Trigger
@@ -56,6 +56,32 @@ kubectl run loki-cli --image=grafana/logcli --rm -i --restart=Never -- \
 ```
 If logs are returned, but querying `{job="faro"}` returns nothing, the dashboard cannot find the data because it relies strictly on the `job="faro"` label.
 
+### 4. Check CORS Preflight at Ingress
+
+If the browser DevTools show the Faro SDK failing with CORS errors on `OPTIONS` preflight requests, the issue is at the Traefik ingress layer. The Alloy `cors_allowed_origins` only handles CORS for requests that *reach* the pod — Traefik may reject the preflight before it gets there.
+
+Verify the IngressRoute has a CORS middleware:
+```bash
+kubectl get middleware -n monitoring alloy-cors -o yaml
+```
+If missing, create a Traefik `Middleware` resource that handles `OPTIONS` preflight:
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: alloy-cors
+  namespace: monitoring
+spec:
+  headers:
+    accessControlAllowMethods: ["GET", "POST", "OPTIONS"]
+    accessControlAllowOriginList:
+      - "https://nelsonlamounier.com"
+      - "https://www.nelsonlamounier.com"
+    accessControlAllowHeaders: ["Content-Type", "x-faro-session-id"]
+    accessControlMaxAge: 86400
+```
+Then reference it in the alloy IngressRoute's `routes[].middlewares` array.
+
 ## Root Cause
 
 By default, the `faro.receiver` component in Grafana Alloy accepts telemetry payloads and forwards them to a `loki.write` component, but **it does not automatically inject the `job="faro"` label**.
@@ -81,7 +107,10 @@ In `kubernetes-app/platform/charts/monitoring/chart/templates/alloy/configmap.ya
       server {
         listen_address = "0.0.0.0"
         listen_port    = {{ .Values.alloy.service.faroPort }}
-        cors_allowed_origins = ["*"]
+        cors_allowed_origins = [
+          "https://nelsonlamounier.com",
+          "https://www.nelsonlamounier.com",
+        ]
       }
 
       output {

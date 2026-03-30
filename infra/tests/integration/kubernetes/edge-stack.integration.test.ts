@@ -29,10 +29,14 @@ import { execSync } from 'child_process';
 import {
     CloudFrontClient,
     GetDistributionConfigCommand,
+    GetCachePolicyCommand,
+    GetOriginRequestPolicyCommand,
 } from '@aws-sdk/client-cloudfront';
 import type {
     DistributionConfig,
     CacheBehavior,
+    CachePolicyConfig,
+    OriginRequestPolicyConfig,
 } from '@aws-sdk/client-cloudfront';
 import {
     ECRClient,
@@ -96,16 +100,21 @@ const ECR_PATHS = sharedEcrPaths(CDK_ENV);
 // =============================================================================
 
 /** Expected CloudFront behaviour count (excluding the default behaviour) */
-const EXPECTED_BEHAVIOUR_COUNT = 7;
+const EXPECTED_BEHAVIOUR_COUNT = 8;
 
 /**
  * Expected ordered path patterns matching the `additionalBehaviors` array
  * in edge-stack.ts. Order matters: CloudFront evaluates first match wins.
+ *
+ * CRITICAL: Auth-sensitive patterns (/api/auth/*, /admin/*, /api/admin/*)
+ * MUST appear BEFORE the /api/* catch-all. CloudFront evaluates behaviours
+ * in listed order (first match wins), NOT by path specificity.
  */
 const EXPECTED_BEHAVIOUR_ORDER = [
     CLOUDFRONT_PATH_PATTERNS.nextjs.static,   // /_next/static/*
     CLOUDFRONT_PATH_PATTERNS.nextjs.data,      // /_next/data/*
     CLOUDFRONT_PATH_PATTERNS.assets.images,    // /images/*
+    CLOUDFRONT_PATH_PATTERNS.assets.videos,    // /videos/*
     CLOUDFRONT_PATH_PATTERNS.authCallback,     // /api/auth/*
     CLOUDFRONT_PATH_PATTERNS.admin,            // /admin/*
     CLOUDFRONT_PATH_PATTERNS.adminApi,         // /api/admin/*
@@ -113,8 +122,31 @@ const EXPECTED_BEHAVIOUR_ORDER = [
 ] satisfies readonly string[];
 
 /** Indices for critical ordering assertions */
-const AUTH_CALLBACK_INDEX = 3;
-const API_CATCHALL_INDEX = 6;
+const AUTH_CALLBACK_INDEX = 4;
+const API_CATCHALL_INDEX = 7;
+
+/**
+ * Path patterns that require auth cookie forwarding.
+ * These behaviours MUST use the AuthNoCachePolicy (CookieBehavior: all)
+ * to allow Set-Cookie headers to pass through to the viewer.
+ */
+const AUTH_SENSITIVE_PATTERNS: Set<string> = new Set([
+    CLOUDFRONT_PATH_PATTERNS.authCallback,
+    CLOUDFRONT_PATH_PATTERNS.admin,
+    CLOUDFRONT_PATH_PATTERNS.adminApi,
+]);
+
+/**
+ * Expected CookieBehavior for auth-sensitive behaviours.
+ * Must be 'all' to allow Set-Cookie forwarding for CSRF double-submit.
+ */
+const EXPECTED_AUTH_COOKIE_BEHAVIOR = 'all';
+
+/**
+ * Expected CookieBehavior for the API catch-all.
+ * 'none' is correct here — public API routes don't need cookies.
+ */
+const EXPECTED_API_COOKIE_BEHAVIOR = 'none';
 
 /** S3-origin path patterns (should be routed to S3 OAC, not EIP) */
 const S3_ORIGIN_PATTERNS = new Set([
@@ -469,6 +501,113 @@ describe('CloudFront — Behaviour Ordering', () => {
         const behaviour = findBehaviourByPattern(behaviours, pattern);
         expect(behaviour).toBeDefined();
         expect(behaviour!.Compress).toBe(true);
+    });
+});
+
+// =============================================================================
+// SUITE 1b: CloudFront Auth Cookie Forwarding
+//
+// Post-deployment validation of the three CSRF root causes:
+//   1. Auth/admin behaviours must use CookieBehavior: all (not none)
+//   2. OriginRequestPolicy cookie names must contain no wildcards
+//   3. Auth behaviours must appear before /api/* catch-all
+//
+// These tests run against the LIVE distribution and will FAIL the CI
+// pipeline if any of the three root causes recur.
+// =============================================================================
+
+describe('CloudFront — Auth Cookie Forwarding', () => {
+    // Depends on: behaviours, distributionConfig populated in top-level beforeAll
+    // Cache/OriginRequest policies are loaded per-behaviour in this suite's beforeAll
+
+    /** Map of auth-sensitive pattern → resolved CachePolicyConfig */
+    let authCachePolicies: Map<string, CachePolicyConfig>;
+
+    /** Map of auth-sensitive pattern → resolved OriginRequestPolicyConfig */
+    let authOriginRequestPolicies: Map<string, OriginRequestPolicyConfig>;
+
+    /** CachePolicyConfig for the /api/* catch-all */
+    let apiCatchallCachePolicy: CachePolicyConfig | undefined;
+
+    beforeAll(async () => {
+        authCachePolicies = new Map();
+        authOriginRequestPolicies = new Map();
+
+        // Resolve CachePolicy and OriginRequestPolicy for each auth-sensitive behaviour
+        for (const behaviour of behaviours) {
+            const pattern = behaviour.PathPattern ?? '';
+
+            if (AUTH_SENSITIVE_PATTERNS.has(pattern)) {
+                // Resolve CachePolicy
+                const cpId = behaviour.CachePolicyId;
+                if (cpId) {
+                    const cpResponse = await cloudfront.send(
+                        new GetCachePolicyCommand({ Id: cpId }),
+                    );
+                    const config = cpResponse.CachePolicy?.CachePolicyConfig;
+                    if (config) authCachePolicies.set(pattern, config);
+                }
+
+                // Resolve OriginRequestPolicy
+                const orpId = behaviour.OriginRequestPolicyId;
+                if (orpId) {
+                    const orpResponse = await cloudfront.send(
+                        new GetOriginRequestPolicyCommand({ Id: orpId }),
+                    );
+                    const config = orpResponse.OriginRequestPolicy?.OriginRequestPolicyConfig;
+                    if (config) authOriginRequestPolicies.set(pattern, config);
+                }
+            }
+
+            // Resolve API catch-all CachePolicy
+            if (pattern === CLOUDFRONT_PATH_PATTERNS.api) {
+                const cpId = behaviour.CachePolicyId;
+                if (cpId) {
+                    const cpResponse = await cloudfront.send(
+                        new GetCachePolicyCommand({ Id: cpId }),
+                    );
+                    apiCatchallCachePolicy = cpResponse.CachePolicy?.CachePolicyConfig;
+                }
+            }
+        }
+    }, 30_000);
+
+    it.each(
+        Array.from(AUTH_SENSITIVE_PATTERNS).map((pattern) => ({ pattern })),
+    )('should use CookieBehavior "all" for auth-sensitive "$pattern"', ({ pattern }) => {
+        const policy = authCachePolicies.get(pattern);
+        expect(policy).toBeDefined();
+        const cookieBehavior = policy!.ParametersInCacheKeyAndForwardedToOrigin?.CookiesConfig?.CookieBehavior;
+        expect(cookieBehavior).toBe(EXPECTED_AUTH_COOKIE_BEHAVIOR);
+    });
+
+    it('should use CookieBehavior "none" for the /api/* catch-all', () => {
+        expect(apiCatchallCachePolicy).toBeDefined();
+        const cookieBehavior = apiCatchallCachePolicy!.ParametersInCacheKeyAndForwardedToOrigin?.CookiesConfig?.CookieBehavior;
+        expect(cookieBehavior).toBe(EXPECTED_API_COOKIE_BEHAVIOR);
+    });
+
+    it.each(
+        Array.from(AUTH_SENSITIVE_PATTERNS).map((pattern) => ({ pattern })),
+    )('should have no wildcard cookies in OriginRequestPolicy for "$pattern"', ({ pattern }) => {
+        const policy = authOriginRequestPolicies.get(pattern);
+        expect(policy).toBeDefined();
+        const cookies = policy!.CookiesConfig?.Cookies?.Items ?? [];
+        const wildcardCookies = cookies.filter((c) => c.includes('*') || c.includes('?'));
+        expect(wildcardCookies).toHaveLength(0);
+    });
+
+    it('should list all auth-sensitive patterns BEFORE the /api/* catch-all', () => {
+        const apiIndex = behaviours.findIndex(
+            (b) => b.PathPattern === CLOUDFRONT_PATH_PATTERNS.api,
+        );
+        expect(apiIndex).toBeGreaterThan(-1);
+
+        for (const pattern of AUTH_SENSITIVE_PATTERNS) {
+            const authIndex = behaviours.findIndex((b) => b.PathPattern === pattern);
+            expect(authIndex).toBeGreaterThan(-1);
+            expect(authIndex).toBeLessThan(apiIndex);
+        }
     });
 });
 

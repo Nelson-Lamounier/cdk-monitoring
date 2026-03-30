@@ -6,81 +6,110 @@ description: Synchronise the Knowledge Base after code changes, debugging, or im
 
 // turbo-all
 
-This workflow ensures the Knowledge Base stays in sync with the codebase after any session that modifies infrastructure, Kubernetes resources, observability, CI/CD, or application code.
+Keeps the Knowledge Base accurate after sessions that modify
+infrastructure, Kubernetes, observability, CI/CD, or application code.
 
-**Invoke with**: `/kb-sync` or when the agent detects significant code changes at end of a session.
+**Invoke with:** `/kb-sync` after code changes or at end of session.
 
 ---
 
 ## Step 1 — Identify What Changed
 
-Determine what code was modified in this session:
-
 ```bash
-# Show files changed since the last commit (unstaged + staged)
+# Unstaged + staged changes
 git diff --name-only HEAD
-# If already committed, show last commit
+# Or last commit
 git diff --name-only HEAD~1..HEAD
 ```
 
-If working from conversation context rather than git, review the session summary to identify affected code areas.
+If working from conversation context, review the session summary.
 
 ---
 
-## Step 2 — Consult the Code-to-KB Mapping
+## Step 2 — Map Changes to KB Documents
 
-Read the mapping file to find which KB documents are affected:
+Read `knowledge-base/.kb-map.yml` and cross-reference changed files
+against `code_paths` globs. Note the corresponding `kb_docs`.
 
-```
-knowledge-base/.kb-map.yml
-```
+**If no mapping exists:**
+> "⚠️ Unmapped code area: `<path>`. Adding to `.kb-map.yml`."
 
-Cross-reference the changed files against the `code_paths` globs. For each match, note the corresponding `kb_docs`.
+### Domain Boundaries
 
-**If no mapping exists for the changed code area**, flag it:
-> "⚠️ Unmapped code area: `<path>`. Consider adding a mapping to `.kb-map.yml`."
+Use these boundaries when deciding where content belongs:
 
----
-
-## Step 3 — Review Each Affected KB Document
-
-For each affected KB document, read it and determine:
-
-1. **Is the content still accurate?** Does the document describe the current state of the code?
-2. **Are there new capabilities/changes not documented?** (new endpoints, new stacks, changed configs)
-3. **Are there removed capabilities still documented?** (deleted services, deprecated patterns)
-
-### Quality Gates — Ask the User If Needed
-
-If you are uncertain about any of the following, **ask the user before updating**:
-
-- [ ] Is this a temporary experimental change or a permanent architectural decision?
-- [ ] Should this change be documented as a new ADR (architecture decision)?
-- [ ] Does this change affect the cost breakdown or security posture?
-- [ ] Are there runbooks that need updating for new failure modes?
+| Domain | Scope |
+|:---|:---|
+| `infrastructure` | CDK stacks, VPC, CloudFront, WAF, NLB, SGs, IAM, KMS |
+| `kubernetes` | Self-managed K8s, bootstrap, GitOps, Crossplane |
+| `observability` | Prometheus, Grafana, Loki, Tempo, Faro RUM |
+| `ai-ml` | Bedrock, Pinecone, self-healing agent |
+| `frontend` | Next.js deployment, Argo Rollouts, API Gateway |
+| `operations` | CI/CD, MCP servers, workflows |
+| `finops` | Cost breakdown, optimisation |
+| `career` | Professional development, certifications |
 
 ---
 
-## Step 4 — Update Existing KB Documents
+## Step 3 — Review Affected KB Documents
 
-For each affected document that needs changes:
+For each affected document, check:
 
-### 4a. Update Frontmatter
+1. **Accuracy** — does it describe the current code state?
+2. **Completeness** — are new capabilities documented?
+3. **Staleness** — are removed features still described?
+4. **Troubleshooting** — does a new resolved issue warrant a
+   troubleshooting entry (What? Why? Fix)?
+
+### Decision Gates (ask user if uncertain)
+
+- Temporary experiment or permanent architectural decision?
+- Should a new ADR be created?
+- Does this affect cost or security posture?
+- Are runbooks affected by new failure modes?
+
+---
+
+## Step 4 — Update Documents
+
+### 4a. Frontmatter
+
 ```yaml
-last_updated: "YYYY-MM-DD"  # Set to today's date
+last_updated: "YYYY-MM-DD"  # Today's date
 ```
 
-Update `tags:` if new technologies or services were introduced.
+Add/update `tags:` if new services were introduced.
 
-### 4b. Update Content Sections
-- Refresh prose to reflect current implementation
-- Update code snippets if they reference changed files
-- Ensure `## Summary` accurately describes the current state
-- Update `## Keywords` if new terms are relevant
+### 4b. Content
+
+- Refresh prose to match current implementation
+- Update code snippets referencing changed files
+- Ensure `## Summary` is accurate
+- Update `## Keywords` if new terms apply
 - Update `## Transferable Skills Demonstrated` if applicable
 
-### 4c. Regenerate Sidecar File
-After updating any KB document, regenerate its `.metadata.json` sidecar:
+### 4c. Troubleshooting Entries
+
+If a resolved production issue was part of this session, add a
+structured troubleshooting entry under `## Troubleshooting` in the
+relevant domain document. Use this format:
+
+```markdown
+### <Short Title>
+
+**What happened:** <Observable symptom — what the user saw>
+
+**Why:** <Root cause — why the system behaved that way>
+
+**Fix:** <What was changed to resolve it permanently>
+```
+
+Each entry should be self-contained — a developer hitting the same
+issue should be able to understand and resolve it from this entry alone.
+
+### 4d. Sidecar Metadata
+
+Regenerate the `.metadata.json` sidecar for each updated document:
 
 ```json
 {
@@ -95,27 +124,25 @@ After updating any KB document, regenerate its `.metadata.json` sidecar:
 
 Save as `<filename>.md.metadata.json` alongside the document.
 
-### 4d. Update Cross-References
-If the document references other KB docs via `related_docs:` in frontmatter, verify those paths still exist. Update if necessary.
+### 4e. Cross-References
+
+Verify `related_docs:` paths in frontmatter still exist. Update if
+files were moved or renamed.
 
 ---
 
-## Step 5 — Create New KB Documents (If Needed)
+## Step 5 — Create New Documents (If Needed)
 
-If the code changes introduce an **entirely new service, stack, or capability** that no existing KB document covers:
+Only when code changes introduce an entirely new service, stack, or
+capability not covered by any existing KB document.
 
 ### 5a. Ask the User
-> "I've identified a new code area (`<path>`) that isn't covered by any KB document. What type of document should I create?"
 
-Offer options:
-- **Implementation doc** — describes how it works
-- **ADR** — records why a decision was made
-- **Runbook** — troubleshooting steps
-- **Architecture doc** — high-level design
+> "New code area `<path>` has no KB doc. What type?"
 
-### 5b. Use the Document Template
+Options: Implementation, ADR, Runbook, Architecture.
 
-Every new KB document MUST include:
+### 5b. Document Template
 
 ```markdown
 ---
@@ -134,54 +161,60 @@ status: active
 
 # <Title>
 
-<Introduction paragraph>
+<Introduction>
 
-## <Main Sections>
+## <Sections>
 
-<Content>
+## Troubleshooting
+
+### <Issue Title>
+
+**What happened:** <symptom>
+
+**Why:** <root cause>
+
+**Fix:** <resolution>
 
 ## Transferable Skills Demonstrated
 
-- **<Skill>** — <how it's demonstrated in this document>
+- **<Skill>** — <demonstration>
 
 ## Summary
 
-<2-3 sentence summary of what this document covers>
+<2-3 sentences>
 
 ## Keywords
 
-<comma-separated list of searchable terms>
+<comma-separated searchable terms>
 ```
 
-### 5c. Create the Sidecar
-Generate the `.metadata.json` file alongside the new document.
+### 5c. Post-Creation
 
-### 5d. Update the Mapping
-Add the new document to `knowledge-base/.kb-map.yml` under the appropriate code paths.
-
-### 5e. Update index.md
-Add the new document to `knowledge-base/index.md` in the correct domain section.
+1. Create `.metadata.json` sidecar
+2. Add mapping to `knowledge-base/.kb-map.yml`
+3. Add entry to `knowledge-base/index.md`
 
 ---
 
 ## Step 6 — Validate
 
-Run the validation checks to ensure all documents pass:
-
 ```bash
 cd knowledge-base
 # Check: every .md has frontmatter
-find . -name '*.md' -not -path './scripts/*' -not -name 'README.md' -not -name 'index.md' | while read f; do
+find . -name '*.md' -not -path './scripts/*' \
+  -not -name 'README.md' -not -name 'index.md' | while read f; do
   head -1 "$f" | grep -q '^---$' || echo "MISSING FRONTMATTER: $f"
 done
 
 # Check: every .md has a sidecar
-find . -name '*.md' -not -path './scripts/*' -not -name 'README.md' | while read f; do
+find . -name '*.md' -not -path './scripts/*' \
+  -not -name 'README.md' | while read f; do
   [ -f "${f}.metadata.json" ] || echo "MISSING SIDECAR: $f"
 done
 
 # Check: required sections
-for f in $(find . -name '*.md' -not -path './scripts/*' -not -name 'README.md' -not -name 'index.md'); do
+for f in $(find . -name '*.md' -not -path './scripts/*' \
+  -not -name 'README.md' -not -name 'index.md'); do
   grep -q '## Summary' "$f" || echo "MISSING SUMMARY: $f"
   grep -q '## Keywords' "$f" || echo "MISSING KEYWORDS: $f"
 done
@@ -189,28 +222,28 @@ done
 
 ---
 
-## Step 7 — Update Knowledge Base(At repository Root Directory) Items (Major Changes Only)
+## Step 7 — Update Antigravity Knowledge Items (Major Only)
 
-If this session involved **significant architectural changes** (new stacks, major refactoring, deleted services), update the Antigravity knowledge items:
+Only for significant architectural changes (new stacks, major
+refactoring, deleted services). Skip for minor updates.
 
-1. Check if the relevant KI exists in `~/.gemini/antigravity/knowledge/`
-2. Update the `metadata.json` summary and timestamps
-3. Update the relevant artifact files
-
-**Skip this step for minor content updates** (typo fixes, small config changes).
+1. Check `~/.gemini/antigravity/knowledge/` for relevant KI
+2. Update `metadata.json` summary and timestamps
+3. Update relevant artifact files
 
 ---
 
-## Summary Checklist
+## Summary Report
 
-At the end of a `/kb-sync` run, report:
+At the end of every `/kb-sync`, output:
 
-```
+```text
 === KB Sync Summary ===
-📝 Documents updated:    <N>
-📄 Documents created:    <N>
-🗺️ Mappings added:       <N>
-📎 Sidecars regenerated: <N>
+📝 Documents updated:       <N>
+📄 Documents created:       <N>
+🗺️  Mappings added:          <N>
+📎 Sidecars regenerated:    <N>
+🔧 Troubleshooting entries: <N>
 🧠 Knowledge items updated: <N>
-⚠️  Unmapped code areas:  <list>
+⚠️  Unmapped code areas:     <list>
 ```

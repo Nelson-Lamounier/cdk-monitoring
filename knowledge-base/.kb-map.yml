@@ -39,10 +39,13 @@ mappings:
       - "infra/lib/stacks/kubernetes/edge-stack.ts"
       - "infra/lib/stacks/kubernetes/base-stack.ts"
       - "infra/lib/stacks/shared/security-baseline-stack.ts"
+      - "infra/lib/constructs/networking/cloudfront.ts"
+      - "infra/lib/config/nextjs.ts"
     kb_docs:
       - "infrastructure/networking-implementation.md"
       - "infrastructure/security-implementation.md"
       - "infrastructure/security-posture.md"
+      - "frontend/frontend-integration.md"
 
   - name: "Infrastructure Topology"
     code_paths:
@@ -211,6 +214,7 @@ mappings:
     code_paths:
       - ".github/workflows/**"
       - "scripts/deploy-*"
+      - "infra/tests/integration/**/*.ts"
     kb_docs:
       - "operations/ci-cd-implementation.md"
 

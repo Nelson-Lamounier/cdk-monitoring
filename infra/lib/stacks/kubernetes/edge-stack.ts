@@ -452,6 +452,25 @@ export class KubernetesEdgeStack extends cdk.Stack {
 
         const noCachePolicy = cloudfront.CachePolicy.CACHING_DISABLED;
 
+        // Auth-aware no-cache policy: MaxTTL must be >0 so CloudFront permits
+        // CookieBehavior.ALL — but the origin sends Cache-Control: no-store,
+        // so CloudFront will never cache an actual response.  The critical
+        // difference from CACHING_DISABLED is that CookieBehavior.ALL causes
+        // CloudFront to forward Set-Cookie response headers back to the viewer,
+        // which is required for the Auth.js CSRF double-submit flow.
+        const authNoCachePolicy = new cloudfront.CachePolicy(this, 'AuthNoCachePolicy', {
+            cachePolicyName: `${envName}-${namePrefix}-auth-no-cache`,
+            comment: 'No caching — passes Set-Cookie headers for Auth.js CSRF/session flow',
+            defaultTtl: cdk.Duration.seconds(0),
+            maxTtl: cdk.Duration.seconds(1),
+            minTtl: cdk.Duration.seconds(0),
+            cookieBehavior: cloudfront.CacheCookieBehavior.all(),
+            queryStringBehavior: cloudfront.CacheQueryStringBehavior.all(),
+            headerBehavior: cloudfront.CacheHeaderBehavior.none(),
+            enableAcceptEncodingGzip: false,
+            enableAcceptEncodingBrotli: false,
+        });
+
         // Origin Request Policy (forwarded to Traefik/EIP)
         const eipOriginRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'EipOriginRequestPolicy', {
             originRequestPolicyName: `${envName}-${namePrefix}-eip-origin`,
@@ -531,34 +550,34 @@ export class KubernetesEdgeStack extends cdk.Stack {
                 {
                     pathPattern: CLOUDFRONT_PATH_PATTERNS.authCallback,
                     origin: eipOrigin,
-                    cachePolicy: noCachePolicy,
+                    cachePolicy: authNoCachePolicy,
                     originRequestPolicy: adminOriginRequestPolicy,
                     viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
                     compress: false,
-                    description: 'NextAuth.js auth callbacks (no caching, cookies forwarded)',
+                    description: 'NextAuth.js auth callbacks (no caching, Set-Cookie forwarded)',
                 },
                 // Admin pages — caching disabled, cookies forwarded for session validation
                 {
                     pathPattern: CLOUDFRONT_PATH_PATTERNS.admin,
                     origin: eipOrigin,
-                    cachePolicy: noCachePolicy,
+                    cachePolicy: authNoCachePolicy,
                     originRequestPolicy: adminOriginRequestPolicy,
                     viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
                     compress: true,
-                    description: 'Admin pages (no caching, cookies forwarded for auth)',
+                    description: 'Admin pages (no caching, Set-Cookie forwarded for auth)',
                 },
                 // Admin API routes — caching disabled, cookies forwarded for session validation
                 {
                     pathPattern: CLOUDFRONT_PATH_PATTERNS.adminApi,
                     origin: eipOrigin,
-                    cachePolicy: noCachePolicy,
+                    cachePolicy: authNoCachePolicy,
                     originRequestPolicy: adminOriginRequestPolicy,
                     viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
                     compress: true,
-                    description: 'Admin API routes (no caching, cookies forwarded for auth)',
+                    description: 'Admin API routes (no caching, Set-Cookie forwarded for auth)',
                 },
                 // API routes — general (catch-all for /api/* after more specific patterns above)
                 {

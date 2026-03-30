@@ -49,6 +49,99 @@ export const DYNAMO_TABLE_STEM = 'personal-portfolio';
 /** S3 assets bucket purpose stem (used by S3BucketConstruct) */
 export const ASSETS_BUCKET_STEM = 'article-assets';
 
+// =============================================================================
+// NEXTAUTH.JS COOKIE CONSTANTS
+// =============================================================================
+
+/**
+ * NextAuth.js (Auth.js v5) cookies forwarded by CloudFront to the origin.
+ *
+ * CloudFront OriginRequestPolicy has a hard limit of **10 cookies**.
+ * We include both `__Secure-`/`__Host-` prefixed variants (used when
+ * the browser sees HTTPS) and non-prefixed variants (used when the
+ * origin connection is HTTP — which is the case here because CloudFront
+ * connects to Traefik via HTTP_ONLY).
+ *
+ * Dropped to stay within the 10-cookie limit:
+ * - `__Secure-authjs.nonce` / `authjs.nonce` — transient, only used
+ *   during the initial OAuth redirect and consumed immediately.
+ *
+ * @see https://authjs.dev/getting-started/deployment#cookies
+ */
+export const AUTH_COOKIES = [
+    '__Secure-authjs.session-token',
+    '__Host-authjs.csrf-token',
+    'authjs.callback-url',
+    '__Secure-authjs.callback-url',
+    '__Secure-authjs.state',
+    '__Secure-authjs.pkce.code_verifier',
+    'authjs.session-token',
+    'authjs.csrf-token',
+    'authjs.state',
+    'authjs.pkce.code_verifier',
+] as const;
+
+/**
+ * Maximum number of cookies allowed in a CloudFront OriginRequestPolicy allowList.
+ * AWS enforces a hard limit of 10 cookies per policy.
+ *
+ * @see https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/controlling-origin-requests.html
+ */
+const MAX_CLOUDFRONT_COOKIES = 10;
+
+/**
+ * Validate AUTH_COOKIES at module load time.
+ *
+ * Guards against the three root causes of the CSRF regression:
+ * 1. **Wildcard patterns** — CloudFront treats `*authjs*` as a literal string,
+ *    not a glob, resulting in zero cookies forwarded.
+ * 2. **Exceeding the 10-cookie limit** — AWS will reject the OriginRequestPolicy.
+ * 3. **Duplicate entries** — waste cookie slots and indicate a copy-paste error.
+ *
+ * @throws Error if any validation fails (caught at `cdk synth` time)
+ */
+function validateAuthCookies(): void {
+    // Rule 1: No wildcard characters
+    const wildcardCookies = AUTH_COOKIES.filter(
+        (c) => c.includes('*') || c.includes('?'),
+    );
+    if (wildcardCookies.length > 0) {
+        throw new Error(
+            `AUTH_COOKIES contains wildcard characters — CloudFront treats these as ` +
+            `literal strings, not globs. Remove wildcards from: ${wildcardCookies.join(', ')}`,
+        );
+    }
+
+    // Rule 2: Max 10 cookies (CloudFront hard limit)
+    if (AUTH_COOKIES.length > MAX_CLOUDFRONT_COOKIES) {
+        throw new Error(
+            `AUTH_COOKIES has ${AUTH_COOKIES.length} entries but CloudFront ` +
+            `OriginRequestPolicy allows a maximum of ${MAX_CLOUDFRONT_COOKIES}. ` +
+            `Remove ${AUTH_COOKIES.length - MAX_CLOUDFRONT_COOKIES} cookie(s).`,
+        );
+    }
+
+    // Rule 3: No duplicates
+    const seen = new Set<string>();
+    const duplicates: string[] = [];
+    for (const cookie of AUTH_COOKIES) {
+        if (seen.has(cookie)) {
+            duplicates.push(cookie);
+        }
+        seen.add(cookie);
+    }
+    if (duplicates.length > 0) {
+        throw new Error(
+            `AUTH_COOKIES contains duplicate entries: ${duplicates.join(', ')}. ` +
+            `Each cookie name must be unique.`,
+        );
+    }
+}
+
+// Execute validation at module load time — fails during `cdk synth` if
+// cookies are misconfigured, preventing a bad deploy from reaching AWS.
+validateAuthCookies();
+
 /**
  * Resolved resource names for a given environment.
  */
@@ -673,9 +766,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
             errorResponseTtl: cdk.Duration.seconds(60),
             cacheHeaders: { dynamic: ['Accept', 'Accept-Language'], api: ['Accept', 'Accept-Language', 'Authorization', 'Content-Type'] },
             originRequestHeaders: ['Host', 'CloudFront-Viewer-Country', 'CloudFront-Is-Mobile-Viewer', 'CloudFront-Is-Desktop-Viewer', 'User-Agent', 'Content-Type'],
-            adminCookies: [
-                '*authjs*',
-            ],
+            adminCookies: [...AUTH_COOKIES],
         },
         ecsTask: {
             logRetention: logs.RetentionDays.ONE_MONTH,
@@ -765,20 +856,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
             errorResponseTtl: cdk.Duration.seconds(60),
             cacheHeaders: { dynamic: ['Accept', 'Accept-Language'], api: ['Accept', 'Accept-Language', 'Authorization', 'Content-Type'] },
             originRequestHeaders: ['Host', 'CloudFront-Viewer-Country', 'CloudFront-Is-Mobile-Viewer', 'CloudFront-Is-Desktop-Viewer', 'User-Agent', 'Content-Type'],
-            adminCookies: [
-                '__Secure-authjs.session-token',
-                '__Host-authjs.csrf-token',
-                'authjs.callback-url',
-                '__Secure-authjs.callback-url',
-                '__Secure-authjs.state',
-                '__Secure-authjs.pkce.code_verifier',
-                '__Secure-authjs.nonce',
-                'authjs.session-token',
-                'authjs.csrf-token',
-                'authjs.state',
-                'authjs.pkce.code_verifier',
-                'authjs.nonce',
-            ],
+            adminCookies: [...AUTH_COOKIES],
         },
         ecsTask: {
             logRetention: logs.RetentionDays.THREE_MONTHS,
@@ -868,20 +946,7 @@ function buildNextJsConfigs(): Record<DeployableEnvironment, NextJsConfigs> {
             errorResponseTtl: cdk.Duration.seconds(60),
             cacheHeaders: { dynamic: ['Accept', 'Accept-Language'], api: ['Accept', 'Accept-Language', 'Authorization', 'Content-Type'] },
             originRequestHeaders: ['Host', 'CloudFront-Viewer-Country', 'CloudFront-Is-Mobile-Viewer', 'CloudFront-Is-Desktop-Viewer', 'User-Agent', 'Content-Type'],
-            adminCookies: [
-                '__Secure-authjs.session-token',
-                '__Host-authjs.csrf-token',
-                'authjs.callback-url',
-                '__Secure-authjs.callback-url',
-                '__Secure-authjs.state',
-                '__Secure-authjs.pkce.code_verifier',
-                '__Secure-authjs.nonce',
-                'authjs.session-token',
-                'authjs.csrf-token',
-                'authjs.state',
-                'authjs.pkce.code_verifier',
-                'authjs.nonce',
-            ],
+            adminCookies: [...AUTH_COOKIES],
         },
         ecsTask: {
             logRetention: logs.RetentionDays.ONE_YEAR,  // Compliance requirement

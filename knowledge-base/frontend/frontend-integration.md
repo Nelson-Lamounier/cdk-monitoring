@@ -4,8 +4,6 @@ doc_type: code-analysis
 domain: frontend
 tags:
   - nextjs
-  - cloudfront
-  - waf
   - argo-rollouts
   - bluegreen
   - api-gateway
@@ -15,7 +13,7 @@ related_docs:
   - kubernetes/adrs/traefik-over-nginx-alb.md
   - kubernetes/adrs/argo-rollouts-zero-downtime.md
   - infrastructure/networking-implementation.md
-last_updated: "2026-03-23"
+last_updated: "2026-03-30"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -26,7 +24,7 @@ status: accepted
 
 The Next.js portfolio frontend is a separate application repository deployed into the Kubernetes cluster via ArgoCD. This document covers the **infrastructure integration layer** — the CDK-managed resources, deployment pipeline, and service mesh that connect the frontend to the AWS backend.
 
-> **Scope:** This document does not cover React components, UI styling, or Next.js application code. It focuses on the infrastructure seams that make deployment, runtime, and operations work.
+> **Scope:** This document covers deployment integration — how the frontend connects to CloudFront, ArgoCD, and the API backend. For core CloudFront/WAF infrastructure (behaviour ordering, cache policies, WAF rules, compile-time guardrails), see [Networking Implementation](../infrastructure/networking-implementation.md).
 
 ## Architecture
 
@@ -38,7 +36,10 @@ CloudFront (us-east-1) — HTTPS termination, WAF, security headers
     ├── /_next/static/*   → S3 OAC origin (immutable assets, 1yr TTL)
     ├── /_next/data/*     → S3 OAC origin (ISR data files)
     ├── /images/*         → S3 OAC origin (article images)
-    └── /api/*            → EIP origin (no caching)
+    ├── /api/auth/*       → EIP origin (AuthNoCachePolicy — CookieBehavior: all)
+    ├── /api/admin/*      → EIP origin (AuthNoCachePolicy — CookieBehavior: all)
+    ├── /api/*            → EIP origin (CachingDisabled — no cookies)
+    └── /admin/*          → EIP origin (AuthNoCachePolicy — CookieBehavior: all)
     ↓
 EIP (52.18.73.218, eu-west-1) → Traefik DaemonSet (hostNetwork)
     ↓
@@ -100,7 +101,8 @@ K8s Namespace: nextjs-app
 |:---|:---|:---|:---|
 | Static Assets | 1 year default, no headers/cookies | Gzip + Brotli | `/_next/static/*`, `/images/*` |
 | Dynamic Content | ISR default, honours origin `Cache-Control` | Gzip + Brotli | `/_next/data/*`, default behaviour |
-| No Cache | Disabled | Off | `/api/*` routes |
+| No Cache | Disabled | Off | `/api/*` routes (CookieBehavior: none) |
+| Auth No Cache | `MaxTTL: 1`, `DefaultTTL: 0`, `CookieBehavior: all` | Off | `/api/auth/*`, `/api/admin/*`, `/admin/*` — preserves `Set-Cookie` headers |
 
 ### Live Resources (from SSM Discovery)
 

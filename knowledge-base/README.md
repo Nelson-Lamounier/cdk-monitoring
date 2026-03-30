@@ -38,7 +38,7 @@ knowledge-base/
 ├── ai-ml/                          # Bedrock, self-healing agent
 │   ├── bedrock-implementation.md
 │   └── self-healing-agent.md
-├── frontend/                       # Next.js, CloudFront
+├── frontend/                       # Next.js deployment, integration
 │   └── frontend-integration.md
 ├── operations/                     # CI/CD, MCP tooling
 │   ├── adrs/                       # Operations ADRs
@@ -97,11 +97,11 @@ Every document in this knowledge base **must** include:
 
 | Domain | Folder | Description |
 |:---|:---|:---|
-| `infrastructure` | `infrastructure/` | CDK stacks, VPC, IAM, KMS, GuardDuty |
+| `infrastructure` | `infrastructure/` | CDK stacks, VPC, CloudFront, WAF, IAM, KMS |
 | `kubernetes` | `kubernetes/` | Self-managed K8s, bootstrap, GitOps, Crossplane |
 | `observability` | `observability/` | Prometheus, Grafana, Loki, Tempo, RUM |
 | `ai-ml` | `ai-ml/` | Bedrock, Pinecone, self-healing agent |
-| `frontend` | `frontend/` | Next.js, CloudFront, WAF |
+| `frontend` | `frontend/` | Next.js deployment, Argo Rollouts, API Gateway |
 | `operations` | `operations/` | CI/CD, MCP servers |
 | `finops` | `finops/` | Cost breakdown, optimisation |
 | `career` | `career/` | Professional development, certifications |

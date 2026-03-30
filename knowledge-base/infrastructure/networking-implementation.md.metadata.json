@@ -2,7 +2,8 @@
   "metadataAttributes": {
     "doc_type": "code-analysis",
     "domain": "infrastructure",
-    "tags": "vpc,security-groups,nlb,traefik,route53,cloudfront,calico,networking",
+    "title": "Networking Implementation — CloudFront, WAF, VPC, NLB, Traefik",
+    "tags": "cloudfront,waf,vpc,security-groups,nlb,traefik,route53,calico,networking",
     "status": "accepted"
   }
 }

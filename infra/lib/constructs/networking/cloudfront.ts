@@ -370,6 +370,11 @@ export class CloudFrontConstruct extends Construct {
         }
 
         // =====================================================================
+        // BEHAVIOUR ORDERING VALIDATION
+        // =====================================================================
+        CloudFrontConstruct.validateBehaviourOrdering(additionalBehaviors);
+
+        // =====================================================================
         // BUILD ERROR RESPONSES
         // =====================================================================
         const errorResponseConfigs: cloudfront.ErrorResponse[] = errorResponses.map((err) => ({
@@ -455,5 +460,43 @@ export class CloudFrontConstruct extends Construct {
             },
             cdk.Stack.of(this),
         );
+    }
+
+    // =========================================================================
+    // PRIVATE VALIDATION HELPERS
+    // =========================================================================
+
+    /**
+     * Validate that no catch-all behaviour pattern shadows a more-specific
+     * sub-path pattern later in the list.
+     *
+     * CloudFront evaluates `additionalBehaviors` in listed order (first match
+     * wins), NOT by path specificity. If `/api/*` appears before `/api/auth/*`,
+     * the auth behaviour never matches — causing CSRF cookie stripping.
+     *
+     * @param behaviors - The behaviours array in insertion order
+     * @throws Error if a catch-all shadows a more-specific sub-path
+     */
+    private static validateBehaviourOrdering(behaviors: readonly AdditionalBehaviorConfig[]): void {
+        const patterns = behaviors.map((b) => b.pathPattern);
+        for (let i = 0; i < patterns.length; i++) {
+            const current = patterns[i];
+            // Only check patterns that end with /* (catch-all wildcards)
+            if (!current.endsWith('/*')) continue;
+
+            const prefix = current.slice(0, -1); // e.g. '/api/*' → '/api/'
+            for (let j = i + 1; j < patterns.length; j++) {
+                const later = patterns[j];
+                if (later.startsWith(prefix) && later !== current) {
+                    throw new Error(
+                        `CloudFront behaviour ordering error: catch-all pattern ` +
+                        `"${current}" (index ${i}) appears before more-specific ` +
+                        `"${later}" (index ${j}). CloudFront uses first-match-wins ` +
+                        `ordering — the specific pattern will never match. ` +
+                        `Move "${later}" before "${current}" in the additionalBehaviors array.`,
+                    );
+                }
+            }
+        }
     }
 }

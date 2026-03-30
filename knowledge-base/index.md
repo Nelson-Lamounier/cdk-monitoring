@@ -7,7 +7,7 @@ tags:
   - navigation
   - document-graph
   - table-of-contents
-last_updated: "2026-03-29"
+last_updated: "2026-03-30"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -23,7 +23,7 @@ Core AWS infrastructure: CDK stacks, VPC networking, security, and live resource
 | Document | Type | Description |
 |:---|:---|:---|
 | [Stack Overview](infrastructure/stack-overview.md) | Architecture | 12-stack CDK architecture across K8s, compute, AI/ML, and edge |
-| [Networking Implementation](infrastructure/networking-implementation.md) | Code Analysis | VPC, security groups, NLB, Route 53, and traffic flow |
+| [Networking Implementation](infrastructure/networking-implementation.md) | Code Analysis | CloudFront, WAF, VPC, security groups, NLB, Traefik, traffic flow |
 | [Security Implementation](infrastructure/security-implementation.md) | Code Analysis | IAM, GuardDuty, KMS, IMDSv2, CDK-nag compliance |
 | [Infrastructure Topology](infrastructure/infrastructure-topology.md) | Live Infra | Network flow map, VPC layout, 4-node cluster topology |
 | [AWS Resource Inventory](infrastructure/aws-resource-inventory.md) | Live Infra | Snapshot inventory of all deployed AWS resources |
@@ -75,7 +75,7 @@ Next.js application infrastructure and deployment.
 
 | Document | Type | Description |
 |:---|:---|:---|
-| [Frontend Integration](frontend/frontend-integration.md) | Code Analysis | CloudFront edge, WAF, Argo Rollouts, API Gateway |
+| [Frontend Integration](frontend/frontend-integration.md) | Code Analysis | Next.js deployment, Argo Rollouts, API Gateway |
 
 ## Operations (2 documents)
 
