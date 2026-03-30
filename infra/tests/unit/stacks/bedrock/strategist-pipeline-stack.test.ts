@@ -2,15 +2,15 @@
  * @format
  * Strategist Pipeline Stack Unit Tests
  *
- * Tests for the StrategistPipelineStack (Multi-Agent Step Functions):
- * - Lambda functions (Research, Strategist, Coach, Trigger) with correct runtimes
- * - Step Functions state machine with correct naming
+ * Tests for the StrategistPipelineStack (Iterative Multi-Agent Step Functions):
+ * - Lambda functions (Research, Strategist, AnalysisPersist, CoachLoader, Coach, Trigger)
+ * - Two Step Functions state machines (Analysis + Coaching)
  * - SQS Dead Letter Queue with SSL enforcement
  * - IAM permissions (Bedrock InvokeModel, DynamoDB access)
- * - SSM parameter exports (state machine ARN, trigger function ARN)
+ * - SSM parameter exports (analysis SM ARN, coaching SM ARN, trigger function ARN)
  * - X-Ray tracing enabled on all Lambdas
- * - CloudWatch log groups for all Lambdas and state machine
- * - Public properties (stateMachine, triggerFunction, pipelineDlq)
+ * - CloudWatch log groups for all Lambdas and state machines
+ * - Public properties (analysisStateMachine, coachingStateMachine, triggerFunction, pipelineDlq)
  */
 
 import { Match, Template } from 'aws-cdk-lib/assertions';
@@ -31,17 +31,18 @@ import {
 const NAME_PREFIX = 'bedrock-development';
 const TEST_BUCKET_NAME = `${NAME_PREFIX}-kb-data`;
 const TABLE_NAME = `${NAME_PREFIX}-job-strategist`;
-const CONTENT_TABLE_NAME = `${NAME_PREFIX}-ai-content`;
 const TEST_KB_ID = 'test-kb-id-12345';
 const TEST_KB_ARN = 'arn:aws:bedrock:eu-west-1:123456789012:knowledge-base/test-kb-id-12345';
 
-/** Lambda function count: Research + Strategist + Coach + Trigger = 4 */
-const EXPECTED_LAMBDA_COUNT = 4;
+/** Lambda function count: Research + Strategist + AnalysisPersist + CoachLoader + Coach + Trigger = 6 */
+const EXPECTED_LAMBDA_COUNT = 6;
 
 /** Expected Lambda function names */
 const LAMBDA_NAMES = {
     research: `${NAME_PREFIX}-strategist-research`,
     strategist: `${NAME_PREFIX}-strategist-writer`,
+    analysisPersist: `${NAME_PREFIX}-strategist-analysis-persist`,
+    coachLoader: `${NAME_PREFIX}-strategist-coach-loader`,
     coach: `${NAME_PREFIX}-strategist-coach`,
     trigger: `${NAME_PREFIX}-strategist-trigger`,
 } as const;
@@ -75,7 +76,6 @@ const DEFAULT_PROPS: StrategistPipelineStackProps = {
     knowledgeBaseId: TEST_KB_ID,
     knowledgeBaseArn: TEST_KB_ARN,
     environmentName: 'development',
-    contentTableName: CONTENT_TABLE_NAME,
     env: TEST_ENV_EU,
 };
 
@@ -115,7 +115,7 @@ describe('StrategistPipelineStack', () => {
     describe('Lambda Functions', () => {
         const { template } = createPipelineStack();
 
-        it('should create exactly 4 Lambda functions', () => {
+        it('should create exactly 6 Lambda functions', () => {
             template.resourceCountIs('AWS::Lambda::Function', EXPECTED_LAMBDA_COUNT);
         });
 
@@ -128,6 +128,18 @@ describe('StrategistPipelineStack', () => {
         it('should create the Strategist Lambda with correct name', () => {
             template.hasResourceProperties('AWS::Lambda::Function', {
                 FunctionName: LAMBDA_NAMES.strategist,
+            });
+        });
+
+        it('should create the Analysis Persist Lambda with correct name', () => {
+            template.hasResourceProperties('AWS::Lambda::Function', {
+                FunctionName: LAMBDA_NAMES.analysisPersist,
+            });
+        });
+
+        it('should create the Coach Loader Lambda with correct name', () => {
+            template.hasResourceProperties('AWS::Lambda::Function', {
+                FunctionName: LAMBDA_NAMES.coachLoader,
             });
         });
 
@@ -275,16 +287,22 @@ describe('StrategistPipelineStack', () => {
     // =========================================================================
     // Step Functions — State Machine
     // =========================================================================
-    describe('Step Functions State Machine', () => {
+    describe('Step Functions State Machines', () => {
         const { template } = createPipelineStack();
 
-        it('should create exactly 1 state machine', () => {
-            template.resourceCountIs('AWS::StepFunctions::StateMachine', 1);
+        it('should create exactly 2 state machines', () => {
+            template.resourceCountIs('AWS::StepFunctions::StateMachine', 2);
         });
 
-        it('should set the correct state machine name', () => {
+        it('should set the correct analysis state machine name', () => {
             template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
-                StateMachineName: `${NAME_PREFIX}-strategist-pipeline`,
+                StateMachineName: `${NAME_PREFIX}-strategist-analysis`,
+            });
+        });
+
+        it('should set the correct coaching state machine name', () => {
+            template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
+                StateMachineName: `${NAME_PREFIX}-strategist-coaching`,
             });
         });
 
@@ -415,9 +433,15 @@ describe('StrategistPipelineStack', () => {
             }
         });
 
-        it('should create a log group for the state machine', () => {
+        it('should create a log group for the analysis state machine', () => {
             template.hasResourceProperties('AWS::Logs::LogGroup', {
-                LogGroupName: `/aws/vendedlogs/states/${NAME_PREFIX}-strategist-pipeline`,
+                LogGroupName: `/aws/vendedlogs/states/${NAME_PREFIX}-strategist-analysis`,
+            });
+        });
+
+        it('should create a log group for the coaching state machine', () => {
+            template.hasResourceProperties('AWS::Logs::LogGroup', {
+                LogGroupName: `/aws/vendedlogs/states/${NAME_PREFIX}-strategist-coaching`,
             });
         });
     });
@@ -428,9 +452,15 @@ describe('StrategistPipelineStack', () => {
     describe('SSM Parameters', () => {
         const { template } = createPipelineStack();
 
-        it('should export state machine ARN', () => {
+        it('should export analysis state machine ARN', () => {
             template.hasResourceProperties('AWS::SSM::Parameter', {
-                Name: `/${NAME_PREFIX}/strategist-state-machine-arn`,
+                Name: `/${NAME_PREFIX}/strategist-analysis-state-machine-arn`,
+            });
+        });
+
+        it('should export coaching state machine ARN', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: `/${NAME_PREFIX}/strategist-coaching-state-machine-arn`,
             });
         });
 
@@ -440,8 +470,8 @@ describe('StrategistPipelineStack', () => {
             });
         });
 
-        it('should create exactly 2 SSM parameters', () => {
-            template.resourceCountIs('AWS::SSM::Parameter', 2);
+        it('should create exactly 3 SSM parameters', () => {
+            template.resourceCountIs('AWS::SSM::Parameter', 3);
         });
     });
 
@@ -451,8 +481,12 @@ describe('StrategistPipelineStack', () => {
     describe('Stack Properties', () => {
         const { stack } = createPipelineStack();
 
-        it('should expose stateMachine', () => {
-            expect(stack.stateMachine).toBeDefined();
+        it('should expose analysisStateMachine', () => {
+            expect(stack.analysisStateMachine).toBeDefined();
+        });
+
+        it('should expose coachingStateMachine', () => {
+            expect(stack.coachingStateMachine).toBeDefined();
         });
 
         it('should expose triggerFunction', () => {
@@ -467,18 +501,32 @@ describe('StrategistPipelineStack', () => {
     // =========================================================================
     // Step Functions — Pipeline Definition
     // =========================================================================
-    describe('Step Functions Pipeline Definition', () => {
+    describe('Step Functions Pipeline Definitions', () => {
         const { template } = createPipelineStack();
 
-        it('should reference all 3 agent tasks and the fail state in the definition', () => {
+        it('should create exactly 2 state machines', () => {
+            template.resourceCountIs('AWS::StepFunctions::StateMachine', 2);
+        });
+
+        it('should reference analysis pipeline tasks in the definitions', () => {
             const stateMachines = template.findResources('AWS::StepFunctions::StateMachine');
             const definitionStr = JSON.stringify(Object.values(stateMachines));
 
-            // All 3 task states and the fail state should be in the definition
+            // Analysis pipeline tasks
             expect(definitionStr).toContain('ResearchTask');
             expect(definitionStr).toContain('StrategistTask');
+            expect(definitionStr).toContain('AnalysisPersistTask');
+            expect(definitionStr).toContain('AnalysisPipelineFailed');
+        });
+
+        it('should reference coaching pipeline tasks in the definitions', () => {
+            const stateMachines = template.findResources('AWS::StepFunctions::StateMachine');
+            const definitionStr = JSON.stringify(Object.values(stateMachines));
+
+            // Coaching pipeline tasks
+            expect(definitionStr).toContain('CoachLoaderTask');
             expect(definitionStr).toContain('CoachTask');
-            expect(definitionStr).toContain('PipelineFailed');
+            expect(definitionStr).toContain('CoachingPipelineFailed');
         });
     });
 
