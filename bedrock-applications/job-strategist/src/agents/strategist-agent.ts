@@ -16,6 +16,10 @@ import { runAgent } from '../../../shared/src/index.js';
 import { formatResumeForPrompt } from '../services/resume-service.js';
 import { STRATEGIST_PERSONA_SYSTEM_PROMPT } from '../prompts/strategist-persona.js';
 import { sanitiseOutput } from '../security/output-sanitiser.js';
+import {
+    FitRatingSchema,
+    ApplicationRecommendationSchema,
+} from '../schemas/dynamo-record.schema.js';
 import type {
     AgentConfig,
     AgentResult,
@@ -142,6 +146,7 @@ function buildStrategistMessage(
     return sections.join('\n');
 }
 
+
 // =============================================================================
 // XML METADATA EXTRACTION
 // =============================================================================
@@ -151,6 +156,10 @@ function buildStrategistMessage(
  *
  * Uses simple regex extraction rather than a full XML parser to
  * avoid additional dependencies in the Lambda bundle.
+ *
+ * FitRating and ApplicationRecommendation values are Zod-validated
+ * against their respective enum schemas. Invalid values fall back
+ * to safe defaults via `.catch()`.
  *
  * @param xml - Raw XML analysis output
  * @returns Extracted metadata fields
@@ -167,8 +176,8 @@ function extractMetadataFromXml(xml: string): StrategistAnalysisResult['metadata
         targetRole: extract('target_role'),
         targetCompany: extract('target_company'),
         analysisDate: extract('analysis_date'),
-        overallFitRating: extract('overall_fit_rating') as StrategistAnalysisResult['metadata']['overallFitRating'],
-        applicationRecommendation: extract('application_recommendation') as StrategistAnalysisResult['metadata']['applicationRecommendation'],
+        overallFitRating: FitRatingSchema.catch('STRETCH').parse(extract('overall_fit_rating')),
+        applicationRecommendation: ApplicationRecommendationSchema.catch('APPLY WITH CAVEATS').parse(extract('application_recommendation')),
     };
 }
 

@@ -8,7 +8,7 @@
  * produces a structured research brief with verified/partial/gap
  * skill classification.
  *
- * Uses Haiku 3.5 for cost-efficient extraction and analysis.
+ * Uses Haiku 4.5 for cost-efficient extraction and analysis.
  *
  * Pipeline position: API → **Research** → Strategist → Coach → DynamoDB
  */
@@ -34,8 +34,14 @@ import type {
 // CONFIGURATION
 // =============================================================================
 
-/** Research Agent model — Haiku 3.5 for cost-efficient extraction */
-const RESEARCH_MODEL = process.env.RESEARCH_MODEL ?? 'eu.anthropic.claude-haiku-3-5-20241022-v1:0';
+/** Research Agent model — set by CDK via RESEARCH_MODEL environment variable */
+const RESEARCH_MODEL = process.env.RESEARCH_MODEL;
+if (!RESEARCH_MODEL) {
+    throw new Error(
+        'Missing required environment variable RESEARCH_MODEL. ' +
+        'This must be set by CDK infrastructure (e.g. eu.anthropic.claude-haiku-4-5-20251001-v1:0)',
+    );
+}
 
 /** Maximum output tokens */
 const RESEARCH_MAX_TOKENS = 8192;

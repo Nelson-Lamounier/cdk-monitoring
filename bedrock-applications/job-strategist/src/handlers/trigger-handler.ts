@@ -13,43 +13,61 @@
  *
  * Input: API Gateway event with JSON body
  * Output: API Gateway response with pipelineId and status
+ *
+ * Security: All external inputs are validated via Zod schemas at the
+ * API Gateway boundary. No unsafe `as` casts on user-supplied data.
  */
 
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { ZodError } from 'zod';
 
 import type {
-    InterviewStage,
-    PipelineOperation,
     StrategistPipelineContext,
     StrategistResearchHandlerInput,
     StrategistCoachLoaderInput,
-    StructuredResumeData,
 } from '../../../shared/src/index.js';
 
+import {
+    TriggerRequestSchema,
+    type AnalyseRequest,
+    type CoachRequest,
+} from '../schemas/trigger.schema.js';
+import { StructuredResumeDataSchema } from '../schemas/resume-data.schema.js';
+import { ApplicationMetadataRecordSchema } from '../schemas/dynamo-record.schema.js';
+import { TriggerEnvSchema } from '../schemas/environment.schema.js';
+
 // =============================================================================
-// CONFIGURATION
+// ENVIRONMENT VALIDATION (FAIL-FAST ON COLD START)
 // =============================================================================
+
+/**
+ * Validates all required environment variables at module init.
+ *
+ * If any critical variable is missing, the Lambda will throw immediately
+ * during cold start rather than producing cryptic errors mid-execution.
+ */
+const env = TriggerEnvSchema.parse(process.env);
 
 /** Step Functions — Analysis state machine ARN */
-const ANALYSIS_STATE_MACHINE_ARN = process.env.ANALYSIS_STATE_MACHINE_ARN ?? '';
+const ANALYSIS_STATE_MACHINE_ARN = env.ANALYSIS_STATE_MACHINE_ARN;
 
 /** Step Functions — Coaching state machine ARN */
-const COACHING_STATE_MACHINE_ARN = process.env.COACHING_STATE_MACHINE_ARN ?? '';
+const COACHING_STATE_MACHINE_ARN = env.COACHING_STATE_MACHINE_ARN;
 
 /** DynamoDB table for job application tracking */
-const TABLE_NAME = process.env.TABLE_NAME ?? '';
+const TABLE_NAME = env.TABLE_NAME;
 
 /** S3 bucket for pipeline artefacts */
-const ASSETS_BUCKET = process.env.ASSETS_BUCKET ?? '';
+const ASSETS_BUCKET = env.ASSETS_BUCKET;
 
 /** Runtime environment */
-const ENVIRONMENT = process.env.ENVIRONMENT ?? 'development';
+const ENVIRONMENT = env.ENVIRONMENT;
 
 /** Allowed CORS origins */
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS ?? '*';
+const ALLOWED_ORIGINS = env.ALLOWED_ORIGINS;
 
 // =============================================================================
 // CLIENTS
@@ -57,47 +75,6 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS ?? '*';
 
 const sfnClient = new SFNClient({});
 const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-
-// =============================================================================
-// TYPES
-// =============================================================================
-
-/**
- * Request body for the 'analyse' operation.
- *
- * Triggers the full analysis pipeline: Research → Strategist → Persist.
- */
-interface AnalyseRequestBody {
-    /** Operation type */
-    readonly operation: 'analyse';
-    /** Raw job description text */
-    readonly jobDescription: string;
-    /** Target company name */
-    readonly targetCompany: string;
-    /** Target role title */
-    readonly targetRole: string;
-    /** Resume ID selected by the user in the admin UI */
-    readonly resumeId: string;
-}
-
-/**
- * Request body for the 'coach' operation.
- *
- * Triggers the coaching pipeline: Load Analysis → Coach → Persist.
- */
-interface CoachRequestBody {
-    /** Operation type */
-    readonly operation: 'coach';
-    /** Existing application slug to load analysis from */
-    readonly applicationSlug: string;
-    /** Interview stage to prepare coaching for */
-    readonly interviewStage: InterviewStage;
-}
-
-/**
- * Discriminated union of all valid trigger request bodies.
- */
-type TriggerRequestBody = AnalyseRequestBody | CoachRequestBody;
 
 // =============================================================================
 // RESPONSE HELPERS
@@ -123,6 +100,21 @@ function buildResponse(statusCode: number, body: Record<string, unknown>): APIGa
     };
 }
 
+/**
+ * Formats Zod validation errors into a user-friendly message.
+ *
+ * Reveals field names and constraints but masks raw values
+ * to prevent accidental PII or injection content echoing.
+ *
+ * @param error - ZodError from failed schema parsing
+ * @returns Formatted error message string
+ */
+function formatZodError(error: ZodError): string {
+    return error.issues
+        .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+        .join('; ');
+}
+
 // =============================================================================
 // ANALYSE OPERATION
 // =============================================================================
@@ -131,14 +123,14 @@ function buildResponse(statusCode: number, body: Record<string, unknown>): APIGa
  * Handle the 'analyse' operation — full analysis pipeline.
  *
  * 1. Generates an application slug from company + role
- * 2. Fetches structured resume data from DynamoDB
+ * 2. Fetches structured resume data from DynamoDB (Zod-validated)
  * 3. Writes an initial 'analysing' record to DynamoDB
  * 4. Starts the Analysis State Machine
  *
- * @param body - Validated analyse request body
+ * @param body - Zod-validated analyse request body
  * @returns API Gateway response with pipelineId
  */
-async function handleAnalyse(body: AnalyseRequestBody): Promise<APIGatewayProxyResultV2> {
+async function handleAnalyse(body: AnalyseRequest): Promise<APIGatewayProxyResultV2> {
     // Generate slug and execution name
     const slug = `${body.targetCompany}-${body.targetRole}`
         .toLowerCase()
@@ -152,25 +144,33 @@ async function handleAnalyse(body: AnalyseRequestBody): Promise<APIGatewayProxyR
 
     console.log(`[strategist-trigger] Analyse — slug="${slug}", role="${body.targetRole}", resumeId="${body.resumeId}"`);
 
-    // Fetch structured resume from DynamoDB
-    let resumeData: StructuredResumeData | null = null;
+    // Fetch structured resume from DynamoDB — Zod-validated
+    let resumeData: ReturnType<typeof StructuredResumeDataSchema.parse> | null = null;
 
-    if (TABLE_NAME) {
-        console.log(`[strategist-trigger] Fetching resume: RESUME#${body.resumeId}`);
-        const resumeResult = await ddbClient.send(new GetCommand({
-            TableName: TABLE_NAME,
-            Key: {
-                pk: `RESUME#${body.resumeId}`,
-                sk: 'METADATA',
-            },
-        }));
+    console.log(`[strategist-trigger] Fetching resume: RESUME#${body.resumeId}`);
+    const resumeResult = await ddbClient.send(new GetCommand({
+        TableName: TABLE_NAME,
+        Key: {
+            pk: `RESUME#${body.resumeId}`,
+            sk: 'METADATA',
+        },
+    }));
 
-        if (resumeResult.Item) {
-            resumeData = (resumeResult.Item['data'] ?? resumeResult.Item) as StructuredResumeData;
-            console.log(`[strategist-trigger] Resume loaded: ${resumeData.profile?.name ?? 'unknown'}`);
+    if (resumeResult.Item) {
+        const rawResumeData = resumeResult.Item['data'] ?? resumeResult.Item;
+        const parseResult = StructuredResumeDataSchema.safeParse(rawResumeData);
+
+        if (parseResult.success) {
+            resumeData = parseResult.data;
+            console.log(`[strategist-trigger] Resume loaded: ${resumeData.profile.name}`);
         } else {
-            console.warn(`[strategist-trigger] Resume not found: RESUME#${body.resumeId} — pipeline will run without resume baseline`);
+            console.warn(
+                `[strategist-trigger] Resume data failed validation: ${formatZodError(parseResult.error)}. ` +
+                'Pipeline will run without resume baseline.',
+            );
         }
+    } else {
+        console.warn(`[strategist-trigger] Resume not found: RESUME#${body.resumeId} — pipeline will run without resume baseline`);
     }
 
     // Build pipeline context
@@ -192,31 +192,29 @@ async function handleAnalyse(body: AnalyseRequestBody): Promise<APIGatewayProxyR
     };
 
     // Write initial 'analysing' record to DynamoDB
-    if (TABLE_NAME) {
-        console.log(`[strategist-trigger] Writing analysing record: APPLICATION#${slug}`);
-        await ddbClient.send(new PutCommand({
-            TableName: TABLE_NAME,
-            Item: {
-                pk: `APPLICATION#${slug}`,
-                sk: 'METADATA',
-                status: 'analysing',
-                pipelineId: executionName,
-                applicationSlug: slug,
-                targetCompany: body.targetCompany,
-                targetRole: body.targetRole,
-                interviewStage: 'applied',
-                startedAt: now,
-                updatedAt: now,
-                environment: ENVIRONMENT,
-                // GSI1 — status index
-                gsi1pk: 'APP_STATUS#analysing',
-                gsi1sk: `${datePrefix}#${slug}`,
-                // GSI2 — company index
-                gsi2pk: `COMPANY#${body.targetCompany.toLowerCase().replace(/\s+/g, '-')}`,
-                gsi2sk: `${datePrefix}#${slug}`,
-            },
-        }));
-    }
+    console.log(`[strategist-trigger] Writing analysing record: APPLICATION#${slug}`);
+    await ddbClient.send(new PutCommand({
+        TableName: TABLE_NAME,
+        Item: {
+            pk: `APPLICATION#${slug}`,
+            sk: 'METADATA',
+            status: 'analysing',
+            pipelineId: executionName,
+            applicationSlug: slug,
+            targetCompany: body.targetCompany,
+            targetRole: body.targetRole,
+            interviewStage: 'applied',
+            startedAt: now,
+            updatedAt: now,
+            environment: ENVIRONMENT,
+            // GSI1 — status index
+            gsi1pk: 'APP_STATUS#analysing',
+            gsi1sk: `${datePrefix}#${slug}`,
+            // GSI2 — company index
+            gsi2pk: `COMPANY#${body.targetCompany.toLowerCase().replace(/\s+/g, '-')}`,
+            gsi2sk: `${datePrefix}#${slug}`,
+        },
+    }));
 
     // Start Analysis State Machine
     console.log(`[strategist-trigger] Starting analysis execution: ${executionName}`);
@@ -236,7 +234,7 @@ async function handleAnalyse(body: AnalyseRequestBody): Promise<APIGatewayProxyR
     return buildResponse(200, {
         pipelineId: executionName,
         applicationSlug: slug,
-        operation: 'analyse' as PipelineOperation,
+        operation: 'analyse',
         status: 'analysing',
         executionArn: result.executionArn,
     });
@@ -250,13 +248,14 @@ async function handleAnalyse(body: AnalyseRequestBody): Promise<APIGatewayProxyR
  * Handle the 'coach' operation — coaching pipeline.
  *
  * 1. Validates the existing application exists in DynamoDB
- * 2. Builds a minimal pipeline context
- * 3. Starts the Coaching State Machine (Load Analysis → Coach → Persist)
+ * 2. Extracts application fields via Zod schema (no unsafe casts)
+ * 3. Builds a minimal pipeline context
+ * 4. Starts the Coaching State Machine (Load Analysis → Coach → Persist)
  *
- * @param body - Validated coach request body
+ * @param body - Zod-validated coach request body
  * @returns API Gateway response with pipelineId
  */
-async function handleCoach(body: CoachRequestBody): Promise<APIGatewayProxyResultV2> {
+async function handleCoach(body: CoachRequest): Promise<APIGatewayProxyResultV2> {
     const now = new Date().toISOString();
     const executionName = `coach-${body.applicationSlug}-${body.interviewStage}-${Date.now()}`;
 
@@ -266,68 +265,64 @@ async function handleCoach(body: CoachRequestBody): Promise<APIGatewayProxyResul
     );
 
     // Verify the application exists
-    if (TABLE_NAME) {
-        const appResult = await ddbClient.send(new GetCommand({
-            TableName: TABLE_NAME,
-            Key: {
-                pk: `APPLICATION#${body.applicationSlug}`,
-                sk: 'METADATA',
-            },
-        }));
+    const appResult = await ddbClient.send(new GetCommand({
+        TableName: TABLE_NAME,
+        Key: {
+            pk: `APPLICATION#${body.applicationSlug}`,
+            sk: 'METADATA',
+        },
+    }));
 
-        if (!appResult.Item) {
-            return buildResponse(404, {
-                error: `Application not found: ${body.applicationSlug}. Run "analyse" first.`,
-            });
-        }
-
-        // Read saved application data for the pipeline context
-        const appData = appResult.Item;
-
-        // Build minimal pipeline context for coaching
-        const pipelineContext: StrategistPipelineContext = {
-            pipelineId: executionName,
-            operation: 'coach',
-            applicationSlug: body.applicationSlug,
-            jobDescription: (appData['jobDescription'] as string) ?? '',
-            targetCompany: (appData['targetCompany'] as string) ?? '',
-            targetRole: (appData['targetRole'] as string) ?? '',
-            resumeId: (appData['resumeId'] as string) ?? '',
-            resumeData: null, // Not needed for coaching — analysis has the context
-            interviewStage: body.interviewStage,
-            bucket: ASSETS_BUCKET,
-            environment: ENVIRONMENT,
-            cumulativeTokens: { input: 0, output: 0, thinking: 0 },
-            cumulativeCostUsd: 0,
-            startedAt: now,
-        };
-
-        // Start Coaching State Machine
-        console.log(`[strategist-trigger] Starting coaching execution: ${executionName}`);
-
-        const sfnInput: StrategistCoachLoaderInput = {
-            context: pipelineContext,
-        };
-
-        const result = await sfnClient.send(new StartExecutionCommand({
-            stateMachineArn: COACHING_STATE_MACHINE_ARN,
-            name: executionName,
-            input: JSON.stringify(sfnInput),
-        }));
-
-        console.log(`[strategist-trigger] Coaching execution started — arn=${result.executionArn ?? 'unknown'}`);
-
-        return buildResponse(200, {
-            pipelineId: executionName,
-            applicationSlug: body.applicationSlug,
-            operation: 'coach' as PipelineOperation,
-            interviewStage: body.interviewStage,
-            status: 'coaching',
-            executionArn: result.executionArn,
+    if (!appResult.Item) {
+        return buildResponse(404, {
+            error: `Application not found: ${body.applicationSlug}. Run "analyse" first.`,
         });
     }
 
-    return buildResponse(500, { error: 'TABLE_NAME is not configured' });
+    // Zod-validate application metadata fields (replaces unsafe as string casts)
+    const appFields = ApplicationMetadataRecordSchema.parse(appResult.Item);
+
+    // Build minimal pipeline context for coaching
+    const pipelineContext: StrategistPipelineContext = {
+        pipelineId: executionName,
+        operation: 'coach',
+        applicationSlug: body.applicationSlug,
+        jobDescription: appFields.jobDescription,
+        targetCompany: appFields.targetCompany,
+        targetRole: appFields.targetRole,
+        resumeId: appFields.resumeId,
+        resumeData: null, // Not needed for coaching — analysis has the context
+        interviewStage: body.interviewStage,
+        bucket: ASSETS_BUCKET,
+        environment: ENVIRONMENT,
+        cumulativeTokens: { input: 0, output: 0, thinking: 0 },
+        cumulativeCostUsd: 0,
+        startedAt: now,
+    };
+
+    // Start Coaching State Machine
+    console.log(`[strategist-trigger] Starting coaching execution: ${executionName}`);
+
+    const sfnInput: StrategistCoachLoaderInput = {
+        context: pipelineContext,
+    };
+
+    const result = await sfnClient.send(new StartExecutionCommand({
+        stateMachineArn: COACHING_STATE_MACHINE_ARN,
+        name: executionName,
+        input: JSON.stringify(sfnInput),
+    }));
+
+    console.log(`[strategist-trigger] Coaching execution started — arn=${result.executionArn ?? 'unknown'}`);
+
+    return buildResponse(200, {
+        pipelineId: executionName,
+        applicationSlug: body.applicationSlug,
+        operation: 'coach',
+        interviewStage: body.interviewStage,
+        status: 'coaching',
+        executionArn: result.executionArn,
+    });
 }
 
 // =============================================================================
@@ -341,6 +336,9 @@ async function handleCoach(body: CoachRequestBody): Promise<APIGatewayProxyResul
  * - 'analyse': Full analysis pipeline (Research → Strategist → Persist)
  * - 'coach': Coaching pipeline (Load Analysis → Coach → Persist)
  *
+ * All request body validation is handled by Zod schemas — no manual
+ * field checking or unsafe type assertions.
+ *
  * @param event - API Gateway event
  * @returns API Gateway response with pipelineId
  */
@@ -351,40 +349,37 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     try {
-        // Parse and validate body
+        // Parse and validate body via Zod
         if (!event.body) {
             return buildResponse(400, { error: 'Request body is required' });
         }
 
-        const body = JSON.parse(event.body) as TriggerRequestBody;
-
-        // Route based on operation
-        if (!body.operation || (body.operation !== 'analyse' && body.operation !== 'coach')) {
-            return buildResponse(400, {
-                error: 'Invalid operation. Must be "analyse" or "coach".',
-            });
+        let rawBody: unknown;
+        try {
+            rawBody = JSON.parse(event.body);
+        } catch {
+            return buildResponse(400, { error: 'Invalid JSON in request body' });
         }
+
+        // Zod discriminated union validates operation + operation-specific fields
+        const body = TriggerRequestSchema.parse(rawBody);
 
         if (body.operation === 'analyse') {
-            const analyseBody = body as AnalyseRequestBody;
-            if (!analyseBody.jobDescription || !analyseBody.targetCompany || !analyseBody.targetRole || !analyseBody.resumeId) {
-                return buildResponse(400, {
-                    error: 'Missing required fields for analyse: jobDescription, targetCompany, targetRole, resumeId',
-                });
-            }
-            return handleAnalyse(analyseBody);
+            return handleAnalyse(body);
         }
 
-        // operation === 'coach'
-        const coachBody = body as CoachRequestBody;
-        if (!coachBody.applicationSlug || !coachBody.interviewStage) {
-            return buildResponse(400, {
-                error: 'Missing required fields for coach: applicationSlug, interviewStage',
-            });
-        }
-        return handleCoach(coachBody);
+        return handleCoach(body);
 
     } catch (error) {
+        // Zod validation errors → 400 with field-level detail
+        if (error instanceof ZodError) {
+            console.warn(`[strategist-trigger] Validation error: ${formatZodError(error)}`);
+            return buildResponse(400, {
+                error: 'Request validation failed',
+                details: formatZodError(error),
+            });
+        }
+
         const message = error instanceof Error ? error.message : 'Unknown error';
         console.error(`[strategist-trigger] Error: ${message}`);
         return buildResponse(500, { error: 'Internal server error', details: message });
