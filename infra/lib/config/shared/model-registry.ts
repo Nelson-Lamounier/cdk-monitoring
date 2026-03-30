@@ -9,6 +9,7 @@
  * Projects consuming these constants:
  * - **Bedrock ChatBot** — `config/bedrock/allocations.ts` (Agent model)
  * - **Article Pipeline** — `config/bedrock/content-allocations.ts` + `pipeline-allocations.ts`
+ * - **Job Strategist** — `config/bedrock/strategist-allocations.ts`
  * - **Self-Healing Agent** — `config/self-healing/configurations.ts`
  *
  * Model ID format: `eu.<provider>.<model>` uses cross-region inference profiles
@@ -22,24 +23,19 @@
 // =============================================================================
 
 /**
- * Claude Haiku 3.5 — fastest, cheapest Anthropic model.
+ * Claude Haiku 4.5 — lightweight model optimised for speed and efficiency.
  *
- * Use for low-latency tasks like classification, routing, and research.
+ * Use for chatbot agents, research, classification, and moderate-complexity tasks.
+ * Supports Adaptive Thinking (reasoning). 200K context, 64K max output.
  *
- * Pricing (eu cross-region, as of March 2026):
- * - Input: $0.80/1M tokens
- * - Output: $4.00/1M tokens
- */
-export const CLAUDE_HAIKU_3_5 = 'eu.anthropic.claude-haiku-3-5-20241022-v1:0';
-
-/**
- * Claude Haiku 4.5 — upgraded Haiku with improved reasoning.
- *
- * Use for chatbot agents and moderate-complexity classification.
+ * Verified EU cross-region inference profile:
+ * `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
  *
  * Pricing (eu cross-region, as of March 2026):
  * - Input: $1.00/1M tokens
  * - Output: $5.00/1M tokens
+ *
+ * @see https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-4-5.html
  */
 export const CLAUDE_HAIKU_4_5 = 'eu.anthropic.claude-haiku-4-5-20251001-v1:0';
 
@@ -92,7 +88,7 @@ export const MODELS = {
 
     // ── Article Pipeline ────────────────────────────────────────
     /** Research agent: KB retrieval, complexity analysis, outline */
-    ARTICLE_RESEARCH: CLAUDE_HAIKU_3_5,
+    ARTICLE_RESEARCH: CLAUDE_HAIKU_4_5,
     /** Writer agent: full MDX article generation */
     ARTICLE_WRITER: CLAUDE_SONNET_4_6,
     /** QA agent: quality validation, tech accuracy, SEO */
@@ -106,7 +102,7 @@ export const MODELS = {
 
     // ── Job Strategist Pipeline ─────────────────────────────────
     /** Research agent: KB retrieval, resume parsing, gap analysis */
-    JOB_STRATEGIST_RESEARCH: CLAUDE_HAIKU_3_5,
+    JOB_STRATEGIST_RESEARCH: CLAUDE_HAIKU_4_5,
     /** Strategist agent: strategy generation, document crafting */
     JOB_STRATEGIST_WRITER: CLAUDE_SONNET_4_6,
     /** Interview Coach agent: stage-specific preparation */
