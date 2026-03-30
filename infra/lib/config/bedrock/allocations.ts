@@ -30,15 +30,6 @@ export interface AgentAllocation {
     readonly idleSessionTtlInSeconds: number;
 }
 
-/**
- * Lambda allocation for Action Group handlers
- */
-export interface ActionGroupLambdaAllocation {
-    /** Lambda memory in MB */
-    readonly memoryMb: number;
-    /** Lambda timeout in seconds */
-    readonly timeoutSeconds: number;
-}
 
 /**
  * Lambda allocation for API invoke handler
@@ -78,7 +69,6 @@ export interface ApiGatewayAllocation {
 export interface BedrockAllocations {
     readonly agent: AgentAllocation;
     readonly knowledgeBase: KnowledgeBaseAllocation;
-    readonly actionGroupLambda: ActionGroupLambdaAllocation;
     readonly apiLambda: ApiLambdaAllocation;
     readonly apiGateway: ApiGatewayAllocation;
 }
@@ -101,10 +91,6 @@ export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocatio
             pineconeConnectionString: 'https://portfolio-kb-79dyhsi.svc.aped-4627-b74a.pinecone.io',
             pineconeNamespace: 'portfolio-dev',
         },
-        actionGroupLambda: {
-            memoryMb: 256,
-            timeoutSeconds: 30,
-        },
         apiLambda: {
             memoryMb: 256,
             timeoutSeconds: 60,
@@ -125,10 +111,6 @@ export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocatio
             pineconeConnectionString: 'https://portfolio-kb-79dyhsi.svc.aped-4627-b74a.pinecone.io',
             pineconeNamespace: 'portfolio-stg',
         },
-        actionGroupLambda: {
-            memoryMb: 512,
-            timeoutSeconds: 30,
-        },
         apiLambda: {
             memoryMb: 512,
             timeoutSeconds: 60,
@@ -148,10 +130,6 @@ export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocatio
             embeddingsModel: MODELS.KB_EMBEDDINGS,
             pineconeConnectionString: 'https://portfolio-kb-79dyhsi.svc.aped-4627-b74a.pinecone.io',
             pineconeNamespace: 'portfolio-prd',
-        },
-        actionGroupLambda: {
-            memoryMb: 1024,
-            timeoutSeconds: 60,
         },
         apiLambda: {
             memoryMb: 1024,

@@ -78,3 +78,13 @@ export type {
     QaHandlerInput,
     PipelineOutput,
 } from './types.js';
+
+// ─── Structured Logger ───────────────────────────────────────────────────────
+export { log, createLogger } from './logger.js';
+
+export type { LogLevel, LogFunction } from './logger.js';
+
+// ─── EMF Metric Emission ─────────────────────────────────────────────────────
+export { emitEmfMetric } from './emf.js';
+
+export type { EmfMetricEntry } from './emf.js';

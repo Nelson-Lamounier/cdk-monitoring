@@ -140,6 +140,11 @@ const MODEL_PRICING: Record<string, { inputPer1k: number; outputPer1k: number; t
         outputPer1k: 0.004,
         thinkingPer1k: 0.004,
     },
+    'eu.anthropic.claude-haiku-4-5-20251001-v1:0': {
+        inputPer1k: 0.001,
+        outputPer1k: 0.005,
+        thinkingPer1k: 0.005,
+    },
 };
 
 /** Fallback pricing if the model is not in the pricing table. */

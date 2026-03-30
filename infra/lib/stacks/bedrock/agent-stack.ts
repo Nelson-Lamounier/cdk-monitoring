@@ -3,7 +3,7 @@
  * Bedrock Agent Stack
  *
  * Core AI stack for the Bedrock Agent project.
- * Creates the Bedrock Agent, Guardrail, Action Group Lambda, and Agent Alias.
+ * Creates the Bedrock Agent, Guardrail, and Agent Alias.
  *
  * Uses @cdklabs/generative-ai-cdk-constructs for L2 Bedrock constructs.
  */
@@ -12,10 +12,8 @@ import {
     bedrock,
 } from '@cdklabs/generative-ai-cdk-constructs';
 import type { IKnowledgeBase } from '@cdklabs/generative-ai-cdk-constructs/lib/cdk-lib/bedrock/knowledge-bases/knowledge-base';
-import { NagSuppressions } from 'cdk-nag';
 
 import * as cdkBedrock from 'aws-cdk-lib/aws-bedrock';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -41,10 +39,6 @@ export interface BedrockAgentStackProps extends cdk.StackProps {
     readonly blockedInputMessaging: string;
     /** Blocked output messaging for guardrail */
     readonly blockedOutputsMessaging: string;
-    /** Lambda memory for Action Group handler (MB) */
-    readonly actionGroupLambdaMemoryMb: number;
-    /** Lambda timeout for Action Group handler (seconds) */
-    readonly actionGroupLambdaTimeoutSeconds: number;
     /** Removal policy for resources */
     readonly removalPolicy: cdk.RemovalPolicy;
     /** Optional Knowledge Base to associate with the agent */
@@ -55,7 +49,7 @@ export interface BedrockAgentStackProps extends cdk.StackProps {
  * Agent Stack for Bedrock.
  *
  * Creates the Bedrock Agent with Knowledge Base, Guardrail,
- * Action Group, and Agent Alias.
+ * and Agent Alias.
  */
 export class BedrockAgentStack extends cdk.Stack {
     /** The Bedrock Agent */
@@ -66,9 +60,6 @@ export class BedrockAgentStack extends cdk.Stack {
 
     /** The Guardrail */
     public readonly guardrail: bedrock.Guardrail;
-
-    /** The Action Group Lambda function */
-    public readonly actionGroupFunction: lambda.Function;
 
     /** Agent ID */
     public readonly agentId: string;
@@ -173,45 +164,6 @@ export class BedrockAgentStack extends cdk.Stack {
             threshold: 0.7,
         });
 
-
-        // =================================================================
-        // Action Group Lambda — Custom action handler
-        // =================================================================
-        this.actionGroupFunction = new lambda.Function(this, 'ActionGroupHandler', {
-            functionName: `${namePrefix}-action-group`,
-            runtime: lambda.Runtime.NODEJS_22_X,
-            handler: 'index.handler',
-            code: lambda.Code.fromInline([
-                '// Infrastructure stub — business logic deployed from separate monorepo package',
-                'exports.handler = async (event) => ({',
-                '  messageVersion: "1.0",',
-                '  response: {',
-                '    actionGroup: event.actionGroup,',
-                '    apiPath: event.apiPath,',
-                '    httpMethod: event.httpMethod,',
-                '    httpStatusCode: 200,',
-                '    responseBody: { "application/json": { body: "{}" } },',
-                '  },',
-                '});',
-            ].join('\n')),
-            memorySize: props.actionGroupLambdaMemoryMb,
-            timeout: cdk.Duration.seconds(props.actionGroupLambdaTimeoutSeconds),
-            description: `Action Group handler for ${namePrefix} agent`,
-        });
-
-        // CDK-Nag suppression: NODEJS_22_X is the latest Node.js LTS runtime;
-        // AwsSolutions-L1 may not recognize it as latest yet.
-        NagSuppressions.addResourceSuppressions(
-            this.actionGroupFunction,
-            [
-                {
-                    id: 'AwsSolutions-L1',
-                    reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
-                },
-            ],
-            true,
-        );
-
         // =================================================================
         // Resolve Foundation Model
         //
@@ -219,7 +171,7 @@ export class BedrockAgentStack extends cdk.Stack {
         // use CrossRegionInferenceProfile to create a proper inference
         // profile for the Agent. Otherwise, use the direct model ID.
         // =================================================================
-        const geoMatch = props.foundationModel.match(/^(eu|us|apac)\.(.*)/); 
+        const geoMatch = props.foundationModel.match(/^(eu|us|apac)\.(.*)/);
         const agentModel = geoMatch
             ? bedrock.CrossRegionInferenceProfile.fromConfig({
                 geoRegion: geoMatch[1] === 'eu'
@@ -251,51 +203,13 @@ export class BedrockAgentStack extends cdk.Stack {
             idleSessionTTL: cdk.Duration.seconds(props.idleSessionTtlInSeconds),
         });
 
-        // Wire Guardrail, Knowledge Base, and Action Group via methods
+        // Wire Guardrail and Knowledge Base via methods
         this.agent.addGuardrail(this.guardrail);
 
         // Associate Knowledge Base if provided
         if (props.knowledgeBase) {
             this.agent.addKnowledgeBase(props.knowledgeBase);
         }
-
-        this.agent.addActionGroup(new bedrock.AgentActionGroup({
-            name: `${namePrefix}-actions`,
-            description: `Custom actions for ${namePrefix} agent`,
-            executor: bedrock.ActionGroupExecutor.fromlambdaFunction(this.actionGroupFunction),
-            apiSchema: bedrock.ApiSchema.fromInline(JSON.stringify({
-                openapi: '3.0.0',
-                info: {
-                    title: `${namePrefix} Actions`,
-                    version: '1.0.0',
-                    description: `Action group API for ${namePrefix} agent`,
-                },
-                paths: {
-                    '/get-info': {
-                        get: {
-                            summary: 'Get portfolio information',
-                            description: 'Retrieves information about the portfolio',
-                            operationId: 'getInfo',
-                            responses: {
-                                '200': {
-                                    description: 'Successful response',
-                                    content: {
-                                        'application/json': {
-                                            schema: {
-                                                type: 'object',
-                                                properties: {
-                                                    message: { type: 'string' },
-                                                },
-                                            },
-                                        },
-                                    },
-                                },
-                            },
-                        },
-                    },
-                },
-            })),
-        }));
 
         // =================================================================
         // Agent Alias — Stable identifier for invocations

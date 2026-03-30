@@ -17,6 +17,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { type DeployableEnvironment, Environment } from '../environments';
+import { CHATBOT_AGENT_INSTRUCTION } from './chatbot-persona';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -85,19 +86,15 @@ export interface BedrockConfigs {
 // =============================================================================
 
 /**
- * Bedrock resource configurations by environment
+ * Bedrock resource configurations by environment.
+ *
+ * Agent instruction prompt is imported from the canonical source:
+ * @see bedrock-applications/chatbot/src/prompts/chatbot-persona.ts
  */
+
 export const BEDROCK_CONFIGS: Record<DeployableEnvironment, BedrockConfigs> = {
     [Environment.DEVELOPMENT]: {
-        agentInstruction:
-            'You are Nelson Lamounier\'s portfolio assistant. ' +
-            'You MUST ONLY answer questions using information from the Knowledge Base. ' +
-            'If the user asks about topics not covered in the Knowledge Base, ' +
-            'politely decline and redirect them to the portfolio website at nelsonlamounier.com. ' +
-            'Never answer general knowledge questions, write code on demand, ' +
-            'or discuss topics unrelated to Nelson\'s portfolio, projects, skills, ' +
-            'certifications, or career experience. ' +
-            'Always cite specific projects or technologies from the Knowledge Base when answering.',
+        agentInstruction: CHATBOT_AGENT_INSTRUCTION,
         agentDescription: 'Portfolio AI assistant (development)',
         guardrail: {
             enableContentFilters: true,
@@ -120,15 +117,7 @@ export const BEDROCK_CONFIGS: Record<DeployableEnvironment, BedrockConfigs> = {
     },
 
     [Environment.STAGING]: {
-        agentInstruction:
-            'You are Nelson Lamounier\'s portfolio assistant. ' +
-            'You MUST ONLY answer questions using information from the Knowledge Base. ' +
-            'If the user asks about topics not covered in the Knowledge Base, ' +
-            'politely decline and redirect them to the portfolio website at nelsonlamounier.com. ' +
-            'Never answer general knowledge questions, write code on demand, ' +
-            'or discuss topics unrelated to Nelson\'s portfolio, projects, skills, ' +
-            'certifications, or career experience. ' +
-            'Always cite specific projects or technologies from the Knowledge Base when answering.',
+        agentInstruction: CHATBOT_AGENT_INSTRUCTION,
         agentDescription: 'Portfolio AI assistant (staging)',
         guardrail: {
             enableContentFilters: true,
@@ -151,16 +140,7 @@ export const BEDROCK_CONFIGS: Record<DeployableEnvironment, BedrockConfigs> = {
     },
 
     [Environment.PRODUCTION]: {
-        agentInstruction:
-            'You are Nelson Lamounier\'s portfolio assistant. ' +
-            'You MUST ONLY answer questions using information from the Knowledge Base. ' +
-            'If the user asks about topics not covered in the Knowledge Base, ' +
-            'politely decline and redirect them to the portfolio website at nelsonlamounier.com. ' +
-            'Never answer general knowledge questions, write code on demand, ' +
-            'or discuss topics unrelated to Nelson\'s portfolio, projects, skills, ' +
-            'certifications, or career experience. ' +
-            'Always be professional and accurate. ' +
-            'Always cite specific projects or technologies from the Knowledge Base when answering.',
+        agentInstruction: CHATBOT_AGENT_INSTRUCTION,
         agentDescription: 'Portfolio AI assistant',
         guardrail: {
             enableContentFilters: true,

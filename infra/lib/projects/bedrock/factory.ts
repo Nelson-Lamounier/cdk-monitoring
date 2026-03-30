@@ -134,7 +134,7 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
         kbStack.addDependency(dataStack);
 
         // =================================================================
-        // Stack 3: Agent (Bedrock Agent + Guardrail + Action Group + KB)
+        // Stack 3: Agent (Bedrock Agent + Guardrail + KB)
         //
         // Core AI resources. Knowledge Base is wired here so the chatbot
         // can answer portfolio questions from Pinecone-indexed documents.
@@ -151,8 +151,6 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 enableContentFilters: configs.guardrail.enableContentFilters,
                 blockedInputMessaging: configs.guardrail.blockedInputMessaging,
                 blockedOutputsMessaging: configs.guardrail.blockedOutputMessaging,
-                actionGroupLambdaMemoryMb: allocs.actionGroupLambda.memoryMb,
-                actionGroupLambdaTimeoutSeconds: allocs.actionGroupLambda.timeoutSeconds,
                 removalPolicy: configs.removalPolicy,
                 knowledgeBase: kbStack.knowledgeBase,
                 env,
