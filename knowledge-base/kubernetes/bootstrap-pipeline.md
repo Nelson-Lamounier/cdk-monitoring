@@ -14,7 +14,7 @@ related_docs:
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
   - kubernetes/adrs/self-managed-k8s-vs-eks.md
   - kubernetes/bootstrap-system-scripts.md
-last_updated: "2026-03-22"
+last_updated: "2026-03-30"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -309,7 +309,18 @@ Both resolve the SSM Automation document from `/k8s/<env>/deploy/secrets-doc-nam
 
 ---
 
-*Updated 2026-03-25 — SSM document consolidation + 6-phase pipeline refactoring.*
+*Updated 2026-03-30 — Fixed States.MathAdd CDK synthesis bug in poll counter.*
+
+## Troubleshooting
+
+### States.MathAdd Crash on Second Poll Iteration
+
+**What happened:** The bootstrap orchestrator Step Function crashed at `WorkerBootstrapIncrCount` with `Invalid arguments in States.MathAdd` every time an SSM Automation took longer than one 30-second poll cycle. New worker nodes failed to complete bootstrap.
+
+**Why:** Two interacting CDK synthesis bugs in `sfn.Pass` with `parameters` and `sfn.JsonPath.mathAdd()` — (1) the `'count.$'` key was emitted as a literal string rather than a JSONPath assignment, and (2) `sfn.JsonPath.numberAt()` inside `sfn.JsonPath.mathAdd()` dropped the path suffix (`.count`). The first poll worked incidentally (counter was `0`, a plain number) but produced `{"count.$": 1}` (an object), causing the second poll to crash.
+
+**Fix:** Replaced `sfn.Pass` with `sfn.CustomState` for both `InitCount` and `IncrCount` states, emitting raw ASL JSON to bypass the CDK token resolution bug. Changed counter structure from `{ count: N }` to `{ value: N }`. See CDK issue [#23387](https://github.com/aws/aws-cdk/issues/23387).
+
 ## Transferable Skills Demonstrated
 
 - **Immutable infrastructure** — golden AMI build pipeline with Packer and User Data
@@ -319,7 +330,7 @@ Both resolve the SSM Automation document from `/k8s/<env>/deploy/secrets-doc-nam
 
 ## Summary
 
-This document provides an implementation walkthrough of the 4-layer Kubernetes bootstrap pipeline: Golden AMI (EC2 Image Builder) → User Data (LaunchTemplate) → SSM Automation (6 documents) → Step Functions orchestration (EventBridge-triggered). It covers the full lifecycle from bare EC2 instance to operational Kubernetes node.
+This document provides an implementation walkthrough of the 4-layer Kubernetes bootstrap pipeline: Golden AMI (EC2 Image Builder) → User Data (LaunchTemplate) → SSM Automation (6 documents) → Step Functions orchestration (EventBridge-triggered). It covers the full lifecycle from bare EC2 instance to operational Kubernetes node, including the `sfn.CustomState` workaround for CDK's `States.MathAdd` token resolution bug in the polling loop.
 
 ## Keywords
 

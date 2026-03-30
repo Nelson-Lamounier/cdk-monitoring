@@ -78,6 +78,7 @@ mappings:
     code_paths:
       - "infra/lib/stacks/kubernetes/golden-ami-stack.ts"
       - "infra/lib/stacks/kubernetes/ssm-automation-stack.ts"
+      - "infra/lib/constructs/ssm/*.ts"
       - "scripts/k8s-*"
       - "scripts/bootstrap-*"
     kb_docs:

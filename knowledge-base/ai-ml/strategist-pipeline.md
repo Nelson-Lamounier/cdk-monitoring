@@ -15,6 +15,9 @@ tags:
   - career-strategy
   - iterative-pipeline
   - prompt-engineering
+  - null-safety
+  - defensive-parsing
+  - cachePoint
 related_docs:
   - ai-ml/bedrock-implementation.md
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
@@ -335,6 +338,54 @@ POST /api/admin/strategist
 | Frontend action | Approve/Reject | Operation selection (analyse/coach) + status lifecycle |
 | API Gateway | Not used (S3 event) | Not used (Lambda SDK invoke) |
 
+## Troubleshooting
+
+### Invalid `SystemContentBlock` cachePoint format crashes Bedrock SDK
+
+**What happened:** The Analysis Pipeline Step Function failed at `ResearchTask` with `AgentExecutionError: Cannot read properties of undefined (reading '0')`. The DynamoDB METADATA record was permanently stuck at `"analysing"` because the pipeline never reached the Analysis Persist step.
+
+**Why:** All persona files (except `blog-persona.ts`) constructed the Bedrock prompt caching block incorrectly. They used the `guardContent` union member (intended for guardrails) paired with `as unknown as SystemContentBlock` double-casts to construct cachePoint directives:
+
+```typescript
+// ❌ WRONG — guardContent is for guardrails, not caching
+{ guardContent: { type: 'cachePoint' } } as unknown as SystemContentBlock
+```
+
+The `as unknown as` cast masked the TypeScript error, allowing the invalid payload to compile. When the Bedrock SDK serialised this malformed block, it crashed internally during request construction — the `[0]` in the error referred to the SDK's internal array access on the corrupted content blocks.
+
+**Fix:** Replace all occurrences with the correct `cachePoint` union member:
+
+```typescript
+// ✅ CORRECT — cachePoint is its own union member
+{ cachePoint: { type: 'default' } } as SystemContentBlock
+```
+
+Affected files: `research-persona.ts`, `strategist-persona.ts`, `coach-persona.ts` (job-strategist), `research-persona.ts`, `qa-persona.ts` (article-pipeline).
+
+**Anti-pattern lesson:** Never use `as unknown as SdkType` to construct AWS SDK request objects. This suppresses both the TypeScript compiler and the SDK's discriminated union validation.
+
+---
+
+### Incomplete LLM response crashes downstream agent with `undefined` property access
+
+**What happened:** When the Bedrock Knowledge Base returned empty results for a job description query, the LLM generated incomplete JSON (missing `technologyInventory` and other nested objects). The `strategist-agent.ts` then crashed accessing `research.technologyInventory.languages.join(', ')` on the undefined object.
+
+**Why:** The `parseJsonResponse<T>()` function in `shared/src/agent-runner.ts` uses an unsafe `as T` cast. It does not validate that the parsed JSON actually matches the expected type shape. When the LLM omits nested objects, the cast succeeds but downstream property access fails at runtime.
+
+**Fix:** Two layers of defence were applied:
+
+1. **Parsing boundary** (`research-agent.ts` `parseResponse` callback): Added defensive defaults for all nested objects and scalar fields, ensuring the agent always returns a structurally valid `StrategistResearchResult`.
+
+2. **Downstream consumer** (`strategist-agent.ts`): Added optional chaining and null-coalescing when accessing `technologyInventory` properties:
+
+```typescript
+// Safe access pattern
+const techInv = research.technologyInventory;
+`Languages: ${(techInv?.languages ?? []).join(', ') || 'None specified'}`;
+```
+
+**Design principle:** Always provide defaults at the `parseResponse` boundary for any LLM-generated JSON, and add secondary safety guards in downstream consumers.
+
 ## Transferable Skills Demonstrated
 
 - **Iterative multi-agent AI orchestration** — Designing a two-pipeline architecture where analysis and coaching execute independently, enabling iterative refinement at each application lifecycle stage.
@@ -343,11 +394,12 @@ POST /api/admin/strategist
 - **Truthfulness-first prompt engineering** — Designing system prompts with strict guardrails against fabrication, source citation requirements, honest gap assessment, and override-if-true framing.
 - **Single-table DynamoDB design** — Implementing a multi-entity schema with composite keys and GSIs for efficient admin listing, with versioned analysis records for iteration comparison.
 - **Infrastructure testing** — 68 unit tests covering DynamoDB schema, Lambda configuration, Step Functions orchestration, and IAM permissions across both stacks.
+- **Defensive LLM response parsing** — Implementing belt-and-braces null-safety at both the parsing boundary and downstream consumers to handle incomplete or malformed AI-generated JSON.
 
 ## Summary
 
-This document analyses the Job Strategist multi-agent pipeline — an iterative, stage-driven AI application that uses two independent Step Functions state machines to separate resume analysis from interview coaching. The Analysis Pipeline (Research → Strategist → AnalysisPersist) produces comprehensive application strategies using a 5-phase framework. The Coaching Pipeline (CoachLoader → Coach) generates stage-specific interview preparation by loading existing analysis from DynamoDB. Three Claude models (Haiku 3.5, Sonnet 4.6, Haiku 4.5) are strategically assigned based on reasoning requirements. The pipeline is deployed as 2 CDK stacks (StrategistData + StrategistPipeline) with 6 Lambda functions, 68 unit tests, and 5 SSM parameter exports wired to the Next.js frontend via K8s secrets.
+This document analyses the Job Strategist multi-agent pipeline — an iterative, stage-driven AI application that uses two independent Step Functions state machines to separate resume analysis from interview coaching. The Analysis Pipeline (Research → Strategist → AnalysisPersist) produces comprehensive application strategies using a 5-phase framework. The Coaching Pipeline (CoachLoader → Coach) generates stage-specific interview preparation by loading existing analysis from DynamoDB. Three Claude models (Haiku 3.5, Sonnet 4.6, Haiku 4.5) are strategically assigned based on reasoning requirements. The pipeline includes defensive null-safety guards at both the parsing boundary and downstream consumers to handle incomplete LLM outputs. The pipeline is deployed as 2 CDK stacks (StrategistData + StrategistPipeline) with 6 Lambda functions, 68 unit tests, and 5 SSM parameter exports wired to the Next.js frontend via K8s secrets.
 
 ## Keywords
 
-bedrock, step-functions, lambda, dynamodb, multi-agent, job-application, interview-coaching, converse-api, knowledge-base, career-strategy, gap-analysis, cover-letter, resume-tailoring, claude, strategist, iterative-pipeline, two-pipeline, analysis-persist, coach-loader, prompt-engineering, extended-thinking, haiku, sonnet
+bedrock, step-functions, lambda, dynamodb, multi-agent, job-application, interview-coaching, converse-api, knowledge-base, career-strategy, gap-analysis, cover-letter, resume-tailoring, claude, strategist, iterative-pipeline, two-pipeline, analysis-persist, coach-loader, prompt-engineering, extended-thinking, haiku, sonnet, null-safety, defensive-parsing, cachePoint, system-content-block
