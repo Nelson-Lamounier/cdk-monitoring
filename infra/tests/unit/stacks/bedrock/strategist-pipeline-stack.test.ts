@@ -327,6 +327,59 @@ describe('StrategistPipelineStack', () => {
                 }),
             });
         });
+
+        it('should include DynamoUpdateItem error handler in analysis SM definition', () => {
+            /**
+             * Verify the synthesised SM definition body includes a
+             * DynamoDB UpdateItem task that writes status='failed'.
+             * This ensures the Catch → MarkFailed → Fail chain is wired.
+             */
+            const sms = template.findResources('AWS::StepFunctions::StateMachine', {
+                Properties: {
+                    StateMachineName: `${NAME_PREFIX}-strategist-analysis`,
+                },
+            });
+            const smLogicalId = Object.keys(sms)[0];
+            const definitionString = JSON.stringify(
+                sms[smLogicalId].Properties.DefinitionString,
+            );
+            expect(definitionString).toContain('MarkAnalysisFailed');
+            expect(definitionString).toContain('dynamodb:updateItem');
+        });
+
+        it('should include DynamoUpdateItem error handler in coaching SM definition', () => {
+            const sms = template.findResources('AWS::StepFunctions::StateMachine', {
+                Properties: {
+                    StateMachineName: `${NAME_PREFIX}-strategist-coaching`,
+                },
+            });
+            const smLogicalId = Object.keys(sms)[0];
+            const definitionString = JSON.stringify(
+                sms[smLogicalId].Properties.DefinitionString,
+            );
+            expect(definitionString).toContain('MarkCoachingFailed');
+            expect(definitionString).toContain('dynamodb:updateItem');
+        });
+
+        it('should grant DynamoDB write permissions to SM execution roles', () => {
+            /**
+             * Both SMs need dynamodb:UpdateItem on the strategist table
+             * so the MarkFailed error handler tasks can write status='failed'.
+             */
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: Match.objectLike({
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: Match.arrayWith([
+                                'dynamodb:PutItem',
+                                'dynamodb:UpdateItem',
+                                'dynamodb:DeleteItem',
+                            ]),
+                        }),
+                    ]),
+                }),
+            });
+        });
     });
 
     // =========================================================================

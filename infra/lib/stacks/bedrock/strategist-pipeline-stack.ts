@@ -9,7 +9,7 @@
  *   Admin Dashboard → API Gateway → Trigger Lambda
  *     ↓ operation='analyse'
  *     Analysis State Machine:
- *       → Research Lambda (Haiku 3.5) — KB retrieval, resume, gap analysis
+ *       → Research Lambda (Haiku 4.5) — KB retrieval, resume, gap analysis
  *       → Strategist Lambda (Sonnet 4.6) — 5-phase XML analysis
  *       → Analysis Persist Lambda — DynamoDB persistence
  *
@@ -31,6 +31,7 @@
 
 import * as path from 'node:path';
 
+
 import { NagSuppressions } from 'cdk-nag';
 
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
@@ -41,6 +42,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import { JsonPath } from 'aws-cdk-lib/aws-stepfunctions';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as cdk from 'aws-cdk-lib/core';
@@ -385,26 +387,67 @@ export class StrategistPipelineStack extends cdk.Stack {
             comment: 'Persist analysis results to DynamoDB',
         });
 
-        // Error handling for analysis pipeline
+        // =================================================================
+        // Error Handling — Analysis SM: DynamoUpdateItem → Fail
+        //
+        // When any Lambda task fails, the Catch block preserves the
+        // original task input (which includes context.applicationSlug)
+        // and adds error details at $.error. The DynamoUpdateItem task
+        // writes status='failed' to the APPLICATION METADATA record so
+        // the frontend can display the failure state.
+        // =================================================================
+
         const analysisFailed = new sfn.Fail(this, 'AnalysisPipelineFailed', {
             error: 'AnalysisPipelineExecutionFailed',
             cause: 'One of the analysis pipeline agents threw an unrecoverable error',
         });
 
-        // Chain: Research → Strategist → Persist
+        /** Write status='failed' to DDB before transitioning to Fail state */
+        const markAnalysisFailed = new tasks.DynamoUpdateItem(this, 'MarkAnalysisFailed', {
+            table: strategistTable,
+            key: {
+                pk: tasks.DynamoAttributeValue.fromString(
+                    JsonPath.format('APPLICATION#{}', JsonPath.stringAt('$.context.applicationSlug')),
+                ),
+                sk: tasks.DynamoAttributeValue.fromString('METADATA'),
+            },
+            updateExpression: 'SET #status = :failed, #updatedAt = :now, #errorMessage = :error, #gsi1pk = :gsi1pk',
+            expressionAttributeNames: {
+                '#status': 'status',
+                '#updatedAt': 'updatedAt',
+                '#errorMessage': 'errorMessage',
+                '#gsi1pk': 'gsi1pk',
+            },
+            expressionAttributeValues: {
+                ':failed': tasks.DynamoAttributeValue.fromString('failed'),
+                ':now': tasks.DynamoAttributeValue.fromString(
+                    JsonPath.stringAt('$$.State.EnteredTime'),
+                ),
+                ':error': tasks.DynamoAttributeValue.fromString(
+                    JsonPath.stringAt('$.error.Cause'),
+                ),
+                ':gsi1pk': tasks.DynamoAttributeValue.fromString('APP_STATUS#failed'),
+            },
+            resultPath: sfn.JsonPath.DISCARD,
+            comment: 'Write status=failed to DynamoDB so frontend can display analysis failure',
+        });
+
+        markAnalysisFailed.next(analysisFailed);
+
+        // Chain: Research → Strategist → Persist (all catch → MarkFailed → Fail)
         const analysisDefinition = researchTask
-            .addCatch(analysisFailed, {
+            .addCatch(markAnalysisFailed, {
                 errors: ['States.ALL'],
                 resultPath: '$.error',
             })
             .next(
-                strategistTask.addCatch(analysisFailed, {
+                strategistTask.addCatch(markAnalysisFailed, {
                     errors: ['States.ALL'],
                     resultPath: '$.error',
                 }),
             )
             .next(
-                analysisPersistTask.addCatch(analysisFailed, {
+                analysisPersistTask.addCatch(markAnalysisFailed, {
                     errors: ['States.ALL'],
                     resultPath: '$.error',
                 }),
@@ -444,20 +487,55 @@ export class StrategistPipelineStack extends cdk.Stack {
             comment: 'Interview Coach: stage-specific interview preparation',
         });
 
-        // Error handling for coaching pipeline
+        // =================================================================
+        // Error Handling — Coaching SM: DynamoUpdateItem → Fail
+        // =================================================================
+
         const coachingFailed = new sfn.Fail(this, 'CoachingPipelineFailed', {
             error: 'CoachingPipelineExecutionFailed',
             cause: 'The coaching pipeline threw an unrecoverable error',
         });
 
-        // Chain: Load → Coach
+        /** Write status='failed' to DDB before transitioning to Fail state */
+        const markCoachingFailed = new tasks.DynamoUpdateItem(this, 'MarkCoachingFailed', {
+            table: strategistTable,
+            key: {
+                pk: tasks.DynamoAttributeValue.fromString(
+                    JsonPath.format('APPLICATION#{}', JsonPath.stringAt('$.context.applicationSlug')),
+                ),
+                sk: tasks.DynamoAttributeValue.fromString('METADATA'),
+            },
+            updateExpression: 'SET #status = :failed, #updatedAt = :now, #errorMessage = :error, #gsi1pk = :gsi1pk',
+            expressionAttributeNames: {
+                '#status': 'status',
+                '#updatedAt': 'updatedAt',
+                '#errorMessage': 'errorMessage',
+                '#gsi1pk': 'gsi1pk',
+            },
+            expressionAttributeValues: {
+                ':failed': tasks.DynamoAttributeValue.fromString('failed'),
+                ':now': tasks.DynamoAttributeValue.fromString(
+                    JsonPath.stringAt('$$.State.EnteredTime'),
+                ),
+                ':error': tasks.DynamoAttributeValue.fromString(
+                    JsonPath.stringAt('$.error.Cause'),
+                ),
+                ':gsi1pk': tasks.DynamoAttributeValue.fromString('APP_STATUS#failed'),
+            },
+            resultPath: sfn.JsonPath.DISCARD,
+            comment: 'Write status=failed to DynamoDB so frontend can display coaching failure',
+        });
+
+        markCoachingFailed.next(coachingFailed);
+
+        // Chain: Load → Coach (all catch → MarkFailed → Fail)
         const coachingDefinition = coachLoaderTask
-            .addCatch(coachingFailed, {
+            .addCatch(markCoachingFailed, {
                 errors: ['States.ALL'],
                 resultPath: '$.error',
             })
             .next(
-                coachTask.addCatch(coachingFailed, {
+                coachTask.addCatch(markCoachingFailed, {
                     errors: ['States.ALL'],
                     resultPath: '$.error',
                 }),
@@ -478,6 +556,10 @@ export class StrategistPipelineStack extends cdk.Stack {
                 }),
             },
         });
+
+        // Grant DDB write to both state machine execution roles
+        strategistTable.grantWriteData(this.analysisStateMachine);
+        strategistTable.grantWriteData(this.coachingStateMachine);
 
         // =================================================================
         // Lambda — Trigger Handler (API Gateway → Step Functions)

@@ -7,7 +7,7 @@
  *
  * Architecture:
  *   S3 (drafts/*.md) → Trigger Lambda → Step Functions
- *     → Research Lambda (Haiku 3.5)
+ *     → Research Lambda (Haiku 4.5)
  *     → Writer Lambda (Sonnet 4.6)
  *     → QA Lambda (Sonnet 4.6)
  *     → S3 (review/*.mdx) + DynamoDB (status: review/flagged)
@@ -23,6 +23,7 @@
 
 import * as path from 'node:path';
 
+
 import { NagSuppressions } from 'cdk-nag';
 
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
@@ -34,6 +35,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import { JsonPath } from 'aws-cdk-lib/aws-stepfunctions';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as cdk from 'aws-cdk-lib/core';
@@ -359,26 +361,68 @@ export class BedrockPipelineStack extends cdk.Stack {
             comment: 'QA Agent: quality validation + S3/DynamoDB persistence',
         });
 
-        // Error handling: catch all and send to DLQ
+        // =================================================================
+        // Error Handling — DynamoUpdateItem → Fail
+        //
+        // When any Lambda task fails, the Catch block preserves the
+        // original task input (which includes context.slug) and adds
+        // the error details at $.error. The DynamoUpdateItem task
+        // writes status='failed' to the article's METADATA record
+        // so the frontend can display the failure state instead of
+        // hanging on 'processing' indefinitely.
+        // =================================================================
+
         const pipelineFailed = new sfn.Fail(this, 'PipelineFailed', {
             error: 'PipelineExecutionFailed',
             cause: 'One of the pipeline agents threw an unrecoverable error',
         });
 
-        // Chain: Research → Writer → QA
+        /** Write status='failed' to DDB before transitioning to Fail state */
+        const markArticleFailed = new tasks.DynamoUpdateItem(this, 'MarkArticleFailed', {
+            table: contentTable,
+            key: {
+                pk: tasks.DynamoAttributeValue.fromString(
+                    JsonPath.format('ARTICLE#{}', JsonPath.stringAt('$.context.slug')),
+                ),
+                sk: tasks.DynamoAttributeValue.fromString('METADATA'),
+            },
+            updateExpression: 'SET #status = :failed, #updatedAt = :now, #errorMessage = :error, #gsi1pk = :gsi1pk',
+            expressionAttributeNames: {
+                '#status': 'status',
+                '#updatedAt': 'updatedAt',
+                '#errorMessage': 'errorMessage',
+                '#gsi1pk': 'gsi1pk',
+            },
+            expressionAttributeValues: {
+                ':failed': tasks.DynamoAttributeValue.fromString('failed'),
+                ':now': tasks.DynamoAttributeValue.fromString(
+                    JsonPath.stringAt('$$.State.EnteredTime'),
+                ),
+                ':error': tasks.DynamoAttributeValue.fromString(
+                    JsonPath.stringAt('$.error.Cause'),
+                ),
+                ':gsi1pk': tasks.DynamoAttributeValue.fromString('STATUS#failed'),
+            },
+            resultPath: sfn.JsonPath.DISCARD,
+            comment: 'Write status=failed to DynamoDB so frontend can display failure',
+        });
+
+        markArticleFailed.next(pipelineFailed);
+
+        // Chain: Research → Writer → QA (all catch → MarkFailed → Fail)
         const definition = researchTask
-            .addCatch(pipelineFailed, {
+            .addCatch(markArticleFailed, {
                 errors: ['States.ALL'],
                 resultPath: '$.error',
             })
             .next(
-                writerTask.addCatch(pipelineFailed, {
+                writerTask.addCatch(markArticleFailed, {
                     errors: ['States.ALL'],
                     resultPath: '$.error',
                 }),
             )
             .next(
-                qaTask.addCatch(pipelineFailed, {
+                qaTask.addCatch(markArticleFailed, {
                     errors: ['States.ALL'],
                     resultPath: '$.error',
                 }),
@@ -399,6 +443,9 @@ export class BedrockPipelineStack extends cdk.Stack {
                 }),
             },
         });
+
+        // Grant the state machine's execution role permission to write to DynamoDB
+        contentTable.grantWriteData(this.stateMachine);
 
         // =================================================================
         // Lambda — Trigger Handler (S3 event → Step Functions)
