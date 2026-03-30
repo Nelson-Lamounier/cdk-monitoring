@@ -190,9 +190,13 @@ mappings:
     code_paths:
       - "bedrock-applications/job-strategist/**"
       - "bedrock-applications/shared/src/strategist-types.ts"
+      - "bedrock-applications/shared/src/index.ts"
       - "infra/lib/stacks/bedrock/strategist-*.ts"
       - "infra/lib/config/bedrock/strategist-*.ts"
+      - "infra/lib/projects/bedrock/factory.ts"
       - "infra/tests/unit/stacks/bedrock/strategist-*.test.ts"
+      - "kubernetes-app/workloads/charts/nextjs/deploy.py"
+      - ".github/workflows/deploy-bedrock.yml"
       - "docs/bedrock/strategist-frontend-design.md"
     kb_docs:
       - "ai-ml/strategist-pipeline.md"
