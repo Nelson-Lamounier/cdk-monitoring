@@ -88,14 +88,16 @@ function buildStrategistMessage(
         }
     }
 
-    // Technology inventory
+    // Technology inventory (guarded — upstream parseResponse provides defaults,
+    // but belt-and-braces for robustness against LLM output variations)
+    const techInv = research.technologyInventory;
     sections.push(
         '', '### Technology Inventory',
-        `Languages: ${research.technologyInventory.languages.join(', ')}`,
-        `Frameworks: ${research.technologyInventory.frameworks.join(', ')}`,
-        `Infrastructure: ${research.technologyInventory.infrastructure.join(', ')}`,
-        `Tools: ${research.technologyInventory.tools.join(', ')}`,
-        `Methodologies: ${research.technologyInventory.methodologies.join(', ')}`,
+        `Languages: ${(techInv?.languages ?? []).join(', ') || 'None specified'}`,
+        `Frameworks: ${(techInv?.frameworks ?? []).join(', ') || 'None specified'}`,
+        `Infrastructure: ${(techInv?.infrastructure ?? []).join(', ') || 'None specified'}`,
+        `Tools: ${(techInv?.tools ?? []).join(', ') || 'None specified'}`,
+        `Methodologies: ${(techInv?.methodologies ?? []).join(', ') || 'None specified'}`,
     );
 
     // Verified matches — batched push to satisfy lint

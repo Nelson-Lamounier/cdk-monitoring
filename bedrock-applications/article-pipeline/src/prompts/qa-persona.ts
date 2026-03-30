@@ -83,10 +83,10 @@ export const QA_PERSONA_SYSTEM_PROMPT: SystemContentBlock[] = [
         ].join('\n'),
     },
     {
-        guardContent: {
-            type: 'cachePoint',
+        cachePoint: {
+            type: 'default',
         },
-    } as unknown as SystemContentBlock,
+    } as SystemContentBlock,
     {
         text: [
             `## Output Format`,

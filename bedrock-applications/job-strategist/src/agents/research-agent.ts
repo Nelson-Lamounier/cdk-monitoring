@@ -237,14 +237,34 @@ export async function executeResearchAgent(
             const parsed = parseJsonResponse<StrategistResearchResult>(text, 'strategist-research');
 
             // Ensure arrays are always arrays (defensive against LLM output)
+            // and provide safe defaults for nested objects the LLM might omit
             return {
                 ...parsed,
+                targetRole: parsed.targetRole ?? 'Unknown Role',
+                targetCompany: parsed.targetCompany ?? 'Unknown Company',
+                seniority: parsed.seniority ?? 'unspecified',
+                domain: parsed.domain ?? 'unspecified',
                 hardRequirements: Array.isArray(parsed.hardRequirements) ? parsed.hardRequirements : [],
                 softRequirements: Array.isArray(parsed.softRequirements) ? parsed.softRequirements : [],
                 implicitRequirements: Array.isArray(parsed.implicitRequirements) ? parsed.implicitRequirements : [],
                 verifiedMatches: Array.isArray(parsed.verifiedMatches) ? parsed.verifiedMatches : [],
                 partialMatches: Array.isArray(parsed.partialMatches) ? parsed.partialMatches : [],
                 gaps: Array.isArray(parsed.gaps) ? parsed.gaps : [],
+                technologyInventory: {
+                    languages: Array.isArray(parsed.technologyInventory?.languages) ? parsed.technologyInventory.languages : [],
+                    frameworks: Array.isArray(parsed.technologyInventory?.frameworks) ? parsed.technologyInventory.frameworks : [],
+                    infrastructure: Array.isArray(parsed.technologyInventory?.infrastructure) ? parsed.technologyInventory.infrastructure : [],
+                    tools: Array.isArray(parsed.technologyInventory?.tools) ? parsed.technologyInventory.tools : [],
+                    methodologies: Array.isArray(parsed.technologyInventory?.methodologies) ? parsed.technologyInventory.methodologies : [],
+                },
+                experienceSignals: {
+                    yearsExpected: parsed.experienceSignals?.yearsExpected ?? 'unspecified',
+                    domainExperience: parsed.experienceSignals?.domainExperience ?? 'unspecified',
+                    leadershipExpectation: parsed.experienceSignals?.leadershipExpectation ?? 'none specified',
+                    scaleIndicators: parsed.experienceSignals?.scaleIndicators ?? 'unspecified',
+                },
+                overallFitRating: parsed.overallFitRating ?? 'STRETCH',
+                fitSummary: parsed.fitSummary ?? 'Analysis incomplete — insufficient data for assessment.',
                 resumeData,
                 kbContext,
             };

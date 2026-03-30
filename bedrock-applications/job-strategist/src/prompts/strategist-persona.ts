@@ -155,8 +155,8 @@ export const STRATEGIST_PERSONA_SYSTEM_PROMPT: SystemContentBlock[] = [
         ].join('\n'),
     },
     {
-        guardContent: {
-            type: 'cachePoint',
+        cachePoint: {
+            type: 'default',
         },
-    } as unknown as SystemContentBlock,
+    } as SystemContentBlock,
 ];
