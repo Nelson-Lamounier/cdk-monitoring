@@ -72,6 +72,9 @@ export type {
     DimensionResult,
     QaValidationResult,
 
+    // Article versioning
+    ArticleVersionRecord,
+
     // Step Functions state shapes
     ResearchHandlerInput,
     WriterHandlerInput,

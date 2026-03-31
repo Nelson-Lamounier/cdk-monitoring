@@ -8,17 +8,19 @@
  * It is NOT part of the Step Functions state machine. It runs separately,
  * triggered by the admin's action in the dashboard.
  *
- * Approve flow:
- * 1. Copy MDX from review/{slug}.mdx → published/{slug}.mdx
- * 2. Copy MDX to content/v{n}/{slug}.mdx (versioned snapshot)
- * 3. Delete review/{slug}.mdx
- * 4. Update DynamoDB status → 'published', set publishedAt
- * 5. Fire ISR revalidation via POST /api/revalidate
+ * Versioning: The admin specifies which version to approve/reject.
+ * On approval:
+ *   - Copy MDX from review/v{n}/{slug}.mdx → published/{slug}.mdx
+ *   - Copy MDX to content/v{n}/{slug}.mdx (immutable snapshot)
+ *   - Update VERSION#v{n} record → status='published'
+ *   - Update METADATA record → status='published', publishedVersion=n
+ *   - Mark any previously published version as 'superseded'
+ *   - Fire ISR revalidation
  *
- * Reject flow:
- * 1. Copy MDX from review/{slug}.mdx → archived/{slug}.mdx
- * 2. Delete review/{slug}.mdx
- * 3. Update DynamoDB status → 'rejected', set rejectedAt
+ * On rejection:
+ *   - Copy MDX from review/v{n}/{slug}.mdx → archived/v{n}/{slug}.mdx
+ *   - Update VERSION#v{n} record → status='rejected'
+ *   - METADATA status unchanged
  */
 
 import {
@@ -27,7 +29,11 @@ import {
     DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import {
+    DynamoDBDocumentClient,
+    UpdateCommand,
+    QueryCommand,
+} from '@aws-sdk/lib-dynamodb';
 
 // =============================================================================
 // TYPES
@@ -44,6 +50,8 @@ export type PublishAction = 'approve' | 'reject';
 export interface PublishHandlerInput {
     /** Article slug to approve or reject */
     readonly slug: string;
+    /** Version number to approve or reject */
+    readonly version: number;
     /** Pipeline execution ID for audit trail */
     readonly pipelineId?: string;
     /** Admin action: approve or reject */
@@ -58,6 +66,8 @@ export interface PublishHandlerOutput {
     readonly success: boolean;
     /** Article slug processed */
     readonly slug: string;
+    /** Version processed */
+    readonly version: number;
     /** Action performed */
     readonly action: PublishAction;
     /** New article status */
@@ -134,35 +144,115 @@ async function deleteS3Object(bucket: string, key: string): Promise<void> {
 // =============================================================================
 
 /**
- * Update article status in DynamoDB.
+ * Update a VERSION#v<n> record status in DynamoDB.
  *
  * @param slug - Article slug
- * @param status - New status ('published' or 'rejected')
- * @param timestampField - DynamoDB field for the timestamp
+ * @param version - Version number
+ * @param status - New status
+ * @param timestampField - Field to set with current timestamp
  */
-async function updateArticleStatus(
+async function updateVersionStatus(
     slug: string,
+    version: number,
     status: string,
     timestampField: string,
 ): Promise<void> {
     const now = new Date().toISOString();
+    const versionSk = `VERSION#v${version}`;
 
-    console.log(`[publish] DynamoDB update: ARTICLE#${slug} → status=${status}`);
+    console.log(`[publish] DynamoDB update: ARTICLE#${slug} / ${versionSk} → status=${status}`);
 
     await ddbClient.send(new UpdateCommand({
         TableName: TABLE_NAME,
         Key: {
             pk: `ARTICLE#${slug}`,
-            sk: 'METADATA',
+            sk: versionSk,
         },
-        UpdateExpression: `SET #status = :status, ${timestampField} = :ts, updatedAt = :ts, contentRef = :contentRef`,
+        UpdateExpression: `SET #status = :status, ${timestampField} = :ts, updatedAt = :ts`,
         ExpressionAttributeNames: {
             '#status': 'status',
         },
         ExpressionAttributeValues: {
             ':status': status,
             ':ts': now,
+        },
+    }));
+}
+
+/**
+ * Promote a version to published state in METADATA.
+ *
+ * Updates the METADATA record with the published version's details,
+ * points to the published/ S3 prefix, and marks any previously
+ * published version as 'superseded'.
+ *
+ * @param slug - Article slug
+ * @param version - Version being published
+ */
+async function promoteVersionToMetadata(
+    slug: string,
+    version: number,
+): Promise<void> {
+    const now = new Date().toISOString();
+    const datePrefix = now.slice(0, 10);
+    const pk = `ARTICLE#${slug}`;
+
+    // Find any currently published VERSION record to supersede
+    const existingPublished = await ddbClient.send(new QueryCommand({
+        TableName: TABLE_NAME,
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :skPrefix)',
+        FilterExpression: '#status = :published',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+            ':pk': pk,
+            ':skPrefix': 'VERSION#',
+            ':published': 'published',
+        },
+        ProjectionExpression: 'sk',
+    }));
+
+    // Mark previously published versions as superseded
+    if (existingPublished.Items && existingPublished.Items.length > 0) {
+        for (const item of existingPublished.Items) {
+            const oldSk = item.sk as string;
+            if (oldSk !== `VERSION#v${version}`) {
+                console.log(`[publish] Superseding: ${oldSk}`);
+                await ddbClient.send(new UpdateCommand({
+                    TableName: TABLE_NAME,
+                    Key: { pk, sk: oldSk },
+                    UpdateExpression: 'SET #status = :superseded, updatedAt = :now',
+                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeValues: {
+                        ':superseded': 'superseded',
+                        ':now': now,
+                    },
+                }));
+            }
+        }
+    }
+
+    // Update METADATA record — promote version to published state
+    console.log(`[publish] Updating METADATA → published, version=v${version}`);
+    await ddbClient.send(new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { pk, sk: 'METADATA' },
+        UpdateExpression: [
+            'SET #status = :published',
+            'publishedVersion = :version',
+            'publishedAt = :now',
+            'updatedAt = :now',
+            'contentRef = :contentRef',
+            'gsi1pk = :gsi1pk',
+            'gsi1sk = :gsi1sk',
+        ].join(', '),
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+            ':published': 'published',
+            ':version': version,
+            ':now': now,
             ':contentRef': `s3://${ASSETS_BUCKET}/${PUBLISHED_PREFIX}${slug}.mdx`,
+            ':gsi1pk': 'STATUS#published',
+            ':gsi1sk': `${datePrefix}#${slug}`,
         },
     }));
 }
@@ -206,39 +296,44 @@ async function triggerIsrRevalidation(slug: string): Promise<void> {
  *
  * Invoked by the Next.js admin dashboard via AWS SDK Lambda.invoke().
  *
- * @param event - Publish action event with slug and action
+ * @param event - Publish action event with slug, version, and action
  * @returns Operation result for the admin dashboard
  */
 export const handler = async (event: PublishHandlerInput): Promise<PublishHandlerOutput> => {
-    const { slug, action, pipelineId } = event;
+    const { slug, version, action, pipelineId } = event;
 
-    console.log(`[publish] ${action.toUpperCase()} article "${slug}" (pipelineId: ${pipelineId ?? 'N/A'})`);
+    console.log(
+        `[publish] ${action.toUpperCase()} article "${slug}" v${version} ` +
+        `(pipelineId: ${pipelineId ?? 'N/A'})`,
+    );
 
-    const reviewKey = `${REVIEW_PREFIX}${slug}.mdx`;
+    // Version-scoped review key
+    const reviewKey = `${REVIEW_PREFIX}v${version}/${slug}.mdx`;
 
     try {
         if (action === 'approve') {
-            // Generate version number from timestamp
-            const version = Date.now();
             const publishedKey = `${PUBLISHED_PREFIX}${slug}.mdx`;
             const contentKey = `${CONTENT_PREFIX}v${version}/${slug}.mdx`;
 
-            // 1. Copy to published/ and content/v{n}/
+            // 1. Copy to published/ (overwrite live) and content/v{n}/ (immutable)
             await Promise.all([
                 copyS3Object(ASSETS_BUCKET, reviewKey, publishedKey),
                 copyS3Object(ASSETS_BUCKET, reviewKey, contentKey),
             ]);
 
-            // 2. Delete from review/
+            // 2. Delete from review/v{n}/
             await deleteS3Object(ASSETS_BUCKET, reviewKey);
 
-            // 3. Update DynamoDB status
-            await updateArticleStatus(slug, 'published', 'publishedAt');
+            // 3. Update VERSION record → published
+            await updateVersionStatus(slug, version, 'published', 'publishedAt');
 
-            // 4. Trigger ISR revalidation
+            // 4. Promote to METADATA + supersede old published versions
+            await promoteVersionToMetadata(slug, version);
+
+            // 5. Trigger ISR revalidation
             await triggerIsrRevalidation(slug);
 
-            // 5. Emit approval metric
+            // 6. Emit approval metric
             const emf = {
                 _aws: {
                     Timestamp: Date.now(),
@@ -250,6 +345,7 @@ export const handler = async (event: PublishHandlerInput): Promise<PublishHandle
                 },
                 Environment: ENVIRONMENT,
                 Slug: slug,
+                Version: version,
                 ArticlePublished: 1,
             };
             console.log(JSON.stringify(emf));
@@ -257,22 +353,23 @@ export const handler = async (event: PublishHandlerInput): Promise<PublishHandle
             return {
                 success: true,
                 slug,
+                version,
                 action,
                 status: 'published',
-                message: `Article "${slug}" published successfully`,
+                message: `Article "${slug}" v${version} published successfully`,
             };
         } else {
-            // Reject flow
-            const archivedKey = `${ARCHIVED_PREFIX}${slug}.mdx`;
+            // Reject flow — version-scoped archiving
+            const archivedKey = `${ARCHIVED_PREFIX}v${version}/${slug}.mdx`;
 
-            // 1. Copy to archived/
+            // 1. Copy to archived/v{n}/
             await copyS3Object(ASSETS_BUCKET, reviewKey, archivedKey);
 
-            // 2. Delete from review/
+            // 2. Delete from review/v{n}/
             await deleteS3Object(ASSETS_BUCKET, reviewKey);
 
-            // 3. Update DynamoDB status
-            await updateArticleStatus(slug, 'rejected', 'rejectedAt');
+            // 3. Update VERSION record → rejected (METADATA untouched)
+            await updateVersionStatus(slug, version, 'rejected', 'rejectedAt');
 
             // 4. Emit rejection metric
             const emf = {
@@ -286,6 +383,7 @@ export const handler = async (event: PublishHandlerInput): Promise<PublishHandle
                 },
                 Environment: ENVIRONMENT,
                 Slug: slug,
+                Version: version,
                 ArticleRejected: 1,
             };
             console.log(JSON.stringify(emf));
@@ -293,18 +391,20 @@ export const handler = async (event: PublishHandlerInput): Promise<PublishHandle
             return {
                 success: true,
                 slug,
+                version,
                 action,
                 status: 'rejected',
-                message: `Article "${slug}" rejected and archived`,
+                message: `Article "${slug}" v${version} rejected and archived`,
             };
         }
     } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
-        console.error(`[publish] Failed to ${action} article "${slug}": ${err.message}`);
+        console.error(`[publish] Failed to ${action} article "${slug}" v${version}: ${err.message}`);
 
         return {
             success: false,
             slug,
+            version,
             action,
             status: 'error',
             message: `Failed to ${action} article: ${err.message}`,

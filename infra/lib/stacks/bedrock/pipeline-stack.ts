@@ -307,10 +307,10 @@ export class BedrockPipelineStack extends cdk.Stack {
             resources: ['*'],
         }));
 
-        // Publish: S3 read/write/delete, DynamoDB write
+        // Publish: S3 read/write/delete, DynamoDB read/write (needs Query for supersede logic)
         assetsBucket.grantReadWrite(this.publishFunction);
         assetsBucket.grantDelete(this.publishFunction);
-        contentTable.grantWriteData(this.publishFunction);
+        contentTable.grantReadWriteData(this.publishFunction);
 
         // CDK-Nag suppression for NODEJS_22_X
         const allFunctions = [researchFn, writerFn, qaFn, this.publishFunction];
@@ -377,14 +377,16 @@ export class BedrockPipelineStack extends cdk.Stack {
             cause: 'One of the pipeline agents threw an unrecoverable error',
         });
 
-        /** Write status='failed' to DDB before transitioning to Fail state */
+        /** Write status='failed' to the VERSION#v<n> record before transitioning to Fail state */
         const markArticleFailed = new tasks.DynamoUpdateItem(this, 'MarkArticleFailed', {
             table: contentTable,
             key: {
                 pk: tasks.DynamoAttributeValue.fromString(
                     JsonPath.format('ARTICLE#{}', JsonPath.stringAt('$.context.slug')),
                 ),
-                sk: tasks.DynamoAttributeValue.fromString('METADATA'),
+                sk: tasks.DynamoAttributeValue.fromString(
+                    JsonPath.format('VERSION#v{}', JsonPath.stringAt('$.context.version')),
+                ),
             },
             updateExpression: 'SET #status = :failed, #updatedAt = :now, #errorMessage = :error, #gsi1pk = :gsi1pk',
             expressionAttributeNames: {
@@ -404,7 +406,7 @@ export class BedrockPipelineStack extends cdk.Stack {
                 ':gsi1pk': tasks.DynamoAttributeValue.fromString('STATUS#failed'),
             },
             resultPath: sfn.JsonPath.DISCARD,
-            comment: 'Write status=failed to DynamoDB so frontend can display failure',
+            comment: 'Write status=failed to VERSION#v<n> record so frontend can display failure',
         });
 
         markArticleFailed.next(pipelineFailed);
@@ -473,9 +475,10 @@ export class BedrockPipelineStack extends cdk.Stack {
             tracing: lambda.Tracing.ACTIVE,
         });
 
-        // Grant trigger Lambda permission to start executions + write DynamoDB
+        // Grant trigger Lambda permission to start executions + read/write DynamoDB
+        // Read is required for the resolveNextVersion() query
         this.stateMachine.grantStartExecution(this.triggerFunction);
-        contentTable.grantWriteData(this.triggerFunction);
+        contentTable.grantReadWriteData(this.triggerFunction);
 
         NagSuppressions.addResourceSuppressions(
             this.triggerFunction,
@@ -519,6 +522,49 @@ export class BedrockPipelineStack extends cdk.Stack {
             parameterName: `/${props.namePrefix}/pipeline-trigger-function-arn`,
             stringValue: this.triggerFunction.functionArn,
             description: 'ARN of the Trigger Handler Lambda (for S3 events)',
+        });
+
+        // =================================================================
+        // Lambda — Version History Handler (admin dashboard query)
+        // =================================================================
+        const versionHistoryFn = new lambdaNode.NodejsFunction(this, 'VersionHistoryFunction', {
+            functionName: `${namePrefix}-pipeline-version-history`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(handlersDir, 'version-history-handler.ts'),
+            handler: 'handler',
+            memorySize: props.triggerLambdaMemoryMb, // lightweight query function
+            timeout: cdk.Duration.seconds(15),
+            environment: {
+                PIPELINE_TABLE_NAME: contentTable.tableName,
+                ENVIRONMENT: props.environmentName,
+            },
+            description: `Pipeline Version History — query article versions`,
+            logGroup: new logs.LogGroup(this, 'VersionHistoryLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-pipeline-version-history`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            bundling: bundlingConfig,
+            tracing: lambda.Tracing.ACTIVE,
+        });
+
+        contentTable.grantReadData(versionHistoryFn);
+
+        NagSuppressions.addResourceSuppressions(
+            versionHistoryFn,
+            [
+                {
+                    id: 'AwsSolutions-L1',
+                    reason: 'Using NODEJS_22_X — latest Node.js LTS runtime',
+                },
+            ],
+            true,
+        );
+
+        new ssm.StringParameter(this, 'VersionHistoryFunctionArnParam', {
+            parameterName: `/${props.namePrefix}/pipeline-version-history-function-arn`,
+            stringValue: versionHistoryFn.functionArn,
+            description: 'ARN of the Version History Lambda (for admin dashboard)',
         });
     }
 }

@@ -281,6 +281,7 @@ export async function executeResearchAgent(
             sourceKey: '',
             bucket: ctx.bucket,
             environment: ctx.environment,
+            version: 0, // Strategist pipeline — not versioned
             cumulativeTokens: ctx.cumulativeTokens,
             cumulativeCostUsd: ctx.cumulativeCostUsd,
             retryAttempt: 0,

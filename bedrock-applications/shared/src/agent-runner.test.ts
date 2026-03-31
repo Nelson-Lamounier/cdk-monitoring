@@ -103,6 +103,7 @@ function buildPipelineContext(): PipelineContext {
         cumulativeTokens: { input: 0, output: 0, thinking: 0 },
         cumulativeCostUsd: 0,
         retryAttempt: 0,
+        version: 0,
         startedAt: new Date().toISOString(),
     };
 }

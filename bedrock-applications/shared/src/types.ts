@@ -25,12 +25,25 @@ import type { TokenUsage } from './metrics.js';
 /**
  * Article lifecycle status in DynamoDB.
  *
- * - `review`    — QA passed; awaiting manual approval in admin dashboard
- * - `flagged`   — QA failed after max retries; requires admin override or rejection
- * - `published` — Approved by admin; live on the production site
- * - `rejected`  — Rejected by admin; moved to archived/ S3 prefix
+ * Applies to both METADATA records (aggregate status) and VERSION#v<n>
+ * records (per-version status).
+ *
+ * - `processing`  — Pipeline is actively running for this version
+ * - `review`      — QA passed; awaiting manual approval in admin dashboard
+ * - `flagged`     — QA failed after max retries; requires admin override or rejection
+ * - `published`   — Approved by admin; live on the production site
+ * - `rejected`    — Rejected by admin; moved to archived/ S3 prefix
+ * - `failed`      — Pipeline execution failed (agent error, timeout, etc.)
+ * - `superseded`  — Previously published, replaced by a newer version
  */
-export type ArticleStatus = 'review' | 'flagged' | 'published' | 'rejected';
+export type ArticleStatus =
+    | 'processing'
+    | 'review'
+    | 'flagged'
+    | 'published'
+    | 'rejected'
+    | 'failed'
+    | 'superseded';
 
 /**
  * Pipeline generation mode.
@@ -69,6 +82,15 @@ export interface PipelineContext {
 
     /** Runtime environment (e.g. 'development', 'production') */
     readonly environment: string;
+
+    /**
+     * Auto-increment version number for this pipeline run.
+     *
+     * Determined by the trigger handler by querying the latest
+     * VERSION# sort key and incrementing by 1.
+     * Maps to DynamoDB sk: VERSION#v{version}
+     */
+    readonly version: number;
 
     /** Cumulative token usage across all agents */
     cumulativeTokens: {
@@ -378,6 +400,62 @@ export interface QaValidationResult {
     readonly summary: string;
     /** Independent technical confidence score (replaces Writer's self-rating) */
     readonly confidenceOverride: number;
+}
+
+// =============================================================================
+// ARTICLE VERSION RECORD (DynamoDB sk: VERSION#v<n>)
+// =============================================================================
+
+/**
+ * Immutable snapshot of a single pipeline run for an article.
+ *
+ * Stored in DynamoDB as:
+ *   pk: ARTICLE#<slug>
+ *   sk: VERSION#v<n>
+ *
+ * Each pipeline execution creates exactly one VERSION record.
+ * These records are never overwritten — they form an append-only
+ * history of all content generation runs for a given article.
+ */
+export interface ArticleVersionRecord {
+    /** Partition key: ARTICLE#<slug> */
+    readonly pk: string;
+    /** Sort key: VERSION#v<n> */
+    readonly sk: string;
+    /** Auto-increment version number */
+    readonly version: number;
+    /** Pipeline execution ID */
+    readonly pipelineId: string;
+    /** Version lifecycle status */
+    readonly status: ArticleStatus;
+    /** Article slug (denormalised for convenience) */
+    readonly slug: string;
+    /** Pointer to S3 content: s3://bucket/review/v{n}/{slug}.mdx */
+    readonly contentRef: string;
+    /** QA overall score (0–100), set after QA completes */
+    readonly qaScore?: number;
+    /** QA recommendation (publish/revise/reject) */
+    readonly qaRecommendation?: string;
+    /** QA summary text */
+    readonly qaSummary?: string;
+    /** Cumulative pipeline cost in USD */
+    readonly pipelineCostUsd?: number;
+    /** Cumulative token usage */
+    readonly pipelineTokens?: {
+        readonly input: number;
+        readonly output: number;
+        readonly thinking: number;
+    };
+    /** ISO timestamp — when this version was created */
+    readonly createdAt: string;
+    /** ISO timestamp — last update */
+    readonly updatedAt: string;
+    /** ISO timestamp — when this version was published (if approved) */
+    readonly publishedAt?: string;
+    /** ISO timestamp — when this version was rejected (if rejected) */
+    readonly rejectedAt?: string;
+    /** Runtime environment */
+    readonly environment: string;
 }
 
 // =============================================================================
