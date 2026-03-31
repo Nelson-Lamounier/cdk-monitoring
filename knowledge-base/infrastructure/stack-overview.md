@@ -62,7 +62,7 @@ The Bedrock AI/ML stacks are deployed as a separate project via `infra/lib/proje
 3. Bedrock-Agent             → Bedrock Agent with KB data source
 4. Bedrock-Api               → API Gateway (chatbot), Lambda handlers
 5. Bedrock-Content           → DynamoDB content pipeline table, S3 event config
-6. Bedrock-Pipeline          → Step Functions (3-agent article pipeline), 5 Lambdas
+6. Bedrock-Pipeline          → Step Functions (3-agent article pipeline), 6 Lambdas, version history
 7. Bedrock-StrategistData    → DynamoDB job strategist table + GSI
 8. Bedrock-StrategistPipeline → Step Functions (3-agent job strategist), 4 Lambdas
 ```

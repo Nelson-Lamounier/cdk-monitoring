@@ -16,11 +16,13 @@ tags:
   - model-registry
   - error-handling
   - dynamodb-update-item
+  - article-versioning
+  - immutable-records
 related_docs:
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
   - ai-ml/self-healing-agent.md
   - ai-ml/strategist-pipeline.md
-last_updated: "2026-03-30"
+last_updated: "2026-03-31"
 author: Nelson Lamounier
 status: active
 ---
@@ -28,37 +30,68 @@ status: active
 # Bedrock AI Content Pipeline Implementation
 
 **Project:** cdk-monitoring
-**Last Updated:** 2026-03-30
+**Last Updated:** 2026-03-31
 
 ## Architecture
 
-The Bedrock content pipeline is a multi-agent Step Functions orchestration that transforms draft `.md` articles into polished `.mdx` portfolio content using Claude via the Bedrock Converse API. Three specialised agents (Research, Writer, QA) run as separate Lambda functions, coordinated by an AWS Step Functions state machine.
+The Bedrock content pipeline is a multi-agent Step Functions orchestration that transforms draft `.md` articles into polished `.mdx` portfolio content using Claude via the Bedrock Converse API. Three specialised agents (Research, Writer, QA) run as separate Lambda functions, coordinated by an AWS Step Functions state machine. An immutable versioning system ensures published articles remain stable during new draft processing.
 
 ```
 Admin "Paste Mode" (S3 upload)
   └─ drafts/{slug}.md → S3 Event Notification
       └─ Trigger Lambda
-          ├─ DynamoDB: status = "processing"
-          └─ Step Functions: StartExecution
+          ├─ DynamoDB: Query VERSION# → resolve next v<n>
+          ├─ DynamoDB: Write VERSION#v<n> (status = "processing")
+          └─ Step Functions: StartExecution (context.version = n)
               ├─ Research Agent → Pinecone KB retrieval + source analysis
               ├─ Writer Agent → Structured MDX generation
-              └─ QA Agent → Validation + S3 write (review/) + DynamoDB (status = "review")
+              └─ QA Agent → Validation + S3 (review/v<n>/) + DDB (VERSION#v<n> = "review")
 
 Admin Approve/Reject (Lambda.invoke)
   └─ Publish Lambda
-      ├─ Approve: S3 copy review/ → published/ + DynamoDB (status = "published") + ISR
-      └─ Reject: S3 copy review/ → archived/ + DynamoDB (status = "rejected")
+      ├─ Approve: S3 copy review/v<n>/ → published/ + content/v<n>/
+      │           DDB VERSION#v<n> = "published" + METADATA.publishedVersion = n
+      │           Old published VERSION → "superseded" + ISR revalidation
+      └─ Reject:  S3 copy review/v<n>/ → archived/v<n>/
+                  DDB VERSION#v<n> = "rejected" (METADATA untouched)
+
+Admin Version History (Lambda.invoke)
+  └─ Version History Lambda
+      └─ Query pk=ARTICLE#{slug}, sk begins_with VERSION# → all versions
 ```
+
+### DynamoDB Schema — Item Collection Pattern
+
+Each article uses a single partition key (`ARTICLE#<slug>`) with multiple sort keys:
+
+| pk | sk | Purpose |
+|---|---|---|
+| `ARTICLE#<slug>` | `METADATA` | Published state pointer — updated only on admin approval |
+| `ARTICLE#<slug>` | `VERSION#v1` | Immutable record for pipeline run 1 |
+| `ARTICLE#<slug>` | `VERSION#v<n>` | Immutable record for pipeline run n |
+
+The `METADATA` record acts as the "live pointer" and is never modified during pipeline execution. The `VERSION#v<n>` records are append-only — each pipeline run creates a new version record.
+
+### S3 Path Structure (Version-Scoped)
+
+| Path | Purpose |
+|---|---|
+| `drafts/<slug>.md` | Uploaded draft (triggers pipeline) |
+| `review/v<n>/<slug>.mdx` | Pending QA review (version-scoped) |
+| `published/<slug>.mdx` | Live published article (overwritten on each approval) |
+| `content/v<n>/<slug>.mdx` | Immutable published snapshot |
+| `archived/v<n>/<slug>.mdx` | Rejected versions |
 
 ### Article Status Lifecycle
 
 | Status | Written by | When |
 |--------|-----------|------|
-| `processing` | Trigger Lambda | Draft uploaded to S3 |
-| `failed` | SM DynamoUpdateItem Catch | Any Lambda task error during pipeline execution |
-| `review` | QA Handler | Pipeline completes (all 3 agents finish) |
-| `published` | Publish Lambda | Admin approves |
-| `rejected` | Publish Lambda | Admin rejects |
+| `processing` | Trigger Lambda → VERSION#v<n> | Draft uploaded to S3 |
+| `failed` | SM DynamoUpdateItem Catch → VERSION#v<n> | Any Lambda task error during pipeline execution |
+| `review` | QA Handler → VERSION#v<n> | Pipeline completes (all 3 agents finish) |
+| `published` | Publish Lambda → VERSION#v<n> + METADATA | Admin approves |
+| `rejected` | Publish Lambda → VERSION#v<n> | Admin rejects |
+| `superseded` | Publish Lambda → old VERSION#v<m> | New version published, replacing old |
 
 ### S3 Event Notification Wiring
 
@@ -74,26 +107,31 @@ The pipeline is triggered automatically via S3 `OBJECT_CREATED` event notificati
 
 4. **Adaptive Thinking budget** — Complexity analysis (LOW/MID/HIGH) drives how many thinking tokens Claude receives. Dense IaC articles get 10,000 tokens; simple narratives get 2,000. This controls cost while maintaining quality for complex topics.
 
-5. **DynamoDB dual-record pattern** — Each article creates two DynamoDB records: a mutable METADATA record (for frontend queries via GSI) and an immutable CONTENT version record (for audit trail and rollback). The GSI1 key pattern `STATUS#<status>` enables efficient dashboard queries by article state.
+5. **Immutable version records** — Each pipeline run creates a new `VERSION#v<n>` DynamoDB record. The METADATA record is a stable "live pointer" updated only on admin approval. This ensures published articles are never overwritten during new draft processing, and provides a complete audit trail of all pipeline executions.
 
-6. **Processing status as early signal** — The trigger Lambda writes a `status: "processing"` record immediately, before starting the Step Functions execution. This allows the frontend admin dashboard to distinguish between "not started" and "in progress" states. A `ConditionExpression` guard prevents overwriting published articles on accidental re-upload.
+6. **Version-scoped S3 paths** — Review, content snapshot, and archived paths include the version number (`review/v1/`, `content/v1/`). This prevents race conditions when multiple pipeline runs execute for the same slug, and enables rollback to any previous version.
 
-7. **S3 event notification over direct Lambda invocation** — Automatic S3 → Lambda wiring means the frontend only needs S3 PutObject permissions. No Lambda ARN discovery, no SDK invocation. The infra handles routing entirely.
+7. **Supersede logic** — When a new version is published, the publish handler queries for any existing `VERSION#` records with `status='published'` and marks them as `superseded`. This ensures exactly one version is published at any time.
+
+8. **Processing status as early signal** — The trigger Lambda writes a `status: "processing"` VERSION record immediately, before starting the Step Functions execution. This allows the frontend admin dashboard to distinguish between "not started" and "in progress" states.
+
+9. **S3 event notification over direct Lambda invocation** — Automatic S3 → Lambda wiring means the frontend only needs S3 PutObject permissions. No Lambda ARN discovery, no SDK invocation. The infra handles routing entirely.
 
 ## Key Components
 
 | Component | File | Purpose |
 |---|---|---|
-| Trigger Lambda | `bedrock-applications/article-pipeline/src/handlers/trigger-handler.ts` | S3 event → DynamoDB "processing" → SFN StartExecution |
-| Research Agent | `bedrock-applications/article-pipeline/src/agents/research-agent.ts` | Pinecone KB retrieval + source analysis |
-| Writer Agent | `bedrock-applications/article-pipeline/src/agents/writer-agent.ts` | Structured MDX content generation via Converse API |
-| QA Agent | `bedrock-applications/article-pipeline/src/agents/qa-agent.ts` | Content validation + S3 write + DynamoDB update |
-| Research Handler | `bedrock-applications/article-pipeline/src/handlers/research-handler.ts` | Lambda entry point for Research Agent |
-| Writer Handler | `bedrock-applications/article-pipeline/src/handlers/writer-handler.ts` | Lambda entry point for Writer Agent |
-| QA Handler | `bedrock-applications/article-pipeline/src/handlers/qa-handler.ts` | Lambda entry point for QA Agent |
-| Publish Lambda | `bedrock-applications/article-pipeline/src/handlers/publish-handler.ts` | Admin approve/reject → S3 move + DynamoDB + ISR |
-| Shared Types | `bedrock-applications/shared/src/index.ts` | Barrel export: types, metrics, agent-runner utilities |
-| Pipeline Stack | `infra/lib/stacks/bedrock/pipeline-stack.ts` | CDK: Step Functions, 5 Lambdas, S3 event, DLQ, SSM |
+| Trigger Lambda | `article-pipeline/src/handlers/trigger-handler.ts` | S3 event → version resolution → DDB VERSION#v<n> → SFN StartExecution |
+| Research Agent | `article-pipeline/src/agents/research-agent.ts` | Pinecone KB retrieval + source analysis |
+| Writer Agent | `article-pipeline/src/agents/writer-agent.ts` | Structured MDX content generation via Converse API |
+| QA Agent | `article-pipeline/src/agents/qa-agent.ts` | Content validation + version-scoped S3 write + DDB VERSION update |
+| Research Handler | `article-pipeline/src/handlers/research-handler.ts` | Lambda entry point for Research Agent |
+| Writer Handler | `article-pipeline/src/handlers/writer-handler.ts` | Lambda entry point for Writer Agent |
+| QA Handler | `article-pipeline/src/handlers/qa-handler.ts` | Lambda entry point for QA Agent |
+| Publish Lambda | `article-pipeline/src/handlers/publish-handler.ts` | Admin approve/reject → version-scoped S3 move + DDB VERSION/METADATA + ISR |
+| Version History | `article-pipeline/src/handlers/version-history-handler.ts` | Query all VERSION# records for a slug (admin dashboard) |
+| Shared Types | `shared/src/types.ts` | PipelineContext (with version), ArticleVersionRecord, ArticleStatus |
+| Pipeline Stack | `infra/lib/stacks/bedrock/pipeline-stack.ts` | CDK: Step Functions, 6 Lambdas, S3 event, DLQ, SSM |
 | Content Config | `infra/lib/config/bedrock/content-configurations.ts` | DynamoDB table config per environment |
 
 ### SSM Parameter Exports
@@ -103,15 +141,17 @@ The pipeline is triggered automatically via S3 `OBJECT_CREATED` event notificati
 | `/{namePrefix}/pipeline-state-machine-arn` | Step Functions state machine ARN |
 | `/{namePrefix}/pipeline-publish-function-arn` | Publish Lambda ARN (for admin dashboard) |
 | `/{namePrefix}/pipeline-trigger-function-arn` | Trigger Lambda ARN (for diagnostics) |
+| `/{namePrefix}/pipeline-version-history-function-arn` | Version History Lambda ARN (for admin dashboard) |
 
 ### Frontend Integration Contract
 
 The frontend (separate repository) integrates via:
 
 1. **Upload**: `PUT s3://<assets-bucket>/drafts/{slug}.md` — triggers pipeline automatically
-2. **Poll**: Query DynamoDB `pk=ARTICLE#{slug}`, `sk=METADATA` — track `status` field
-3. **Approve/Reject**: `Lambda.invoke(publishFunctionArn, { slug, action: "approve" | "reject" })`
-4. **Environment**: `PUBLISH_LAMBDA_ARN` from SSM `/{namePrefix}/pipeline-publish-function-arn`
+2. **Poll**: Query DynamoDB `pk=ARTICLE#{slug}`, `sk=METADATA` — track `status` and `publishedVersion` fields
+3. **Approve/Reject**: `Lambda.invoke(publishFunctionArn, { slug, version, action: "approve" | "reject" })`
+4. **Version History**: `Lambda.invoke(versionHistoryFunctionArn, { slug })` — returns all VERSION# records
+5. **Environment**: `PUBLISH_LAMBDA_ARN` from SSM `/{namePrefix}/pipeline-publish-function-arn`
 
 ## CDK Stack Architecture
 
@@ -126,7 +166,8 @@ Data → KB → Agent → Api → Content → Pipeline → StrategistData → St
 ### Infrastructure Highlights
 
 - **Step Functions**: Standard workflow with Lambda task integrations for each agent
-- **Error handling**: SF-native `Catch → DynamoUpdateItem → Fail` chain writes `status='failed'` and `errorMessage` to DDB on task failure
+- **Error handling**: SF-native `Catch → DynamoUpdateItem → Fail` chain writes `status='failed'` and `errorMessage` to the `VERSION#v<n>` record (not METADATA) on task failure, using `$.context.version` from the pipeline state
+- **Immutable versioning**: Trigger Lambda queries existing VERSION# sort keys to resolve the next version number before starting the pipeline
 - **Dead Letter Queue**: SQS DLQ with 14-day retention for failed executions
 - **S3 Event Notification**: `OBJECT_CREATED` on `drafts/*.md` → Trigger Lambda
 - **Logging**: Step Functions `ALL` log level; each Lambda has a dedicated CloudWatch log group
@@ -141,6 +182,8 @@ Data → KB → Agent → Api → Content → Pipeline → StrategistData → St
 - **Import path fragility** — Deep relative imports between `article-pipeline/` and `shared/` broke during esbuild bundling. Solved by creating a barrel export (`shared/src/index.ts`) and standardising all handler imports to a single `../../../shared/src/index.js` path. Files at `src/agents/` depth (3 levels below `bedrock-applications/`) must use `../../../shared/src/` — using `../../` (2 levels) resolves to the non-existent `article-pipeline/shared/src/` instead.
 - **Centralised model registry** — All Bedrock model IDs are sourced from `infra/lib/config/shared/model-registry.ts`. When a model is deprecated (e.g. Haiku 3.5 → 4.5), change the constant once and all projects (ChatBot, Article Pipeline, Job Strategist, Self-Healing) pick up the new identifier. Environment variable validation wraps `process.env` reads in typed helper functions (e.g. `requireQaModel()`) to ensure TypeScript narrows the type to `string`.
 - **Missing S3 event notification** — The trigger Lambda was built to receive S3 events but no `addEventNotification` was wired in CDK. Uploading a draft to S3 did nothing until the notification was added to `pipeline-stack.ts`.
+- **Slug mismatch between S3 and DynamoDB** — The persist agent was generating a new slug from the article title instead of using the pipeline's original slug. This caused `DDB pk: ARTICLE#aws-certification-journey` vs `S3 key: review/certification-journey-aws-devops-professional.mdx`. Fixed by enforcing `context.slug` (derived from the S3 filename) across all handlers, overriding any AI-generated metadata slugs.
+- **In-place article mutation** — Articles for the same topic were being changed and updated in place, destroying previous versions. Solved by implementing the immutable `VERSION#v<n>` DynamoDB record pattern and version-scoped S3 paths.
 
 ## Transferable Skills Demonstrated
 
@@ -152,19 +195,21 @@ Data → KB → Agent → Api → Content → Pipeline → StrategistData → St
 
 ## Source Files
 
-- `bedrock-applications/article-pipeline/src/handlers/trigger-handler.ts` — S3 event trigger + DynamoDB processing status
+- `bedrock-applications/article-pipeline/src/handlers/trigger-handler.ts` — S3 event trigger + version resolution + DynamoDB VERSION record
 - `bedrock-applications/article-pipeline/src/agents/research-agent.ts` — Research Agent (Pinecone RAG)
 - `bedrock-applications/article-pipeline/src/agents/writer-agent.ts` — Writer Agent (MDX generation)
 - `bedrock-applications/article-pipeline/src/agents/qa-agent.ts` — QA Agent (validation)
-- `bedrock-applications/article-pipeline/src/handlers/publish-handler.ts` — Admin approve/reject
+- `bedrock-applications/article-pipeline/src/handlers/publish-handler.ts` — Admin approve/reject with version-scoped paths + supersede logic
+- `bedrock-applications/article-pipeline/src/handlers/version-history-handler.ts` — Version history query for admin dashboard
+- `bedrock-applications/shared/src/types.ts` — PipelineContext (with version), ArticleVersionRecord, ArticleStatus
 - `bedrock-applications/shared/src/index.ts` — Barrel export for shared types and utilities
-- `infra/lib/stacks/bedrock/pipeline-stack.ts` — CDK infrastructure (Step Functions, Lambdas, S3 event, DLQ)
+- `infra/lib/stacks/bedrock/pipeline-stack.ts` — CDK infrastructure (Step Functions, 6 Lambdas, S3 event, DLQ, SSM)
 - `infra/lib/config/bedrock/content-configurations.ts` — Environment-specific configuration
 
 ## Summary
 
-This document analyses the Bedrock multi-agent content pipeline that transforms draft markdown articles into polished MDX portfolio content using three specialised AI agents (Research, Writer, QA) orchestrated by AWS Step Functions. The pipeline is triggered automatically via S3 event notifications, tracks article status through a `processing → failed → review → published/rejected` lifecycle in DynamoDB, and provides a Publish Lambda for admin approve/reject actions with ISR revalidation. SF-native DynamoUpdateItem error handlers ensure pipeline failures are immediately written to DDB as `status='failed'`, preventing stuck processing records.
+This document analyses the Bedrock multi-agent content pipeline that transforms draft markdown articles into polished MDX portfolio content using three specialised AI agents (Research, Writer, QA) orchestrated by AWS Step Functions. The pipeline uses an immutable versioning system where each pipeline run creates a `VERSION#v<n>` DynamoDB record and writes to version-scoped S3 paths (`review/v<n>/`, `content/v<n>/`), ensuring published articles remain stable during new draft processing. Article status progresses through `processing → failed → review → published/rejected/superseded` lifecycle stages. The Publish Lambda handles admin approve/reject actions with automatic supersede logic for replacing published versions, and a dedicated Version History Lambda enables the admin dashboard to query all versions for a given article.
 
 ## Keywords
 
-bedrock, step-functions, lambda, pinecone, rag, converse-api, dynamodb, content-generation, claude, mdx, publishing, s3-trigger, multi-agent, event-driven, pipeline, article-lifecycle, error-handling, dynamodb-update-item, catch-handler, model-registry
+bedrock, step-functions, lambda, pinecone, rag, converse-api, dynamodb, content-generation, claude, mdx, publishing, s3-trigger, multi-agent, event-driven, pipeline, article-lifecycle, error-handling, dynamodb-update-item, catch-handler, model-registry, article-versioning, immutable-records, version-history, supersede-logic
