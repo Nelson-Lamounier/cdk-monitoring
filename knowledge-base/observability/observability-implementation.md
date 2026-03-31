@@ -15,7 +15,7 @@ related_docs:
   - observability/rum-dashboard-review.md
   - observability/frontend-performance.md
   - observability/runbooks/faro-rum-no-data.md
-last_updated: "2026-03-29"
+last_updated: "2026-03-31"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -97,7 +97,7 @@ Tempo receives OTLP gRPC/HTTP traces. Key configuration:
 - **Metrics generator** enabled: `span-metrics`, `service-graphs`, `local-blocks`
 - **Remote write** to Prometheus with `send_exemplars: true` — creates Metrics → Traces bridge
 - **Block retention**: 72h, max 5MB per trace, 2000 max live traces
-- **Storage**: local-path PVC (10Gi dev)
+- **Storage**: EBS CSI PVC (`ebs-sc`, 10Gi dev)
 
 ## Alloy — Faro RUM Collector
 

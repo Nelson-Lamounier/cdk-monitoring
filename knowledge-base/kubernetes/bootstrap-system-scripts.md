@@ -16,7 +16,7 @@ related_docs:
   - kubernetes/bootstrap-pipeline.md
   - kubernetes/adrs/argocd-over-flux.md
   - operations/ci-cd-implementation.md
-last_updated: "2026-03-25"
+last_updated: "2026-03-31"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -81,7 +81,7 @@ boot/steps/
 ├── boot_helpers/config.py    # BootConfig dataclass — env var consolidation
 ├── common.py                 # StepRunner, logging, AMI validation
 ├── cp/                       # 10 control plane step modules
-│   ├── ebs_volume.py         # Attach + format EBS data volume
+│   ├── ebs_volume.py         # Format + mount launch-template data volume
 │   ├── dr_restore.py         # Restore etcd snapshot + certs from S3
 │   ├── kubeadm_init.py       # kubeadm init + DNS + cert backup
 │   ├── calico.py             # Install Calico CNI
@@ -111,7 +111,7 @@ print(cfg.ssm_prefix)   # /k8s/development
 ```
 
 Key fields: `ssm_prefix`, `aws_region`, `k8s_version`, `data_dir`, `pod_cidr`,
-`service_cidr`, `api_dns_name`, `s3_bucket`, `volume_id`, `calico_version`,
+`service_cidr`, `api_dns_name`, `s3_bucket`, `calico_version`,
 `environment`, `join_max_retries`, `join_retry_interval`.
 
 ### Import Collision Resolution
@@ -135,7 +135,7 @@ Located at `tests/boot/`, fully mocked and runs offline in ~0.1 seconds:
 | Test File | Tests | Coverage |
 |-----------|-------|----------|
 | `test_config.py` | 7 | BootConfig defaults, env overrides, properties |
-| `test_ebs_volume.py` | 11 | NVMe device resolution, volume state, formatting |
+| `test_ebs_volume.py` | 11 | NVMe device resolution, volume state, format + mount |
 | `test_join_cluster.py` | 9 | CA hash, CA mismatch + reset, endpoint resolution |
 | `test_stale_pvs.py` | 8 | Node discovery, stale PV detection, error handling |
 

@@ -13,7 +13,7 @@ tags:
 related_docs:
   - infrastructure/stack-overview.md
   - infrastructure/infrastructure-topology.md
-last_updated: "2026-03-22"
+last_updated: "2026-03-31"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -89,7 +89,7 @@ status: accepted
 ### Storage
 
 - **S3 Buckets:** KB source data, bootstrap scripts, frontend static assets (10 total)
-- **EBS (GP3):** KMS-encrypted volumes for each EC2 instance, local-path PVs for monitoring data
+- **EBS (GP3):** KMS-encrypted volumes for each EC2 instance, EBS CSI Driver-provisioned PVs for monitoring data
 - **DynamoDB:** Single table for published article metadata (single-table design)
 
 ### AI / Bedrock
@@ -150,7 +150,7 @@ All infrastructure outputs are stored in SSM Parameter Store (141 parameters) us
 - **SSM as parameter store** — All infrastructure outputs stored in SSM rather than CloudFormation exports or Terraform outputs. This enables cross-stack lookups, programmatic discovery by CI/CD pipelines, and MCP tool access.
 - **SecureString for secrets** — K8s join tokens, deploy keys, admin passwords, and TLS certificates stored as KMS-encrypted SecureString parameters. No secrets in Git or environment variables.
 - **4 EC2 instances** — Separated control plane from worker nodes by role (app, ArgoCD, monitoring). Each node has a dedicated SSM automation execution ID for traceable bootstrap provenance.
-- **Local-path PVs for monitoring** — Prometheus, Grafana, and Loki data use local-path Persistent Volumes on the dedicated monitoring node. The `Recreate` deployment strategy prevents RWO PVC deadlocks during updates.
+- **EBS CSI PVs for monitoring** — Prometheus, Grafana, Loki, and Tempo data use EBS-backed Persistent Volumes (`ebs-sc` StorageClass, GP3 encrypted) via the `aws-ebs-csi-driver`. The `Recreate` deployment strategy prevents RWO PVC deadlocks during updates.
 
 ## Transferable Skills Demonstrated
 
