@@ -6,7 +6,7 @@
  * - AgentCore Gateway resource (AWS::BedrockAgentCore::Gateway)
  * - Auto-provisioned IAM role (Bedrock trust)
  * - Cognito User Pool for M2M auth
- * - Tool Lambda functions (diagnose-alarm, ebs-detach, check-node-health, analyse-cluster-health)
+ * - Tool Lambda functions (diagnose-alarm, ebs-detach, check-node-health, analyse-cluster-health, get-node-diagnostic-json, remediate-node-bootstrap)
  * - GatewayTarget registrations
  * - CloudWatch log groups with correct names and retention
  * - SSM parameters for gateway-url and gateway-id
@@ -119,8 +119,8 @@ describe('SelfHealingGatewayStack', () => {
     describe('Gateway Targets', () => {
         const { template } = createGatewayStack();
 
-        it('should register 4 Gateway targets', () => {
-            template.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 4);
+        it('should register 6 Gateway targets', () => {
+            template.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 6);
         });
 
         it('should register the diagnose-alarm target', () => {
