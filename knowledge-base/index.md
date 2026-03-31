@@ -7,7 +7,7 @@ tags:
   - navigation
   - document-graph
   - table-of-contents
-last_updated: "2026-03-30"
+last_updated: "2026-03-31"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -16,13 +16,14 @@ status: accepted
 
 This index provides a navigable map of all documents in the cdk-monitoring knowledge base, organised by domain.
 
-## Infrastructure (8 documents)
+## Infrastructure (9 documents)
 
 Core AWS infrastructure: CDK stacks, VPC networking, security, and live resource inventory.
 
 | Document | Type | Description |
 |:---|:---|:---|
-| [Stack Overview](infrastructure/stack-overview.md) | Architecture | 12-stack CDK architecture across K8s, compute, AI/ML, and edge |
+| [Stack Overview](infrastructure/stack-overview.md) | Architecture | 20-stack CDK architecture, dual-layer testing strategy (46 unit + 13 integration suites) |
+| [KubernetesBaseStack](infrastructure/stacks/kubernetes-base-stack.md) | Architecture | Foundation layer: VPC, SGs ×4, KMS, EBS, NLB, Route 53, SSM — problem → solution framing |
 | [Networking Implementation](infrastructure/networking-implementation.md) | Code Analysis | CloudFront, WAF, VPC, security groups, NLB, Traefik, traffic flow |
 | [Security Implementation](infrastructure/security-implementation.md) | Code Analysis | IAM, GuardDuty, KMS, IMDSv2, CDK-nag compliance |
 | [Infrastructure Topology](infrastructure/infrastructure-topology.md) | Live Infra | Network flow map, VPC layout, 4-node cluster topology |

@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "architecture",
+    "domain": "infrastructure",
+    "title": "KubernetesBaseStack — Foundation Infrastructure",
+    "tags": "cdk, kubernetes, base-stack, security-groups, vpc, nlb, ebs, kms, route53, ssm, s3"
+  }
+}

@@ -4,18 +4,25 @@ doc_type: architecture
 domain: infrastructure
 tags:
   - cdk
+  - typescript
   - cloudformation
   - stack-architecture
-  - 14-stacks
+  - 20-stacks
   - aws
   - kubernetes
   - bedrock
+  - jest
+  - unit-testing
+  - integration-testing
+  - template-assertions
 related_docs:
   - infrastructure/adrs/cdk-over-terraform.md
   - infrastructure/networking-implementation.md
   - infrastructure/security-implementation.md
   - infrastructure/infrastructure-topology.md
-last_updated: "2026-03-30"
+  - infrastructure/stacks/kubernetes-base-stack.md
+  - operations/ci-cd-implementation.md
+last_updated: "2026-03-31"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -24,7 +31,7 @@ status: accepted
 
 **Project:** cdk-monitoring
 **Author:** Nelson Lamounier
-**Last Updated:** 2026-03-30
+**Last Updated:** 2026-03-31
 
 ## Multi-Project Architecture
 
@@ -51,6 +58,14 @@ The Kubernetes platform is deployed as 12 independent CloudFormation stacks, orc
 6. Kubernetes-Edge          → ACM + WAF + CloudFront (us-east-1), Route 53 alias
 7. Kubernetes-Observability → CloudWatch pre-deployment dashboard
 ```
+
+### Per-Stack Deep-Dive Documentation
+
+Detailed problem → solution documentation for individual stacks is available in the `infrastructure/stacks/` folder. Each document covers: what resources the stack creates, what problem it solves, why it was designed that way, design patterns, cost estimates, and failure impact analysis.
+
+| Stack | Deep-Dive Document |
+|---|---|
+| Kubernetes-Base | [kubernetes-base-stack.md](infrastructure/stacks/kubernetes-base-stack.md) |
 
 ### Bedrock Stack Dependency Graph
 
@@ -224,8 +239,209 @@ Deployed as 2 additional CDK stacks: `SelfHealing-Gateway-development` (AgentCor
 - **FinOps:** Token budget alarm (100K/hr MathExpression), reserved concurrency, EventBridge self-exclusion filter, DRY_RUN mode
 - **PoC verified:** 2026-03-23 — agent completed full diagnostic loop in 26.3s using 4,448 tokens (~$0.02)
 
+## CDK Testing Strategy
+
+The codebase implements a **dual-layer testing strategy** using Jest for both unit and integration tests. This approach provides synth-time confidence (unit tests) and post-deployment correctness (integration tests), catching different categories of defects.
+
+### TypeScript CDK — Language & Tooling
+
+| Aspect | Standard |
+|---|---|
+| **Language** | TypeScript 5.x with `strict: true` |
+| **Test framework** | Jest 29 with `ts-jest` transformer |
+| **CDK assertion library** | `aws-cdk-lib/assertions` (`Template`, `Match`) |
+| **Linting** | ESLint + `@typescript-eslint` + `jest/no-conditional-in-test` |
+| **CI command** | `just test-unit <path>` / `just ci-integration-test <path> <env>` |
+| **Coverage** | Enabled in CI, excluded from local rapid-iteration runs |
+
+### Unit Tests — Synth-Time Template Assertions
+
+Unit tests synthesise the CDK stack via `Template.fromStack()` and assert against the resulting CloudFormation JSON. They run **without AWS credentials** and complete in under 3 seconds.
+
+**What they verify:**
+- Resource existence and counts (`resourceCountIs`)
+- Resource properties and configuration (`hasResourceProperties`, `Match.objectLike`)
+- Security group inline rules (ingress and egress arrays)
+- Self-referencing vs CIDR-based SG rule rendering patterns
+- SSM parameter publishing for cross-stack discovery
+- Stack outputs (`CfnOutput` exports)
+- Public property exposure (typed API surface)
+- Config integration (config-driven values flow correctly to resources)
+
+**Test file layout:**
+```
+infra/tests/
+├── fixtures/                        # Shared test factories, VPC mock context
+│   ├── index.ts                     # Re-exports all fixtures
+│   └── test-app.ts                  # createTestApp() with VPC context mock
+├── unit/
+│   ├── stacks/
+│   │   ├── kubernetes/
+│   │   │   ├── base-stack.test.ts           # 108 tests — reference implementation
+│   │   │   ├── compute-stack.test.ts
+│   │   │   ├── data-stack.test.ts
+│   │   │   ├── api-stack.test.ts
+│   │   │   ├── app-iam-stack.test.ts
+│   │   │   ├── observability-stack.test.ts
+│   │   │   ├── ssm-automation-stack.test.ts
+│   │   │   ├── argocd-worker-stack.test.ts
+│   │   │   └── monitoring-worker-stack.test.ts
+│   │   ├── bedrock/
+│   │   │   ├── agent-stack.test.ts
+│   │   │   ├── ai-content-stack.test.ts
+│   │   │   ├── api-stack.test.ts
+│   │   │   ├── data-stack.test.ts
+│   │   │   ├── kb-stack.test.ts
+│   │   │   ├── strategist-data-stack.test.ts
+│   │   │   └── strategist-pipeline-stack.test.ts
+│   │   ├── self-healing/
+│   │   │   ├── agent-stack.test.ts
+│   │   │   └── gateway-stack.test.ts
+│   │   └── shared/
+│   │       ├── cognito-auth-stack.test.ts
+│   │       ├── crossplane-stack.test.ts
+│   │       ├── finops-stack.test.ts
+│   │       └── security-baseline-stack.test.ts
+│   ├── constructs/                  # Isolated construct-level tests
+│   ├── lambda/                      # Lambda handler tests
+│   ├── factories/                   # Factory pattern tests
+│   └── utilities/                   # Naming, tagging utility tests
+└── integration/
+    ├── kubernetes/                   # 12 post-deploy verification suites
+    └── self-healing/                 # Agent stack integration
+```
+
+**Unit test conventions (enforced by ESLint + custom rules):**
+
+1. **Named constants** — no magic values in assertions (`TEST_VPC_CIDR`, `ANY_IPV4`, `NLB_LOG_LIFECYCLE_DAYS`)
+2. **Data-driven tests** — `it.each()` for repetitive rule validation (e.g., 19 SG rules in one loop)
+3. **No conditionals in tests** — `jest/no-conditional-in-test` is `error` for unit, `warn` for integration
+4. **`requireParam` guard** — never use `!` (non-null assertion) on external data; throw descriptive errors
+5. **`import type`** — all type-only imports use `import type` for `isolatedModules` compliance
+6. **`satisfies` over `as`** — typed literal arrays use `satisfies` to catch structural errors at definition
+7. **Resource caching** — API results fetched in `beforeAll`, never inside `it()` blocks
+
+### Integration Tests — Post-Deployment AWS Verification
+
+Integration tests call **live AWS APIs** (EC2, ELBv2, S3, SSM, KMS, Route 53) to verify deployed resources match expectations. They require valid AWS credentials and a deployed stack.
+
+**What they verify:**
+- AWS resource state (`available`, `enabled`, `in-service`)
+- Security group rules exist on live EC2 security groups
+- NLB configuration, target group health, listener protocols
+- S3 bucket encryption, lifecycle policies, access logging
+- KMS key rotation and enablement status
+- EBS volume size, type, encryption, and AZ placement
+- Route 53 hosted zones and DNS records
+- SSM parameter values match expected cross-stack contracts
+
+**Integration test file inventory:**
+
+| Test Suite | Stack Verified | Key Assertions |
+|---|---|---|
+| `base-stack.integration.test.ts` | KubernetesBaseStack | ~80 assertions: VPC, SGs ×5, NLB, EBS, EIP, S3, KMS, Route 53, SSM |
+| `control-plane-stack.integration.test.ts` | ControlPlaneStack | ASG config, instance type, user-data, SG attachment |
+| `app-worker-stack.integration.test.ts` | AppWorkerStack | Worker ASG, Spot config, kubeadm join |
+| `argocd-worker-stack.integration.test.ts` | ArgocdWorkerStack | ArgoCD node ASG, Spot config |
+| `monitoring-worker-stack.integration.test.ts` | MonitoringWorkerStack | Monitoring node ASG, EBS attachment |
+| `golden-ami-stack.integration.test.ts` | GoldenAmiStack | Image Builder pipeline, components, AMI output |
+| `edge-stack.integration.test.ts` | EdgeStack | CloudFront, WAF, ACM, cookie forwarding |
+| `data-stack.integration.test.ts` | DataStack | DynamoDB tables, S3 asset bucket |
+| `bootstrap-orchestrator.integration.test.ts` | SsmAutomationStack | Step Functions state machine, SSM documents |
+| `ssm-automation-runtime.integration.test.ts` | SsmAutomation (runtime) | Instance targeting, EC2 health, SSM Agent |
+| `s3-bootstrap-artefacts.integration.test.ts` | S3 artefacts | Bucket exists, script file counts per prefix |
+| `bluegreen.integration.test.ts` | Argo Rollouts | Traffic segregation in BlueGreen transitions |
+| `agent-stack.integration.test.ts` | SelfHealingAgent | Bedrock agent, EventBridge rules, SNS topics |
+
+### KubernetesBaseStack — Reference Implementation
+
+The `KubernetesBaseStack` serves as the **gold standard** for CDK testing in this project. It demonstrates the complete dual-layer approach with 108 unit tests and ~80 integration test assertions.
+
+#### Unit Test Coverage (108 tests)
+
+| Describe Block | Tests | What It Validates |
+|---|---|---|
+| Security Groups — Existence | 5 | 5 SGs created (4 custom + 1 NLB), correct egress policies |
+| Cluster Base SG — Ingress Rules | 19 | All 19 config-driven rules: self-referencing TCP/UDP, VPC CIDR, pod CIDR |
+| Control Plane SG — Rules | 1 | Port 6443 from VPC CIDR |
+| Ingress SG — Rules | 1 | Port 80 from VPC CIDR (NLB health checks) |
+| Monitoring SG — Rules | 5 | Prometheus (9090), Node Exporter (9100), Loki (30100), Tempo (30417), pod CIDR |
+| CloudFront Prefix List | 2 | Custom resource lookup + IAM permissions |
+| NLB — Configuration | 2 | Internet-facing scheme, load balancer name |
+| NLB — Target Groups | 4 | HTTP/HTTPS TGs, port/protocol, health check |
+| NLB — Listeners | 3 | 2 listeners (count), TCP on port 80, TCP on port 443 |
+| NLB — Security Group | 5 | Inline ingress (80/443 from 0.0.0.0/0), inline egress (80/443 to VPC CIDR) |
+| KMS Key | 4 | Encryption enabled, rotation, alias, CloudWatch service principal |
+| EBS Volume | 5 | GP3 type, encryption, volume size, AZ, tagging |
+| DLM Snapshot Policy | 4 | Lifecycle policy, target tag, daily schedule, IAM role |
+| Elastic IP | 2 | VPC domain, name tagging |
+| Route 53 | 2 | Private hosted zone, placeholder A record |
+| S3 Buckets | 2 | 3 buckets created, encryption enabled |
+| NLB Access Logs Bucket | 3 | SSE-S3 encryption, 3-day lifecycle, bucket name pattern |
+| SSM Parameters | 12 | 14 parameters under correct prefix, SG IDs, TG ARNs, resource references |
+| Stack Properties | 10 | Public fields (vpc, securityGroup, elasticIp, etc.) |
+| Stack Outputs | 9 | CfnOutput exports (VpcId, SecurityGroupId, etc.) |
+| Config Integration | 5 | Config values flow correctly to resources |
+| Resource Counts | 1 | Total core resource count validation |
+
+#### CDK Template Assertion Patterns
+
+A critical design decision in the unit tests is understanding how CDK renders security group rules:
+
+| Peer Type | CDK CFN Output | Assertion Pattern |
+|---|---|---|
+| Self-referencing (`Peer.self()`) | Separate `AWS::EC2::SecurityGroupIngress` resource | `template.hasResourceProperties('AWS::EC2::SecurityGroupIngress', ...)` |
+| CIDR (`Peer.ipv4(cidr)`) | Inline on `AWS::EC2::SecurityGroup` | `SecurityGroupIngress` array with `Match.arrayWith()` |
+| Egress with `allowAllOutbound: false` | Inline `SecurityGroupEgress` array | Replaces default `Disallow all traffic` placeholder |
+
+This distinction is essential for writing correct assertions. Many CDK test suites fail because they assume all rules render as standalone resources.
+
+### Testing in CI/CD
+
+Both test layers run in the GitHub Actions deployment pipeline:
+
+```
+┌─────────────────┐     ┌────────────────────┐     ┌────────────────────────┐
+│  ci.yml         │     │ deploy-kubernetes   │     │  verify-base-stack     │
+│                 │     │                     │     │                        │
+│  just test-unit │────▶│  cdk deploy base    │────▶│  just ci-integration   │
+│  (all stacks)   │     │                     │     │  kubernetes/base-stack │
+│                 │     │                     │     │  $CDK_ENV --verbose    │
+└─────────────────┘     └────────────────────┘     └────────────────────────┘
+```
+
+- **Unit tests** run on every PR (`ci.yml`) — no AWS credentials required
+- **Integration tests** run after each stack deployment (`_deploy-kubernetes.yml`) — requires deployed stack
+- **Gate pattern** — downstream stacks wait for `verify-base-stack` to succeed before deploying
+
+### Industry Standards & Best Practices
+
+The testing implementation follows established industry standards:
+
+| Practice | Implementation | Industry Reference |
+|---|---|---|
+| **Shift-left testing** | Unit tests catch ~90% of CFN errors at synth time | AWS Well-Architected (Reliability Pillar) |
+| **Template assertions** | `aws-cdk-lib/assertions` library (official CDK testing approach) | AWS CDK Developer Guide |
+| **Data-driven tests** | `it.each()` eliminates copy-paste for config-driven resources | Jest best practices |
+| **Test pyramid** | Many fast unit tests, fewer slow integration tests | Martin Fowler's Test Pyramid |
+| **Post-deployment verification** | Integration tests validate deployed state matches intent | AWS Solutions Architect pattern |
+| **Deterministic tests** | No conditionals (`jest/no-conditional-in-test`), no flaky assertions | `eslint-plugin-jest` enforcement |
+| **CI gate pattern** | Pipeline blocks downstream deploys on test failure | Continuous Delivery (Humble & Farley) |
+| **Config-driven assertions** | Test constants derived from the same config source as the stack | DRY principle |
+
+### Problems the Test Suite Addresses
+
+1. **Drift detection** — catches when CDK construct changes silently alter CloudFormation output
+2. **Security group rule completeness** — validates all 19 ingress rules exist, preventing accidental omission that could break etcd, kubelet, or DNS
+3. **NLB misconfiguration** — verifies health check ports, target group protocols, and listener bindings match the expected traffic flow
+4. **Cross-stack contract integrity** — ensures all 14 SSM parameters are published, preventing downstream stack deployment failures
+5. **Encryption compliance** — validates KMS key rotation, S3 encryption (SSE-S3 for NLB logs, SSE-KMS for scripts), and EBS encryption
+6. **Lifecycle policy enforcement** — verifies DLM snapshot policies and S3 lifecycle rules to prevent cost surprises
+7. **Post-deployment state mismatch** — integration tests catch AWS resource state that doesn't match the synthesised template (e.g., manual changes, failed deploys)
+
 ## Source Files
 
+### Stack Definitions
 - `infra/lib/projects/kubernetes/factory.ts` — 12-stack factory
 - `infra/lib/config/kubernetes/configurations.ts` — all configs (SG rules, instance types, versions)
 - `infra/lib/stacks/kubernetes/base-stack.ts` — long-lived infrastructure
@@ -236,17 +452,27 @@ Deployed as 2 additional CDK stacks: `SelfHealing-Gateway-development` (AgentCor
 - `infra/lib/constructs/ssm/bootstrap-orchestrator.ts` — Step Functions state machine
 - `infra/lib/constructs/ssm/node-drift-enforcement.ts` — drift remediation
 
+### Test Suites
+- `infra/tests/unit/stacks/kubernetes/base-stack.test.ts` — 108 unit tests (reference implementation)
+- `infra/tests/integration/kubernetes/base-stack.integration.test.ts` — ~80 post-deploy assertions
+- `infra/tests/fixtures/` — shared VPC context mocks, test app factory
+- `.agents/rules/integration-test-quality.md` — 11 enforced test quality rules
+
 ## Transferable Skills Demonstrated
 
-- **Multi-stack CDK architecture** — organising 12 stacks with cross-stack dependencies
+- **Multi-stack CDK architecture** — organising 20 stacks across 2 factory-driven projects with SSM-based cross-stack discovery
+- **TypeScript CDK testing** — dual-layer unit + integration test strategy using `aws-cdk-lib/assertions` with 108 template assertions on the reference stack
+- **Test pyramid in infrastructure** — fast synth-time unit tests (no credentials) + slower post-deploy integration tests (live AWS APIs), gated in CI/CD
+- **Data-driven test design** — config-derived assertions via `it.each()` aligned with the same configuration source as production stacks
+- **Security group rule verification** — understanding CDK L1/L2 rendering patterns (self-referencing vs inline CIDR rules) for correct template assertions
 - **Separation of concerns** — isolating compute, networking, AI/ML, and edge into independent stacks
 - **AWS Well-Architected alignment** — designing for security, reliability, and cost optimisation
 - **Infrastructure documentation** — communicating complex architectures to mixed audiences
 
 ## Summary
 
-This document provides the high-level architectural overview of the entire cdk-monitoring infrastructure, mapping all 12 CDK stacks across Kubernetes foundation, compute, AI/ML, shared services, and edge networking. It serves as the entry point for understanding the system architecture.
+This document provides the high-level architectural overview of the entire cdk-monitoring infrastructure, mapping all 20 CDK stacks across 2 projects (Kubernetes + Bedrock), the dual-layer CDK testing strategy (46 unit test suites + 13 integration test suites), and the KubernetesBaseStack reference implementation demonstrating 108 unit tests and ~80 integration assertions. It serves as the entry point for understanding both the system architecture and the testing methodology.
 
 ## Keywords
 
-cdk, cloudformation, stack-architecture, aws, kubernetes, bedrock, self-healing, edge, networking, security, observability
+cdk, typescript, cloudformation, stack-architecture, aws, kubernetes, bedrock, self-healing, edge, networking, security, observability, jest, unit-testing, integration-testing, template-assertions, test-pyramid

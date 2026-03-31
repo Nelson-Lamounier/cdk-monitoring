@@ -34,6 +34,28 @@ mappings:
     kb_docs:
       - "infrastructure/stack-overview.md"
 
+  - name: "Per-Stack Deep-Dive (Infrastructure)"
+    code_paths:
+      - "infra/lib/stacks/kubernetes/base-stack.ts"
+      - "infra/lib/config/kubernetes/configurations.ts"
+      - "infra/lib/constructs/networking/**/*.ts"
+      - "infra/lib/constructs/security/**/*.ts"
+      - "infra/lib/constructs/storage/**/*.ts"
+    kb_docs:
+      - "infrastructure/stacks/kubernetes-base-stack.md"
+      - "infrastructure/stack-overview.md"
+
+  - name: "CDK Testing Strategy"
+    code_paths:
+      - "infra/tests/unit/**/*.test.ts"
+      - "infra/tests/integration/**/*.test.ts"
+      - "infra/tests/fixtures/**/*.ts"
+      - ".agents/rules/integration-test-quality.md"
+      - "jest.config.ts"
+    kb_docs:
+      - "infrastructure/stack-overview.md"
+      - "operations/ci-cd-implementation.md"
+
   - name: "Networking & Edge"
     code_paths:
       - "infra/lib/stacks/kubernetes/edge-stack.ts"
