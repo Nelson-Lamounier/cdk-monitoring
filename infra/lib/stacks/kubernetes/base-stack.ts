@@ -15,8 +15,6 @@
  *       • Ingress — Traefik HTTP/HTTPS (CloudFront prefix list + admin IPs from SSM)
  *       • Monitoring — Prometheus, Node Exporter, Loki, Tempo
  *   - KMS Key (CloudWatch log group encryption, auto-rotation enabled)
- *   - EBS Volume (persistent storage for Kubernetes data + PVCs)
- *   - DLM Snapshot Policy (daily EBS snapshots with 7-day retention)
  *   - Elastic IP (shared by Next.js CloudFront and SSM access)
  *   - Route 53 Private Hosted Zone (k8s.internal — stable API server DNS)
  *   - S3 Bucket (k8s scripts & manifests — synced by CI pipeline)
@@ -39,7 +37,7 @@
 
 import { NagSuppressions } from 'cdk-nag';
 
-import * as dlm from 'aws-cdk-lib/aws-dlm';
+
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -139,8 +137,7 @@ export class KubernetesBaseStack extends cdk.Stack {
     /** KMS key for CloudWatch log group encryption */
     public readonly logGroupKmsKey: kms.Key;
 
-    /** EBS volume for persistent Kubernetes data */
-    public readonly ebsVolume: ec2.Volume;
+
 
     /** S3 bucket for k8s scripts and manifests */
     public readonly scriptsBucket: s3.IBucket;
@@ -319,78 +316,6 @@ export class KubernetesBaseStack extends cdk.Stack {
             },
         }));
 
-        // =====================================================================
-        // EBS Volume (persistent storage for Kubernetes data)
-        //
-        // Lives in the base stack (not compute) for lifecycle safety:
-        //   1. Survives compute replacements — ASG instance cycling, AMI
-        //      updates, and instance type changes don't destroy etcd state,
-        //      PVCs, or monitoring data. New instances re-attach via user-data.
-        //   2. Protects against accidental deletion — cdk destroy on compute
-        //      won't orphan cluster data. RETAIN removal policy in base stack.
-        //   3. AZ binding — EBS is AZ-locked; creating it here locks the
-        //      cluster to {region}a early, and compute ASG respects that.
-        // =====================================================================
-        this.ebsVolume = new ec2.Volume(this, 'K8sDataVolume', {
-            availabilityZone: `${this.region}a`,
-            size: cdk.Size.gibibytes(configs.storage.volumeSizeGb),
-            volumeType: ec2.EbsDeviceVolumeType.GP3,
-            encrypted: true,
-            removalPolicy: configs.removalPolicy,
-            volumeName: `${namePrefix}-data`,
-        });
-
-        // Tag for EBS lifecycle Lambda discovery — the ebs-detach Lambda
-        // filters by ManagedBy=MonitoringStack to find volumes to gracefully
-        // detach before ASG instance termination.
-        cdk.Tags.of(this.ebsVolume).add('ManagedBy', 'MonitoringStack');
-
-        // =====================================================================
-        // EBS Snapshot Lifecycle Policy (DLM)
-        //
-        // Automated daily snapshots with 7-day retention. Critical insurance
-        // for single-node cluster: protects against etcd corruption, EBS
-        // failure, and accidental data loss.
-        // Cost: ~$0.05/GB/mo incremental → < $0.50/mo for 30 GB volume.
-        // =====================================================================
-        const dlmRole = new iam.Role(this, 'DlmLifecycleRole', {
-            assumedBy: new iam.ServicePrincipal('dlm.amazonaws.com'),
-            managedPolicies: [
-                iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSDataLifecycleManagerServiceRole'),
-            ],
-        });
-
-        new dlm.CfnLifecyclePolicy(this, 'EbsSnapshotPolicy', {
-            description: `Daily EBS snapshots for ${namePrefix} Kubernetes data volume`,
-            state: 'ENABLED',
-            executionRoleArn: dlmRole.roleArn,
-            policyDetails: {
-                resourceTypes: ['VOLUME'],
-                targetTags: [{
-                    key: 'Name',
-                    value: `${namePrefix}-data`,
-                }],
-                schedules: [{
-                    name: `${namePrefix}-daily-snapshot`,
-                    createRule: {
-                        interval: 24,
-                        intervalUnit: 'HOURS',
-                        times: ['03:00'],  // UTC — low-traffic window
-                    },
-                    retainRule: {
-                        count: 7,  // Keep 7 days of daily snapshots
-                    },
-                    tagsToAdd: [{
-                        key: 'CreatedBy',
-                        value: 'DLM',
-                    }, {
-                        key: 'Environment',
-                        value: targetEnvironment,
-                    }],
-                    copyTags: true,
-                }],
-            },
-        });
 
         // =====================================================================
         // Elastic IP (shared endpoint for Next.js CloudFront + SSM access)
@@ -563,7 +488,7 @@ export class KubernetesBaseStack extends cdk.Stack {
                 [ssmPaths.controlPlaneSgId]: this.controlPlaneSg.securityGroupId,
                 [ssmPaths.ingressSgId]: this.ingressSg.securityGroupId,
                 [ssmPaths.monitoringSgId]: this.monitoringSg.securityGroupId,
-                [ssmPaths.ebsVolumeId]: this.ebsVolume.volumeId,
+
                 [ssmPaths.scriptsBucket]: this.scriptsBucket.bucketName,
                 [ssmPaths.hostedZoneId]: this.hostedZone.hostedZoneId,
                 [ssmPaths.apiDnsName]: K8S_API_DNS_NAME,
@@ -581,7 +506,7 @@ export class KubernetesBaseStack extends cdk.Stack {
             { id: 'SecurityGroupId',      value: this.securityGroup.securityGroupId,   description: 'Kubernetes cluster security group ID' },
             { id: 'ElasticIpAddress',     value: this.elasticIp.ref,                   description: 'Kubernetes cluster Elastic IP address' },
             { id: 'ElasticIpAllocationId', value: this.elasticIp.attrAllocationId,     description: 'Kubernetes cluster Elastic IP allocation ID' },
-            { id: 'EbsVolumeId',          value: this.ebsVolume.volumeId,              description: 'Kubernetes data EBS volume ID' },
+
             { id: 'HostedZoneId',         value: this.hostedZone.hostedZoneId,         description: 'Route 53 private hosted zone ID (k8s.internal)' },
             { id: 'ApiDnsName',           value: K8S_API_DNS_NAME,                     description: 'Stable DNS name for the Kubernetes API server' },
             { id: 'LogGroupKmsKeyArn',    value: this.logGroupKmsKey.keyArn,            description: 'KMS key ARN for CloudWatch log group encryption' },

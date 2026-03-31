@@ -29,7 +29,6 @@ import {
     EC2Client,
     DescribeVpcsCommand,
     DescribeSecurityGroupsCommand,
-    DescribeVolumesCommand,
     DescribeAddressesCommand,
     DescribeFlowLogsCommand,
 } from '@aws-sdk/client-ec2';
@@ -620,7 +619,6 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
             'controlPlaneSgId',
             'ingressSgId',
             'monitoringSgId',
-            'ebsVolumeId',
             'scriptsBucket',
             'hostedZoneId',
             'apiDnsName',
@@ -629,7 +627,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
             'nlbHttpsTargetGroupArn',
         ] satisfies Array<keyof K8sSsmPaths>;
 
-        it('should have all 14 SSM parameters published', () => {
+        it('should have all 13 SSM parameters published', () => {
             expect(ssmParams.size).toBeGreaterThanOrEqual(expectedPaths.length);
         });
 
@@ -1035,45 +1033,7 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
     });
 
-    // =========================================================================
-    // EBS Volume
-    // =========================================================================
-    describe('EBS Volume', () => {
-        let volumeId: string;
-        let volume: {
-            Encrypted?: boolean;
-            VolumeType?: string;
-            Size?: number;
-            AvailabilityZone?: string;
-        };
 
-        // Depends on: ssmParams populated in top-level beforeAll
-        beforeAll(async () => {
-            volumeId = requireParam(ssmParams, SSM_PATHS.ebsVolumeId);
-
-            const { Volumes } = await ec2.send(
-                new DescribeVolumesCommand({ VolumeIds: [volumeId] }),
-            );
-            expect(Volumes).toHaveLength(1);
-            volume = Volumes![0];
-        });
-
-        it('should be encrypted', () => {
-            expect(volume.Encrypted).toBe(true);
-        });
-
-        it('should use GP3 volume type', () => {
-            expect(volume.VolumeType).toBe('gp3');
-        });
-
-        it('should be the configured size', () => {
-            expect(volume.Size).toBe(CONFIGS.storage.volumeSizeGb);
-        });
-
-        it('should be in the correct availability zone', () => {
-            expect(volume.AvailabilityZone).toBe(`${REGION}a`);
-        });
-    });
 
     // =========================================================================
     // Elastic IP

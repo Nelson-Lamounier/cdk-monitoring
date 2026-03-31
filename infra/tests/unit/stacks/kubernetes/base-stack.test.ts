@@ -545,93 +545,7 @@ describe('KubernetesBaseStack', () => {
         });
     });
 
-    // =========================================================================
-    // EBS Volume
-    // =========================================================================
-    describe('EBS Volume', () => {
-        it('should create a GP3 EBS volume', () => {
-            template.hasResourceProperties('AWS::EC2::Volume', {
-                VolumeType: 'gp3',
-            });
-        });
 
-        it('should encrypt the EBS volume', () => {
-            template.hasResourceProperties('AWS::EC2::Volume', {
-                Encrypted: true,
-            });
-        });
-
-        it('should set the volume size from config', () => {
-            template.hasResourceProperties('AWS::EC2::Volume', {
-                Size: TEST_CONFIGS.storage.volumeSizeGb,
-            });
-        });
-
-        it('should set the availability zone to region-a', () => {
-            template.hasResourceProperties('AWS::EC2::Volume', {
-                AvailabilityZone: `${TEST_ENV_EU.region}a`,
-            });
-        });
-
-        it('should tag the volume with the name prefix', () => {
-            template.hasResourceProperties('AWS::EC2::Volume', {
-                Tags: Match.arrayWith([
-                    Match.objectLike({ Key: 'Name', Value: 'k8s-dev-data' }),
-                ]),
-            });
-        });
-    });
-
-    // =========================================================================
-    // DLM Snapshot Lifecycle Policy
-    // =========================================================================
-    describe('DLM Snapshot Policy', () => {
-        it('should create a DLM lifecycle policy', () => {
-            template.resourceCountIs('AWS::DLM::LifecyclePolicy', 1);
-        });
-
-        it('should target the EBS volume by Name tag', () => {
-            template.hasResourceProperties('AWS::DLM::LifecyclePolicy', {
-                PolicyDetails: Match.objectLike({
-                    TargetTags: Match.arrayWith([
-                        Match.objectLike({ Key: 'Name', Value: 'k8s-dev-data' }),
-                    ]),
-                }),
-            });
-        });
-
-        it('should schedule daily snapshots with 7-day retention', () => {
-            template.hasResourceProperties('AWS::DLM::LifecyclePolicy', {
-                PolicyDetails: Match.objectLike({
-                    Schedules: Match.arrayWith([
-                        Match.objectLike({
-                            CreateRule: Match.objectLike({
-                                Interval: 24,
-                                IntervalUnit: 'HOURS',
-                            }),
-                            RetainRule: Match.objectLike({
-                                Count: 7,
-                            }),
-                        }),
-                    ]),
-                }),
-            });
-        });
-
-        it('should create a DLM execution role', () => {
-            template.hasResourceProperties('AWS::IAM::Role', {
-                AssumeRolePolicyDocument: Match.objectLike({
-                    Statement: Match.arrayWith([
-                        Match.objectLike({
-                            Principal: Match.objectLike({
-                                Service: 'dlm.amazonaws.com',
-                            }),
-                        }),
-                    ]),
-                }),
-            });
-        });
-    });
 
     // =========================================================================
     // Elastic IP
@@ -730,8 +644,8 @@ describe('KubernetesBaseStack', () => {
     // SSM Parameters
     // =========================================================================
     describe('SSM Parameters', () => {
-        it('should create 14 SSM parameters for cross-stack discovery', () => {
-            template.resourceCountIs('AWS::SSM::Parameter', 14);
+        it('should create 13 SSM parameters for cross-stack discovery', () => {
+            template.resourceCountIs('AWS::SSM::Parameter', 13);
         });
 
         it('should create SSM parameters under the /k8s/development prefix', () => {
@@ -744,7 +658,7 @@ describe('KubernetesBaseStack', () => {
             const expectedPrefixes = paramNames.filter(
                 (name) => name.startsWith('/k8s/development/'),
             );
-            expect(expectedPrefixes).toHaveLength(14);
+            expect(expectedPrefixes).toHaveLength(13);
         });
 
         it('should publish the security group ID to SSM', () => {
@@ -761,12 +675,7 @@ describe('KubernetesBaseStack', () => {
             });
         });
 
-        it('should publish the EBS volume ID to SSM', () => {
-            template.hasResourceProperties('AWS::SSM::Parameter', {
-                Name: '/k8s/development/ebs-volume-id',
-                Type: 'String',
-            });
-        });
+
 
         it('should publish the scripts bucket name to SSM', () => {
             template.hasResourceProperties('AWS::SSM::Parameter', {
@@ -860,10 +769,7 @@ describe('KubernetesBaseStack', () => {
             expect(stack.logGroupKmsKey.keyArn).toBeDefined();
         });
 
-        it('should expose ebsVolume', () => {
-            expect(stack.ebsVolume).toBeDefined();
-            expect(stack.ebsVolume.volumeId).toBeDefined();
-        });
+
 
         it('should expose scriptsBucket', () => {
             expect(stack.scriptsBucket).toBeDefined();
@@ -912,11 +818,7 @@ describe('KubernetesBaseStack', () => {
             });
         });
 
-        it('should export EbsVolumeId', () => {
-            template.hasOutput('EbsVolumeId', {
-                Description: 'Kubernetes data EBS volume ID',
-            });
-        });
+
 
         it('should export HostedZoneId', () => {
             template.hasOutput('HostedZoneId', {
@@ -948,22 +850,7 @@ describe('KubernetesBaseStack', () => {
     // Config Integration
     // =========================================================================
     describe('Config Integration', () => {
-        it('should use the storage volumeSizeGb from config', () => {
-            expect(TEST_CONFIGS.storage.volumeSizeGb).toBe(30);
-            template.hasResourceProperties('AWS::EC2::Volume', {
-                Size: 30,
-            });
-        });
 
-        it('should use the removalPolicy from config', () => {
-            // development env uses DESTROY
-            expect(TEST_CONFIGS.removalPolicy).toBe(cdk.RemovalPolicy.DESTROY);
-
-            // EBS volume should have DeletionPolicy matching DESTROY
-            const volumes = template.findResources('AWS::EC2::Volume');
-            const volumeKey = Object.keys(volumes)[0];
-            expect(volumes[volumeKey].DeletionPolicy).toBe('Delete');
-        });
 
         it('should use pod network CIDR from config for SG rules', () => {
             expect(TEST_CONFIGS.cluster.podNetworkCidr).toBe('192.168.0.0/16');
@@ -991,15 +878,13 @@ describe('KubernetesBaseStack', () => {
     describe('Resource Counts', () => {
         it('should create expected number of core resources', () => {
             template.resourceCountIs('AWS::EC2::SecurityGroup', 5);
-            template.resourceCountIs('AWS::EC2::Volume', 1);
             template.resourceCountIs('AWS::EC2::EIP', 1);
             template.resourceCountIs('AWS::KMS::Key', 1);
             template.resourceCountIs('AWS::KMS::Alias', 1);
             template.resourceCountIs('AWS::Route53::HostedZone', 1);
             template.resourceCountIs('AWS::Route53::RecordSet', 1);
             template.resourceCountIs('AWS::S3::Bucket', 3);
-            template.resourceCountIs('AWS::SSM::Parameter', 14);
-            template.resourceCountIs('AWS::DLM::LifecyclePolicy', 1);
+            template.resourceCountIs('AWS::SSM::Parameter', 13);
         });
     });
 });

@@ -377,8 +377,6 @@ export interface K8sSsmPaths {
     readonly monitoringSgId: string;
 
     // --- Storage ---
-    /** Persistent EBS data volume ID */
-    readonly ebsVolumeId: string;
     /** S3 bucket name for k8s scripts and manifests */
     readonly scriptsBucket: string;
 
@@ -427,7 +425,6 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
         monitoringSgId: `${prefix}/monitoring-sg-id`,
 
         // Storage
-        ebsVolumeId: `${prefix}/ebs-volume-id`,
         scriptsBucket: `${prefix}/scripts-bucket`,
 
         // DNS
