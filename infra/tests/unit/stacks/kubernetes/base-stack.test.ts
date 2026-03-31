@@ -32,6 +32,22 @@ import {
 } from '../../../fixtures';
 
 // =============================================================================
+// Named Constants (Rule 3)
+// =============================================================================
+
+/** VPC CIDR from test context — must match TEST_VPC_CONTEXT.vpcCidrBlock */
+const TEST_VPC_CIDR = '10.0.0.0/16';
+
+/** Pod network CIDR from K8s config */
+const TEST_POD_CIDR = '192.168.0.0/16';
+
+/** Any IPv4 address (NLB inbound) */
+const ANY_IPV4 = '0.0.0.0/0';
+
+/** NLB access log lifecycle expiration in days */
+const NLB_LOG_LIFECYCLE_DAYS = 3;
+
+// =============================================================================
 // Test Fixtures
 // =============================================================================
 
@@ -81,9 +97,9 @@ describe('KubernetesBaseStack', () => {
     });
 
     // =========================================================================
-    // Security Groups
+    // Security Groups — Existence & Configuration
     // =========================================================================
-    describe('Security Groups', () => {
+    describe('Security Groups — Existence', () => {
         it('should create exactly 5 security groups (4 custom + 1 NLB)', () => {
             template.resourceCountIs('AWS::EC2::SecurityGroup', 5);
         });
@@ -125,20 +141,129 @@ describe('KubernetesBaseStack', () => {
             template.hasResourceProperties('AWS::EC2::SecurityGroup', {
                 GroupDescription: Match.stringLikeRegexp('K8s monitoring'),
                 GroupName: 'k8s-dev-k8s-monitoring',
+                SecurityGroupEgress: Match.arrayWith([
+                    Match.objectLike({
+                        CidrIp: '255.255.255.255/32',
+                        Description: 'Disallow all traffic',
+                    }),
+                ]),
+            });
+        });
+    });
+
+    // =========================================================================
+    // Cluster Base SG — Individual Ingress Rules
+    //
+    // Verifies every config-driven rule renders into the CloudFormation template.
+    // Self-referencing rules use AWS::EC2::SecurityGroupIngress (separate resource).
+    // CIDR-based rules use inline SecurityGroupIngress on the SG resource.
+    // =========================================================================
+    describe('Cluster Base SG — Ingress Rules', () => {
+        it('should have the expected number of config-driven rules', () => {
+            const ruleCount = TEST_CONFIGS.securityGroups.clusterBase.rules.length;
+            expect(ruleCount).toBe(19); // 13 self + 1 vpcCidr + 5 podCidr
+        });
+
+        // --- Self-referencing TCP rules (rendered as SecurityGroupIngress resources) ---
+        it.each([
+            { port: 2379, endPort: 2380, desc: 'etcd client+peer' },
+            { port: 10250, endPort: 10250, desc: 'kubelet API' },
+            { port: 10257, endPort: 10257, desc: 'kube-controller-manager' },
+            { port: 10259, endPort: 10259, desc: 'kube-scheduler' },
+            { port: 179, endPort: 179, desc: 'Calico BGP' },
+            { port: 30000, endPort: 32767, desc: 'NodePort range' },
+            { port: 53, endPort: 53, desc: 'CoreDNS TCP' },
+            { port: 5473, endPort: 5473, desc: 'Calico Typha' },
+            { port: 9100, endPort: 9100, desc: 'Traefik metrics' },
+            { port: 9101, endPort: 9101, desc: 'Node Exporter metrics' },
+        ])(
+            'should have self-referencing TCP rule for $desc (port $port)',
+            ({ port, endPort }) => {
+                template.hasResourceProperties('AWS::EC2::SecurityGroupIngress', {
+                    IpProtocol: 'tcp',
+                    FromPort: port,
+                    ToPort: endPort,
+                    Description: Match.stringLikeRegexp('intra-cluster'),
+                });
+            },
+        );
+
+        // --- Self-referencing UDP rules ---
+        it.each([
+            { port: 4789, desc: 'VXLAN overlay' },
+            { port: 53, desc: 'CoreDNS UDP' },
+        ])(
+            'should have self-referencing UDP rule for $desc (port $port)',
+            ({ port }) => {
+                template.hasResourceProperties('AWS::EC2::SecurityGroupIngress', {
+                    IpProtocol: 'udp',
+                    FromPort: port,
+                    ToPort: port,
+                    Description: Match.stringLikeRegexp('intra-cluster'),
+                });
+            },
+        );
+
+        // --- VPC CIDR TCP rule (inline on SG) ---
+        it('should have VPC CIDR TCP rule for K8s API server (port 6443)', () => {
+            template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+                GroupName: 'k8s-dev-k8s-cluster',
+                SecurityGroupIngress: Match.arrayWith([
+                    Match.objectLike({
+                        FromPort: 6443,
+                        ToPort: 6443,
+                        IpProtocol: 'tcp',
+                        CidrIp: TEST_VPC_CIDR,
+                    }),
+                ]),
             });
         });
 
-        it('should create ingress rules from config for cluster base SG', () => {
-            // Verify a representative set of ingress rules from K8sSecurityGroupConfig
-            // etcd (2379-2380), K8s API (6443), kubelet (10250) — all self-referencing
-            const ruleCount = TEST_CONFIGS.securityGroups.clusterBase.rules.length;
+        // --- Pod CIDR TCP rules (inline on SG) ---
+        it.each([
+            { port: 6443, desc: 'K8s API server' },
+            { port: 10250, desc: 'kubelet API' },
+            { port: 53, desc: 'CoreDNS TCP' },
+            { port: 9100, desc: 'Traefik metrics' },
+            { port: 9101, desc: 'Node Exporter metrics' },
+        ])(
+            'should have pod CIDR TCP rule for $desc (port $port)',
+            ({ port }) => {
+                template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+                    GroupName: 'k8s-dev-k8s-cluster',
+                    SecurityGroupIngress: Match.arrayWith([
+                        Match.objectLike({
+                            FromPort: port,
+                            ToPort: port,
+                            IpProtocol: 'tcp',
+                            CidrIp: TEST_POD_CIDR,
+                        }),
+                    ]),
+                });
+            },
+        );
 
-            // Each rule creates an AWS::EC2::SecurityGroup ingress entry
-            // We verify the config-driven rule count by checking total ingress rules exist
-            expect(ruleCount).toBeGreaterThan(10); // sanity: cluster base has 17+ rules
+        // --- Pod CIDR UDP rule ---
+        it('should have pod CIDR UDP rule for CoreDNS (port 53)', () => {
+            template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+                GroupName: 'k8s-dev-k8s-cluster',
+                SecurityGroupIngress: Match.arrayWith([
+                    Match.objectLike({
+                        FromPort: 53,
+                        ToPort: 53,
+                        IpProtocol: 'udp',
+                        CidrIp: TEST_POD_CIDR,
+                    }),
+                ]),
+            });
         });
+    });
 
-        it('should create K8s API ingress rule on port 6443 for control plane SG', () => {
+    // =========================================================================
+    // Control Plane SG — Rule Validation
+    // =========================================================================
+    describe('Control Plane SG — Rules', () => {
+        it('should have K8s API ingress rule on port 6443 from VPC CIDR', () => {
             template.hasResourceProperties('AWS::EC2::SecurityGroup', {
                 GroupName: 'k8s-dev-k8s-control-plane',
                 SecurityGroupIngress: Match.arrayWith([
@@ -146,13 +271,19 @@ describe('KubernetesBaseStack', () => {
                         FromPort: 6443,
                         ToPort: 6443,
                         IpProtocol: 'tcp',
+                        CidrIp: TEST_VPC_CIDR,
                         Description: Match.stringLikeRegexp('K8s API'),
                     }),
                 ]),
             });
         });
+    });
 
-        it('should create HTTP ingress rule for NLB health checks on ingress SG', () => {
+    // =========================================================================
+    // Ingress SG — Rule Validation
+    // =========================================================================
+    describe('Ingress SG — Rules', () => {
+        it('should have HTTP port 80 from VPC CIDR (NLB health checks)', () => {
             template.hasResourceProperties('AWS::EC2::SecurityGroup', {
                 GroupName: 'k8s-dev-k8s-ingress',
                 SecurityGroupIngress: Match.arrayWith([
@@ -160,26 +291,51 @@ describe('KubernetesBaseStack', () => {
                         FromPort: 80,
                         ToPort: 80,
                         IpProtocol: 'tcp',
-                        CidrIp: '10.0.0.0/16',
+                        CidrIp: TEST_VPC_CIDR,
                     }),
                 ]),
             });
         });
+    });
 
-        it('should create monitoring port rules from config', () => {
-            // Verify Prometheus (9090) and Node Exporter (9100) from VPC CIDR
+    // =========================================================================
+    // Monitoring SG — Rule Validation
+    //
+    // Ports: Prometheus (9090), Node Exporter (9100), Loki (30100), Tempo (30417)
+    // Sources: VPC CIDR for all, pod CIDR for Node Exporter (Prometheus scraping)
+    // =========================================================================
+    describe('Monitoring SG — Rules', () => {
+        it.each([
+            { port: 9090, desc: 'Prometheus metrics' },
+            { port: 9100, desc: 'Node Exporter metrics (VPC)' },
+            { port: 30100, desc: 'Loki push API' },
+            { port: 30417, desc: 'Tempo OTLP gRPC' },
+        ])(
+            'should have TCP rule for $desc (port $port) from VPC CIDR',
+            ({ port }) => {
+                template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+                    GroupName: 'k8s-dev-k8s-monitoring',
+                    SecurityGroupIngress: Match.arrayWith([
+                        Match.objectLike({
+                            FromPort: port,
+                            ToPort: port,
+                            IpProtocol: 'tcp',
+                            CidrIp: TEST_VPC_CIDR,
+                        }),
+                    ]),
+                });
+            },
+        );
+
+        it('should have Node Exporter port 9100 from pod CIDR (Prometheus scraping)', () => {
             template.hasResourceProperties('AWS::EC2::SecurityGroup', {
                 GroupName: 'k8s-dev-k8s-monitoring',
                 SecurityGroupIngress: Match.arrayWith([
                     Match.objectLike({
-                        FromPort: 9090,
-                        ToPort: 9090,
-                        IpProtocol: 'tcp',
-                    }),
-                    Match.objectLike({
                         FromPort: 9100,
                         ToPort: 9100,
                         IpProtocol: 'tcp',
+                        CidrIp: TEST_POD_CIDR,
                     }),
                 ]),
             });
@@ -212,6 +368,139 @@ describe('KubernetesBaseStack', () => {
                 }),
             });
         });
+    });
+
+    // =========================================================================
+    // NLB — Configuration
+    // =========================================================================
+    describe('NLB — Configuration', () => {
+        it('should create an internet-facing Network Load Balancer', () => {
+            template.hasResourceProperties('AWS::ElasticLoadBalancingV2::LoadBalancer', {
+                Scheme: 'internet-facing',
+                Type: 'network',
+                LoadBalancerAttributes: Match.arrayWith([
+                    Match.objectLike({
+                        Key: 'load_balancing.cross_zone.enabled',
+                        Value: 'false',
+                    }),
+                ]),
+            });
+        });
+
+        it('should have the correct load balancer name', () => {
+            template.hasResourceProperties('AWS::ElasticLoadBalancingV2::LoadBalancer', {
+                Name: 'k8s-dev-nlb',
+            });
+        });
+    });
+
+    // =========================================================================
+    // NLB — Target Groups
+    // =========================================================================
+    describe('NLB — Target Groups', () => {
+        it('should create 2 target groups (HTTP + HTTPS)', () => {
+            template.resourceCountIs('AWS::ElasticLoadBalancingV2::TargetGroup', 2);
+        });
+
+        it('should have an HTTP target group on port 80 with TCP protocol', () => {
+            template.hasResourceProperties('AWS::ElasticLoadBalancingV2::TargetGroup', {
+                Name: 'k8s-dev-http',
+                Port: 80,
+                Protocol: 'TCP',
+                TargetType: 'instance',
+            });
+        });
+
+        it('should have an HTTPS target group on port 443 with TCP protocol', () => {
+            template.hasResourceProperties('AWS::ElasticLoadBalancingV2::TargetGroup', {
+                Name: 'k8s-dev-https',
+                Port: 443,
+                Protocol: 'TCP',
+                TargetType: 'instance',
+            });
+        });
+
+        it('should health-check HTTPS target group on port 80', () => {
+            template.hasResourceProperties('AWS::ElasticLoadBalancingV2::TargetGroup', {
+                Name: 'k8s-dev-https',
+                HealthCheckPort: '80',
+                HealthCheckProtocol: 'TCP',
+            });
+        });
+    });
+
+    // =========================================================================
+    // NLB — Listeners
+    // =========================================================================
+    describe('NLB — Listeners', () => {
+        it('should create 2 listeners (HTTP + HTTPS)', () => {
+            template.resourceCountIs('AWS::ElasticLoadBalancingV2::Listener', 2);
+        });
+
+        it('should have a TCP listener on port 80', () => {
+            template.hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', {
+                Port: 80,
+                Protocol: 'TCP',
+            });
+        });
+
+        it('should have a TCP listener on port 443', () => {
+            template.hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', {
+                Port: 443,
+                Protocol: 'TCP',
+            });
+        });
+    });
+
+    // =========================================================================
+    // NLB — Security Group
+    //
+    // CDK renders all NLB SG rules inline on the SecurityGroup resource:
+    // Inbound: 0.0.0.0/0 + ::/0 on ports 80 + 443 (IPv4 + IPv6)
+    // Outbound: VPC CIDR on ports 80 + 443 (replaces default 'Disallow all' egress)
+    // =========================================================================
+    describe('NLB — Security Group', () => {
+        it('should have NLB SG with correct description', () => {
+            template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+                GroupDescription: Match.stringLikeRegexp('Security group for NLB'),
+            });
+        });
+
+        it.each([80, 443])(
+            'should have inline inbound TCP %i from 0.0.0.0/0 (IPv4)',
+            (port) => {
+                template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+                    GroupDescription: Match.stringLikeRegexp('Security group for NLB'),
+                    SecurityGroupIngress: Match.arrayWith([
+                        Match.objectLike({
+                            IpProtocol: 'tcp',
+                            FromPort: port,
+                            ToPort: port,
+                            CidrIp: ANY_IPV4,
+                            Description: Match.stringLikeRegexp(`TCP/${port} inbound`),
+                        }),
+                    ]),
+                });
+            },
+        );
+
+        it.each([80, 443])(
+            'should have inline outbound TCP %i to VPC CIDR',
+            (port) => {
+                template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+                    GroupDescription: Match.stringLikeRegexp('Security group for NLB'),
+                    SecurityGroupEgress: Match.arrayWith([
+                        Match.objectLike({
+                            IpProtocol: 'tcp',
+                            FromPort: port,
+                            ToPort: port,
+                            CidrIp: TEST_VPC_CIDR,
+                            Description: Match.stringLikeRegexp(`TCP/${port} to targets`),
+                        }),
+                    ]),
+                });
+            },
+        );
     });
 
     // =========================================================================
@@ -398,6 +687,46 @@ describe('KubernetesBaseStack', () => {
     });
 
     // =========================================================================
+    // NLB Access Logs Bucket — Detailed
+    // =========================================================================
+    describe('NLB Access Logs Bucket', () => {
+        it('should use S3-managed encryption (AES256 / SSE-S3)', () => {
+            template.hasResourceProperties('AWS::S3::Bucket', {
+                BucketName: Match.stringLikeRegexp('nlb-access-logs'),
+                BucketEncryption: Match.objectLike({
+                    ServerSideEncryptionConfiguration: Match.arrayWith([
+                        Match.objectLike({
+                            ServerSideEncryptionByDefault: Match.objectLike({
+                                SSEAlgorithm: 'AES256',
+                            }),
+                        }),
+                    ]),
+                }),
+            });
+        });
+
+        it('should have a lifecycle rule with 3-day expiration', () => {
+            template.hasResourceProperties('AWS::S3::Bucket', {
+                BucketName: Match.stringLikeRegexp('nlb-access-logs'),
+                LifecycleConfiguration: Match.objectLike({
+                    Rules: Match.arrayWith([
+                        Match.objectLike({
+                            ExpirationInDays: NLB_LOG_LIFECYCLE_DAYS,
+                            Status: 'Enabled',
+                        }),
+                    ]),
+                }),
+            });
+        });
+
+        it('should have a bucket name containing the nlb-access-logs identifier', () => {
+            template.hasResourceProperties('AWS::S3::Bucket', {
+                BucketName: Match.stringLikeRegexp('k8s-dev-nlb-access-logs'),
+            });
+        });
+    });
+
+    // =========================================================================
     // SSM Parameters
     // =========================================================================
     describe('SSM Parameters', () => {
@@ -464,6 +793,20 @@ describe('KubernetesBaseStack', () => {
         it('should publish the KMS key ARN to SSM', () => {
             template.hasResourceProperties('AWS::SSM::Parameter', {
                 Name: '/k8s/development/kms-key-arn',
+                Type: 'String',
+            });
+        });
+
+        it('should publish the NLB HTTP target group ARN to SSM', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/k8s/development/nlb-http-target-group-arn',
+                Type: 'String',
+            });
+        });
+
+        it('should publish the NLB HTTPS target group ARN to SSM', () => {
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/k8s/development/nlb-https-target-group-arn',
                 Type: 'String',
             });
         });
