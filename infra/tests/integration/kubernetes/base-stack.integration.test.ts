@@ -222,25 +222,58 @@ function findUdpIngressRule(
 
 /**
  * Assert that a rule has a self-referencing source (same SG ID).
+ * Throws with actual source details on failure.
  */
 function expectSelfReferencing(rule: IpPermission, sgId: string): void {
     const selfRef = rule.UserIdGroupPairs?.find((p) => p.GroupId === sgId);
-    expect(selfRef).toBeDefined();
+    if (!selfRef) {
+        const actualSources = [
+            ...(rule.UserIdGroupPairs ?? []).map((p) => `SG:${p.GroupId}`),
+            ...(rule.IpRanges ?? []).map((r) => `CIDR:${r.CidrIp}`),
+            ...(rule.PrefixListIds ?? []).map((p) => `PrefixList:${p.PrefixListId}`),
+        ];
+        throw new Error(
+            `Expected self-referencing source (SG ${sgId}) on port ${rule.FromPort}.\n` +
+            `Actual sources: ${actualSources.length > 0 ? actualSources.join(', ') : '(none)'}`,
+        );
+    }
 }
 
 /**
  * Assert that a rule has an IPv4 CIDR source containing the given prefix.
+ * Throws with actual CIDR and source details on failure.
  */
 function expectCidrSource(rule: IpPermission, cidrPrefix: string): void {
     const match = rule.IpRanges?.find((r) => r.CidrIp?.startsWith(cidrPrefix));
-    expect(match).toBeDefined();
+    if (!match) {
+        const actualCidrs = (rule.IpRanges ?? []).map((r) => r.CidrIp).join(', ');
+        const otherSources = [
+            ...(rule.UserIdGroupPairs ?? []).map((p) => `SG:${p.GroupId}`),
+            ...(rule.PrefixListIds ?? []).map((p) => `PrefixList:${p.PrefixListId}`),
+        ];
+        throw new Error(
+            `Expected CIDR source starting with '${cidrPrefix}' on port ${rule.FromPort}.\n` +
+            `Actual CIDRs: ${actualCidrs || '(none)'}\n` +
+            `Other sources: ${otherSources.length > 0 ? otherSources.join(', ') : '(none)'}`,
+        );
+    }
 }
 
 /**
  * Assert that a rule has a prefix list source.
+ * Throws with actual source details on failure.
  */
 function expectPrefixListSource(rule: IpPermission): void {
-    expect(rule.PrefixListIds?.length).toBeGreaterThan(0);
+    if (!rule.PrefixListIds?.length) {
+        const actualSources = [
+            ...(rule.UserIdGroupPairs ?? []).map((p) => `SG:${p.GroupId}`),
+            ...(rule.IpRanges ?? []).map((r) => `CIDR:${r.CidrIp}`),
+        ];
+        throw new Error(
+            `Expected at least one prefix list source on port ${rule.FromPort}.\n` +
+            `Actual sources: ${actualSources.length > 0 ? actualSources.join(', ') : '(none)'}`,
+        );
+    }
 }
 
 /**
@@ -281,6 +314,170 @@ function findAllTrafficEgress(egress: IpPermission[]): IpPermission | undefined 
  */
 function findListener(listeners: Listener[], port: number): Listener | undefined {
     return listeners.find((l) => l.Port === port);
+}
+
+// =============================================================================
+// Diagnostic Formatters (human-readable rule output on failure)
+// =============================================================================
+
+/**
+ * Format a single IpPermission rule into a human-readable string.
+ * Used in diagnostic output when assertions fail.
+ */
+function formatIpPermission(rule: IpPermission): string {
+    const port = rule.FromPort === rule.ToPort
+        ? `${rule.FromPort}`
+        : `${rule.FromPort}-${rule.ToPort}`;
+    const sources = [
+        ...(rule.UserIdGroupPairs ?? []).map((p) => `SG:${p.GroupId}`),
+        ...(rule.IpRanges ?? []).map((r) => `CIDR:${r.CidrIp}`),
+        ...(rule.Ipv6Ranges ?? []).map((r) => `CIDRv6:${r.CidrIpv6}`),
+        ...(rule.PrefixListIds ?? []).map((p) => `PrefixList:${p.PrefixListId}`),
+    ];
+    return `  \u2022 Port ${port} (${rule.IpProtocol}) \u2014 Sources: ${sources.join(', ') || '(none)'}`;
+}
+
+/**
+ * Format all IpPermission rules, optionally filtered by protocol.
+ * Returns a multi-line diagnostic string for assertion failure messages.
+ */
+function formatIpPermissions(rules: IpPermission[], protocol?: string): string {
+    const filtered = protocol
+        ? rules.filter((r) => r.IpProtocol === protocol)
+        : rules;
+    if (filtered.length === 0) {
+        return `  (no ${protocol ?? ''} rules found)`;
+    }
+    return filtered.map(formatIpPermission).join('\n');
+}
+
+// =============================================================================
+// Require Helpers — Find + Assert with Diagnostic Context
+//
+// These replace the bare `find*() + expect().toBeDefined()` pattern.
+// On failure they throw with the full list of actual rules, so engineers
+// can immediately see what IS present without visiting the AWS console.
+// =============================================================================
+
+/**
+ * Find a TCP ingress rule or throw with full diagnostic context.
+ * Returns the narrowed IpPermission (no `!` needed by callers).
+ *
+ * @param rules - The IpPermissions array from DescribeSecurityGroups
+ * @param fromPort - The start port to match
+ * @param toPort - The end port to match (defaults to fromPort)
+ * @returns The matched IpPermission rule
+ * @throws Error with formatted list of actual TCP rules if not found
+ */
+function requireTcpIngressRule(
+    rules: IpPermission[],
+    fromPort: number,
+    toPort?: number,
+): IpPermission {
+    const rule = findTcpIngressRule(rules, fromPort, toPort);
+    if (!rule) {
+        const portDesc = toPort && toPort !== fromPort ? `${fromPort}-${toPort}` : `${fromPort}`;
+        throw new Error(
+            `Expected TCP ingress rule for port ${portDesc}, but none found.\n` +
+            `Actual TCP ingress rules (${rules.filter((r) => r.IpProtocol === 'tcp').length}):\n` +
+            formatIpPermissions(rules, 'tcp'),
+        );
+    }
+    return rule;
+}
+
+/**
+ * Find a UDP ingress rule or throw with full diagnostic context.
+ *
+ * @param rules - The IpPermissions array
+ * @param fromPort - The start port to match
+ * @param toPort - The end port to match (defaults to fromPort)
+ * @returns The matched IpPermission rule
+ * @throws Error with formatted list of actual UDP rules if not found
+ */
+function requireUdpIngressRule(
+    rules: IpPermission[],
+    fromPort: number,
+    toPort?: number,
+): IpPermission {
+    const rule = findUdpIngressRule(rules, fromPort, toPort);
+    if (!rule) {
+        const portDesc = toPort && toPort !== fromPort ? `${fromPort}-${toPort}` : `${fromPort}`;
+        throw new Error(
+            `Expected UDP ingress rule for port ${portDesc}, but none found.\n` +
+            `Actual UDP ingress rules (${rules.filter((r) => r.IpProtocol === 'udp').length}):\n` +
+            formatIpPermissions(rules, 'udp'),
+        );
+    }
+    return rule;
+}
+
+/**
+ * Find an egress rule or throw with full diagnostic context.
+ *
+ * @param rules - The IpPermissionsEgress array
+ * @param fromPort - The start port to match
+ * @param toPort - The end port to match
+ * @param protocol - The IP protocol to match (e.g. 'tcp')
+ * @returns The matched IpPermission rule
+ * @throws Error with formatted list of actual egress rules if not found
+ */
+function requireEgressRule(
+    rules: IpPermission[],
+    fromPort: number,
+    toPort: number,
+    protocol: string,
+): IpPermission {
+    const rule = findEgressRule(rules, fromPort, toPort, protocol);
+    if (!rule) {
+        throw new Error(
+            `Expected ${protocol.toUpperCase()} egress rule for port ${fromPort}-${toPort}, but none found.\n` +
+            `Actual egress rules (${rules.length}):\n` +
+            formatIpPermissions(rules),
+        );
+    }
+    return rule;
+}
+
+/**
+ * Find an all-traffic egress rule or throw with full diagnostic context.
+ *
+ * @param rules - The IpPermissionsEgress array
+ * @returns The matched IpPermission rule
+ * @throws Error with formatted list of actual egress rules if not found
+ */
+function requireAllTrafficEgress(rules: IpPermission[]): IpPermission {
+    const rule = findAllTrafficEgress(rules);
+    if (!rule) {
+        throw new Error(
+            `Expected unrestricted egress rule (all protocols, ${ANY_IPV4}), but none found.\n` +
+            `Actual egress rules (${rules.length}):\n` +
+            formatIpPermissions(rules),
+        );
+    }
+    return rule;
+}
+
+/**
+ * Find an NLB listener by port or throw with full diagnostic context.
+ *
+ * @param listeners - The Listeners array from DescribeListeners
+ * @param port - The port to match
+ * @returns The matched Listener
+ * @throws Error with formatted list of actual listeners if not found
+ */
+function requireListener(listeners: Listener[], port: number): Listener {
+    const listener = findListener(listeners, port);
+    if (!listener) {
+        const actual = listeners
+            .map((l) => `  \u2022 Port ${l.Port} (${l.Protocol})`)
+            .join('\n');
+        throw new Error(
+            `Expected NLB listener on port ${port}, but none found.\n` +
+            `Actual listeners (${listeners.length}):\n${actual || '  (none)'}`,
+        );
+    }
+    return listener;
 }
 
 // =============================================================================
@@ -556,7 +753,6 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         // --- Self-referencing TCP rules ---
         it.each([
             { port: 2379, endPort: 2380, desc: 'etcd client+peer' },
-            { port: 6443, desc: 'K8s API server' },
             { port: 10250, desc: 'kubelet API' },
             { port: 10257, desc: 'kube-controller-manager' },
             { port: 10259, desc: 'kube-scheduler' },
@@ -569,23 +765,28 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         ])(
             'should have self-referencing TCP rule for $desc (port $port)',
             ({ port, endPort }) => {
-                const rule = findTcpIngressRule(ingress, port, endPort);
-                expect(rule).toBeDefined();
-                expectSelfReferencing(rule!, sgId);
+                const rule = requireTcpIngressRule(ingress, port, endPort);
+                expectSelfReferencing(rule, sgId);
             },
         );
 
         // --- Self-referencing UDP rules ---
         it('should have self-referencing UDP rule for VXLAN (port 4789)', () => {
-            const rule = findUdpIngressRule(ingress, 4789);
-            expect(rule).toBeDefined();
-            expectSelfReferencing(rule!, sgId);
+            const rule = requireUdpIngressRule(ingress, 4789);
+            expectSelfReferencing(rule, sgId);
         });
 
         it('should have self-referencing UDP rule for CoreDNS (port 53)', () => {
-            const rule = findUdpIngressRule(ingress, 53);
-            expect(rule).toBeDefined();
-            expectSelfReferencing(rule!, sgId);
+            const rule = requireUdpIngressRule(ingress, 53);
+            expectSelfReferencing(rule, sgId);
+        });
+
+        // --- VPC CIDR TCP rules ---
+        // Port 6443 uses vpcCidr (not self) so that ALL SGs in the VPC
+        // (monitoring, ingress, control plane workers) can reach the API server.
+        it('should have VPC CIDR TCP rule for K8s API server (port 6443)', () => {
+            const rule = requireTcpIngressRule(ingress, 6443);
+            expectCidrSource(rule, VPC_CIDR_PREFIX);
         });
 
         // --- Pod CIDR TCP rules ---
@@ -598,21 +799,19 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         ])(
             'should have pod CIDR TCP rule for $desc (port $port)',
             ({ port }) => {
-                const rule = findTcpIngressRule(ingress, port);
-                expect(rule).toBeDefined();
-                expectCidrSource(rule!, POD_CIDR_PREFIX);
+                const rule = requireTcpIngressRule(ingress, port);
+                expectCidrSource(rule, POD_CIDR_PREFIX);
             },
         );
 
         // --- Pod CIDR UDP rules ---
         it('should have pod CIDR UDP rule for CoreDNS (port 53)', () => {
-            const rule = findUdpIngressRule(ingress, 53);
-            expect(rule).toBeDefined();
-            expectCidrSource(rule!, POD_CIDR_PREFIX);
+            const rule = requireUdpIngressRule(ingress, 53);
+            expectCidrSource(rule, POD_CIDR_PREFIX);
         });
 
         it('should allow all outbound traffic', () => {
-            expect(findAllTrafficEgress(egress)).toBeDefined();
+            requireAllTrafficEgress(egress);
         });
     });
 
@@ -636,9 +835,8 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
 
         it('should have K8s API port 6443 open from VPC CIDR', () => {
-            const apiRule = findTcpIngressRule(ingress, 6443);
-            expect(apiRule).toBeDefined();
-            expectCidrSource(apiRule!, VPC_CIDR_PREFIX);
+            const apiRule = requireTcpIngressRule(ingress, 6443);
+            expectCidrSource(apiRule, VPC_CIDR_PREFIX);
         });
 
         it('should NOT allow all outbound traffic (restricted)', () => {
@@ -670,20 +868,17 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
 
         it('should have HTTP port 80 from VPC CIDR (NLB health checks)', () => {
-            const httpRule = findTcpIngressRule(ingress, 80);
-            expect(httpRule).toBeDefined();
-            expectCidrSource(httpRule!, VPC_CIDR_PREFIX);
+            const httpRule = requireTcpIngressRule(ingress, 80);
+            expectCidrSource(httpRule, VPC_CIDR_PREFIX);
         });
 
         it('should have HTTP port 80 from CloudFront prefix list', () => {
-            const httpRule = findTcpIngressRule(ingress, 80);
-            expect(httpRule).toBeDefined();
-            expectPrefixListSource(httpRule!);
+            const httpRule = requireTcpIngressRule(ingress, 80);
+            expectPrefixListSource(httpRule);
         });
 
         it('should have HTTPS port 443 for admin access', () => {
-            const httpsRule = findTcpIngressRule(ingress, 443);
-            expect(httpsRule).toBeDefined();
+            requireTcpIngressRule(ingress, 443);
         });
 
         it('should NOT allow all outbound traffic (restricted)', () => {
@@ -718,16 +913,14 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         ])(
             'should have TCP rule for $desc (port $port) from VPC CIDR',
             ({ port }) => {
-                const rule = findTcpIngressRule(ingress, port);
-                expect(rule).toBeDefined();
-                expectCidrSource(rule!, VPC_CIDR_PREFIX);
+                const rule = requireTcpIngressRule(ingress, port);
+                expectCidrSource(rule, VPC_CIDR_PREFIX);
             },
         );
 
         it('should have Node Exporter port 9100 from pod CIDR (Prometheus scraping)', () => {
-            const rule = findTcpIngressRule(ingress, 9100);
-            expect(rule).toBeDefined();
-            expectCidrSource(rule!, POD_CIDR_PREFIX);
+            const rule = requireTcpIngressRule(ingress, 9100);
+            expectCidrSource(rule, POD_CIDR_PREFIX);
         });
 
         it('should NOT allow all outbound traffic (restricted)', () => {
@@ -744,27 +937,23 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     // =========================================================================
     describe('NLB SG — Rule Validation', () => {
         it('should have inbound TCP 80 from 0.0.0.0/0', () => {
-            const httpRule = findTcpIngressRule(nlbSgIngress, 80);
-            expect(httpRule).toBeDefined();
-            expectCidrSource(httpRule!, ANY_IPV4);
+            const httpRule = requireTcpIngressRule(nlbSgIngress, 80);
+            expectCidrSource(httpRule, ANY_IPV4);
         });
 
         it('should have inbound TCP 443 from 0.0.0.0/0', () => {
-            const httpsRule = findTcpIngressRule(nlbSgIngress, 443);
-            expect(httpsRule).toBeDefined();
-            expectCidrSource(httpsRule!, ANY_IPV4);
+            const httpsRule = requireTcpIngressRule(nlbSgIngress, 443);
+            expectCidrSource(httpsRule, ANY_IPV4);
         });
 
         it('should have outbound TCP 80 to VPC CIDR', () => {
-            const http = findEgressRule(nlbSgEgress, 80, 80, 'tcp');
-            expect(http).toBeDefined();
-            expectCidrSource(http!, VPC_CIDR_PREFIX);
+            const http = requireEgressRule(nlbSgEgress, 80, 80, 'tcp');
+            expectCidrSource(http, VPC_CIDR_PREFIX);
         });
 
         it('should have outbound TCP 443 to VPC CIDR', () => {
-            const https = findEgressRule(nlbSgEgress, 443, 443, 'tcp');
-            expect(https).toBeDefined();
-            expectCidrSource(https!, VPC_CIDR_PREFIX);
+            const https = requireEgressRule(nlbSgEgress, 443, 443, 'tcp');
+            expectCidrSource(https, VPC_CIDR_PREFIX);
         });
 
         it('should NOT have unrestricted outbound (0.0.0.0/0 all protocols)', () => {
@@ -836,15 +1025,13 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
         });
 
         it('should have a TCP listener on port 80', () => {
-            const httpListener = findListener(nlbListeners, 80);
-            expect(httpListener).toBeDefined();
-            expect(httpListener!.Protocol).toBe('TCP');
+            const httpListener = requireListener(nlbListeners, 80);
+            expect(httpListener.Protocol).toBe('TCP');
         });
 
         it('should have a TCP listener on port 443', () => {
-            const httpsListener = findListener(nlbListeners, 443);
-            expect(httpsListener).toBeDefined();
-            expect(httpsListener!.Protocol).toBe('TCP');
+            const httpsListener = requireListener(nlbListeners, 443);
+            expect(httpsListener.Protocol).toBe('TCP');
         });
     });
 

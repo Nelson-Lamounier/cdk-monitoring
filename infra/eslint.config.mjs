@@ -316,6 +316,15 @@ export default [
                         "**.hasOutput",
                         // Custom test assertion helpers
                         "StackAssertions.**",
+                        // Integration test diagnostic helpers (throw on failure)
+                        "requireTcpIngressRule",
+                        "requireUdpIngressRule",
+                        "requireEgressRule",
+                        "requireAllTrafficEgress",
+                        "requireListener",
+                        "expectSelfReferencing",
+                        "expectCidrSource",
+                        "expectPrefixListSource",
                     ],
                 },
             ],
