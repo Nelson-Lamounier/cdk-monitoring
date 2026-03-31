@@ -266,6 +266,11 @@ function buildPrompt(event: AlarmEvent): string {
         const newState = detail.state?.value ?? 'unknown';
         const reason = detail.state?.reason ?? 'no reason provided';
 
+        // SSM Bootstrap failure — inject diagnostic workflow guidance
+        const bootstrapGuidance = isBootstrapAlarm(alarmName)
+            ? buildBootstrapDiagnosticGuidance()
+            : '';
+
         return [
             'A CloudWatch Alarm has fired.',
             `Alarm: ${alarmName}`,
@@ -273,9 +278,9 @@ function buildPrompt(event: AlarmEvent): string {
             `Reason: ${reason}`,
             '',
             dryRunNote,
-            '',
+            bootstrapGuidance,
             `Full event detail:\n${JSON.stringify(detail, null, 2)}`,
-        ].join('\n');
+        ].filter(Boolean).join('\n');
     }
 
     // Generic EventBridge event
@@ -576,7 +581,92 @@ function getDefaultTools(): AgentTool[] {
                 },
             },
         },
+        {
+            name: 'get_node_diagnostic_json',
+            description: 'Fetch the machine-readable run_summary.json from a Kubernetes node via SSM. Returns the bootstrap step status, failure classification code (AMI_MISMATCH, S3_FORBIDDEN, KUBEADM_FAIL, CALICO_TIMEOUT, ARGOCD_SYNC_FAIL, CW_AGENT_FAIL), and per-step timing. Use this FIRST when diagnosing bootstrap failures.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    instanceId: { type: 'string', description: 'EC2 instance ID to diagnose' },
+                },
+                required: ['instanceId'],
+            },
+        },
+        {
+            name: 'remediate_node_bootstrap',
+            description: 'Trigger the SSM Automation Document to re-run the bootstrap sequence on a failed Kubernetes node. Resolves the correct Document name and IAM role from SSM Parameter Store. Use this AFTER diagnosing the failure with get_node_diagnostic_json and confirming the failure is transient.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    instanceId: { type: 'string', description: 'EC2 instance ID to remediate' },
+                    role: {
+                        type: 'string',
+                        description: 'Node role: "control-plane" or "worker"',
+                        enum: ['control-plane', 'worker'],
+                    },
+                },
+                required: ['instanceId', 'role'],
+            },
+        },
     ];
+}
+
+// =============================================================================
+// Bootstrap Alarm Detection & Diagnostic Guidance
+// =============================================================================
+
+/** Known bootstrap-related alarm name patterns */
+const BOOTSTRAP_ALARM_PATTERNS = [
+    'bootstrap-orchestrator',
+    'ssm-automation',
+    'step-function',
+    'k8s-bootstrap',
+];
+
+/**
+ * Determine whether an alarm name relates to the SSM bootstrap pipeline.
+ *
+ * @param alarmName - CloudWatch alarm name
+ * @returns true if the alarm is bootstrap-related
+ */
+function isBootstrapAlarm(alarmName: string): boolean {
+    const lower = alarmName.toLowerCase();
+    return BOOTSTRAP_ALARM_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
+/**
+ * Build structured diagnostic guidance for bootstrap failures.
+ *
+ * Injected into the agent prompt when a bootstrap-related alarm fires.
+ * Guides the agent through a deterministic diagnostic → remediation flow.
+ *
+ * @returns Formatted guidance block
+ */
+function buildBootstrapDiagnosticGuidance(): string {
+    return [
+        '',
+        '─── SSM BOOTSTRAP FAILURE DETECTED ───',
+        'This alarm relates to the Kubernetes node bootstrap pipeline.',
+        'Follow this diagnostic workflow:',
+        '',
+        '1. DIAGNOSE: Use `get_node_diagnostic_json` to fetch the run_summary.json',
+        '   from the affected instance. This reveals the exact failed step and',
+        '   failure code (e.g., AMI_MISMATCH, S3_FORBIDDEN, KUBEADM_FAIL).',
+        '',
+        '2. CLASSIFY: Determine if the failure is:',
+        '   - TRANSIENT: Network timeouts, S3 eventual consistency, NLB propagation',
+        '     → Safe to retry by triggering `remediate_node_bootstrap`.',
+        '   - PERMANENT: AMI mismatch, IAM permission denied, corrupted certificates',
+        '     → Report to operator; do NOT retry automatically.',
+        '',
+        '3. REMEDIATE (transient only): Use `remediate_node_bootstrap` with the',
+        '   correct role (control-plane or worker) to re-trigger the SSM Document.',
+        '',
+        '4. VERIFY: After remediation, use `check_node_health` to confirm the node',
+        '   joined the cluster, then `analyse_cluster_health` for workload health.',
+        '───────────────────────────────────────',
+        '',
+    ].join('\n');
 }
 
 // =============================================================================

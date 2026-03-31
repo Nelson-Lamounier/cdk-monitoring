@@ -10,7 +10,13 @@
  * Resources:
  * - AgentCore Gateway (L2 construct — CloudFormation-managed lifecycle)
  * - Default Cognito authoriser for M2M (machine-to-machine) JWT auth
- * - 2 Lambda tool functions (diagnose-alarm, ebs-detach)
+ * - 6 Lambda tool functions registered as MCP targets:
+ *   1. diagnose-alarm
+ *   2. ebs-detach
+ *   3. check-node-health
+ *   4. analyse-cluster-health
+ *   5. get-node-diagnostic-json
+ *   6. remediate-node-bootstrap
  * - SSM parameters for cross-stack discovery
  * - CloudWatch log group for Gateway invocations
  *
@@ -302,6 +308,102 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         }));
 
         // =================================================================
+        // Tool Lambda 5: Get Node Diagnostic JSON
+        //
+        // Fetches the machine-readable `run_summary.json` from a K8s node
+        // via SSM SendCommand. Contains bootstrap status, failure
+        // classification, and per-step timing from the Python StepRunner.
+        // =================================================================
+        const getNodeDiagnosticFn = new lambdaNode.NodejsFunction(this, 'GetNodeDiagnosticFunction', {
+            functionName: `${namePrefix}-tool-get-node-diagnostic`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'tools', 'get-node-diagnostic-json', 'index.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.seconds(30),
+            logGroup: new logs.LogGroup(this, 'GetNodeDiagnosticLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-tool-get-node-diagnostic`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            tracing: lambda.Tracing.ACTIVE,
+            description: `MCP tool: fetch bootstrap run_summary.json from node for ${namePrefix}`,
+            bundling: {
+                minify: true,
+                sourceMap: true,
+                externalModules: ['@aws-sdk/*'],
+            },
+        });
+
+        // Grant SSM SendCommand + GetCommandInvocation to read diagnostic file
+        getNodeDiagnosticFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SsmSendCommand',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:SendCommand',
+                'ssm:GetCommandInvocation',
+            ],
+            resources: ['*'],
+        }));
+
+        // =================================================================
+        // Tool Lambda 6: Remediate Node Bootstrap
+        //
+        // Triggers an SSM Automation Document to re-run the bootstrap
+        // sequence on a failed K8s node. Resolves Document names and
+        // IAM roles from SSM Parameter Store at runtime.
+        // =================================================================
+        const remediateNodeBootstrapFn = new lambdaNode.NodejsFunction(this, 'RemediateNodeBootstrapFunction', {
+            functionName: `${namePrefix}-tool-remediate-bootstrap`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'tools', 'remediate-node-bootstrap', 'index.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.seconds(30),
+            logGroup: new logs.LogGroup(this, 'RemediateNodeBootstrapLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-tool-remediate-bootstrap`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            tracing: lambda.Tracing.ACTIVE,
+            description: `MCP tool: trigger SSM Automation to remediate failed node bootstrap for ${namePrefix}`,
+            environment: {
+                SSM_PREFIX: '/k8s/development',
+            },
+            bundling: {
+                minify: true,
+                sourceMap: true,
+                externalModules: ['@aws-sdk/*'],
+            },
+        });
+
+        // Grant SSM Automation execution + parameter resolution
+        remediateNodeBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'StartSsmAutomation',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:StartAutomationExecution',
+                'ssm:GetAutomationExecution',
+            ],
+            resources: ['*'],
+        }));
+
+        remediateNodeBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'ResolveSsmParameters',
+            effect: iam.Effect.ALLOW,
+            actions: ['ssm:GetParameter'],
+            resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/k8s/*`],
+        }));
+
+        // Grant IAM PassRole so SSM Automation can assume the automation role
+        remediateNodeBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'PassAutomationRole',
+            effect: iam.Effect.ALLOW,
+            actions: ['iam:PassRole'],
+            resources: [`arn:aws:iam::${this.account}:role/*ssm-automation*`],
+        }));
+
+        // =================================================================
         // Register Tools with AgentCore Gateway
         //
         // Each tool is registered via addLambdaTarget() with an inline
@@ -447,6 +549,74 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             }]),
         });
 
+        this.gateway.addLambdaTarget('GetNodeDiagnosticTarget', {
+            gatewayTargetName: 'get-node-diagnostic-json',
+            description: 'Fetch bootstrap diagnostic run_summary.json from a Kubernetes node',
+            lambdaFunction: getNodeDiagnosticFn,
+            toolSchema: ToolSchema.fromInline([{
+                name: 'get_node_diagnostic_json',
+                description: 'Fetch the machine-readable run_summary.json bootstrap diagnostic file from a Kubernetes node via SSM. Returns the overall bootstrap status, failure classification code, and per-step timing and errors.',
+                inputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        instanceId: {
+                            type: SchemaDefinitionType.STRING,
+                            description: 'EC2 instance ID of the node to diagnose',
+                        },
+                    },
+                    required: ['instanceId'],
+                },
+                outputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        instanceId: { type: SchemaDefinitionType.STRING, description: 'Target instance ID' },
+                        found: { type: SchemaDefinitionType.BOOLEAN, description: 'Whether run_summary.json exists on the node' },
+                        failureCode: { type: SchemaDefinitionType.STRING, description: 'Machine-readable failure classification (e.g. AMI_MISMATCH, KUBEADM_FAIL)' },
+                        failedSteps: {
+                            type: SchemaDefinitionType.ARRAY,
+                            description: 'Names of bootstrap steps that failed',
+                            items: { type: SchemaDefinitionType.STRING },
+                        },
+                        summary: { type: SchemaDefinitionType.OBJECT, description: 'Full parsed run_summary.json content' },
+                    },
+                },
+            }]),
+        });
+
+        this.gateway.addLambdaTarget('RemediateNodeBootstrapTarget', {
+            gatewayTargetName: 'remediate-node-bootstrap',
+            description: 'Trigger SSM Automation to re-bootstrap a failed Kubernetes node',
+            lambdaFunction: remediateNodeBootstrapFn,
+            toolSchema: ToolSchema.fromInline([{
+                name: 'remediate_node_bootstrap',
+                description: 'Trigger an SSM Automation Document to re-run the full bootstrap sequence on a failed Kubernetes node. Resolves the correct SSM Document name (control-plane or worker) and IAM role from Parameter Store. Returns the automation execution ID for tracking.',
+                inputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        instanceId: {
+                            type: SchemaDefinitionType.STRING,
+                            description: 'EC2 instance ID of the node to remediate',
+                        },
+                        role: {
+                            type: SchemaDefinitionType.STRING,
+                            description: 'Node role: "control-plane" or "worker"',
+                        },
+                    },
+                    required: ['instanceId', 'role'],
+                },
+                outputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        instanceId: { type: SchemaDefinitionType.STRING, description: 'Target instance ID' },
+                        role: { type: SchemaDefinitionType.STRING, description: 'Node role used for remediation' },
+                        documentName: { type: SchemaDefinitionType.STRING, description: 'SSM Automation Document executed' },
+                        executionId: { type: SchemaDefinitionType.STRING, description: 'SSM Automation execution ID' },
+                        status: { type: SchemaDefinitionType.STRING, description: 'triggered or error' },
+                    },
+                },
+            }]),
+        });
+
         // =================================================================
         // CDK-Nag Suppressions
         // =================================================================
@@ -509,6 +679,30 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             [{
                 id: 'AwsSolutions-IAM5',
                 reason: 'EC2 DescribeInstances and SSM SendCommand require wildcard — instance IDs are dynamic (resolved by tag at runtime)',
+            }, {
+                id: 'AwsSolutions-L1',
+                reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
+            }],
+            true,
+        );
+
+        NagSuppressions.addResourceSuppressions(
+            getNodeDiagnosticFn,
+            [{
+                id: 'AwsSolutions-IAM5',
+                reason: 'SSM SendCommand requires wildcard — instance IDs are dynamic (resolved at runtime)',
+            }, {
+                id: 'AwsSolutions-L1',
+                reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
+            }],
+            true,
+        );
+
+        NagSuppressions.addResourceSuppressions(
+            remediateNodeBootstrapFn,
+            [{
+                id: 'AwsSolutions-IAM5',
+                reason: 'SSM StartAutomationExecution requires wildcard — document names are resolved dynamically from Parameter Store',
             }, {
                 id: 'AwsSolutions-L1',
                 reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
