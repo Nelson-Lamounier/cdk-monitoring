@@ -166,52 +166,6 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             resources: ['*'],
         }));
 
-        // =================================================================
-        // Tool Lambda 2: EBS Volume Detach
-        //
-        // Detaches tagged EBS volumes from terminating instances and
-        // completes ASG lifecycle actions. Existing production Lambda
-        // reused as an MCP tool.
-        // =================================================================
-        const ebsDetachFn = new lambdaNode.NodejsFunction(this, 'EbsDetachFunction', {
-            functionName: `${namePrefix}-tool-ebs-detach`,
-            runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'ebs-detach', 'index.ts'),
-            handler: 'handler',
-            memorySize: 256,
-            timeout: cdk.Duration.minutes(3),
-            logGroup: new logs.LogGroup(this, 'EbsDetachLogGroup', {
-                logGroupName: `/aws/lambda/${namePrefix}-tool-ebs-detach`,
-                retention: props.logRetention,
-                removalPolicy: props.removalPolicy,
-            }),
-            tracing: lambda.Tracing.ACTIVE,
-            description: `MCP tool: EBS volume detach for ${namePrefix}`,
-            bundling: {
-                minify: true,
-                sourceMap: true,
-                externalModules: ['@aws-sdk/*'],
-            },
-        });
-
-        // Grant EC2 + ASG permissions for EBS detachment
-        ebsDetachFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'ManageEbsVolumes',
-            effect: iam.Effect.ALLOW,
-            actions: [
-                'ec2:DescribeVolumes',
-                'ec2:DescribeInstances',
-                'ec2:DetachVolume',
-            ],
-            resources: ['*'],
-        }));
-
-        ebsDetachFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'CompleteLifecycleAction',
-            effect: iam.Effect.ALLOW,
-            actions: ['autoscaling:CompleteLifecycleAction'],
-            resources: ['*'],
-        }));
 
         // =================================================================
         // Tool Lambda 3: Check Node Health
@@ -445,37 +399,6 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             }]),
         });
 
-        this.gateway.addLambdaTarget('EbsDetachTarget', {
-            gatewayTargetName: 'ebs-detach',
-            description: 'Detach EBS volumes from a terminating EC2 instance',
-            lambdaFunction: ebsDetachFn,
-            toolSchema: ToolSchema.fromInline([{
-                name: 'ebs_detach',
-                description: 'Detach tagged EBS volumes from a terminating or unhealthy EC2 instance. Completes the ASG lifecycle action after detachment.',
-                inputSchema: {
-                    type: SchemaDefinitionType.OBJECT,
-                    properties: {
-                        EC2InstanceId: {
-                            type: SchemaDefinitionType.STRING,
-                            description: 'The EC2 instance ID to detach volumes from',
-                        },
-                        AutoScalingGroupName: {
-                            type: SchemaDefinitionType.STRING,
-                            description: 'The Auto Scaling group name',
-                        },
-                        LifecycleHookName: {
-                            type: SchemaDefinitionType.STRING,
-                            description: 'The lifecycle hook name',
-                        },
-                        LifecycleActionToken: {
-                            type: SchemaDefinitionType.STRING,
-                            description: 'The lifecycle action token',
-                        },
-                    },
-                    required: ['EC2InstanceId'],
-                },
-            }]),
-        });
 
         this.gateway.addLambdaTarget('CheckNodeHealthTarget', {
             gatewayTargetName: 'check-node-health',
@@ -650,17 +573,6 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             true,
         );
 
-        NagSuppressions.addResourceSuppressions(
-            ebsDetachFn,
-            [{
-                id: 'AwsSolutions-IAM5',
-                reason: 'EC2 DetachVolume and DescribeVolumes require wildcard — volumes and instances are dynamic',
-            }, {
-                id: 'AwsSolutions-L1',
-                reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
-            }],
-            true,
-        );
 
         NagSuppressions.addResourceSuppressions(
             checkNodeHealthFn,

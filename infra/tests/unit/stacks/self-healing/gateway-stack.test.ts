@@ -98,13 +98,6 @@ describe('SelfHealingGatewayStack', () => {
             });
         });
 
-        it('should create the ebs-detach Lambda function', () => {
-            template.hasResourceProperties('AWS::Lambda::Function', {
-                FunctionName: `${NAME_PREFIX}-tool-ebs-detach`,
-                Runtime: 'nodejs22.x',
-            });
-        });
-
         it('should enable X-Ray tracing on tool Lambdas', () => {
             template.hasResourceProperties('AWS::Lambda::Function', {
                 FunctionName: `${NAME_PREFIX}-tool-diagnose-alarm`,
@@ -119,19 +112,13 @@ describe('SelfHealingGatewayStack', () => {
     describe('Gateway Targets', () => {
         const { template } = createGatewayStack();
 
-        it('should register 6 Gateway targets', () => {
-            template.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 6);
+        it('should register 5 Gateway targets', () => {
+            template.resourceCountIs('AWS::BedrockAgentCore::GatewayTarget', 5);
         });
 
         it('should register the diagnose-alarm target', () => {
             template.hasResourceProperties('AWS::BedrockAgentCore::GatewayTarget', {
                 Name: 'diagnose-alarm',
-            });
-        });
-
-        it('should register the ebs-detach target', () => {
-            template.hasResourceProperties('AWS::BedrockAgentCore::GatewayTarget', {
-                Name: 'ebs-detach',
             });
         });
 
@@ -191,23 +178,6 @@ describe('SelfHealingGatewayStack', () => {
                 },
             });
         });
-
-        it('should grant EC2 permissions to ebs-detach', () => {
-            template.hasResourceProperties('AWS::IAM::Policy', {
-                PolicyDocument: {
-                    Statement: Match.arrayWith([
-                        Match.objectLike({
-                            Action: Match.arrayWith([
-                                'ec2:DescribeVolumes',
-                                'ec2:DescribeInstances',
-                                'ec2:DetachVolume',
-                            ]),
-                            Effect: 'Allow',
-                        }),
-                    ]),
-                },
-            });
-        });
     });
 
     // =========================================================================
@@ -241,9 +211,6 @@ describe('SelfHealingGatewayStack', () => {
         it('should create log groups for tool Lambdas', () => {
             template.hasResourceProperties('AWS::Logs::LogGroup', {
                 LogGroupName: `/aws/lambda/${NAME_PREFIX}-tool-diagnose-alarm`,
-            });
-            template.hasResourceProperties('AWS::Logs::LogGroup', {
-                LogGroupName: `/aws/lambda/${NAME_PREFIX}-tool-ebs-detach`,
             });
         });
     });

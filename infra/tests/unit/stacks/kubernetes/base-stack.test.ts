@@ -645,7 +645,7 @@ describe('KubernetesBaseStack', () => {
     // =========================================================================
     describe('SSM Parameters', () => {
         it('should create 13 SSM parameters for cross-stack discovery', () => {
-            template.resourceCountIs('AWS::SSM::Parameter', 13);
+            template.resourceCountIs('AWS::SSM::Parameter', 14);
         });
 
         it('should create SSM parameters under the /k8s/development prefix', () => {
@@ -658,7 +658,7 @@ describe('KubernetesBaseStack', () => {
             const expectedPrefixes = paramNames.filter(
                 (name) => name.startsWith('/k8s/development/'),
             );
-            expect(expectedPrefixes).toHaveLength(13);
+            expect(expectedPrefixes).toHaveLength(14);
         });
 
         it('should publish the security group ID to SSM', () => {
@@ -884,7 +884,7 @@ describe('KubernetesBaseStack', () => {
             template.resourceCountIs('AWS::Route53::HostedZone', 1);
             template.resourceCountIs('AWS::Route53::RecordSet', 1);
             template.resourceCountIs('AWS::S3::Bucket', 3);
-            template.resourceCountIs('AWS::SSM::Parameter', 13);
+            template.resourceCountIs('AWS::SSM::Parameter', 14);
         });
     });
 });
