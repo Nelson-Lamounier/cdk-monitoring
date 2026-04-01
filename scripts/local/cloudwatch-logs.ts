@@ -40,7 +40,7 @@ const args = parseArgs(
         { name: 'profile', description: 'AWS CLI profile', hasValue: true },
         { name: 'region', description: 'AWS region', hasValue: true, default: 'eu-west-1' },
         { name: 'log-group', description: 'Skip selection and query this log group directly', hasValue: true },
-        { name: 'streams', description: 'Number of recent log streams to fetch', hasValue: true, default: '5' },
+        { name: 'streams', description: 'Number of recent log streams to fetch', hasValue: true, default: '10' },
         { name: 'events', description: 'Max log events per stream', hasValue: true, default: '50' },
     ],
     'CloudWatch Log Stream Explorer — interactively browse log groups, streams, and events',
