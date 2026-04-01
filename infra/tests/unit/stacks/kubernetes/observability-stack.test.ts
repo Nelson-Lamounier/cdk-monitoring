@@ -143,15 +143,14 @@ describe('KubernetesObservabilityStack', () => {
             expect(dashboardBody).toContain('Errors');
         });
 
-        it('should include CloudFront metrics when distributionId is provided', () => {
+        it('should include CloudFront metrics when distributionId SSM path is provided', () => {
             const { template } = createObservabilityStack({
-                cloudFrontDistributionId: 'E1234567890ABC',
+                cloudFrontDistributionIdSsmPath: '/nextjs/development/cloudfront/distribution-id',
             });
             const dashboard = template.findResources('AWS::CloudWatch::Dashboard');
             const dashboardBody = getDashboardBody(dashboard);
 
             expect(dashboardBody).toContain('AWS/CloudFront');
-            expect(dashboardBody).toContain('E1234567890ABC');
         });
 
         it('should NOT include CloudFront metrics when distributionId is omitted', () => {

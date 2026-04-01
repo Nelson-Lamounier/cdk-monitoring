@@ -26,7 +26,6 @@
  *   npx cdk synth -c project=k8s -c environment=dev
  */
 
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import {
@@ -544,14 +543,11 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 targetEnvironment: environment,
                 namePrefix,
                 ssmPrefix,
-                nlbFullName: ssm.StringParameter.valueForStringParameter(
-                    scope,
-                    k8sSsmPaths(environment).nlbFullName
-                ),
-                cloudFrontDistributionId: ssm.StringParameter.valueForStringParameter(
-                    scope,
-                    nextjsSsmPaths(environment).cloudfront.distributionId
-                ),
+                // SSM paths — the stack resolves these internally via
+                // ssm.StringParameter.valueForStringParameter scoped to itself.
+                // MUST NOT resolve here: `scope` is cdk.App, not a Stack.
+                nlbFullNameSsmPath: k8sSsmPaths(environment).nlbFullName,
+                cloudFrontDistributionIdSsmPath: nextjsSsmPaths(environment).cloudfront.distributionId,
                 selfHealingConfig: {
                     agentFunctionName: `${selfHealingPrefix}-agent`,
                     toolFunctions: [
