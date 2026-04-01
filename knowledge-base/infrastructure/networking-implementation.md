@@ -314,6 +314,27 @@ explicit allowed origins. Attached it to the Faro IngressRoute.
 Tightened Alloy's own `cors_allowed_origins` from `["*"]` to the
 same explicit list.
 
+---
+
+### CloudFront CachePolicy `AlreadyExists` Error During Deployment
+
+**What happened:** The CDK deployment pipeline failed with `AlreadyExists` for
+an `AWS::CloudFront::CachePolicy`.
+
+**Why:** `CachePolicy` and `OriginRequestPolicy` resources in `edge-stack.ts`
+were explicitly assigned hardcoded names via the `cachePolicyName` and
+`originRequestPolicyName` props. When a policy is manually created for testing,
+or if a previous stack deletion fails to clean up the policies, CloudFormation
+fails to deploy because the exact name already exists globally across the AWS
+account.
+
+**Fix:** Removed the hardcoded string names from all `CachePolicy` and
+`OriginRequestPolicy` constructs. By omitting the explicit name, CDK
+automatically generates a unique physical name based on the construct's logical
+ID (e.g., `EdgeStack-StaticAssetsCachePoli-ABC123XYZ`). This idiomatic CDK
+approach prevents cross-environment naming conflicts and ensures robust
+deployment automation.
+
 ## Transferable Skills Demonstrated
 
 - **Network architecture design** — designing multi-layer traffic

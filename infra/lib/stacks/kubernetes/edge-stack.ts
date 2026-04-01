@@ -417,7 +417,6 @@ export class KubernetesEdgeStack extends cdk.Stack {
 
         // Cache Policies
         const staticAssetsCachePolicy = new cloudfront.CachePolicy(this, 'StaticAssetsCachePolicy', {
-            cachePolicyName: `${envName}-${namePrefix}-static-assets`,
             comment: 'Cache policy for immutable static assets (1 year TTL)',
             defaultTtl: cfConfig.staticAssetsTtl.default,
             maxTtl: cfConfig.staticAssetsTtl.max,
@@ -438,7 +437,6 @@ export class KubernetesEdgeStack extends cdk.Stack {
         //   Cache-Control: s-maxage=<revalidate>, stale-while-revalidate
         // and that Traefik does NOT strip or override these headers.
         const dynamicContentCachePolicy = new cloudfront.CachePolicy(this, 'DynamicContentCachePolicy', {
-            cachePolicyName: `${envName}-${namePrefix}-dynamic-content`,
             comment: 'Cache policy for ISR pages with revalidation',
             defaultTtl: cfConfig.dynamicContentTtl.default,
             maxTtl: cfConfig.dynamicContentTtl.max,
@@ -459,7 +457,6 @@ export class KubernetesEdgeStack extends cdk.Stack {
         // CloudFront to forward Set-Cookie response headers back to the viewer,
         // which is required for the Auth.js CSRF double-submit flow.
         const authNoCachePolicy = new cloudfront.CachePolicy(this, 'AuthNoCachePolicy', {
-            cachePolicyName: `${envName}-${namePrefix}-auth-no-cache`,
             comment: 'No caching — passes Set-Cookie headers for Auth.js CSRF/session flow',
             defaultTtl: cdk.Duration.seconds(0),
             maxTtl: cdk.Duration.seconds(1),
@@ -473,7 +470,6 @@ export class KubernetesEdgeStack extends cdk.Stack {
 
         // Origin Request Policy (forwarded to Traefik/EIP)
         const eipOriginRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'EipOriginRequestPolicy', {
-            originRequestPolicyName: `${envName}-${namePrefix}-eip-origin`,
             comment: 'Forward necessary headers to EIP/Traefik origin',
             headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(...cfConfig.originRequestHeaders),
             queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.all(),
@@ -483,7 +479,6 @@ export class KubernetesEdgeStack extends cdk.Stack {
         // Admin/Auth Origin Request Policy — forwards NextAuth.js session cookies
         // Required for login, session validation, and CSRF protection on admin routes.
         const adminOriginRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'AdminOriginRequestPolicy', {
-            originRequestPolicyName: `${envName}-${namePrefix}-admin-origin`,
             comment: 'Forward headers + NextAuth.js session cookies for admin/auth routes',
             headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(...cfConfig.originRequestHeaders),
             queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.all(),
