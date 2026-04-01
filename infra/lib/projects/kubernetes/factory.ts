@@ -26,6 +26,7 @@
  *   npx cdk synth -c project=k8s -c environment=dev
  */
 
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import {
@@ -37,7 +38,7 @@ import {
 import { getK8sConfigs } from '../../config/kubernetes';
 import { getNextJsConfigs, getNextJsK8sConfig, nextjsResourceNames } from '../../config/nextjs';
 import { Project, getProjectConfig } from '../../config/projects';
-import { nextjsSsmPaths } from '../../config/ssm-paths';
+import { nextjsSsmPaths, k8sSsmPaths } from '../../config/ssm-paths';
 import {
     IProjectFactory,
     ProjectFactoryContext,
@@ -543,13 +544,14 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 targetEnvironment: environment,
                 namePrefix,
                 ssmPrefix,
-                stateMachineName: `${namePrefix}-bootstrap-orchestrator`,
-                lambdaFunctions: [
-                    {
-                        functionName: `${namePrefix}-bootstrap-router`,
-                        label: 'Bootstrap Router',
-                    },
-                ],
+                nlbFullName: ssm.StringParameter.valueForStringParameter(
+                    scope,
+                    k8sSsmPaths(environment).nlbFullName
+                ),
+                cloudFrontDistributionId: ssm.StringParameter.valueForStringParameter(
+                    scope,
+                    nextjsSsmPaths(environment).cloudfront.distributionId
+                ),
                 selfHealingConfig: {
                     agentFunctionName: `${selfHealingPrefix}-agent`,
                     toolFunctions: [

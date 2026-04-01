@@ -493,6 +493,7 @@ export class KubernetesBaseStack extends cdk.Stack {
                 [ssmPaths.hostedZoneId]: this.hostedZone.hostedZoneId,
                 [ssmPaths.apiDnsName]: K8S_API_DNS_NAME,
                 [ssmPaths.kmsKeyArn]: this.logGroupKmsKey.keyArn,
+                [ssmPaths.nlbFullName]: this.nlbConstruct.loadBalancerFullName,
                 [ssmPaths.nlbHttpTargetGroupArn]: this.nlbHttpTargetGroup.targetGroupArn,
                 [ssmPaths.nlbHttpsTargetGroupArn]: this.nlbHttpsTargetGroup.targetGroupArn,
             },

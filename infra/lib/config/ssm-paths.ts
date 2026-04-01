@@ -391,6 +391,8 @@ export interface K8sSsmPaths {
     readonly kmsKeyArn: string;
 
     // --- NLB (Network Load Balancer) ---
+    /** NLB full name (for CloudWatch metrics) */
+    readonly nlbFullName: string;
     /** NLB HTTP (port 80) target group ARN */
     readonly nlbHttpTargetGroupArn: string;
     /** NLB HTTPS (port 443) target group ARN */
@@ -435,6 +437,7 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
         kmsKeyArn: `${prefix}/kms-key-arn`,
 
         // NLB
+        nlbFullName: `${prefix}/nlb-full-name`,
         nlbHttpTargetGroupArn: `${prefix}/nlb-http-target-group-arn`,
         nlbHttpsTargetGroupArn: `${prefix}/nlb-https-target-group-arn`,
 

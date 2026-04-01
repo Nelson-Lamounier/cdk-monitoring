@@ -26,7 +26,7 @@
  * ```
  */
 
-import * as ssm from 'aws-cdk-lib/aws-ssm';
+
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -37,7 +37,6 @@ import {
     OperationsDashboard,
 } from '../../constructs/observability';
 import type {
-    DashboardLambdaConfig,
     OpsDashboardSelfHealingConfig,
 } from '../../constructs/observability';
 
@@ -64,18 +63,6 @@ export interface KubernetesObservabilityStackProps extends cdk.StackProps {
      * Omit to skip CloudFront section.
      */
     readonly cloudFrontDistributionId?: string;
-
-    /**
-     * Step Functions state machine name for bootstrap orchestrator metrics.
-     * Omit to skip Step Functions section.
-     */
-    readonly stateMachineName?: string;
-
-    /**
-     * Lambda function names to monitor.
-     * Omit to skip Lambda section.
-     */
-    readonly lambdaFunctions?: DashboardLambdaConfig[];
 
     /**
      * NLB full name for CloudWatch metrics.
@@ -122,9 +109,10 @@ export class KubernetesObservabilityStack extends cdk.Stack {
         // ASG names follow the pattern: {namePrefix}-{role}
         // These are set by AutoScalingGroupConstruct via the instanceName prop.
         // =================================================================
-        const controlPlaneAsgName = `${namePrefix}-control-plane`;
-        const appWorkerAsgName = `${namePrefix}-app-worker`;
-        const monitoringWorkerAsgName = `${namePrefix}-mon-worker`;
+        const controlPlaneAsgName = `${namePrefix}-asg`;
+        const appWorkerAsgName = `${namePrefix}-worker-asg`;
+        const monitoringWorkerAsgName = `${namePrefix}-mon-worker-asg`;
+        const argoCdWorkerAsgName = `${namePrefix}-argocd-worker-asg`;
 
         // =================================================================
         // Resolve NLB name from naming convention
@@ -137,13 +125,6 @@ export class KubernetesObservabilityStack extends cdk.Stack {
         const nlbName = props.nlbFullName ?? `net/${namePrefix}-nlb/placeholder`;
 
         // =================================================================
-        // Read EBS volume ID from SSM (for future EBS widgets)
-        // =================================================================
-        const _ebsVolumeId = ssm.StringParameter.valueForStringParameter(
-            this, `${ssmPrefix}/ebs-volume-id`,
-        );
-
-        // =================================================================
         // Dashboard Construct
         // =================================================================
         this.dashboard = new InfrastructureDashboard(this, 'InfraDashboard', {
@@ -153,14 +134,11 @@ export class KubernetesObservabilityStack extends cdk.Stack {
                 controlPlaneAsgName,
                 appWorkerAsgName,
                 monitoringWorkerAsgName,
+                argoCdWorkerAsgName,
             },
             nlb: {
                 loadBalancerFullName: nlbName,
             },
-            stateMachine: props.stateMachineName
-                ? { name: props.stateMachineName }
-                : undefined,
-            lambdaFunctions: props.lambdaFunctions,
             cloudFront: props.cloudFrontDistributionId
                 ? { distributionId: props.cloudFrontDistributionId }
                 : undefined,

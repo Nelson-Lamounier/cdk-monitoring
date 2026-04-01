@@ -20,7 +20,6 @@
  *         monitoringWorkerAsgName: 'k8s-dev-mon-worker',
  *     },
  *     nlb: { loadBalancerFullName: 'net/k8s-dev-nlb/abc123' },
- *     stateMachine: { name: 'k8s-dev-bootstrap-orchestrator' },
  * });
  * ```
  */
@@ -44,6 +43,8 @@ export interface DashboardEc2Config {
     readonly appWorkerAsgName: string;
     /** Monitoring worker ASG name */
     readonly monitoringWorkerAsgName: string;
+    /** ArgoCD worker ASG name */
+    readonly argoCdWorkerAsgName: string;
 }
 
 /**
@@ -60,24 +61,6 @@ export interface DashboardNlbConfig {
     readonly httpTargetGroupFullName?: string;
     /** HTTPS target group full name (optional — omit if unknown at synth) */
     readonly httpsTargetGroupFullName?: string;
-}
-
-/**
- * Step Functions state machine reference for dashboard metrics.
- */
-export interface DashboardStateMachineConfig {
-    /** State machine name (not ARN) */
-    readonly name: string;
-}
-
-/**
- * Lambda function references for dashboard metrics.
- */
-export interface DashboardLambdaConfig {
-    /** Lambda function name */
-    readonly functionName: string;
-    /** Human-readable label for the dashboard widget */
-    readonly label: string;
 }
 
 /**
@@ -103,12 +86,6 @@ export interface InfrastructureDashboardProps {
 
     /** NLB configuration */
     readonly nlb: DashboardNlbConfig;
-
-    /** Step Functions state machine configuration (optional) */
-    readonly stateMachine?: DashboardStateMachineConfig;
-
-    /** Lambda functions to monitor (optional) */
-    readonly lambdaFunctions?: DashboardLambdaConfig[];
 
     /** CloudFront distribution (optional — deployed in us-east-1) */
     readonly cloudFront?: DashboardCloudFrontConfig;
@@ -173,6 +150,7 @@ export class InfrastructureDashboard extends Construct {
             { name: props.ec2.controlPlaneAsgName, label: 'Control Plane' },
             { name: props.ec2.appWorkerAsgName, label: 'App Worker' },
             { name: props.ec2.monitoringWorkerAsgName, label: 'Mon Worker' },
+            { name: props.ec2.argoCdWorkerAsgName, label: 'ArgoCD Worker' },
         ];
 
         // CPU Utilisation (all 3 ASGs side-by-side)
@@ -359,157 +337,119 @@ export class InfrastructureDashboard extends Construct {
         // =================================================================
         // Section 3: Step Functions (Bootstrap Orchestrator)
         // =================================================================
-        if (props.stateMachine) {
-            this.dashboard.addWidgets(
-                new cloudwatch.TextWidget({
-                    markdown: '# Bootstrap Orchestrator (Step Functions)',
-                    width: FULL_WIDTH,
-                    height: 1,
-                }),
-            );
-
-            const sfnDimensions = {
-                StateMachineArn: cdk.Stack.of(this).formatArn({
-                    service: 'states',
-                    resource: 'stateMachine',
-                    resourceName: props.stateMachine.name,
-                    arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
-                }),
-            };
-
-            this.dashboard.addWidgets(
-                new cloudwatch.GraphWidget({
-                    title: 'Executions (Started / Succeeded / Failed)',
-                    width: HALF_WIDTH,
-                    height: WIDGET_HEIGHT,
-                    left: [
-                        new cloudwatch.Metric({
-                            namespace: 'AWS/States',
-                            metricName: 'ExecutionsStarted',
-                            dimensionsMap: sfnDimensions,
-                            label: 'Started',
-                            period,
-                            statistic: 'Sum',
-                        }),
-                        new cloudwatch.Metric({
-                            namespace: 'AWS/States',
-                            metricName: 'ExecutionsSucceeded',
-                            dimensionsMap: sfnDimensions,
-                            label: 'Succeeded',
-                            period,
-                            statistic: 'Sum',
-                        }),
-                        new cloudwatch.Metric({
-                            namespace: 'AWS/States',
-                            metricName: 'ExecutionsFailed',
-                            dimensionsMap: sfnDimensions,
-                            label: 'Failed',
-                            period,
-                            statistic: 'Sum',
-                            color: '#d13212',
-                        }),
-                    ],
-                }),
-                new cloudwatch.GraphWidget({
-                    title: 'Execution Duration',
-                    width: HALF_WIDTH,
-                    height: WIDGET_HEIGHT,
-                    left: [
-                        new cloudwatch.Metric({
-                            namespace: 'AWS/States',
-                            metricName: 'ExecutionTime',
-                            dimensionsMap: sfnDimensions,
-                            label: 'Duration (ms)',
-                            period,
-                            statistic: 'Average',
-                        }),
-                    ],
-                    leftYAxis: { min: 0, label: 'Milliseconds' },
-                }),
-            );
-        }
+        this.dashboard.addWidgets(
+            new cloudwatch.TextWidget({
+                markdown: '# All Step Functions',
+                width: FULL_WIDTH,
+                height: 1,
+            }),
+        );
+        this.dashboard.addWidgets(
+            new cloudwatch.GraphWidget({
+                title: 'Executions (Started / Succeeded / Failed)',
+                width: HALF_WIDTH,
+                height: WIDGET_HEIGHT,
+                left: [
+                    new cloudwatch.MathExpression({
+                        expression: 'SEARCH(\'{AWS/States,StateMachineArn} MetricName="ExecutionsStarted"\', \'Sum\', 300)',
+                        label: 'Started',
+                        period,
+                    }),
+                    new cloudwatch.MathExpression({
+                        expression: 'SEARCH(\'{AWS/States,StateMachineArn} MetricName="ExecutionsSucceeded"\', \'Sum\', 300)',
+                        label: 'Succeeded',
+                        period,
+                    }),
+                    new cloudwatch.MathExpression({
+                        expression: 'SEARCH(\'{AWS/States,StateMachineArn} MetricName="ExecutionsFailed"\', \'Sum\', 300)',
+                        label: 'Failed',
+                        period,
+                        color: '#d13212',
+                    }),
+                ],
+            }),
+            new cloudwatch.GraphWidget({
+                title: 'Execution Duration',
+                width: HALF_WIDTH,
+                height: WIDGET_HEIGHT,
+                left: [
+                    new cloudwatch.MathExpression({
+                        expression: 'SEARCH(\'{AWS/States,StateMachineArn} MetricName="ExecutionTime"\', \'Average\', 300)',
+                        label: 'Duration (ms)',
+                        period,
+                    }),
+                ],
+                leftYAxis: { min: 0, label: 'Milliseconds' },
+            }),
+        );
 
         // =================================================================
         // Section 4: Lambda Functions
         // =================================================================
-        if (props.lambdaFunctions && props.lambdaFunctions.length > 0) {
-            this.dashboard.addWidgets(
-                new cloudwatch.TextWidget({
-                    markdown: '# λ Lambda Functions',
-                    width: FULL_WIDTH,
-                    height: 1,
-                }),
-            );
+        this.dashboard.addWidgets(
+            new cloudwatch.TextWidget({
+                markdown: '# λ All Lambda Functions',
+                width: FULL_WIDTH,
+                height: 1,
+            }),
+        );
 
-            this.dashboard.addWidgets(
-                new cloudwatch.GraphWidget({
-                    title: 'Lambda Errors',
-                    width: HALF_WIDTH,
-                    height: WIDGET_HEIGHT,
-                    left: props.lambdaFunctions.map(({ functionName, label }) =>
-                        new cloudwatch.Metric({
-                            namespace: 'AWS/Lambda',
-                            metricName: 'Errors',
-                            dimensionsMap: { FunctionName: functionName },
-                            label,
-                            period,
-                            statistic: 'Sum',
-                            color: '#d13212',
-                        }),
-                    ),
-                }),
-                new cloudwatch.GraphWidget({
-                    title: 'Lambda Duration',
-                    width: HALF_WIDTH,
-                    height: WIDGET_HEIGHT,
-                    left: props.lambdaFunctions.map(({ functionName, label }) =>
-                        new cloudwatch.Metric({
-                            namespace: 'AWS/Lambda',
-                            metricName: 'Duration',
-                            dimensionsMap: { FunctionName: functionName },
-                            label,
-                            period,
-                            statistic: 'Average',
-                        }),
-                    ),
-                    leftYAxis: { min: 0, label: 'Milliseconds' },
-                }),
-            );
+        this.dashboard.addWidgets(
+            new cloudwatch.GraphWidget({
+                title: 'Lambda Errors',
+                width: HALF_WIDTH,
+                height: WIDGET_HEIGHT,
+                left: [
+                    new cloudwatch.MathExpression({
+                        expression: 'SEARCH(\'{AWS/Lambda,FunctionName} MetricName="Errors"\', \'Sum\', 300)',
+                        label: 'Errors',
+                        period,
+                        color: '#d13212',
+                    }),
+                ],
+            }),
+            new cloudwatch.GraphWidget({
+                title: 'Lambda Duration',
+                width: HALF_WIDTH,
+                height: WIDGET_HEIGHT,
+                left: [
+                    new cloudwatch.MathExpression({
+                        expression: 'SEARCH(\'{AWS/Lambda,FunctionName} MetricName="Duration"\', \'Average\', 300)',
+                        label: 'Duration',
+                        period,
+                    }),
+                ],
+                leftYAxis: { min: 0, label: 'Milliseconds' },
+            }),
+        );
 
-            this.dashboard.addWidgets(
-                new cloudwatch.GraphWidget({
-                    title: 'Lambda Invocations',
-                    width: HALF_WIDTH,
-                    height: WIDGET_HEIGHT,
-                    left: props.lambdaFunctions.map(({ functionName, label }) =>
-                        new cloudwatch.Metric({
-                            namespace: 'AWS/Lambda',
-                            metricName: 'Invocations',
-                            dimensionsMap: { FunctionName: functionName },
-                            label,
-                            period,
-                            statistic: 'Sum',
-                        }),
-                    ),
-                }),
-                new cloudwatch.GraphWidget({
-                    title: 'Lambda Throttles',
-                    width: HALF_WIDTH,
-                    height: WIDGET_HEIGHT,
-                    left: props.lambdaFunctions.map(({ functionName, label }) =>
-                        new cloudwatch.Metric({
-                            namespace: 'AWS/Lambda',
-                            metricName: 'Throttles',
-                            dimensionsMap: { FunctionName: functionName },
-                            label,
-                            period,
-                            statistic: 'Sum',
-                            color: '#ff9900',
-                        }),
-                    ),
-                }),
-            );
-        }
+        this.dashboard.addWidgets(
+            new cloudwatch.GraphWidget({
+                title: 'Lambda Invocations',
+                width: HALF_WIDTH,
+                height: WIDGET_HEIGHT,
+                left: [
+                    new cloudwatch.MathExpression({
+                        expression: 'SEARCH(\'{AWS/Lambda,FunctionName} MetricName="Invocations"\', \'Sum\', 300)',
+                        label: 'Invocations',
+                        period,
+                    }),
+                ],
+            }),
+            new cloudwatch.GraphWidget({
+                title: 'Lambda Throttles',
+                width: HALF_WIDTH,
+                height: WIDGET_HEIGHT,
+                left: [
+                    new cloudwatch.MathExpression({
+                        expression: 'SEARCH(\'{AWS/Lambda,FunctionName} MetricName="Throttles"\', \'Sum\', 300)',
+                        label: 'Throttles',
+                        period,
+                        color: '#ff9900',
+                    }),
+                ],
+            }),
+        );
 
         // =================================================================
         // Section 5: CloudFront (us-east-1 metrics — cross-region)

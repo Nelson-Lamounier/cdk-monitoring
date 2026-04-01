@@ -1,3 +1,10 @@
+---
+title: "Bootstrap Token Corruption — SSM SecureString Backslash Injection"
+description: "Runbook for addressing token corruption during kubeadm join"
+tags: ["kubernetes", "bootstrap", "ssm", "troubleshooting", "runbook"]
+last_updated: "2026-04-01"
+---
+
 # Bootstrap Token Corruption — SSM SecureString Backslash Injection
 
 > **Severity:** Critical — prevents all `kubeadm join` operations  
@@ -146,3 +153,11 @@ Then re-run the failed SSM automation execution.
 4. **Include source labels in error messages** — knowing _where_
    the token came from (SSM vs kubeadm) dramatically speeds up
    incident response.
+
+## Summary
+
+This runbook documents a critical incident where worker nodes failed to join the Kubernetes cluster due to a corrupted bootstrap token in SSM. The token was prepended with a backslash during shell retrieval of the SecureString. The fix introduces strict regex validation (`^[a-z0-9]{6}\.[a-z0-9]{16}$`) at both the write (bash) and read (Python) phases, providing defence-in-depth against shell escape injection.
+
+## Keywords
+
+kubernetes, bootstrap, token, corruption, ssm, securestring, bash, escaping, python, validator, runbook, troubleshooting

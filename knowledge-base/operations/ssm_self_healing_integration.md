@@ -1,3 +1,10 @@
+---
+title: "SSM Bootstrap & Self-Healing Integration"
+description: "Documents the integration between SSM Bootstrap Automation and the Self-Healing Bedrock Pipeline for Kubernetes node lifecycle management."
+tags: ["ssm", "kubernetes", "self-healing", "bedrock", "automation"]
+last_updated: "2026-04-01"
+---
+
 # SSM Bootstrap & Self-Healing Integration
 
 This article documents the integration between the **SSM Bootstrap Automation** system (which handles Day-1 Kubernetes node lifecycle) and the **Self-Healing Bedrock Pipeline** (which handles autonomous "Day-2" incident response). 
@@ -40,3 +47,11 @@ If the Agent fails to remediate the node, check the following:
 1. **SSM Parameter Store**: Ensure the parameters `/k8s/{env}/ssm-automation/{worker|cp}-document-name` exist and point to valid Documents.
 2. **Permanent Failures**: The Agent is explicitly instructed **not** to automatically remediate `PERMANENT` errors like `AMI_MISMATCH` or `S3_FORBIDDEN`. These require human intervention.
 3. **Outside-In API Checks**: The verify scripts now perform outside-in curl validation to the NLB `/healthz` endpoint to combat hidden proxy or AWS Load Balancer propagation delays.
+
+## Summary
+
+This article outlines how the Bedrock Self-Healing Agent interacts with the SSM Bootstrap Automation to autonomously recover failed Kubernetes worker nodes. Through specialized MCP tools (`get_node_diagnostic_json` and `remediate_node_bootstrap`), the agent reads the structured failure logs of the node, determines if the error is transient, and triggers the SSM pipeline to remediate without operator intervention.
+
+## Keywords
+
+ssm, self-healing, kubernetes, bootstrap, bedrock, agent, mcp, automation, run_summary, troubleshooting

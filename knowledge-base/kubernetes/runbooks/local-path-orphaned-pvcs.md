@@ -62,6 +62,10 @@ KMS-encrypted, `WaitForFirstConsumer`):
 EBS volumes are network-attached and survive node replacement,
 eliminating the orphaned PVC problem entirely.
 
+## Summary
+
+This archived runbook explains a historical issue where stateful Pods became permanently stuck in Pending state due to orphaned local-path PVCs following node termination. Since EC2 instances were ephemeral and local-path volumes were strictly tied to a specific node, the loss of the node necessitated manual or automated cleanup of the orphaned PVCs so the StatefulSet could provision a fresh volume on a new node. This problem was entirely eliminated by the cluster-wide migration to the AWS EBS CSI Driver (`ebs-sc`), which provides network-attached volumes that natively survive node replacement.
+
 ## Keywords
 
 archived, local-path, orphaned-pvc, ebs-csi, migration, storage

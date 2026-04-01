@@ -13,8 +13,6 @@ export type {
     InfrastructureDashboardProps,
     DashboardEc2Config,
     DashboardNlbConfig,
-    DashboardStateMachineConfig,
-    DashboardLambdaConfig,
     DashboardCloudFrontConfig,
 } from './cloudwatch-dashboard';
 export {
