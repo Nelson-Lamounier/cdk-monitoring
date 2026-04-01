@@ -67,7 +67,7 @@ import {
 
 import type { DeployableEnvironment } from '../../../lib/config';
 import { Environment } from '../../../lib/config';
-import { getK8sConfigs } from '../../../lib/config/kubernetes';
+// import { getK8sConfigs } from '../../../lib/config/kubernetes';
 import { k8sSsmPaths, k8sSsmPrefix } from '../../../lib/config/ssm-paths';
 import type { K8sSsmPaths } from '../../../lib/config/ssm-paths';
 import { flatName } from '../../../lib/utilities/naming';
@@ -94,7 +94,7 @@ function parseEnvironment(raw: string): DeployableEnvironment {
 
 const CDK_ENV = parseEnvironment(process.env.CDK_ENV ?? 'development');
 const REGION = process.env.AWS_REGION ?? 'eu-west-1';
-const CONFIGS = getK8sConfigs(CDK_ENV);
+// const CONFIGS = getK8sConfigs(CDK_ENV);
 const SSM_PATHS = k8sSsmPaths(CDK_ENV);
 const PREFIX = k8sSsmPrefix(CDK_ENV);
 const NAME_PREFIX = flatName('k8s', '', CDK_ENV);
