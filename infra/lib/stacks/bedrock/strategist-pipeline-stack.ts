@@ -2,7 +2,7 @@
  * @format
  * Strategist Pipeline Stack — Iterative Multi-Agent Step Functions Pipeline
  *
- * Creates two Step Functions state machines and 6 Lambda functions
+ * Creates two Step Functions state machines and 7 Lambda functions
  * for the iterative job strategist pipeline.
  *
  * Architecture:
@@ -11,6 +11,7 @@
  *     Analysis State Machine:
  *       → Research Lambda (Haiku 4.5) — KB retrieval, resume, gap analysis
  *       → Strategist Lambda (Sonnet 4.6) — 5-phase XML analysis
+ *       → Resume Builder Lambda (Haiku 4.5) — apply suggestions to rebuild resume
  *       → Analysis Persist Lambda — DynamoDB persistence
  *
  *     ↓ operation='coach'
@@ -227,7 +228,7 @@ export class StrategistPipelineStack extends cdk.Stack {
         });
 
         // =================================================================
-        // Lambda — Analysis Persist Handler (Analysis Pipeline Stage 3)
+        // Lambda — Analysis Persist Handler (Analysis Pipeline Stage 4)
         // =================================================================
         const analysisPersistFn = new lambdaNode.NodejsFunction(this, 'AnalysisPersistFunction', {
             functionName: `${namePrefix}-strategist-analysis-persist`,
@@ -329,6 +330,38 @@ export class StrategistPipelineStack extends cdk.Stack {
         // Analysis Persist: DynamoDB read/write
         strategistTable.grantReadWriteData(analysisPersistFn);
 
+        // =================================================================
+        // Lambda — Resume Builder Handler (Analysis Pipeline Stage 3)
+        // =================================================================
+        const resumeBuilderFn = new lambdaNode.NodejsFunction(this, 'ResumeBuilderFunction', {
+            functionName: `${namePrefix}-strategist-resume-builder`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(handlersDir, 'resume-builder-handler.ts'),
+            handler: 'handler',
+            memorySize: props.agentLambdaMemoryMb,
+            timeout: cdk.Duration.seconds(props.agentLambdaTimeoutSeconds),
+            environment: {
+                RESUME_BUILDER_MODEL: props.researchModel, // Haiku 4.5 — same tier as research
+                TABLE_NAME: strategistTable.tableName,
+                ENVIRONMENT: props.environmentName,
+            },
+            description: `Resume Builder Agent (${props.researchModel})`,
+            logGroup: new logs.LogGroup(this, 'ResumeBuilderLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-strategist-resume-builder`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            bundling: bundlingConfig,
+            tracing: lambda.Tracing.ACTIVE,
+        });
+
+        // Resume Builder: Bedrock InvokeModel, DynamoDB read/write
+        resumeBuilderFn.addToRolePolicy(new iam.PolicyStatement({
+            actions: ['bedrock:InvokeModel'],
+            resources: ['*'],
+        }));
+        strategistTable.grantReadWriteData(resumeBuilderFn);
+
         // Coach Loader: DynamoDB read (query ANALYSIS# records)
         strategistTable.grantReadData(coachLoaderFn);
 
@@ -340,7 +373,7 @@ export class StrategistPipelineStack extends cdk.Stack {
         strategistTable.grantReadWriteData(coachFn);
 
         // CDK-Nag suppression for NODEJS_22_X
-        const allFunctions = [researchFn, strategistFn, analysisPersistFn, coachLoaderFn, coachFn];
+        const allFunctions = [researchFn, strategistFn, resumeBuilderFn, analysisPersistFn, coachLoaderFn, coachFn];
         for (const fn of allFunctions) {
             NagSuppressions.addResourceSuppressions(
                 fn,
@@ -378,6 +411,13 @@ export class StrategistPipelineStack extends cdk.Stack {
             outputPath: '$.Payload',
             resultPath: '$',
             comment: 'Strategist Agent: 5-phase XML analysis and document generation',
+        });
+
+        const resumeBuilderTask = new tasks.LambdaInvoke(this, 'ResumeBuilderTask', {
+            lambdaFunction: resumeBuilderFn,
+            outputPath: '$.Payload',
+            resultPath: '$',
+            comment: 'Resume Builder Agent: apply suggestions to produce tailored resume',
         });
 
         const analysisPersistTask = new tasks.LambdaInvoke(this, 'AnalysisPersistTask', {
@@ -445,7 +485,7 @@ export class StrategistPipelineStack extends cdk.Stack {
 
         markAnalysisFailed.next(analysisFailed);
 
-        // Chain: Research → Strategist → Persist (all catch → MarkFailed → Fail)
+        // Chain: Research → Strategist → ResumeBuilder → Persist (all catch → MarkFailed → Fail)
         const analysisDefinition = researchTask
             .addCatch(markAnalysisFailed, {
                 errors: ['States.ALL'],
@@ -453,6 +493,12 @@ export class StrategistPipelineStack extends cdk.Stack {
             })
             .next(
                 strategistTask.addCatch(markAnalysisFailed, {
+                    errors: ['States.ALL'],
+                    resultPath: '$.error',
+                }),
+            )
+            .next(
+                resumeBuilderTask.addCatch(markAnalysisFailed, {
                     errors: ['States.ALL'],
                     resultPath: '$.error',
                 }),
