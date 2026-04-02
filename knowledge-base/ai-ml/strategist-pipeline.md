@@ -22,11 +22,12 @@ tags:
   - runtime-type-safety
   - error-handling
   - dynamodb-update-item
+  - resume-builder
 related_docs:
   - ai-ml/bedrock-implementation.md
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
   - infrastructure/stack-overview.md
-last_updated: "2026-03-30"
+last_updated: "2026-04-02"
 author: Nelson Lamounier
 status: active
 ---
@@ -48,6 +49,7 @@ The Job Strategist is an **iterative, stage-driven AI pipeline** built on AWS Be
 │    └─ Step Functions: Analysis State Machine                            │
 │        ├─ Research Agent   → KB retrieval, resume parsing, gap analysis │
 │        ├─ Strategist Agent → 5-phase analysis, cover letter, resume     │
+│        ├─ Resume Builder   → Tailored resume JSON generation            │
 │        └─ Analysis Persist → METADATA + ANALYSIS#{pipelineId} → DDB    │
 └─────────────────────────────────────────────────────────────────────────┘
 
@@ -96,6 +98,7 @@ Each agent has a distinct reasoning requirement that maps to a specific Claude m
 |-------|-------|--------------------|-------------|----------------|
 | Research | Haiku 4.5 | Extraction & classification | 8,192 / 4,096 thinking | Cost-efficient for structured data retrieval with Adaptive Thinking support |
 | Strategist | Sonnet 4.6 | Complex analysis & writing | 16,384 / 8,192 thinking | Deep reasoning for 5-phase analysis, cover letter crafting, and resume tailoring |
+| Resume Builder | Haiku 4.5 | Precision JSON generation | 8,192 / 4,096 thinking | Fast and cost-effective application of Strategist's targeted diffs into the JSON schema |
 | Coach | Haiku 4.5 | Conversational preparation | 8,192 / 4,096 thinking | Fast, structured output for interview Q&A and coaching scenarios |
 
 All model IDs are sourced from the centralised `infra/lib/config/shared/model-registry.ts` — when upgrading models, change the constant there and all projects pick up the new identifier. The model selection is intentional: expensive models (Sonnet) are reserved for the phase requiring the deepest reasoning, whilst cheaper models (Haiku) handle extraction and conversational output. This reduces per-pipeline cost by ~60% compared to using Sonnet for all three agents.
@@ -140,6 +143,20 @@ Output: XML Analysis + Cover Letter + Resume Suggestions
 - **XML output** — The Strategist produces a comprehensive XML document rather than JSON. XML preserves section hierarchy better for long-form content whilst remaining machine-parseable. The `sanitiseOutput()` step validates well-formedness.
 - **Extended thinking** — Sonnet 4.6 is configured with an 8,192-token thinking budget. The model uses this internal scratchpad to reason about gap analysis and positioning before producing output. This is critical for the nuanced "truthful but positive" framing requirement.
 - **Resume suggestions schema** — Output includes typed arrays: `ResumeAdditionSuggestion[]` (new bullets to add), `ResumeReframeSuggestion[]` (existing bullets to rephrase), and `ResumeEslCorrection[]` (grammar/style fixes). Each includes `section`, `index`, and specific before/after text.
+
+### Resume Builder Agent — Precision JSON Generation
+
+**Purpose:** Programmatically applies the Strategist's suggested additions and reframes into a strict JSON payload that matches the frontend's expected Resume structure.
+
+```
+Input:  Strategist's 5-phase analysis XML + ResumeData + Pipeline Context
+Output: Tailored Resume JSON
+```
+
+**Implementation details:**
+
+- **Decoupled execution** — Placed in a separate execution step rather than requesting JSON directly from the Strategist, ensuring the Strategist focuses its 16K token budget on reasoning while a cheaper Haiku model formats the JSON.
+- **Strict adherence** — Guided by a system persona that aggressively rejects hallucinated JSON fields, strictly mapping to `ResumeAdditionSuggestion[]` and `ResumeReframeSuggestion[]`.
 
 ### Coach Agent — Stage-Specific Interview Preparation
 
@@ -237,6 +254,7 @@ Throws a descriptive error if no analysis exists, directing the user to run the 
 | Trigger Handler | `bedrock-applications/job-strategist/src/handlers/trigger-handler.ts` | Dual-operation routing → Analysis SM or Coaching SM |
 | Research Handler | `bedrock-applications/job-strategist/src/handlers/research-handler.ts` | KB retrieval + resume parsing + gap analysis |
 | Strategist Handler | `bedrock-applications/job-strategist/src/handlers/strategist-handler.ts` | 5-phase analysis + cover letter + resume tailoring |
+| Resume Builder Handler | `bedrock-applications/job-strategist/src/handlers/resume-builder-handler.ts` | Resume JSON generation applying suggestions |
 | Analysis Persist | `bedrock-applications/job-strategist/src/handlers/analysis-persist-handler.ts` | DynamoDB writes: METADATA + ANALYSIS# records |
 | Coach Loader | `bedrock-applications/job-strategist/src/handlers/coach-loader-handler.ts` | Load latest ANALYSIS# from DDB for coaching context |
 | Coach Handler | `bedrock-applications/job-strategist/src/handlers/coach-handler.ts` | Stage-specific coaching + INTERVIEW# DDB writes |
@@ -300,12 +318,12 @@ Data → KB → Agent → Api → Content → Pipeline → StrategistData → St
 
 ### Infrastructure Highlights
 
-- **Step Functions**: 2 Standard workflows — Analysis SM (3 Lambda tasks: Research, Strategist, AnalysisPersist) and Coaching SM (2 Lambda tasks: CoachLoader, Coach)
-- **Lambda count**: 6 functions (trigger, research, strategist, analysis-persist, coach-loader, coach)
+- **Step Functions**: 2 Standard workflows — Analysis SM (4 Lambda tasks: Research, Strategist, ResumeBuilder, AnalysisPersist) and Coaching SM (2 Lambda tasks: CoachLoader, Coach)
+- **Lambda count**: 7 functions (trigger, research, strategist, resume-builder, analysis-persist, coach-loader, coach)
 - **Dead Letter Queue**: SQS DLQ with 14-day retention and SQS-managed SSE encryption
-- **Logging**: Step Functions `ALL` log level; 7 CloudWatch log groups (6 Lambdas + 1 shared SM log group)
+- **Logging**: Step Functions `ALL` log level; 8 CloudWatch log groups (7 Lambdas + 1 shared SM log group)
 - **DynamoDB**: PAY_PER_REQUEST billing, point-in-time recovery enabled
-- **Tracing**: X-Ray active tracing on all 6 Lambda functions and both state machines
+- **Tracing**: X-Ray active tracing on all 7 Lambda functions and both state machines
 - **Runtime**: Node.js 22.x for all Lambda functions
 
 ### Unit Test Coverage
@@ -313,7 +331,7 @@ Data → KB → Agent → Api → Content → Pipeline → StrategistData → St
 | Test Suite | Tests | Coverage |
 |-----------|-------|---------|
 | `strategist-data-stack.test.ts` | 23 | DynamoDB schema, GSI, SSM, grants, removal policy |
-| `strategist-pipeline-stack.test.ts` | 48 | 6 Lambdas, 2 SMs, env vars, SQS, IAM, 3 SSM params, DDB error handlers |
+| `strategist-pipeline-stack.test.ts` | 48 | 7 Lambdas, 2 SMs, env vars, SQS, IAM, 3 SSM params, DDB error handlers |
 
 ## Frontend Integration Design
 
@@ -363,7 +381,7 @@ POST /api/admin/strategist
 |--------|-----------------|---------------|
 | Trigger | S3 event notification (`drafts/*.md`) | Direct Lambda invoke (admin POST) |
 | State Machines | 1 (linear) | 2 (Analysis + Coaching) |
-| Agents | Research → Writer → QA (3) | Research → Strategist + AnalysisPersist / CoachLoader → Coach |
+| Agents | Research → Writer → QA (3) | Research → Strategist → ResumeBuilder + AnalysisPersist / CoachLoader → Coach |
 | Iteration model | One-shot per article | Iterative — analyse N times, coach M times |
 | Output | MDX article + S3 artefacts | XML analysis + cover letter + interview prep |
 | DynamoDB | 2 records (METADATA + CONTENT) | 3+ records (METADATA + ANALYSIS# + INTERVIEW#) |
