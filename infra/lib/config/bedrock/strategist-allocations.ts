@@ -79,7 +79,7 @@ export const STRATEGIST_ALLOCATIONS: Record<DeployableEnvironment, StrategistAll
     [Environment.DEVELOPMENT]: {
         lambda: {
             agentMemoryMb: 512,
-            agentTimeoutSeconds: 300,
+            agentTimeoutSeconds: 600,
             triggerMemoryMb: 256,
             interviewMemoryMb: 512,
             statusMemoryMb: 256,
@@ -102,7 +102,7 @@ export const STRATEGIST_ALLOCATIONS: Record<DeployableEnvironment, StrategistAll
     [Environment.STAGING]: {
         lambda: {
             agentMemoryMb: 1024,
-            agentTimeoutSeconds: 300,
+            agentTimeoutSeconds:9600,
             triggerMemoryMb: 256,
             interviewMemoryMb: 1024,
             statusMemoryMb: 256,
@@ -125,7 +125,7 @@ export const STRATEGIST_ALLOCATIONS: Record<DeployableEnvironment, StrategistAll
     [Environment.PRODUCTION]: {
         lambda: {
             agentMemoryMb: 1024,
-            agentTimeoutSeconds: 300,
+            agentTimeoutSeconds: 900,
             triggerMemoryMb: 256,
             interviewMemoryMb: 1024,
             statusMemoryMb: 256,

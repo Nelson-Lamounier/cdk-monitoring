@@ -69,7 +69,7 @@ const DEFAULT_PROPS: StrategistPipelineStackProps = {
     coachMaxTokens: 8192,
     coachThinkingBudgetTokens: 4096,
     agentLambdaMemoryMb: 512,
-    agentLambdaTimeoutSeconds: 300,
+    agentLambdaTimeoutSeconds: 900,
     triggerLambdaMemoryMb: 256,
     logRetention: logs.RetentionDays.ONE_WEEK,
     removalPolicy: cdk.RemovalPolicy.DESTROY,
