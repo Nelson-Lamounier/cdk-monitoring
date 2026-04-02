@@ -270,6 +270,25 @@ export interface ResearchResult {
 
     /** Suggested tags based on content analysis */
     readonly suggestedTags: string[];
+
+    /**
+     * Author's creative direction extracted from the draft prompt.
+     *
+     * For kb-augmented mode (short drafts), this is the instructional
+     * text describing what the author wants. For legacy-transform mode,
+     * this may be empty as the draft itself IS the content.
+     */
+    readonly authorDirection: string;
+
+    /**
+     * MDX content from the previous version (v{n-1}).
+     *
+     * Undefined for first-ever pipeline runs (v1). When present,
+     * the Writer Agent uses this to generate a substantially
+     * different article that addresses the new author direction.
+     * Capped at 3000 characters to conserve token budget.
+     */
+    readonly previousVersionContent?: string;
 }
 
 // =============================================================================
