@@ -106,10 +106,34 @@ export const handler = async (
         }));
     }
 
+    // ─── Payload trimming ─────────────────────────────────────────
+    // Even the terminal state output is subject to the 256KB limit.
+    // All large data has already been written to DynamoDB above, so
+    // we return only lightweight metadata for the execution output.
+    // ──────────────────────────────────────────────────────────────
+
     const output: StrategistAnalysisPipelineOutput = {
         context,
-        research,
-        analysis,
+        research: {
+            ...research,
+            data: {
+                ...research.data,
+                // Strip verbose arrays — already persisted
+                verifiedMatches: [],
+                partialMatches: [],
+                gaps: [],
+            },
+        },
+        analysis: {
+            ...analysis,
+            data: {
+                ...analysis.data,
+                analysisXml: '[persisted to DynamoDB]',
+                coverLetter: analysis.data.coverLetter
+                    ? '[persisted to DynamoDB]'
+                    : null,
+            },
+        },
         applicationStatus: 'analysis-ready',
     };
 

@@ -141,15 +141,28 @@ export const handler = async (
         }));
     }
 
+    // ─── Payload trimming ─────────────────────────────────────────
+    // The tailored resume is already persisted to DynamoDB above.
+    // Strip large fields from the return to stay under 256KB:
+    //   • resumeData — no longer needed (already consumed by this stage)
+    //   • tailoredResume — already in DDB; pass null to avoid bloating the payload
+    // ──────────────────────────────────────────────────────────────
+
+    const trimmedContext = {
+        ...context,
+        resumeData: null,
+    };
+
     console.log(
         `[resume-builder] Pipeline ${context.pipelineId} — tailored resume persisted ` +
-        `(${tailoredResumeResult.data.changesSummary})`,
+        `(${tailoredResumeResult.data.changesSummary}). ` +
+        `resumeData and tailoredResume stripped from Step Functions payload.`,
     );
 
     return {
-        context,
+        context: trimmedContext,
         research,
         analysis,
-        tailoredResume: tailoredResumeResult,
+        tailoredResume: null, // Already persisted — no need to carry through SF payload
     };
 };

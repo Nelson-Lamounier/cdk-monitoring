@@ -390,6 +390,14 @@ POST /api/admin/strategist
 
 ## Troubleshooting
 
+### Step Functions payload limit exceeded (256 KB)
+
+**What happened:** The Step Functions pipeline failed between states (e.g., between Strategist and Resume Builder, or Persist) with a StateMachine execution error regarding payload size limits.
+
+**Why:** AWS Step Functions has a hard 256 KB limit for payload state passed between tasks. Large textual inputs like `jobDescription`, `resumeData`, and the full generated text of previous agents (like the AI-generated `tailoredResume` JSON) were inflating the JSON payload pushed between handlers as they progressed down the chain.
+
+**Fix:** Added payload trimming in Lambda handlers (`strategist-handler.ts`, `resume-builder-handler.ts`, `analysis-persist-handler.ts`). Large string buffers that are no longer needed by downstream stages are replaced with short sentinel values (e.g., `'[trimmed — persisted in METADATA]'`) or stripped entirely by returning `null` or a trimmed context object. Because these records are either preserved in DynamoDB or passed via reference, they can be safely removed from the transit payload.
+
 ### Invalid `SystemContentBlock` cachePoint format crashes Bedrock SDK
 
 **What happened:** The Analysis Pipeline Step Function failed at `ResearchTask` with `AgentExecutionError: Cannot read properties of undefined (reading '0')`. The DynamoDB METADATA record was permanently stuck at `"analysing"` because the pipeline never reached the Analysis Persist step.
