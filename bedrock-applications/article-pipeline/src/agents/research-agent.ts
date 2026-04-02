@@ -17,6 +17,8 @@ import {
     RetrieveCommand,
 } from '@aws-sdk/client-bedrock-agent-runtime';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 
 import { runAgent, parseJsonResponse } from '../../../shared/src/index.js';
 import { RESEARCH_PERSONA_SYSTEM_PROMPT } from '../prompts/research-persona.js';
@@ -56,11 +58,17 @@ const RESEARCH_THINKING_BUDGET = 4096;
 /** Knowledge Base ID for Pinecone retrieval (empty = disabled) */
 const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID ?? '';
 
+/** DynamoDB table for article metadata (used for previous version lookup) */
+const TABLE_NAME = process.env.PIPELINE_TABLE_NAME ?? '';
+
 /** Character threshold for KB-augmented mode detection */
 const KB_AUGMENTED_THRESHOLD = 500;
 
 /** Maximum KB passages to retrieve */
 const MAX_KB_PASSAGES = 10;
+
+/** Maximum characters to include from previous version content */
+const PREVIOUS_VERSION_CONTENT_CAP = 3000;
 
 // =============================================================================
 // CLIENTS
@@ -68,6 +76,7 @@ const MAX_KB_PASSAGES = 10;
 
 const s3Client = new S3Client({});
 const bedrockAgentClient = new BedrockAgentRuntimeClient({});
+const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 // =============================================================================
 // COMPLEXITY ANALYSIS
@@ -227,6 +236,104 @@ async function readDraftFromS3(bucket: string, key: string): Promise<string> {
 }
 
 // =============================================================================
+// AUTHOR DIRECTION EXTRACTION
+// =============================================================================
+
+/**
+ * Extract the author's creative direction from the draft prompt.
+ *
+ * For short drafts (kb-augmented mode), the entire content is essentially
+ * a prompt. This function extracts the instructional text — the part that
+ * tells the Writer what kind of article to generate — by filtering out
+ * headings, metadata lines, and structural markers.
+ *
+ * @param draftContent - Raw markdown draft
+ * @returns Extracted author direction text
+ */
+function extractAuthorDirection(draftContent: string): string {
+    const lines = draftContent.split('\n');
+    const directionLines: string[] = [];
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;                          // skip blank lines
+        if (trimmed.startsWith('#')) continue;            // skip headings
+        if (trimmed.startsWith('```')) break;             // stop at code blocks
+        if (/^[A-Za-z-]+:\s/.test(trimmed)) continue;    // skip metadata (e.g. "Category: ...")
+        directionLines.push(trimmed);
+    }
+
+    const direction = directionLines.join(' ').trim();
+    console.log(`[research] Author direction extracted (${direction.length} chars)`);
+    return direction;
+}
+
+// =============================================================================
+// PREVIOUS VERSION RETRIEVAL
+// =============================================================================
+
+/**
+ * Fetch the previous version's MDX content from S3.
+ *
+ * Queries DynamoDB for the VERSION#v{n-1} record to find the S3
+ * content reference, then reads the MDX file. Returns undefined
+ * if this is the first version or if no previous content exists.
+ *
+ * @param ctx - Pipeline context with slug, version, bucket
+ * @returns Previous version MDX content (capped), or undefined
+ */
+async function fetchPreviousVersionContent(
+    ctx: PipelineContext,
+): Promise<string | undefined> {
+    if (ctx.version <= 1) {
+        console.log('[research] Version 1 — no previous version to fetch');
+        return undefined;
+    }
+
+    if (!TABLE_NAME) {
+        console.warn('[research] PIPELINE_TABLE_NAME not set — skipping previous version lookup');
+        return undefined;
+    }
+
+    const previousVersion = ctx.version - 1;
+    console.log(`[research] Fetching previous version content — VERSION#v${previousVersion}`);
+
+    try {
+        const result = await ddbClient.send(new GetCommand({
+            TableName: TABLE_NAME,
+            Key: {
+                pk: `ARTICLE#${ctx.slug}`,
+                sk: `VERSION#v${previousVersion}`,
+            },
+            ProjectionExpression: 'contentRef',
+        }));
+
+        const contentRef = result.Item?.contentRef as string | undefined;
+        if (!contentRef) {
+            console.warn(`[research] No contentRef found for VERSION#v${previousVersion}`);
+            return undefined;
+        }
+
+        // contentRef format: s3://bucket/review/v{n}/slug.mdx
+        const s3Key = contentRef.replace(`s3://${ctx.bucket}/`, '');
+        console.log(`[research] Reading previous version from s3://${ctx.bucket}/${s3Key}`);
+
+        const content = await readDraftFromS3(ctx.bucket, s3Key);
+        const capped = content.substring(0, PREVIOUS_VERSION_CONTENT_CAP);
+
+        console.log(
+            `[research] Previous version loaded — ${content.length} chars ` +
+            `(capped to ${capped.length} chars)`,
+        );
+
+        return capped;
+    } catch (error) {
+        console.warn(`[research] Failed to fetch previous version: ${String(error)}`);
+        return undefined;
+    }
+}
+
+// =============================================================================
 // USER MESSAGE BUILDER
 // =============================================================================
 
@@ -319,6 +426,12 @@ export async function executeResearchAgent(
     // 5. Build user message and run agent
     const userMessage = buildResearchMessage(draftContent, kbPassages, mode);
 
+    // 6. Extract author direction from draft
+    const authorDirection = extractAuthorDirection(draftContent);
+
+    // 7. Fetch previous version content (for v2+ differentiation)
+    const previousVersionContent = await fetchPreviousVersionContent(ctx);
+
     const result = await runAgent<ResearchResult>({
         config: RESEARCH_CONFIG,
         userMessage,
@@ -337,6 +450,8 @@ export async function executeResearchAgent(
                     ? parsed.suggestedTitle
                     : 'Untitled Article',
                 suggestedTags: Array.isArray(parsed.suggestedTags) ? parsed.suggestedTags : [],
+                authorDirection,
+                previousVersionContent,
             } as ResearchResult;
         },
         pipelineContext: ctx,

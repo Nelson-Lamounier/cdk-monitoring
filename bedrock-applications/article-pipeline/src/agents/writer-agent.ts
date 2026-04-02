@@ -54,7 +54,11 @@ const DEFAULT_THINKING_BUDGET = parseInt(process.env.THINKING_BUDGET_TOKENS ?? '
  * @param retryAttempt - Current retry attempt (0-based)
  * @returns Formatted user message
  */
-function buildWriterMessage(research: ResearchResult, retryAttempt: number): string {
+function buildWriterMessage(
+    research: ResearchResult,
+    retryAttempt: number,
+    version: number,
+): string {
     const parts: string[] = [];
 
     // Header with mode and complexity
@@ -68,6 +72,33 @@ function buildWriterMessage(research: ResearchResult, retryAttempt: number): str
         parts.push(``);
         parts.push(`> ⚠️ This is retry attempt ${retryAttempt}. The previous version did not pass QA.`);
         parts.push(`> Pay extra attention to technical accuracy and code correctness.`);
+    }
+
+    // Author's Direction — HIGHEST PRIORITY
+    // Placed first so the model treats it as the primary creative brief.
+    if (research.authorDirection) {
+        parts.push(``);
+        parts.push(`## ⚡ Author's Direction`);
+        parts.push(`> This is the author's specific creative direction for this article.`);
+        parts.push(`> Your article MUST directly address these instructions.`);
+        parts.push(`> Do NOT let KB context or standard templates override this direction.`);
+        parts.push(``);
+        parts.push(research.authorDirection);
+    }
+
+    // Previous Version Context — differentiation guide (v2+ only)
+    if (research.previousVersionContent) {
+        const previousVersion = version - 1;
+        parts.push(``);
+        parts.push(`## 🔄 Previous Version (v${previousVersion})`);
+        parts.push(`> A previous version of this article already exists. The author has submitted`);
+        parts.push(`> a NEW prompt with DIFFERENT creative direction (see "Author's Direction" above).`);
+        parts.push(`> You MUST generate a substantially different article that addresses the new direction.`);
+        parts.push(`> Do NOT simply rephrase, extend, or lightly edit the previous version.`);
+        parts.push(``);
+        parts.push(`--- BEGIN PREVIOUS VERSION ---`);
+        parts.push(research.previousVersionContent);
+        parts.push(`--- END PREVIOUS VERSION ---`);
     }
 
     // KB context (if KB-augmented mode)
@@ -222,7 +253,7 @@ export async function executeWriterAgent(
         systemPrompt: BLOG_PERSONA_SYSTEM_PROMPT,
     };
 
-    const userMessage = buildWriterMessage(research, ctx.retryAttempt);
+    const userMessage = buildWriterMessage(research, ctx.retryAttempt, ctx.version);
 
     console.log(
         `[writer] Generating article — complexity=${research.complexity.tier}, ` +

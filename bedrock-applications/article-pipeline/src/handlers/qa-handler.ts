@@ -155,18 +155,30 @@ async function writeVersionToDynamoDB(
         Item: item,
     }));
 
-    // Update METADATA with latestVersion pointer (without changing status)
-    console.log(`[qa-handler] Updating METADATA.latestVersion → v${context.version}`);
+    // Update METADATA with latestVersion pointer AND GSI keys.
+    //
+    // CRITICAL: Both gsi1pk AND gsi1sk MUST be set together.
+    // DynamoDB GSIs require both the partition key and sort key to be
+    // present on an item for it to be projected into the index. If
+    // either is missing, the item is invisible to GSI queries — which
+    // is how the frontend's admin dashboard discovers articles.
+    const metadataGsi1sk = `${datePrefix}#${context.slug}`;
+    console.log(
+        `[qa-handler] Updating METADATA — latestVersion=v${context.version}, ` +
+        `gsi1pk=STATUS#${articleStatus}, gsi1sk=${metadataGsi1sk}`,
+    );
     await ddbClient.send(new UpdateCommand({
         TableName: tableName,
         Key: {
             pk: `ARTICLE#${context.slug}`,
             sk: 'METADATA',
         },
-        UpdateExpression: 'SET latestVersion = :v, updatedAt = :now',
+        UpdateExpression: 'SET latestVersion = :v, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk',
         ExpressionAttributeValues: {
             ':v': context.version,
             ':now': now,
+            ':gsi1pk': `STATUS#${articleStatus}`,
+            ':gsi1sk': metadataGsi1sk,
         },
     }));
 }
@@ -191,6 +203,18 @@ export const handler = async (event: QaHandlerInput): Promise<PipelineOutput> =>
         `slug: ${event.context.slug}, version: v${event.context.version}, ` +
         `retryAttempt: ${event.context.retryAttempt}`,
     );
+
+    // Slug-divergence guard: warn if the Writer AI generated a different
+    // slug than the pipeline's authoritative context.slug (derived from the
+    // S3 filename). The context.slug is ALWAYS used for DDB operations.
+    const writerSlug = event.writer?.data?.metadata?.slug;
+    if (writerSlug && writerSlug !== event.context.slug) {
+        console.warn(
+            `[qa-handler] ⚠️ SLUG DIVERGENCE DETECTED — ` +
+            `context.slug="${event.context.slug}" vs writer.slug="${writerSlug}". ` +
+            `Using context.slug as authoritative. Writer's slug will be ignored for DDB keys.`,
+        );
+    }
 
     // 1. Execute QA Agent
     const qa = await executeQaAgent(
