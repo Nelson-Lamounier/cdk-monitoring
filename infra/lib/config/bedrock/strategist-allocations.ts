@@ -102,7 +102,7 @@ export const STRATEGIST_ALLOCATIONS: Record<DeployableEnvironment, StrategistAll
     [Environment.STAGING]: {
         lambda: {
             agentMemoryMb: 1024,
-            agentTimeoutSeconds:9600,
+            agentTimeoutSeconds: 900,
             triggerMemoryMb: 256,
             interviewMemoryMb: 1024,
             statusMemoryMb: 256,

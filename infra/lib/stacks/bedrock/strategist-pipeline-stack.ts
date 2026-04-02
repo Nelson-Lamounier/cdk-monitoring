@@ -214,6 +214,7 @@ export class StrategistPipelineStack extends cdk.Stack {
                 STRATEGIST_MODEL: props.strategistModel,
                 MAX_TOKENS: String(props.strategistMaxTokens),
                 THINKING_BUDGET_TOKENS: String(props.strategistThinkingBudgetTokens),
+                ASSETS_BUCKET: assetsBucket.bucketName,
                 TABLE_NAME: strategistTable.tableName,
                 ENVIRONMENT: props.environmentName,
             },
@@ -239,6 +240,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(30),
             environment: {
                 TABLE_NAME: strategistTable.tableName,
+                ASSETS_BUCKET: assetsBucket.bucketName,
                 ENVIRONMENT: props.environmentName,
             },
             description: 'Strategist Analysis Persist — DynamoDB writer',
@@ -326,9 +328,11 @@ export class StrategistPipelineStack extends cdk.Stack {
             resources: ['*'],
         }));
         strategistTable.grantWriteData(strategistFn);
+        assetsBucket.grantWrite(strategistFn); // S3 offload for analysisXml
 
-        // Analysis Persist: DynamoDB read/write
+        // Analysis Persist: DynamoDB read/write + S3 read for analysisXml
         strategistTable.grantReadWriteData(analysisPersistFn);
+        assetsBucket.grantRead(analysisPersistFn);
 
         // =================================================================
         // Lambda — Resume Builder Handler (Analysis Pipeline Stage 3)

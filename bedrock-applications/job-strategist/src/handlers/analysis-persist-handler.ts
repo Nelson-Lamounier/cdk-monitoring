@@ -6,12 +6,17 @@
  * analysis pipeline. Persists the Strategist Agent's full analysis to
  * DynamoDB and updates the application METADATA record.
  *
+ * **S3 rehydration:** The Strategist Handler offloads the large
+ * `analysisXml` to S3 to stay under the Step Functions 256KB payload
+ * limit. This handler reads it back from S3 before persisting to DDB.
+ *
  * Input:  { context, research, analysis }
  * Output: StrategistAnalysisPipelineOutput
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 
 import type {
     StrategistAnalysisPersistInput,
@@ -25,11 +30,52 @@ import type {
 /** DynamoDB table for job application tracking */
 const TABLE_NAME = process.env.TABLE_NAME ?? '';
 
+/** S3 bucket for pipeline artefacts (shared assets bucket) */
+const ASSETS_BUCKET = process.env.ASSETS_BUCKET ?? '';
+
 // =============================================================================
 // CLIENTS
 // =============================================================================
 
 const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const s3 = new S3Client({});
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/**
+ * Reads the analysisXml from S3 if it was offloaded by the Strategist Handler.
+ * The Strategist Handler replaces the XML with an S3 URI sentinel: `s3://bucket/key`.
+ *
+ * @param analysisXml - Either the full XML string or an S3 URI sentinel
+ * @returns The full XML string (rehydrated from S3 if needed)
+ */
+async function rehydrateAnalysisXml(analysisXml: string): Promise<string> {
+    if (!analysisXml.startsWith('s3://')) {
+        return analysisXml;
+    }
+
+    // Parse s3://bucket/key
+    const uri = analysisXml.slice(5); // Remove 's3://'
+    const slashIndex = uri.indexOf('/');
+    const bucket = uri.slice(0, slashIndex);
+    const key = uri.slice(slashIndex + 1);
+
+    console.log(
+        `[analysis-persist] Rehydrating analysisXml from S3: s3://${bucket}/${key}`,
+    );
+
+    const response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    const xml = await response.Body?.transformToString('utf-8');
+
+    if (!xml) {
+        throw new Error(`Failed to read analysisXml from S3: s3://${bucket}/${key}`);
+    }
+
+    console.log(`[analysis-persist] Rehydrated analysisXml: ${(xml.length / 1024).toFixed(1)}KB`);
+    return xml;
+}
 
 // =============================================================================
 // HANDLER
@@ -56,6 +102,9 @@ export const handler = async (
         `[analysis-persist] Pipeline ${context.pipelineId} ` +
         `— persisting analysis for "${context.targetRole}"`,
     );
+
+    // Rehydrate analysisXml from S3 if it was offloaded
+    const analysisXml = await rehydrateAnalysisXml(analysis.data.analysisXml);
 
     if (TABLE_NAME) {
         // 1. Update METADATA record
@@ -91,7 +140,7 @@ export const handler = async (
             Item: {
                 pk: `APPLICATION#${context.applicationSlug}`,
                 sk: `ANALYSIS#${context.pipelineId}`,
-                analysisXml: analysis.data.analysisXml,
+                analysisXml,
                 coverLetter: analysis.data.coverLetter,
                 analysisMetadata: analysis.data.metadata,
                 research: research.data,
@@ -118,10 +167,7 @@ export const handler = async (
             ...research,
             data: {
                 ...research.data,
-                // Strip verbose arrays — already persisted
-                verifiedMatches: [],
-                partialMatches: [],
-                gaps: [],
+                kbContext: '[persisted to DynamoDB]',
             },
         },
         analysis: {

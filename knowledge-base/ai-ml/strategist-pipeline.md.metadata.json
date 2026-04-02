@@ -3,6 +3,6 @@
     "doc_type": "code-analysis",
     "domain": "ai-ml",
     "title": "Job Strategist Multi-Agent Pipeline",
-    "tags": "bedrock, step-functions, lambda, dynamodb, multi-agent, job-application, interview-coaching, converse-api, knowledge-base, career-strategy, iterative-pipeline, prompt-engineering, null-safety, defensive-parsing, cachePoint, zod-validation, runtime-type-safety, error-handling, dynamodb-update-item, resume-builder, payload-trimming"
+    "tags": "bedrock, step-functions, lambda, dynamodb, multi-agent, job-application, interview-coaching, converse-api, knowledge-base, career-strategy, iterative-pipeline, prompt-engineering, null-safety, defensive-parsing, cachePoint, zod-validation, runtime-type-safety, error-handling, dynamodb-update-item, resume-builder, payload-trimming, s3-offloading"
   }
 }

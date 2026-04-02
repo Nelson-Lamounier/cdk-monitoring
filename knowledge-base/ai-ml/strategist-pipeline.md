@@ -23,6 +23,7 @@ tags:
   - error-handling
   - dynamodb-update-item
   - resume-builder
+  - s3-offloading
 related_docs:
   - ai-ml/bedrock-implementation.md
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
@@ -396,7 +397,9 @@ POST /api/admin/strategist
 
 **Why:** AWS Step Functions has a hard 256 KB limit for payload state passed between tasks. Large textual inputs like `jobDescription`, `resumeData`, and the full generated text of previous agents (like the AI-generated `tailoredResume` JSON) were inflating the JSON payload pushed between handlers as they progressed down the chain.
 
-**Fix:** Added payload trimming in Lambda handlers (`strategist-handler.ts`, `resume-builder-handler.ts`, `analysis-persist-handler.ts`). Large string buffers that are no longer needed by downstream stages are replaced with short sentinel values (e.g., `'[trimmed — persisted in METADATA]'`) or stripped entirely by returning `null` or a trimmed context object. Because these records are either preserved in DynamoDB or passed via reference, they can be safely removed from the transit payload.
+**Fix:** Implemented a two-pronged approach for payload management:
+1. **Payload Trimming:** Large string buffers that are no longer needed by downstream stages are replaced with short sentinel values (e.g., `'[trimmed — persisted in METADATA]'`) or stripped entirely by returning `null` or a trimmed context object in Lambda handlers (`strategist-handler.ts`, `resume-builder-handler.ts`).
+2. **S3 Offloading for Large Results:** The Strategist agent outputs a very large XML blob (`analysisXml`) which often exceeds 200KB alone. This blob is now offloaded directly to an S3 `assetsBucket` by the `strategist-handler.ts`, replacing the payload string with the S3 URI (`s3://<bucket>/<key>`). Downstream handlers like `analysis-persist-handler.ts` pull directly from S3 when writing the final DynamoDB record instead of receiving it through the Step Functions payload.
 
 ### Invalid `SystemContentBlock` cachePoint format crashes Bedrock SDK
 
