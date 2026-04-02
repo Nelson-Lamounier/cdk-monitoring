@@ -411,12 +411,13 @@ export class StrategistPipelineStack extends cdk.Stack {
                 ),
                 sk: tasks.DynamoAttributeValue.fromString('METADATA'),
             },
-            updateExpression: 'SET #status = :failed, #updatedAt = :now, #errorMessage = :error, #gsi1pk = :gsi1pk',
+            updateExpression: 'SET #status = :failed, #updatedAt = :now, #errorMessage = :error, #gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk',
             expressionAttributeNames: {
                 '#status': 'status',
                 '#updatedAt': 'updatedAt',
                 '#errorMessage': 'errorMessage',
                 '#gsi1pk': 'gsi1pk',
+                '#gsi1sk': 'gsi1sk',
             },
             expressionAttributeValues: {
                 ':failed': tasks.DynamoAttributeValue.fromString('failed'),
@@ -427,6 +428,16 @@ export class StrategistPipelineStack extends cdk.Stack {
                     JsonPath.stringAt('$.error.Cause'),
                 ),
                 ':gsi1pk': tasks.DynamoAttributeValue.fromString('APP_STATUS#failed'),
+                ':gsi1sk': tasks.DynamoAttributeValue.fromString(
+                    JsonPath.format(
+                        '{}#{}',
+                        JsonPath.arrayGetItem(
+                            JsonPath.stringSplit(JsonPath.stringAt('$$.State.EnteredTime'), 'T'),
+                            0,
+                        ),
+                        JsonPath.stringAt('$.context.applicationSlug'),
+                    ),
+                ),
             },
             resultPath: sfn.JsonPath.DISCARD,
             comment: 'Write status=failed to DynamoDB so frontend can display analysis failure',
@@ -505,12 +516,13 @@ export class StrategistPipelineStack extends cdk.Stack {
                 ),
                 sk: tasks.DynamoAttributeValue.fromString('METADATA'),
             },
-            updateExpression: 'SET #status = :failed, #updatedAt = :now, #errorMessage = :error, #gsi1pk = :gsi1pk',
+            updateExpression: 'SET #status = :failed, #updatedAt = :now, #errorMessage = :error, #gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk',
             expressionAttributeNames: {
                 '#status': 'status',
                 '#updatedAt': 'updatedAt',
                 '#errorMessage': 'errorMessage',
                 '#gsi1pk': 'gsi1pk',
+                '#gsi1sk': 'gsi1sk',
             },
             expressionAttributeValues: {
                 ':failed': tasks.DynamoAttributeValue.fromString('failed'),
@@ -521,6 +533,16 @@ export class StrategistPipelineStack extends cdk.Stack {
                     JsonPath.stringAt('$.error.Cause'),
                 ),
                 ':gsi1pk': tasks.DynamoAttributeValue.fromString('APP_STATUS#failed'),
+                ':gsi1sk': tasks.DynamoAttributeValue.fromString(
+                    JsonPath.format(
+                        '{}#{}',
+                        JsonPath.arrayGetItem(
+                            JsonPath.stringSplit(JsonPath.stringAt('$$.State.EnteredTime'), 'T'),
+                            0,
+                        ),
+                        JsonPath.stringAt('$.context.applicationSlug'),
+                    ),
+                ),
             },
             resultPath: sfn.JsonPath.DISCARD,
             comment: 'Write status=failed to DynamoDB so frontend can display coaching failure',

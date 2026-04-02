@@ -180,6 +180,7 @@ export class BedrockPipelineStack extends cdk.Stack {
             environment: {
                 RESEARCH_MODEL: props.researchModel,
                 ASSETS_BUCKET: assetsBucket.bucketName,
+                PIPELINE_TABLE_NAME: contentTable.tableName,
                 ENVIRONMENT: props.environmentName,
                 ...(props.knowledgeBaseId ? { KNOWLEDGE_BASE_ID: props.knowledgeBaseId } : {}),
             },
@@ -280,8 +281,10 @@ export class BedrockPipelineStack extends cdk.Stack {
         // IAM — Grant permissions
         // =================================================================
 
-        // Research: S3 read (drafts), Bedrock InvokeModel + KB Retrieve
+        // Research: S3 read (drafts + review/), DynamoDB read, Bedrock InvokeModel + KB Retrieve
         assetsBucket.grantRead(researchFn, `${props.draftPrefix}*`);
+        assetsBucket.grantRead(researchFn, `${props.reviewPrefix}*`);
+        contentTable.grantReadData(researchFn);
         researchFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
             resources: ['*'], // Model ARNs are region-specific inference profiles
@@ -377,7 +380,13 @@ export class BedrockPipelineStack extends cdk.Stack {
             cause: 'One of the pipeline agents threw an unrecoverable error',
         });
 
-        /** Write status='failed' to the VERSION#v<n> record before transitioning to Fail state */
+        /**
+         * Write status='failed' to the VERSION#v<n> record before transitioning to Fail state.
+         *
+         * CRITICAL: Both gsi1pk AND gsi1sk must be set together. DynamoDB GSIs
+         * require both partition key and sort key to project an item into the
+         * index. Without gsi1sk, the failed record is invisible to GSI queries.
+         */
         const markArticleFailed = new tasks.DynamoUpdateItem(this, 'MarkArticleFailed', {
             table: contentTable,
             key: {
@@ -388,12 +397,13 @@ export class BedrockPipelineStack extends cdk.Stack {
                     JsonPath.format('VERSION#v{}', JsonPath.stringAt('$.context.version')),
                 ),
             },
-            updateExpression: 'SET #status = :failed, #updatedAt = :now, #errorMessage = :error, #gsi1pk = :gsi1pk',
+            updateExpression: 'SET #status = :failed, #updatedAt = :now, #errorMessage = :error, #gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk',
             expressionAttributeNames: {
                 '#status': 'status',
                 '#updatedAt': 'updatedAt',
                 '#errorMessage': 'errorMessage',
                 '#gsi1pk': 'gsi1pk',
+                '#gsi1sk': 'gsi1sk',
             },
             expressionAttributeValues: {
                 ':failed': tasks.DynamoAttributeValue.fromString('failed'),
@@ -404,9 +414,12 @@ export class BedrockPipelineStack extends cdk.Stack {
                     JsonPath.stringAt('$.error.Cause'),
                 ),
                 ':gsi1pk': tasks.DynamoAttributeValue.fromString('STATUS#failed'),
+                ':gsi1sk': tasks.DynamoAttributeValue.fromString(
+                    JsonPath.format('{}#{}', JsonPath.stringAt('$.context.startedAt'), JsonPath.stringAt('$.context.slug')),
+                ),
             },
             resultPath: sfn.JsonPath.DISCARD,
-            comment: 'Write status=failed to VERSION#v<n> record so frontend can display failure',
+            comment: 'Write status=failed + GSI keys to VERSION#v<n> record so frontend can display failure',
         });
 
         markArticleFailed.next(pipelineFailed);
