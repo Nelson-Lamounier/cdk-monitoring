@@ -146,8 +146,13 @@ export type {
     // Step Functions state shapes — Analysis Pipeline
     StrategistResearchHandlerInput,
     StrategistWriterHandlerInput,
+    ResumeBuilderHandlerInput,
+    ResumeBuilderHandlerOutput,
     StrategistAnalysisPersistInput,
     StrategistAnalysisPipelineOutput,
+
+    // Resume Builder Agent (Phase 4b)
+    TailoredResumeResult,
 
     // Step Functions state shapes — Coaching Pipeline
     StrategistCoachLoaderInput,

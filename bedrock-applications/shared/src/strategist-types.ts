@@ -233,6 +233,9 @@ export interface StrategistPipelineContext {
 
     /** ISO timestamp of pipeline start */
     readonly startedAt: string;
+
+    /** Whether to generate a cover letter (defaults to true if omitted) */
+    readonly includeCoverLetter?: boolean;
 }
 
 // =============================================================================
@@ -454,8 +457,8 @@ export interface StrategistAnalysisResult {
         readonly applicationRecommendation: ApplicationRecommendation;
     };
 
-    /** Generated cover letter (extracted from XML for convenience) */
-    readonly coverLetter: string;
+    /** Generated cover letter (extracted from XML, null when not requested) */
+    readonly coverLetter: string | null;
 
     /** Structured per-item resume tailoring suggestions (parsed from XML) */
     readonly resumeSuggestions: ResumeSuggestions;
@@ -626,6 +629,32 @@ export interface JobApplicationRecord {
 }
 
 // =============================================================================
+// RESUME BUILDER AGENT OUTPUT (Phase 4b)
+// =============================================================================
+
+/**
+ * Output from the Resume Builder Agent.
+ *
+ * Contains the rebuilt resume with all Strategist suggestions applied.
+ */
+export interface TailoredResumeResult {
+    /** The complete rebuilt resume with suggestions applied */
+    readonly tailoredResume: StructuredResumeData;
+
+    /** Human-readable summary of changes applied */
+    readonly changesSummary: string;
+
+    /** Count of addition suggestions applied */
+    readonly additionsApplied: number;
+
+    /** Count of reframe suggestions applied */
+    readonly reframesApplied: number;
+
+    /** Count of ESL corrections applied */
+    readonly eslCorrectionsApplied: number;
+}
+
+// =============================================================================
 // STEP FUNCTIONS STATE SHAPES — ANALYSIS PIPELINE
 // =============================================================================
 
@@ -645,12 +674,37 @@ export interface StrategistWriterHandlerInput {
 }
 
 /**
+ * Output from Strategist Handler, input to Resume Builder Handler.
+ */
+export interface ResumeBuilderHandlerInput {
+    readonly context: StrategistPipelineContext;
+    readonly research: AgentResult<StrategistResearchResult>;
+    readonly analysis: AgentResult<StrategistAnalysisResult>;
+}
+
+/**
+ * Output from Resume Builder Handler, input to Analysis Persist Handler.
+ */
+export interface ResumeBuilderHandlerOutput {
+    readonly context: StrategistPipelineContext;
+    readonly research: AgentResult<StrategistResearchResult>;
+    readonly analysis: AgentResult<StrategistAnalysisResult>;
+    /** Null when no resume data or no suggestions to apply */
+    readonly tailoredResume: AgentResult<TailoredResumeResult> | null;
+}
+
+/**
  * Output from Strategist Handler, input to Analysis Persist Handler.
+ *
+ * Note: The persist handler accepts both the legacy direct-from-strategist
+ * input and the post-resume-builder input (with tailoredResume field).
  */
 export interface StrategistAnalysisPersistInput {
     readonly context: StrategistPipelineContext;
     readonly research: AgentResult<StrategistResearchResult>;
     readonly analysis: AgentResult<StrategistAnalysisResult>;
+    /** Tailored resume — present when Resume Builder Agent ran (Phase 4b) */
+    readonly tailoredResume?: AgentResult<TailoredResumeResult> | null;
 }
 
 /**
@@ -660,6 +714,8 @@ export interface StrategistAnalysisPipelineOutput {
     readonly context: StrategistPipelineContext;
     readonly research: AgentResult<StrategistResearchResult>;
     readonly analysis: AgentResult<StrategistAnalysisResult>;
+    /** Tailored resume — present when Resume Builder Agent ran (Phase 4b) */
+    readonly tailoredResume?: AgentResult<TailoredResumeResult> | null;
     /** Final application status written to DynamoDB */
     readonly applicationStatus: ApplicationStatus;
 }

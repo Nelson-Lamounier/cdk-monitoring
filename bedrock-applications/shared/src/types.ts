@@ -121,7 +121,8 @@ export interface PipelineContext {
  */
 export type AgentName =
     | 'research' | 'writer' | 'qa'
-    | 'strategist-research' | 'strategist-writer' | 'strategist-coach';
+    | 'strategist-research' | 'strategist-writer' | 'strategist-coach'
+    | 'resume-builder';
 
 /**
  * Model-agnostic configuration for a single agent.
