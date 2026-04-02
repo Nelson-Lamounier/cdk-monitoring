@@ -186,6 +186,7 @@ async function handleAnalyse(body: AnalyseRequest): Promise<APIGatewayProxyResul
         interviewStage: 'applied',
         bucket: ASSETS_BUCKET,
         environment: ENVIRONMENT,
+        includeCoverLetter: body.includeCoverLetter,
         cumulativeTokens: { input: 0, output: 0, thinking: 0 },
         cumulativeCostUsd: 0,
         startedAt: now,

@@ -66,6 +66,11 @@ export const AnalyseRequestSchema = z
             .string()
             .min(1, 'Resume ID is required')
             .max(100, 'Resume ID must be at most 100 characters'),
+        includeCoverLetter: z
+            .boolean()
+            .optional()
+            .default(true)
+            .describe('Whether to generate a cover letter (defaults to true)'),
     })
     .strict();
 

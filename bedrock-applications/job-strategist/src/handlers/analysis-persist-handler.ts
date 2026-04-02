@@ -93,7 +93,8 @@ export const handler = async (
                 sk: `ANALYSIS#${context.pipelineId}`,
                 analysisXml: analysis.data.analysisXml,
                 coverLetter: analysis.data.coverLetter,
-                metadata: analysis.data.metadata,
+                analysisMetadata: analysis.data.metadata,
+                research: research.data,
                 resumeSuggestions: analysis.data.resumeSuggestions,
                 // Deprecated counts — kept for backward compatibility
                 resumeAdditions: analysis.data.resumeAdditions,
