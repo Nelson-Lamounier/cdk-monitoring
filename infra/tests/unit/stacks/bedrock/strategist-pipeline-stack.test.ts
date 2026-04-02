@@ -34,8 +34,8 @@ const TABLE_NAME = `${NAME_PREFIX}-job-strategist`;
 const TEST_KB_ID = 'test-kb-id-12345';
 const TEST_KB_ARN = 'arn:aws:bedrock:eu-west-1:123456789012:knowledge-base/test-kb-id-12345';
 
-/** Lambda function count: Research + Strategist + AnalysisPersist + CoachLoader + Coach + Trigger = 6 */
-const EXPECTED_LAMBDA_COUNT = 6;
+/** Lambda function count: Research + Strategist + ResumeBuilder + AnalysisPersist + CoachLoader + Coach + Trigger = 7 */
+const EXPECTED_LAMBDA_COUNT = 7;
 
 /** Expected Lambda function names */
 const LAMBDA_NAMES = {
@@ -200,7 +200,7 @@ describe('StrategistPipelineStack', () => {
                 FunctionName: LAMBDA_NAMES.strategist,
                 Environment: {
                     Variables: Match.objectLike({
-                        FOUNDATION_MODEL: DEFAULT_PROPS.strategistModel,
+                        STRATEGIST_MODEL: DEFAULT_PROPS.strategistModel,
                     }),
                 },
             });

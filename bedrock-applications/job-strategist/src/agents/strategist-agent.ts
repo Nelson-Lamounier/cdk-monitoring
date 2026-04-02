@@ -37,7 +37,7 @@ import type {
 // =============================================================================
 
 /** Strategist model — Sonnet 4.6 for complex reasoning */
-const STRATEGIST_MODEL = process.env.STRATEGIST_MODEL ?? 'eu.anthropic.claude-sonnet-4-6-20250514-v1:0';
+const STRATEGIST_MODEL = process.env.STRATEGIST_MODEL ?? 'eu.anthropic.claude-sonnet-4-6';
 
 /** Maximum output tokens — large budget for full XML analysis */
 const STRATEGIST_MAX_TOKENS = 16384;

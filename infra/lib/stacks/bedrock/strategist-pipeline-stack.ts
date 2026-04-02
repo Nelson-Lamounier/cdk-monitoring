@@ -211,7 +211,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             memorySize: props.agentLambdaMemoryMb,
             timeout: cdk.Duration.seconds(props.agentLambdaTimeoutSeconds),
             environment: {
-                FOUNDATION_MODEL: props.strategistModel,
+                STRATEGIST_MODEL: props.strategistModel,
                 MAX_TOKENS: String(props.strategistMaxTokens),
                 THINKING_BUDGET_TOKENS: String(props.strategistThinkingBudgetTokens),
                 TABLE_NAME: strategistTable.tableName,

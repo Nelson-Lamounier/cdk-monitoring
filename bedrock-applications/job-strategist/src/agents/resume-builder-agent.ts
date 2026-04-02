@@ -28,7 +28,7 @@ import type {
 // =============================================================================
 
 /** Resume Builder model — Haiku 4.5 for structured transformation */
-const RESUME_BUILDER_MODEL = process.env.RESUME_BUILDER_MODEL ?? 'eu.anthropic.claude-haiku-4-5-20250401-v1:0';
+const RESUME_BUILDER_MODEL = process.env.RESUME_BUILDER_MODEL ?? 'eu.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 /** Maximum output tokens — generous for full JSON resume */
 const RESUME_BUILDER_MAX_TOKENS = 8192;

@@ -27,7 +27,7 @@ import type {
 // =============================================================================
 
 /** Coach model — Haiku 4.5 for fast, conversational output */
-const COACH_MODEL = process.env.COACH_MODEL ?? 'eu.anthropic.claude-haiku-4-5-20250514-v1:0';
+const COACH_MODEL = process.env.COACH_MODEL ?? 'eu.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 /** Maximum output tokens */
 const COACH_MAX_TOKENS = 8192;
