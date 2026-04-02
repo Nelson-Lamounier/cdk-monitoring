@@ -735,6 +735,13 @@ ec2-disable-source-dest-check instance-id region="eu-west-1" profile="dev-accoun
 ssm-run-controlplane instance-id env="development" region="eu-west-1" profile="dev-account":
     #!/usr/bin/env bash
     set -euo pipefail
+    # Map full env name → short env (matches CDK shortEnv() used in doc names)
+    case "{{env}}" in
+      development) SHORT_ENV="dev" ;;
+      staging)     SHORT_ENV="stg" ;;
+      production)  SHORT_ENV="prd" ;;
+      *)           SHORT_ENV="{{env}}" ;;
+    esac
     SSM_PREFIX="/k8s/{{env}}"
     S3_BUCKET=$(aws ssm get-parameter \
       --name "${SSM_PREFIX}/scripts-bucket" \
@@ -742,7 +749,7 @@ ssm-run-controlplane instance-id env="development" region="eu-west-1" profile="d
       --region {{region}} --profile {{profile}})
     echo "Starting control-plane bootstrap on {{instance-id}}..."
     EXEC_ID=$(aws ssm start-automation-execution \
-      --document-name "k8s-{{env}}-bootstrap-control-plane" \
+      --document-name "k8s-${SHORT_ENV}-bootstrap-control-plane" \
       --parameters "InstanceId={{instance-id}},SsmPrefix=${SSM_PREFIX},S3Bucket=${S3_BUCKET},Region={{region}}" \
       --region {{region}} --profile {{profile}} \
       --query "AutomationExecutionId" --output text)
@@ -757,6 +764,13 @@ ssm-run-controlplane instance-id env="development" region="eu-west-1" profile="d
 ssm-run-worker instance-id env="development" region="eu-west-1" profile="dev-account":
     #!/usr/bin/env bash
     set -euo pipefail
+    # Map full env name → short env (matches CDK shortEnv() used in doc names)
+    case "{{env}}" in
+      development) SHORT_ENV="dev" ;;
+      staging)     SHORT_ENV="stg" ;;
+      production)  SHORT_ENV="prd" ;;
+      *)           SHORT_ENV="{{env}}" ;;
+    esac
     SSM_PREFIX="/k8s/{{env}}"
     S3_BUCKET=$(aws ssm get-parameter \
       --name "${SSM_PREFIX}/scripts-bucket" \
@@ -764,7 +778,7 @@ ssm-run-worker instance-id env="development" region="eu-west-1" profile="dev-acc
       --region {{region}} --profile {{profile}})
     echo "Starting worker bootstrap on {{instance-id}}..."
     EXEC_ID=$(aws ssm start-automation-execution \
-      --document-name "k8s-{{env}}-bootstrap-worker" \
+      --document-name "k8s-${SHORT_ENV}-bootstrap-worker" \
       --parameters "InstanceId={{instance-id}},SsmPrefix=${SSM_PREFIX},S3Bucket=${S3_BUCKET},Region={{region}}" \
       --region {{region}} --profile {{profile}} \
       --query "AutomationExecutionId" --output text)
