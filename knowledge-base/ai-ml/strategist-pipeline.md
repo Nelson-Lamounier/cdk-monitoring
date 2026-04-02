@@ -446,7 +446,7 @@ const techInv = research.technologyInventory;
 
 **Why:** The original SM definition had Catch blocks that routed directly to `Fail` states without writing error status to DynamoDB first. The frontend relied on DDB polling for status updates, so a SM-level failure was invisible to the user.
 
-**Fix:** Implemented SF-native `Catch → DynamoUpdateItem → Fail` chains on all three state machines (Article Pipeline, Analysis SM, Coaching SM). Each `DynamoUpdateItem` task writes `status='failed'`, `errorMessage` (from `$.error.Cause`), and `gsi1pk = STATUS#failed` / `APP_STATUS#failed` to the METADATA record before the SM enters the `Fail` state. Uses `resultPath: '$.error'` to preserve original pipeline context for dynamic DDB key resolution. Zero additional Lambdas — fully infrastructure-level error handling.
+**Fix:** Implemented SF-native `Catch → DynamoUpdateItem → Fail` chains on all three state machines (Article Pipeline, Analysis SM, Coaching SM). Each `DynamoUpdateItem` task writes `status='failed'`, `errorMessage` (from `$.error.Cause`), and specifically both GSI keys (`gsi1pk = APP_STATUS#failed`, `gsi1sk = <YYYY-MM-DD>#<slug>`) to the METADATA record before the SM enters the `Fail` state. DynamoDB GSIs require both the partition key and sort key to project an item into the index, so writing just `gsi1pk` leaves the failed record invisible to the frontend. Uses `resultPath: '$.error'` to preserve original pipeline context for dynamic DDB key resolution. Zero additional Lambdas — fully infrastructure-level error handling.
 
 Affected files: `pipeline-stack.ts`, `strategist-pipeline-stack.ts`, `strategist-pipeline-stack.test.ts` (3 new test assertions).
 

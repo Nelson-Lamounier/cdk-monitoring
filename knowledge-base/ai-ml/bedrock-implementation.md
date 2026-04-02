@@ -22,7 +22,7 @@ related_docs:
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
   - ai-ml/self-healing-agent.md
   - ai-ml/strategist-pipeline.md
-last_updated: "2026-03-31"
+last_updated: "2026-04-02"
 author: Nelson Lamounier
 status: active
 ---
@@ -43,9 +43,9 @@ Admin "Paste Mode" (S3 upload)
           ├─ DynamoDB: Query VERSION# → resolve next v<n>
           ├─ DynamoDB: Write VERSION#v<n> (status = "processing")
           └─ Step Functions: StartExecution (context.version = n)
-              ├─ Research Agent → Pinecone KB retrieval + source analysis
-              ├─ Writer Agent → Structured MDX generation
-              └─ QA Agent → Validation + S3 (review/v<n>/) + DDB (VERSION#v<n> = "review")
+              ├─ Research Agent → Pinecone KB retrieval + author direction parsing + previous version fetch
+              ├─ Writer Agent → Structured MDX generation (applies targeted diffs via author direction)
+              └─ QA Agent → Validation + S3 (review/v<n>/) + DDB (VERSION#v<n> = "review" & METADATA index update)
 
 Admin Approve/Reject (Lambda.invoke)
   └─ Publish Lambda
@@ -115,7 +115,9 @@ The pipeline is triggered automatically via S3 `OBJECT_CREATED` event notificati
 
 8. **Processing status as early signal** — The trigger Lambda writes a `status: "processing"` VERSION record immediately, before starting the Step Functions execution. This allows the frontend admin dashboard to distinguish between "not started" and "in progress" states.
 
-9. **S3 event notification over direct Lambda invocation** — Automatic S3 → Lambda wiring means the frontend only needs S3 PutObject permissions. No Lambda ARN discovery, no SDK invocation. The infra handles routing entirely.
+9. **Targeted Updates via Diffing** — Instead of rewriting the entire article on every iteration, authors can insert `[[AUTHOR_DIRECTION]]` blocks into the draft. The Research Agent fetches the previous published version's content from S3, extracts the directions, and the Writer Agent uses both to apply targeted diffs. This preserves specific phrasing across runs.
+
+10. **S3 event notification over direct Lambda invocation** — Automatic S3 → Lambda wiring means the frontend only needs S3 PutObject permissions. No Lambda ARN discovery, no SDK invocation. The infra handles routing entirely.
 
 ## Key Components
 
@@ -184,6 +186,7 @@ Data → KB → Agent → Api → Content → Pipeline → StrategistData → St
 - **Missing S3 event notification** — The trigger Lambda was built to receive S3 events but no `addEventNotification` was wired in CDK. Uploading a draft to S3 did nothing until the notification was added to `pipeline-stack.ts`.
 - **Slug mismatch between S3 and DynamoDB** — The persist agent was generating a new slug from the article title instead of using the pipeline's original slug. This caused `DDB pk: ARTICLE#aws-certification-journey` vs `S3 key: review/certification-journey-aws-devops-professional.mdx`. Fixed by enforcing `context.slug` (derived from the S3 filename) across all handlers, overriding any AI-generated metadata slugs.
 - **In-place article mutation** — Articles for the same topic were being changed and updated in place, destroying previous versions. Solved by implementing the immutable `VERSION#v<n>` DynamoDB record pattern and version-scoped S3 paths.
+- **Missing dashboard projections** — Pipeline tasks (like QA Handler or Step Functions failure catchers) were updating the `status` and `gsi1pk` on the METADATA record but failing to write `gsi1sk` `<YYYY-MM-DD>#<slug>`. Since DynamoDB GSIs require both Keys to project an item, intermediate states frequently vanished from the admin dashboard list. Fixed by ensuring all mutation tasks explicitly write both `gsi1pk` and `gsi1sk`.
 
 ## Transferable Skills Demonstrated
 
@@ -212,4 +215,4 @@ This document analyses the Bedrock multi-agent content pipeline that transforms 
 
 ## Keywords
 
-bedrock, step-functions, lambda, pinecone, rag, converse-api, dynamodb, content-generation, claude, mdx, publishing, s3-trigger, multi-agent, event-driven, pipeline, article-lifecycle, error-handling, dynamodb-update-item, catch-handler, model-registry, article-versioning, immutable-records, version-history, supersede-logic
+bedrock, step-functions, lambda, pinecone, rag, converse-api, dynamodb, content-generation, claude, mdx, publishing, s3-trigger, multi-agent, event-driven, pipeline, article-lifecycle, error-handling, dynamodb-update-item, catch-handler, model-registry, article-versioning, immutable-records, version-history, supersede-logic, targeted-diffing, author-direction, gsi-projection
