@@ -138,8 +138,14 @@ function buildStrategistMessage(
     }
 
     // Interview stage context and closing instruction
+    const shouldIncludeCoverLetter = ctx.includeCoverLetter ?? true;
+    const coverLetterDirective = shouldIncludeCoverLetter
+        ? 'Include a full cover letter in the <cover_letter> section.'
+        : 'SKIP the cover letter — leave the <cover_letter> section as an empty CDATA block: <cover_letter><![CDATA[]]></cover_letter>';
+
     sections.push(
         '', `### Current Interview Stage: ${ctx.interviewStage}`,
+        '', coverLetterDirective,
         '', 'Execute Phases 1–4 of the analysis framework and return the complete XML output.',
     );
 
@@ -339,7 +345,10 @@ export async function executeStrategistAgent(
 
             // Extract metadata from XML for quick DynamoDB queries
             const metadata = extractMetadataFromXml(sanitisedXml);
-            const coverLetter = extractCoverLetter(sanitisedXml);
+            const shouldIncludeCoverLetter = ctx.includeCoverLetter ?? true;
+            const coverLetter = shouldIncludeCoverLetter
+                ? extractCoverLetter(sanitisedXml)
+                : null;
             const resumeSuggestions = buildResumeSuggestions(sanitisedXml);
 
             return {
