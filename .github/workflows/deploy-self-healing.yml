@@ -110,7 +110,9 @@ jobs:
           audience: sts.amazonaws.com
 
       - name: Install Dependencies
-        run: cd infra && yarn install --frozen-lockfile
+        run: |
+          corepack enable
+          cd infra && yarn install --immutable
 
       - name: Run Smoke Tests
         run: just ci-integration-test self-healing development
