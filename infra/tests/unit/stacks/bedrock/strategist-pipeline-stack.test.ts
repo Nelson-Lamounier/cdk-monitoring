@@ -76,6 +76,10 @@ const DEFAULT_PROPS: StrategistPipelineStackProps = {
     knowledgeBaseId: TEST_KB_ID,
     knowledgeBaseArn: TEST_KB_ARN,
     environmentName: 'development',
+    researchProfileArn: 'arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/test-strategist-haiku',
+    strategistProfileArn: 'arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/test-strategist-sonnet',
+    resumeBuilderProfileArn: 'arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/test-strategist-haiku',
+    coachProfileArn: 'arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/test-strategist-haiku',
     env: TEST_ENV_EU,
 };
 

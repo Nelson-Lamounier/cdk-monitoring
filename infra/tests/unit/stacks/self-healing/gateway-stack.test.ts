@@ -47,6 +47,8 @@ function createGatewayStack(
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             throttlingRateLimit: 5,
             throttlingBurstLimit: 10,
+            sonnetProfileSourceArn: 'arn:aws:bedrock:eu-west-1::inference-profile/eu.anthropic.claude-sonnet-4-6',
+            environmentName: 'development',
             env: TEST_ENV_EU,
             ...overrides,
         },
