@@ -640,7 +640,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         const agentProfile = new ApplicationInferenceProfile(this, 'AgentSonnetProfile', {
             profileName: `${namePrefix}-agent-sonnet`,
             modelSourceArn: props.sonnetProfileSourceArn,
-            description: 'Self-healing agent - Sonnet 4.6',
+            description: 'Self healing agent Sonnet 4.6',
             tags: [
                 { key: 'project', value: 'self-healing' },
                 { key: 'cost-centre', value: 'platform' },

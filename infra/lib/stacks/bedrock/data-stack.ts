@@ -143,7 +143,7 @@ export class BedrockDataStack extends cdk.Stack {
         const articleHaikuProfile = new ApplicationInferenceProfile(this, 'ArticleHaikuProfile', {
             profileName: `${namePrefix}-article-haiku`,
             modelSourceArn: props.haikuProfileSourceArn,
-            description: 'Article pipeline research agent - Haiku 4.5',
+            description: 'Article pipeline research agent Haiku 4.5',
             tags: profileTags('article-pipeline'),
         });
         this.articleHaikuProfileArn = articleHaikuProfile.profileArn;
@@ -151,7 +151,7 @@ export class BedrockDataStack extends cdk.Stack {
         const articleSonnetProfile = new ApplicationInferenceProfile(this, 'ArticleSonnetProfile', {
             profileName: `${namePrefix}-article-sonnet`,
             modelSourceArn: props.sonnetProfileSourceArn,
-            description: 'Article pipeline writer and QA agents - Sonnet 4.6',
+            description: 'Article pipeline writer and QA agents Sonnet 4.6',
             tags: profileTags('article-pipeline'),
         });
         this.articleSonnetProfileArn = articleSonnetProfile.profileArn;
@@ -159,7 +159,7 @@ export class BedrockDataStack extends cdk.Stack {
         const strategistHaikuProfile = new ApplicationInferenceProfile(this, 'StrategistHaikuProfile', {
             profileName: `${namePrefix}-strategist-haiku`,
             modelSourceArn: props.haikuProfileSourceArn,
-            description: 'Strategist pipeline research resume builder and coach - Haiku 4.5',
+            description: 'Strategist pipeline research resume builder and coach Haiku 4.5',
             tags: profileTags('strategist'),
         });
         this.strategistHaikuProfileArn = strategistHaikuProfile.profileArn;
@@ -167,7 +167,7 @@ export class BedrockDataStack extends cdk.Stack {
         const strategistSonnetProfile = new ApplicationInferenceProfile(this, 'StrategistSonnetProfile', {
             profileName: `${namePrefix}-strategist-sonnet`,
             modelSourceArn: props.sonnetProfileSourceArn,
-            description: 'Strategist pipeline writer agent - Sonnet 4.6',
+            description: 'Strategist pipeline writer agent Sonnet 4.6',
             tags: profileTags('strategist'),
         });
         this.strategistSonnetProfileArn = strategistSonnetProfile.profileArn;
