@@ -214,10 +214,14 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
             callbackUrls: [
                 `${domainName}/api/auth/callback/cognito`,
                 'http://localhost:3000/api/auth/callback/cognito',
+                'http://localhost:5001/admin/auth/callback',
+                `${domainName}/admin/auth/callback`,
             ],
             logoutUrls: [
                 domainName,
                 'http://localhost:3000',
+                'http://localhost:5001/admin/login',
+                `${domainName}/admin/login`,
             ],
             ssmPrefix: nextjsSsmPrefix(env),
             removalPolicy: isProduction

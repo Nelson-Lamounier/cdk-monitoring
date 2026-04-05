@@ -21,6 +21,7 @@ import type {
     PipelineContext,
     ResearchResult,
     ShotListItem,
+    SuggestedReference,
     WriterResult,
 } from '../../../shared/src/index.js';
 
@@ -33,6 +34,12 @@ import type {
  * Falls back to cross-region Sonnet profile if not set.
  */
 const WRITER_MODEL = process.env.FOUNDATION_MODEL ?? 'eu.anthropic.claude-sonnet-4-6-20260310-v1:0';
+
+/**
+ * Application Inference Profile ARN — enables granular FinOps cost attribution.
+ * When set, used as the model ID for Bedrock invocation instead of the raw model ID.
+ */
+const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? WRITER_MODEL;
 
 /** Maximum output tokens for Writer Agent response (full MDX articles need substantial headroom) */
 const WRITER_MAX_TOKENS = parseInt(process.env.MAX_TOKENS ?? '32768', 10);
@@ -142,6 +149,27 @@ function buildWriterMessage(
         }
     }
 
+    // SEO research brief (keyword targets + suggested references)
+    if (research.seoResearch) {
+        parts.push(``);
+        parts.push(`## SEO Research Brief`);
+        parts.push(`- Primary Keyword: ${research.seoResearch.primaryKeyword}`);
+        if (research.seoResearch.secondaryKeywords.length > 0) {
+            parts.push(`- Secondary Keywords: ${research.seoResearch.secondaryKeywords.join(', ')}`);
+        }
+        if (research.seoResearch.suggestedReferences.length > 0) {
+            parts.push(``);
+            parts.push(`### Suggested Authoritative References`);
+            parts.push(`The Research Agent identified these external links for credibility:`);
+            for (const ref of research.seoResearch.suggestedReferences) {
+                parts.push(`- **${ref.label}**: [${ref.url}](${ref.url})`);
+                if (ref.relevance) {
+                    parts.push(`  *Relevance: ${ref.relevance}*`);
+                }
+            }
+        }
+    }
+
     // Raw draft content
     parts.push(``);
     parts.push(`## Source Draft`);
@@ -195,6 +223,10 @@ function parseWriterResponse(responseText: string): WriterResult {
             ? metadata.skillsDemonstrated.filter((s): s is string => typeof s === 'string')
             : [],
         processingNote: typeof metadata.processingNote === 'string' ? metadata.processingNote : '',
+        primaryKeyword: typeof metadata.primaryKeyword === 'string' ? metadata.primaryKeyword : undefined,
+        secondaryKeywords: Array.isArray(metadata.secondaryKeywords)
+            ? metadata.secondaryKeywords.filter((k): k is string => typeof k === 'string')
+            : undefined,
     };
 
     // Build validated shot list
@@ -210,10 +242,23 @@ function parseWriterResponse(responseText: string): WriterResult {
             context: typeof item.context === 'string' ? item.context : '',
         }));
 
+    // Build validated suggested references
+    const rawRefs = Array.isArray(parsed.suggestedReferences) ? parsed.suggestedReferences : [];
+    const suggestedReferences: SuggestedReference[] = rawRefs
+        .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null)
+        .map((r) => ({
+            label: typeof r.label === 'string' ? r.label : '',
+            url: typeof r.url === 'string' ? r.url : '',
+            relevance: typeof r.relevance === 'string' ? r.relevance : '',
+            usedInline: typeof r.usedInline === 'boolean' ? r.usedInline : false,
+        }))
+        .filter((r) => r.label && r.url);
+
     return {
         content: parsed.content as string,
         metadata: validatedMetadata,
         shotList,
+        suggestedReferences: suggestedReferences.length > 0 ? suggestedReferences : undefined,
     };
 }
 
@@ -247,7 +292,7 @@ export async function executeWriterAgent(
 
     const writerConfig: AgentConfig = {
         agentName: 'writer',
-        modelId: WRITER_MODEL,
+        modelId: EFFECTIVE_MODEL_ID,
         maxTokens: WRITER_MAX_TOKENS,
         thinkingBudget,
         systemPrompt: BLOG_PERSONA_SYSTEM_PROMPT,

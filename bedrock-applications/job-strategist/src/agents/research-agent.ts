@@ -43,6 +43,12 @@ if (!RESEARCH_MODEL) {
     );
 }
 
+/**
+ * Application Inference Profile ARN — enables granular FinOps cost attribution.
+ * When set, used as the model ID for Bedrock invocation instead of the raw model ID.
+ */
+const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? RESEARCH_MODEL;
+
 /** Maximum output tokens */
 const RESEARCH_MAX_TOKENS = 8192;
 
@@ -190,7 +196,7 @@ function buildResearchMessage(
  */
 const RESEARCH_CONFIG: AgentConfig = {
     agentName: 'strategist-research',
-    modelId: RESEARCH_MODEL,
+    modelId: EFFECTIVE_MODEL_ID,
     maxTokens: RESEARCH_MAX_TOKENS,
     thinkingBudget: RESEARCH_THINKING_BUDGET,
     systemPrompt: RESEARCH_PERSONA_SYSTEM_PROMPT,

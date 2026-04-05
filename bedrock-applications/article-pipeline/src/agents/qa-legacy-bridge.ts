@@ -46,6 +46,12 @@ const QA_MODEL = requireQaModel();
 const QA_MAX_TOKENS = parseInt(process.env.QA_MAX_TOKENS ?? '8192', 10);
 const QA_THINKING_BUDGET = parseInt(process.env.QA_THINKING_BUDGET ?? '4096', 10);
 
+/**
+ * Application Inference Profile ARN — enables granular FinOps cost attribution.
+ * When set, used as the model ID for Bedrock invocation instead of the raw model ID.
+ */
+const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? QA_MODEL;
+
 // =============================================================================
 // LEGACY TYPES
 // =============================================================================
@@ -137,7 +143,7 @@ export async function validateArticle(
     ].join('\n');
 
     const command = new ConverseCommand({
-        modelId: QA_MODEL,
+        modelId: EFFECTIVE_MODEL_ID,
         system: QA_PERSONA_SYSTEM_PROMPT,
         messages: [{ role: 'user', content: [{ text: userMessage }] }],
         inferenceConfig: { maxTokens: QA_MAX_TOKENS },

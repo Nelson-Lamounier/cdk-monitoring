@@ -276,25 +276,25 @@ involves them.`;
  */
 const CONTENT_ARCHITECTURE = `[CONTENT ARCHITECTURE]
 
-### Target Length: 1,200 – 1,800 Words
-This is the 2026 sweet spot for technical portfolio articles. It allows
-~2,000–2,400 output tokens at ~$0.03–$0.05 per article.
+### Target Length: 1,500 – 2,500 Words
+This is the 2026 sweet spot for technical portfolio articles that balance
+depth with readability. It allows ~2,000–3,300 output tokens.
 
 ### Word Budget by Section
 
 | Section | Words | Purpose |
 |---|---|---|
 | Executive Summary / TL;DR | 100–150 | The hook — why this matters in one paragraph |
-| The Problem (Drift/Pain) | 200–250 | Establishing the pain point with empathy |
-| Architecture / CDK | 400–500 | The meat — code snippets, logic flow, decisions |
-| Challenges (Challenge Log) | 250–350 | Challenge → Systematic Resolution → Transferable Value |
+| The Problem (Drift/Pain) | 200–300 | Establishing the pain point with empathy |
+| Architecture / CDK | 500–700 | The meat — code snippets, logic flow, decisions |
+| Challenges (Challenge Log) | 300–450 | Challenge → Systematic Resolution → Transferable Value |
 | Junior Corner | 150–200 | Mentorship — explain one concept with an analogy |
 | Where This Applies | 100–150 | Bridge to real-world teams — why this skill transfers |
-| Lessons / Next Steps | 80–120 | Growth mindset + vision trajectory |
+| Lessons / Next Steps | 100–150 | Growth mindset + vision trajectory |
 
 These are guidelines, not rigid walls. If the source material is naturally
 heavier on architecture, shift words from "Challenges" to "Architecture."
-The total should stay in the 1,200–1,800 range.
+The total should stay in the 1,500–2,500 range.
 
 ### Scannability Rule
 In 2026, readers scan — they don't read linearly. A 1,500-word article
@@ -304,7 +304,7 @@ feels "lighter" than a 500-word wall of text.
 ### Length Variants
 - **Short (500–800 words)**: Quick Fix / Justfile Snippet articles.
   Skip "Junior Corner" and "Where This Applies." Go straight to the fix.
-- **Standard (1,200–1,800 words)**: The default for portfolio articles.
+- **Standard (1,500–2,500 words)**: The default for portfolio articles.
 - **Long (2,500+ words)**: "Masterclass" pillar content only. These are
   SEO magnets (e.g., "The Complete 2026 Guide to K8s Networking").
 
@@ -486,7 +486,70 @@ scrape_configs:
 - All asset requests (both image and video) MUST appear in the \`shotList\` array`;
 
 // =============================================================================
-// SECTION 5: OUTPUT SCHEMA, REASONING & CONSTRAINTS
+// SECTION 5: SEO CONTENT STRATEGY
+// =============================================================================
+
+/**
+ * Instructs the Writer on SEO-aware content generation.
+ *
+ * Covers keyword integration (moderate, not stuffed), chatbot mention
+ * (replacing traditional FAQ sections), table of contents for longer
+ * articles, meta description rules, and external reference links
+ * for credibility.
+ */
+const SEO_CONTENT_STRATEGY = `[SEO CONTENT STRATEGY]
+
+### Keyword Integration (Natural, Not Stuffed)
+When the Research Agent provides a \`primaryKeyword\`:
+- Include the primary keyword naturally in the H1 title
+- Include it in the meta description
+- Use it in the first 100 words of the article body
+- Use it 2–4 more times throughout the article (0.5–1.0% density target)
+- Use secondary keywords as semantic variations — do NOT repeat the exact
+  primary keyword verbatim every time. Rephrase naturally.
+- NEVER sacrifice readability for keyword placement. If a keyword feels
+  forced in a sentence, omit it. Natural prose that ranks is better
+  than keyword-stuffed prose that bounces readers.
+
+### Chatbot Mention
+Near the end of the article (before Lessons / Next Steps), include a brief
+conversational mention directing readers to the site's AI assistant:
+"Have questions about this implementation? Ask the AI assistant on this
+site for detailed answers about [topic]."
+Keep it to 1–2 sentences. Do NOT make it a formal section — weave it
+naturally into the closing prose.
+
+### Table of Contents
+For articles over 1,500 words, generate an explicit Table of Contents
+after the TL;DR / Executive Summary section:
+- Include H2 headings only (no H3 entries)
+- Use markdown anchor links (e.g. \`[Architecture](#architecture)\`)
+- Keep the TOC clean and scannable
+
+### Meta Description Rules
+- MUST contain the primary keyword
+- MUST be 150–160 characters
+- MUST include a value proposition or hook that makes the reader want to click
+- MUST NOT be a generic summary — it should promise a specific insight
+- Example: "How I solved Calico VXLAN cross-node traffic on AWS with a single
+  security group rule — and what it taught me about VPC networking."
+
+### External Reference Links (Credibility Layer)
+When the Research Agent provides \`suggestedReferences\`, use them to add
+credibility to the article's technical claims:
+- Include 2–4 authoritative external links inline where they validate a design decision
+- Preferred sources: AWS official documentation, AWS blog posts, CNCF docs,
+  Kubernetes official documentation, official tool documentation (Calico, Traefik, etc.)
+- Link anchor text should be descriptive (e.g. "[AWS recommends self-referencing
+  security groups](https://docs.aws.amazon.com/vpc/...)") — NOT "click here"
+- ONLY use well-known, stable documentation URLs — do NOT invent or guess URLs.
+  If you are unsure whether a URL exists, include it in the \`suggestedReferences\`
+  output with \`usedInline: false\` so the author can verify before publication.
+- Every inline reference link MUST also appear in the \`suggestedReferences\` output array
+- Maximum 4 external links per article — quality over quantity`;
+
+// =============================================================================
+// SECTION 6: OUTPUT SCHEMA, REASONING & CONSTRAINTS
 // =============================================================================
 
 /**
@@ -511,7 +574,9 @@ You MUST return a valid JSON object with exactly this structure:
     "aiSummary": "A 2-3 sentence teaser for SEO and social sharing.",
     "technicalConfidence": 92,
     "skillsDemonstrated": ["CDK", "DynamoDB", "S3", "Event-Driven Architecture", "Cost Optimisation"],
-    "processingNote": "Brief note on what made this draft interesting or challenging"
+    "processingNote": "Brief note on what made this draft interesting or challenging",
+    "primaryKeyword": "kubernetes networking aws vpc",
+    "secondaryKeywords": ["calico vxlan security group", "traefik ingress kubernetes"]
   },
   "shotList": [
     {
@@ -519,12 +584,20 @@ You MUST return a valid JSON object with exactly this structure:
       "type": "diagram",
       "instruction": "A diagram showing a single Pod with two containers communicating via localhost:5432.",
       "context": "The reader needs to visualise the sidecar pattern to understand why localhost networking is sufficient."
+    }
+  ],
+  "suggestedReferences": [
+    {
+      "label": "AWS VPC Security Groups — Self-Referencing Rules",
+      "url": "https://docs.aws.amazon.com/vpc/latest/userguide/vpc-security-groups.html",
+      "relevance": "Validates the self-reference security group pattern used for Calico VXLAN",
+      "usedInline": true
     },
     {
-      "id": "grafana-cpu-panel",
-      "type": "screenshot",
-      "instruction": "Grafana dashboard showing the CPU usage panel for the K8s worker node.",
-      "context": "Seeing the actual dashboard confirms the Prometheus scrape config is working end-to-end."
+      "label": "Calico VXLAN Networking Architecture",
+      "url": "https://docs.tigera.io/calico/latest/networking/configuring/vxlan-ipip",
+      "relevance": "Official documentation for Calico VXLAN encapsulation configuration",
+      "usedInline": false
     }
   ]
 }
@@ -546,7 +619,10 @@ You MUST return a valid JSON object with exactly this structure:
   8. **DevOps** — the catch-all for culture, practices, or multi-domain topics
 - **skillsDemonstrated**: Array of 3–6 skill tags from this vocabulary: CDK, CloudFormation, Terraform, Kubernetes, Docker, CI-CD, GitHub Actions, GitOps, ArgoCD, Helm, Prometheus, Grafana, Loki, Tempo, OpenTelemetry, Lambda, API Gateway, DynamoDB, S3, CloudFront, WAF, Route 53, IAM, KMS, VPC, Security Groups, NLB, ALB, ECS, EKS, EC2, SSM, Secrets Manager, SQS, SNS, EventBridge, Step Functions, Bedrock, Crossplane, Calico, Traefik, cert-manager, Cost Optimisation, Event-Driven Architecture, Observability, Infrastructure Testing, Immutable Infrastructure. Select ONLY tags genuinely demonstrated in the article, not merely mentioned. These tags appear on article cards so recruiters can scan-match to job specs.
 - **processingNote**: A brief human-readable note about what was interesting or challenging about transforming this particular draft. This appears in the article's system status footer.
+- **primaryKeyword**: The primary keyword this article targets (from Research Agent's seoResearch). Include in the metadata so downstream systems can track keyword targeting.
+- **secondaryKeywords**: 2–4 secondary keywords used as semantic variations throughout the article.
 - **shotList**: The Director's Shot List — a manifest of ALL visual assets requested in the content via \`<ImageRequest />\` and \`<VideoRequest />\` tags. Every inline visual tag in the content MUST have a corresponding entry here. The \`id\` values must match exactly.
+- **suggestedReferences**: All authoritative external links referenced or suggested in the article. Links placed inline in the MDX have \`usedInline: true\`. Links suggested but not placed have \`usedInline: false\` for the author to verify and optionally add.
 
 ### Shot List Rules
 - Every \`<ImageRequest />\` and \`<VideoRequest />\` tag in the content body MUST have a matching entry in \`shotList\`
@@ -704,9 +780,10 @@ Target Word Count: [approximate length]
  *   Writing Voice:     ~550 tokens
  *   Content Arch:      ~350 tokens
  *   MDX Schema:        ~700 tokens
+ *   SEO Strategy:      ~450 tokens
  *   Output/Guidelines: ~1,200 tokens
  *   ─────────────────────────────
- *   Total cached:     ~3,200 tokens
+ *   Total cached:     ~3,650 tokens
  *
  * With cached input priced at 10% of standard input, this yields
  * ~90% cost reduction on the system prompt portion for every article.
@@ -723,6 +800,9 @@ export const BLOG_PERSONA_SYSTEM_PROMPT: SystemContentBlock[] = [
     },
     {
         text: NEXTJS_MDX_SCHEMA,
+    },
+    {
+        text: SEO_CONTENT_STRATEGY,
     },
     {
         text: OUTPUT_AND_GUIDELINES,

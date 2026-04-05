@@ -30,6 +30,12 @@ import type {
 /** Resume Builder model — Haiku 4.5 for structured transformation */
 const RESUME_BUILDER_MODEL = process.env.RESUME_BUILDER_MODEL ?? 'eu.anthropic.claude-haiku-4-5-20251001-v1:0';
 
+/**
+ * Application Inference Profile ARN — enables granular FinOps cost attribution.
+ * When set, used as the model ID for Bedrock invocation instead of the raw model ID.
+ */
+const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? RESUME_BUILDER_MODEL;
+
 /** Maximum output tokens — generous for full JSON resume */
 const RESUME_BUILDER_MAX_TOKENS = 8192;
 
@@ -155,7 +161,7 @@ function parseResumeBuilderResponse(
 /** Agent configuration for the Resume Builder Agent. */
 const RESUME_BUILDER_CONFIG: AgentConfig = {
     agentName: AGENT_NAME,
-    modelId: RESUME_BUILDER_MODEL,
+    modelId: EFFECTIVE_MODEL_ID,
     maxTokens: RESUME_BUILDER_MAX_TOKENS,
     thinkingBudget: RESUME_BUILDER_THINKING_BUDGET,
     systemPrompt: RESUME_BUILDER_PERSONA_SYSTEM_PROMPT,

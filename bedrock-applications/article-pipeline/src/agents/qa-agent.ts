@@ -47,6 +47,12 @@ import type {
  */
 const QA_MODEL = process.env.QA_MODEL ?? 'eu.anthropic.claude-sonnet-4-6-20260310-v1:0';
 
+/**
+ * Application Inference Profile ARN — enables granular FinOps cost attribution.
+ * When set, used as the model ID for Bedrock invocation instead of the raw model ID.
+ */
+const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? QA_MODEL;
+
 /** Maximum output tokens for QA response (structured JSON with dimension scores and issues) */
 const QA_MAX_TOKENS = 16384;
 
@@ -192,7 +198,7 @@ function parseQaResponse(responseText: string): QaValidationResult {
  */
 const QA_CONFIG: AgentConfig = {
     agentName: 'qa',
-    modelId: QA_MODEL,
+    modelId: EFFECTIVE_MODEL_ID,
     maxTokens: QA_MAX_TOKENS,
     thinkingBudget: QA_THINKING_BUDGET,
     systemPrompt: QA_PERSONA_SYSTEM_PROMPT,

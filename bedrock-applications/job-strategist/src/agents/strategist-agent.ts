@@ -39,6 +39,12 @@ import type {
 /** Strategist model — Sonnet 4.6 for complex reasoning */
 const STRATEGIST_MODEL = process.env.STRATEGIST_MODEL ?? 'eu.anthropic.claude-sonnet-4-6';
 
+/**
+ * Application Inference Profile ARN — enables granular FinOps cost attribution.
+ * When set, used as the model ID for Bedrock invocation instead of the raw model ID.
+ */
+const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? STRATEGIST_MODEL;
+
 /** Maximum output tokens — large budget for full XML analysis */
 const STRATEGIST_MAX_TOKENS = 16384;
 
@@ -309,7 +315,7 @@ function buildResumeSuggestions(xml: string): ResumeSuggestions {
  */
 const STRATEGIST_CONFIG: AgentConfig = {
     agentName: 'strategist-writer',
-    modelId: STRATEGIST_MODEL,
+    modelId: EFFECTIVE_MODEL_ID,
     maxTokens: STRATEGIST_MAX_TOKENS,
     thinkingBudget: STRATEGIST_THINKING_BUDGET,
     systemPrompt: STRATEGIST_PERSONA_SYSTEM_PROMPT,

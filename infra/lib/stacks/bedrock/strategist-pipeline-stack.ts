@@ -94,6 +94,14 @@ export interface StrategistPipelineStackProps extends cdk.StackProps {
     readonly knowledgeBaseArn?: string;
     /** Runtime environment name */
     readonly environmentName: string;
+    /** Application Inference Profile ARN for Research agent */
+    readonly researchProfileArn: string;
+    /** Application Inference Profile ARN for Strategist agent */
+    readonly strategistProfileArn: string;
+    /** Application Inference Profile ARN for Resume Builder agent */
+    readonly resumeBuilderProfileArn: string;
+    /** Application Inference Profile ARN for Interview Coach agent */
+    readonly coachProfileArn: string;
 }
 
 // =============================================================================
@@ -185,6 +193,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(props.agentLambdaTimeoutSeconds),
             environment: {
                 RESEARCH_MODEL: props.researchModel,
+                INFERENCE_PROFILE_ARN: props.researchProfileArn,
                 ASSETS_BUCKET: assetsBucket.bucketName,
                 TABLE_NAME: strategistTable.tableName,
                 ENVIRONMENT: props.environmentName,
@@ -212,6 +221,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(props.agentLambdaTimeoutSeconds),
             environment: {
                 STRATEGIST_MODEL: props.strategistModel,
+                INFERENCE_PROFILE_ARN: props.strategistProfileArn,
                 MAX_TOKENS: String(props.strategistMaxTokens),
                 THINKING_BUDGET_TOKENS: String(props.strategistThinkingBudgetTokens),
                 ASSETS_BUCKET: assetsBucket.bucketName,
@@ -289,6 +299,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(props.agentLambdaTimeoutSeconds),
             environment: {
                 COACH_MODEL: props.coachModel,
+                INFERENCE_PROFILE_ARN: props.coachProfileArn,
                 MAX_TOKENS: String(props.coachMaxTokens),
                 THINKING_BUDGET_TOKENS: String(props.coachThinkingBudgetTokens),
                 TABLE_NAME: strategistTable.tableName,
@@ -313,7 +324,7 @@ export class StrategistPipelineStack extends cdk.Stack {
         strategistTable.grantWriteData(researchFn);
         researchFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: ['*'], // Model ARNs are region-specific inference profiles
+            resources: [props.researchProfileArn],
         }));
         if (props.knowledgeBaseArn) {
             researchFn.addToRolePolicy(new iam.PolicyStatement({
@@ -325,7 +336,7 @@ export class StrategistPipelineStack extends cdk.Stack {
         // Strategist: Bedrock InvokeModel, DynamoDB write (persist analysis)
         strategistFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: ['*'],
+            resources: [props.strategistProfileArn],
         }));
         strategistTable.grantWriteData(strategistFn);
         assetsBucket.grantWrite(strategistFn); // S3 offload for analysisXml
@@ -346,6 +357,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(props.agentLambdaTimeoutSeconds),
             environment: {
                 RESUME_BUILDER_MODEL: props.researchModel, // Haiku 4.5 — same tier as research
+                INFERENCE_PROFILE_ARN: props.resumeBuilderProfileArn,
                 TABLE_NAME: strategistTable.tableName,
                 ENVIRONMENT: props.environmentName,
             },
@@ -362,7 +374,7 @@ export class StrategistPipelineStack extends cdk.Stack {
         // Resume Builder: Bedrock InvokeModel, DynamoDB read/write
         resumeBuilderFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: ['*'],
+            resources: [props.resumeBuilderProfileArn],
         }));
         strategistTable.grantReadWriteData(resumeBuilderFn);
 
@@ -372,7 +384,7 @@ export class StrategistPipelineStack extends cdk.Stack {
         // Coach: Bedrock InvokeModel, DynamoDB read/write
         coachFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: ['*'],
+            resources: [props.coachProfileArn],
         }));
         strategistTable.grantReadWriteData(coachFn);
 
@@ -391,11 +403,11 @@ export class StrategistPipelineStack extends cdk.Stack {
             );
         }
 
-        // Bedrock wildcard resource suppression
+        // IAM5 suppression — remaining wildcards from S3 prefix grants
         NagSuppressions.addStackSuppressions(this, [
             {
                 id: 'AwsSolutions-IAM5',
-                reason: 'Bedrock InvokeModel requires wildcard for cross-region inference profiles.',
+                reason: 'S3 grants use prefix-scoped wildcards. Bedrock IAM now uses scoped Application Inference Profile ARNs.',
             },
         ]);
 

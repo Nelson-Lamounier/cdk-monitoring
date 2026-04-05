@@ -92,6 +92,12 @@ export interface BedrockPipelineStackProps extends cdk.StackProps {
     readonly archivedPrefix: string;
     /** ISR revalidation endpoint URL (optional) */
     readonly isrEndpoint?: string;
+    /** Application Inference Profile ARN for Research agent */
+    readonly researchProfileArn: string;
+    /** Application Inference Profile ARN for Writer agent */
+    readonly writerProfileArn: string;
+    /** Application Inference Profile ARN for QA agent */
+    readonly qaProfileArn: string;
 }
 
 // =============================================================================
@@ -179,6 +185,7 @@ export class BedrockPipelineStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(props.agentLambdaTimeoutSeconds),
             environment: {
                 RESEARCH_MODEL: props.researchModel,
+                INFERENCE_PROFILE_ARN: props.researchProfileArn,
                 ASSETS_BUCKET: assetsBucket.bucketName,
                 PIPELINE_TABLE_NAME: contentTable.tableName,
                 ENVIRONMENT: props.environmentName,
@@ -206,6 +213,7 @@ export class BedrockPipelineStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(props.agentLambdaTimeoutSeconds),
             environment: {
                 FOUNDATION_MODEL: props.writerModel,
+                INFERENCE_PROFILE_ARN: props.writerProfileArn,
                 MAX_TOKENS: String(props.writerMaxTokens),
                 THINKING_BUDGET_TOKENS: String(props.writerThinkingBudgetTokens),
                 ENVIRONMENT: props.environmentName,
@@ -232,6 +240,7 @@ export class BedrockPipelineStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(props.agentLambdaTimeoutSeconds),
             environment: {
                 QA_MODEL: props.qaModel,
+                INFERENCE_PROFILE_ARN: props.qaProfileArn,
                 ASSETS_BUCKET: assetsBucket.bucketName,
                 PIPELINE_TABLE_NAME: contentTable.tableName,
                 REVIEW_PREFIX: props.reviewPrefix,
@@ -287,7 +296,7 @@ export class BedrockPipelineStack extends cdk.Stack {
         contentTable.grantReadData(researchFn);
         researchFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: ['*'], // Model ARNs are region-specific inference profiles
+            resources: [props.researchProfileArn],
         }));
         if (props.knowledgeBaseArn) {
             researchFn.addToRolePolicy(new iam.PolicyStatement({
@@ -299,7 +308,7 @@ export class BedrockPipelineStack extends cdk.Stack {
         // Writer: Bedrock InvokeModel only
         writerFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: ['*'],
+            resources: [props.writerProfileArn],
         }));
 
         // QA: S3 write (review/), DynamoDB write, Bedrock InvokeModel
@@ -307,7 +316,7 @@ export class BedrockPipelineStack extends cdk.Stack {
         contentTable.grantWriteData(qaFn);
         qaFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: ['*'],
+            resources: [props.qaProfileArn],
         }));
 
         // Publish: S3 read/write/delete, DynamoDB read/write (needs Query for supersede logic)
@@ -330,11 +339,11 @@ export class BedrockPipelineStack extends cdk.Stack {
             );
         }
 
-        // Bedrock wildcard resource suppression
+        // IAM5 suppression — remaining wildcards from S3 prefix grants
         NagSuppressions.addStackSuppressions(this, [
             {
                 id: 'AwsSolutions-IAM5',
-                reason: 'Bedrock InvokeModel requires wildcard for cross-region inference profiles. S3 grants use specific prefixes.',
+                reason: 'S3 grants use prefix-scoped wildcards. Bedrock IAM now uses scoped Application Inference Profile ARNs.',
             },
         ]);
 

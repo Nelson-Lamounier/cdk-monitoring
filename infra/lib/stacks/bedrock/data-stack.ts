@@ -16,6 +16,8 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
+import { ApplicationInferenceProfile } from '../../constructs/observability/application-inference-profile';
+
 /**
  * Props for BedrockDataStack
  */
@@ -26,6 +28,12 @@ export interface BedrockDataStackProps extends cdk.StackProps {
     readonly createEncryptionKey: boolean;
     /** Removal policy for the S3 bucket */
     readonly removalPolicy: cdk.RemovalPolicy;
+    /** System inference profile ARN for Haiku 4.5 (used as CopyFrom source) */
+    readonly haikuProfileSourceArn: string;
+    /** System inference profile ARN for Sonnet 4.6 (used as CopyFrom source) */
+    readonly sonnetProfileSourceArn: string;
+    /** Runtime environment name (for profile tags) */
+    readonly environmentName: string;
 }
 
 /**
@@ -47,6 +55,15 @@ export class BedrockDataStack extends cdk.Stack {
 
     /** The bucket name (for SSM export) */
     public readonly bucketName: string;
+
+    /** Application Inference Profile ARN — Article Pipeline Haiku 4.5 */
+    public readonly articleHaikuProfileArn: string;
+    /** Application Inference Profile ARN — Article Pipeline Sonnet 4.6 */
+    public readonly articleSonnetProfileArn: string;
+    /** Application Inference Profile ARN — Strategist Pipeline Haiku 4.5 */
+    public readonly strategistHaikuProfileArn: string;
+    /** Application Inference Profile ARN — Strategist Pipeline Sonnet 4.6 */
+    public readonly strategistSonnetProfileArn: string;
 
     constructor(scope: Construct, id: string, props: BedrockDataStackProps) {
         super(scope, id, props);
@@ -106,6 +123,54 @@ export class BedrockDataStack extends cdk.Stack {
             serverAccessLogsPrefix: 'data-bucket/',
         });
         this.bucketName = this.dataBucket.bucketName;
+
+        // =================================================================
+        // Application Inference Profiles — FinOps Cost Attribution
+        //
+        // Each profile wraps a system-defined inference profile with
+        // cost-allocation tags, enabling per-pipeline billing in
+        // AWS Cost Explorer.
+        // =================================================================
+        const profileTags = (component: string): cdk.CfnTag[] => [
+            { key: 'project', value: 'bedrock' },
+            { key: 'cost-centre', value: 'application' },
+            { key: 'component', value: component },
+            { key: 'environment', value: props.environmentName },
+            { key: 'owner', value: 'nelson-l' },
+            { key: 'managed-by', value: 'cdk' },
+        ];
+
+        const articleHaikuProfile = new ApplicationInferenceProfile(this, 'ArticleHaikuProfile', {
+            profileName: `${namePrefix}-article-haiku`,
+            modelSourceArn: props.haikuProfileSourceArn,
+            description: 'Article pipeline research agent - Haiku 4.5',
+            tags: profileTags('article-pipeline'),
+        });
+        this.articleHaikuProfileArn = articleHaikuProfile.profileArn;
+
+        const articleSonnetProfile = new ApplicationInferenceProfile(this, 'ArticleSonnetProfile', {
+            profileName: `${namePrefix}-article-sonnet`,
+            modelSourceArn: props.sonnetProfileSourceArn,
+            description: 'Article pipeline writer and QA agents - Sonnet 4.6',
+            tags: profileTags('article-pipeline'),
+        });
+        this.articleSonnetProfileArn = articleSonnetProfile.profileArn;
+
+        const strategistHaikuProfile = new ApplicationInferenceProfile(this, 'StrategistHaikuProfile', {
+            profileName: `${namePrefix}-strategist-haiku`,
+            modelSourceArn: props.haikuProfileSourceArn,
+            description: 'Strategist pipeline research resume builder and coach - Haiku 4.5',
+            tags: profileTags('strategist'),
+        });
+        this.strategistHaikuProfileArn = strategistHaikuProfile.profileArn;
+
+        const strategistSonnetProfile = new ApplicationInferenceProfile(this, 'StrategistSonnetProfile', {
+            profileName: `${namePrefix}-strategist-sonnet`,
+            modelSourceArn: props.sonnetProfileSourceArn,
+            description: 'Strategist pipeline writer agent - Sonnet 4.6',
+            tags: profileTags('strategist'),
+        });
+        this.strategistSonnetProfileArn = strategistSonnetProfile.profileArn;
 
         // =================================================================
         // SSM Parameter Exports

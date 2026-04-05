@@ -55,6 +55,7 @@ import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? '';
 const FOUNDATION_MODEL = process.env.FOUNDATION_MODEL ?? 'eu.anthropic.claude-sonnet-4-6';
+const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? FOUNDATION_MODEL;
 const DRY_RUN = (process.env.DRY_RUN ?? 'true').toLowerCase() === 'true';
 const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ?? 'You are an infrastructure remediation agent.';
 
@@ -724,7 +725,7 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<{ text:
         const iterationStart = Date.now();
 
         const response = await bedrock.send(new ConverseCommand({
-            modelId: FOUNDATION_MODEL,
+            modelId: EFFECTIVE_MODEL_ID,
             system: systemPrompt,
             messages,
             toolConfig,

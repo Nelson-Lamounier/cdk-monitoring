@@ -31,6 +31,8 @@ import type {
     PipelineContext,
     PipelineMode,
     ResearchResult,
+    SeoResearch,
+    SuggestedReference,
 } from '../../../shared/src/index.js';
 
 // =============================================================================
@@ -48,6 +50,13 @@ if (!RESEARCH_MODEL) {
         'This must be set by CDK infrastructure (e.g. eu.anthropic.claude-haiku-4-5-20251001-v1:0)',
     );
 }
+
+/**
+ * Application Inference Profile ARN — enables granular FinOps cost attribution.
+ * When set, used as the model ID for Bedrock invocation instead of the raw model ID.
+ * Falls back to RESEARCH_MODEL if not configured.
+ */
+const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? RESEARCH_MODEL;
 
 /** Maximum output tokens for Research Agent response */
 const RESEARCH_MAX_TOKENS = 8192;
@@ -380,6 +389,47 @@ function buildResearchMessage(
 }
 
 // =============================================================================
+// RESEARCH AGENT — SEO RESEARCH PARSER
+// =============================================================================
+
+/**
+ * Safely extract SEO research data from the LLM response.
+ *
+ * Returns `undefined` when the LLM does not produce the `seoResearch`
+ * field, making the feature gracefully optional for older prompts
+ * or edge cases where the model omits it.
+ *
+ * @param parsed - Raw parsed JSON from the LLM research response
+ * @returns Typed SeoResearch or undefined
+ */
+function parseSeoResearch(parsed: Record<string, unknown>): SeoResearch | undefined {
+    const raw = parsed.seoResearch;
+    if (!raw || typeof raw !== 'object') return undefined;
+
+    const seo = raw as Record<string, unknown>;
+    const primaryKeyword = typeof seo.primaryKeyword === 'string' ? seo.primaryKeyword : '';
+    if (!primaryKeyword) return undefined;
+
+    const secondaryKeywords = Array.isArray(seo.secondaryKeywords)
+        ? seo.secondaryKeywords.filter((k): k is string => typeof k === 'string')
+        : [];
+
+    const suggestedReferences = Array.isArray(seo.suggestedReferences)
+        ? seo.suggestedReferences
+            .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null)
+            .map((r): SuggestedReference => ({
+                label: typeof r.label === 'string' ? r.label : '',
+                url: typeof r.url === 'string' ? r.url : '',
+                relevance: typeof r.relevance === 'string' ? r.relevance : '',
+                usedInline: false, // Research Agent only suggests — Writer decides inline usage
+            }))
+            .filter((r) => r.label && r.url)
+        : [];
+
+    return { primaryKeyword, secondaryKeywords, suggestedReferences };
+}
+
+// =============================================================================
 // RESEARCH AGENT EXECUTION
 // =============================================================================
 
@@ -388,7 +438,7 @@ function buildResearchMessage(
  */
 const RESEARCH_CONFIG: AgentConfig = {
     agentName: 'research',
-    modelId: RESEARCH_MODEL,
+    modelId: EFFECTIVE_MODEL_ID,
     maxTokens: RESEARCH_MAX_TOKENS,
     thinkingBudget: RESEARCH_THINKING_BUDGET,
     systemPrompt: RESEARCH_PERSONA_SYSTEM_PROMPT,
@@ -439,6 +489,7 @@ export async function executeResearchAgent(
             const parsed = parseJsonResponse<Record<string, unknown>>(text, 'research');
 
             // Merge local complexity analysis with LLM-generated outline
+            const seoResearch = parseSeoResearch(parsed);
             return {
                 mode,
                 draftContent,
@@ -452,6 +503,7 @@ export async function executeResearchAgent(
                 suggestedTags: Array.isArray(parsed.suggestedTags) ? parsed.suggestedTags : [],
                 authorDirection,
                 previousVersionContent,
+                seoResearch,
             } as ResearchResult;
         },
         pipelineContext: ctx,

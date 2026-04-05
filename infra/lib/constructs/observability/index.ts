@@ -28,3 +28,9 @@ export {
 export type {
     BedrockObservabilityProps,
 } from './bedrock-observability';
+export {
+    ApplicationInferenceProfile,
+} from './application-inference-profile';
+export type {
+    ApplicationInferenceProfileProps,
+} from './application-inference-profile';

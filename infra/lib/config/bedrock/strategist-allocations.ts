@@ -6,7 +6,7 @@
  * Allocations are "how much" — memory, timeout, model selection, token budgets.
  *
  * Agent architecture:
- *   1. Research Agent (Haiku 3.5) — KB retrieval, resume parsing, gap analysis
+ *   1. Research Agent (Haiku 4.5) — KB retrieval, resume parsing, gap analysis
  *   2. Strategist Agent (Sonnet 4.6) — Strategy generation, document crafting
  *   3. Interview Coach (Haiku 4.5) — Stage-specific interview preparation
  *
@@ -63,7 +63,7 @@ export interface StrategistLambdaAllocation {
  */
 export interface StrategistAllocations {
     readonly lambda: StrategistLambdaAllocation;
-    /** Research Agent — KB retrieval and gap analysis (Haiku 3.5) */
+    /** Research Agent — KB retrieval and gap analysis (Haiku 4.5) */
     readonly research: StrategistAgentModelAllocation;
     /** Strategist Agent — strategy generation and document crafting (Sonnet 4.6) */
     readonly strategist: StrategistWriterModelAllocation;

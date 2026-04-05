@@ -29,6 +29,12 @@ import type {
 /** Coach model — Haiku 4.5 for fast, conversational output */
 const COACH_MODEL = process.env.COACH_MODEL ?? 'eu.anthropic.claude-haiku-4-5-20251001-v1:0';
 
+/**
+ * Application Inference Profile ARN — enables granular FinOps cost attribution.
+ * When set, used as the model ID for Bedrock invocation instead of the raw model ID.
+ */
+const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? COACH_MODEL;
+
 /** Maximum output tokens */
 const COACH_MAX_TOKENS = 8192;
 
@@ -82,7 +88,7 @@ function buildCoachMessage(
  */
 const COACH_CONFIG: AgentConfig = {
     agentName: 'strategist-coach',
-    modelId: COACH_MODEL,
+    modelId: EFFECTIVE_MODEL_ID,
     maxTokens: COACH_MAX_TOKENS,
     thinkingBudget: COACH_THINKING_BUDGET,
     systemPrompt: COACH_PERSONA_SYSTEM_PROMPT,

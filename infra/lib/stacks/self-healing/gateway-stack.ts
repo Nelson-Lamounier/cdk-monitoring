@@ -26,7 +26,7 @@
  * - MCP protocol configuration (MCP 2025-03-26, SEMANTIC search)
  */
 
-import * as path from 'path';
+import * as path from 'node:path';
 
 import {
     Gateway,
@@ -44,6 +44,8 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
+import { ApplicationInferenceProfile } from '../../constructs/observability/application-inference-profile';
+
 
 /**
  * Props for SelfHealingGatewayStack
@@ -59,6 +61,10 @@ export interface SelfHealingGatewayStackProps extends cdk.StackProps {
     readonly throttlingRateLimit: number;
     /** Gateway throttle — burst capacity */
     readonly throttlingBurstLimit: number;
+    /** System inference profile ARN for Sonnet 4.6 (used as CopyFrom source) */
+    readonly sonnetProfileSourceArn: string;
+    /** Runtime environment name (for profile tags) */
+    readonly environmentName: string;
 }
 
 /**
@@ -90,6 +96,9 @@ export class SelfHealingGatewayStack extends cdk.Stack {
     /** OAuth2 scope strings for client credentials flow */
     public readonly oauthScopes: string;
 
+    /** Application Inference Profile ARN — Self-Healing Agent Sonnet 4.6 */
+    public readonly agentProfileArn: string;
+
     constructor(scope: Construct, id: string, props: SelfHealingGatewayStackProps) {
         super(scope, id, props);
 
@@ -98,7 +107,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         // =================================================================
         // CloudWatch Log Group — Gateway invocations
         // =================================================================
-        const gatewayLogGroup = new logs.LogGroup(this, 'GatewayLogGroup', {
+        new logs.LogGroup(this, 'GatewayLogGroup', {
             logGroupName: `/aws/agentcore/${namePrefix}-gateway`,
             retention: props.logRetention,
             removalPolicy: props.removalPolicy,
@@ -623,6 +632,27 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         );
 
         // =================================================================
+        // Application Inference Profile — FinOps Cost Attribution
+        //
+        // Creates a tagged profile for the Self-Healing Agent to enable
+        // per-pipeline Bedrock billing in AWS Cost Explorer.
+        // =================================================================
+        const agentProfile = new ApplicationInferenceProfile(this, 'AgentSonnetProfile', {
+            profileName: `${namePrefix}-agent-sonnet`,
+            modelSourceArn: props.sonnetProfileSourceArn,
+            description: 'Self-healing agent - Sonnet 4.6',
+            tags: [
+                { key: 'project', value: 'self-healing' },
+                { key: 'cost-centre', value: 'platform' },
+                { key: 'component', value: 'compute' },
+                { key: 'environment', value: props.environmentName },
+                { key: 'owner', value: 'nelson-l' },
+                { key: 'managed-by', value: 'cdk' },
+            ],
+        });
+        this.agentProfileArn = agentProfile.profileArn;
+
+        // =================================================================
         // SSM Parameter Exports
         // =================================================================
         new ssm.StringParameter(this, 'GatewayUrlParam', {
@@ -658,6 +688,6 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         });
 
         // Suppress log group output for gateway
-        void gatewayLogGroup;
+        // CloudWatch log group is automatically created on first invocation
     }
 }

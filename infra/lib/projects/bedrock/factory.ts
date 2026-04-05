@@ -34,6 +34,7 @@ import { getStrategistAllocations } from '../../config/bedrock/strategist-alloca
 import { getStrategistConfigs } from '../../config/bedrock/strategist-configurations';
 import { Environment, cdkEnvironment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
+import { SYSTEM_INFERENCE_PROFILES } from '../../config/shared/model-registry';
 import {
     IProjectFactory,
     ProjectFactoryContext,
@@ -114,6 +115,9 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 namePrefix,
                 createEncryptionKey: configs.createKmsKeys,
                 removalPolicy: configs.removalPolicy,
+                haikuProfileSourceArn: SYSTEM_INFERENCE_PROFILES.CLAUDE_HAIKU_4_5,
+                sonnetProfileSourceArn: SYSTEM_INFERENCE_PROFILES.CLAUDE_SONNET_4_6,
+                environmentName: this.environment,
                 env,
             }
         );
@@ -252,6 +256,9 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 reviewPrefix: pipelineConfigs.s3.reviewPrefix,
                 archivedPrefix: pipelineConfigs.s3.archivedPrefix,
                 isrEndpoint: pipelineConfigs.isrEndpoint,
+                researchProfileArn: dataStack.articleHaikuProfileArn,
+                writerProfileArn: dataStack.articleSonnetProfileArn,
+                qaProfileArn: dataStack.articleSonnetProfileArn,
                 env,
             }
         );
@@ -305,6 +312,10 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 knowledgeBaseId: kbStack.knowledgeBaseId,
                 knowledgeBaseArn: kbStack.knowledgeBaseArn,
                 environmentName: this.environment,
+                researchProfileArn: dataStack.strategistHaikuProfileArn,
+                strategistProfileArn: dataStack.strategistSonnetProfileArn,
+                resumeBuilderProfileArn: dataStack.strategistHaikuProfileArn,
+                coachProfileArn: dataStack.strategistHaikuProfileArn,
                 env,
             }
         );

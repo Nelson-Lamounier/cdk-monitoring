@@ -60,6 +60,10 @@ export type {
     OutlineSection,
     ResearchResult,
 
+    // SEO
+    SuggestedReference,
+    SeoResearch,
+
     // Writer Agent
     ShotListItem,
     ArticleMetadata,

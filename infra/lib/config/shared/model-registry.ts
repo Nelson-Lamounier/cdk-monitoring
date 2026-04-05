@@ -117,3 +117,27 @@ export const MODELS = {
  * Type representing all available model role keys.
  */
 export type ModelRole = keyof typeof MODELS;
+
+// =============================================================================
+// SYSTEM-DEFINED INFERENCE PROFILE ARNs
+// =============================================================================
+
+/**
+ * ARN-format identifiers for cross-region system-defined inference profiles.
+ *
+ * Used exclusively as `copyFrom` source when creating Application Inference
+ * Profiles via `CfnApplicationInferenceProfile`. The double `::` in each ARN
+ * indicates that these are AWS-managed resources (no account ID).
+ *
+ * @remarks Do not use these directly for model invocation — use the short-form
+ * model IDs in the `MODELS` object above. These ARNs are only for the
+ * CloudFormation `ModelSource.CopyFrom` field.
+ *
+ * @see https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html
+ */
+export const SYSTEM_INFERENCE_PROFILES = {
+    /** Cross-region inference profile ARN for Claude Haiku 4.5 */
+    CLAUDE_HAIKU_4_5: `arn:aws:bedrock:eu-west-1::inference-profile/${CLAUDE_HAIKU_4_5}`,
+    /** Cross-region inference profile ARN for Claude Sonnet 4.6 */
+    CLAUDE_SONNET_4_6: `arn:aws:bedrock:eu-west-1::inference-profile/${CLAUDE_SONNET_4_6}`,
+} as const;

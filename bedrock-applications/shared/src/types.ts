@@ -290,6 +290,53 @@ export interface ResearchResult {
      * Capped at 3000 characters to conserve token budget.
      */
     readonly previousVersionContent?: string;
+
+    /**
+     * SEO research context extracted by the Research Agent.
+     *
+     * Contains keyword targeting, semantic variations, and suggested
+     * authoritative external references (AWS docs, official blogs)
+     * for the Writer Agent to incorporate.
+     */
+    readonly seoResearch?: SeoResearch;
+}
+
+// =============================================================================
+// SEO TYPES
+// =============================================================================
+
+/**
+ * An authoritative external reference link suggested by the pipeline.
+ *
+ * These are documentation links (AWS docs, CNCF docs, official blog posts)
+ * that validate the technical claims in the article. The Writer Agent
+ * places some inline in the MDX content and lists all in the output
+ * so the author can verify URLs before publication.
+ */
+export interface SuggestedReference {
+    /** Human-readable label for the link */
+    readonly label: string;
+    /** Full URL to an authoritative source (AWS docs, official blog, Medium) */
+    readonly url: string;
+    /** Why this reference validates or supports the article's content */
+    readonly relevance: string;
+    /** Whether the Writer placed this link inline in the MDX content */
+    readonly usedInline: boolean;
+}
+
+/**
+ * SEO research context produced by the Research Agent.
+ *
+ * Provides keyword targeting and external reference suggestions
+ * that the Writer Agent uses to optimise article discoverability.
+ */
+export interface SeoResearch {
+    /** Primary search term this article should target */
+    readonly primaryKeyword: string;
+    /** 2–4 secondary keywords for semantic coverage */
+    readonly secondaryKeywords: string[];
+    /** Authoritative external references for credibility */
+    readonly suggestedReferences: SuggestedReference[];
 }
 
 // =============================================================================
@@ -344,6 +391,10 @@ export interface ArticleMetadata {
     readonly skillsDemonstrated: string[];
     /** Writer's note about the draft processing */
     readonly processingNote: string;
+    /** Primary search term this article targets (SEO) */
+    readonly primaryKeyword?: string;
+    /** 2–4 secondary keywords for semantic variation (SEO) */
+    readonly secondaryKeywords?: string[];
 }
 
 /**
@@ -358,6 +409,15 @@ export interface WriterResult {
 
     /** Director's Shot List — manifest of visual assets */
     readonly shotList: ShotListItem[];
+
+    /**
+     * Authoritative external references suggested by the Writer.
+     *
+     * Some may be placed inline in the MDX content (`usedInline: true`),
+     * others are listed for the author to review and optionally add.
+     * URLs should be verified before publication.
+     */
+    readonly suggestedReferences?: SuggestedReference[];
 }
 
 // =============================================================================
