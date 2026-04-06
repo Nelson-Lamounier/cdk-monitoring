@@ -37,7 +37,7 @@ import {
 import { getK8sConfigs } from '../../config/kubernetes';
 import { getNextJsConfigs, getNextJsK8sConfig, nextjsResourceNames } from '../../config/nextjs';
 import { Project, getProjectConfig } from '../../config/projects';
-import { nextjsSsmPaths } from '../../config/ssm-paths';
+import { nextjsSsmPaths, k8sSsmPaths } from '../../config/ssm-paths';
 import {
     IProjectFactory,
     ProjectFactoryContext,
@@ -429,6 +429,16 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                     // Bedrock content pipeline — AI-enhanced article metadata
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
                 ],
+                // Admin write access — article publishing and deletion
+                dynamoWriteTableArns: [
+                    `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
+                ],
+                // Admin S3 write — article image and video uploads from admin panel
+                s3WriteBucketArns: [
+                    `arn:aws:s3:::${resourceNames.assetsBucketName}`,
+                ],
+                // Bedrock pipeline SSM — resolve infrastructure for admin publish
+                bedrockSsmPath: `/${bedrockNamePrefix}/*`,
                 dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
             },
         );
@@ -533,13 +543,11 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 targetEnvironment: environment,
                 namePrefix,
                 ssmPrefix,
-                stateMachineName: `${namePrefix}-bootstrap-orchestrator`,
-                lambdaFunctions: [
-                    {
-                        functionName: `${namePrefix}-bootstrap-router`,
-                        label: 'Bootstrap Router',
-                    },
-                ],
+                // SSM paths — the stack resolves these internally via
+                // ssm.StringParameter.valueForStringParameter scoped to itself.
+                // MUST NOT resolve here: `scope` is cdk.App, not a Stack.
+                nlbFullNameSsmPath: k8sSsmPaths(environment).nlbFullName,
+                cloudFrontDistributionIdSsmPath: nextjsSsmPaths(environment).cloudfront.distributionId,
                 selfHealingConfig: {
                     agentFunctionName: `${selfHealingPrefix}-agent`,
                     toolFunctions: [

@@ -174,12 +174,22 @@ export class BedrockKbStack extends cdk.Stack {
         //
         // Upload repo documentation (README, ADRs, articles) to this
         // bucket and sync the data source to populate the KB.
+        //
+        // Chunking: HIERARCHICAL_TITAN preset
+        //   Parent chunks: 1500 tokens (captures a full ## section)
+        //   Child chunks:  300 tokens  (precise paragraph retrieval)
+        //   Overlap:       60 tokens   (prevents hard cuts mid-sentence)
+        //
+        // This aligns with the KB's Markdown heading structure —
+        // each ## section becomes a parent chunk with its paragraphs
+        // as child chunks, preserving section-level context.
         // =================================================================
         const dataBucket = s3.Bucket.fromBucketArn(this, 'ImportedDataBucket', props.dataBucketArn);
 
         this.dataSource = this.knowledgeBase.addS3DataSource({
             bucket: dataBucket,
             dataSourceName: `${namePrefix}-repo-docs`,
+            chunkingStrategy: bedrock.ChunkingStrategy.HIERARCHICAL_TITAN,
         });
 
         // =================================================================

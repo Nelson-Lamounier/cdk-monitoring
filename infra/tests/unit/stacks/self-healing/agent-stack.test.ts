@@ -64,6 +64,7 @@ function createAgentStack(
             cognitoClientId: 'test-client-id',
             cognitoScopes: 'agentcore/invoke',
             dlqRetentionDays: DLQ_RETENTION_DAYS,
+            inferenceProfileArn: 'arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/test-agent-sonnet',
             env: TEST_ENV_EU,
             ...overrides,
         },

@@ -209,15 +209,15 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
             expect(image.State).toBe('available');
         });
 
-        it(`should have ${EXPECTED_ARCHITECTURE} architecture`, () => {
+        it('should have x86_64 architecture', () => {
             expect(image.Architecture).toBe(EXPECTED_ARCHITECTURE);
         });
 
-        it(`should use ${EXPECTED_VIRTUALISATION_TYPE} virtualisation`, () => {
+        it('should use hvm virtualisation', () => {
             expect(image.VirtualizationType).toBe(EXPECTED_VIRTUALISATION_TYPE);
         });
 
-        it(`should have ${EXPECTED_ROOT_DEVICE_TYPE} root device type`, () => {
+        it('should have ebs root device type', () => {
             expect(image.RootDeviceType).toBe(EXPECTED_ROOT_DEVICE_TYPE);
         });
 
@@ -225,11 +225,11 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
             expect(image.EnaSupport).toBe(true);
         });
 
-        it(`should use ${EXPECTED_VOLUME_TYPE} root volume type`, () => {
+        it('should use gp3 root volume type', () => {
             expect(rootBlockDevice.Ebs?.VolumeType).toBe(EXPECTED_VOLUME_TYPE);
         });
 
-        it(`should have root volume size >= ${MIN_ROOT_VOLUME_SIZE_GB} GB`, () => {
+        it('should have root volume size >= minimum configured GB', () => {
             expect(rootBlockDevice.Ebs?.VolumeSize).toBeGreaterThanOrEqual(
                 MIN_ROOT_VOLUME_SIZE_GB,
             );
@@ -285,10 +285,12 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
     // =========================================================================
     describe('AMI Tags', () => {
         let tags: Array<{ Key?: string; Value?: string }>;
+        let description: string;
 
         // Depends on: image from top-level beforeAll
         beforeAll(() => {
             tags = image.Tags ?? [];
+            description = image.Description ?? '';
         });
 
         it('should have the KubernetesVersion tag', () => {
@@ -302,7 +304,7 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
         });
 
         it('should have a description containing the K8s version', () => {
-            expect(image.Description ?? '').toContain(
+            expect(description).toContain(
                 CONFIGS.cluster.kubernetesVersion,
             );
         });
@@ -312,14 +314,20 @@ describe('GoldenAmiStack — Post-Deploy Verification', () => {
     // Image Builder Pipeline — validates freshness
     // =========================================================================
     describe('Image Builder Pipeline', () => {
+        let imageName: string;
+
+        // Depends on: image from top-level beforeAll
+        beforeAll(() => {
+            imageName = (image.Name ?? '').toLowerCase();
+        });
+
         it('should have been created by Image Builder', () => {
             // Image Builder AMIs follow the CDK naming pattern:
             // {namePrefix}-golden-ami-{buildDate}
-            const name = (image.Name ?? '').toLowerCase();
-            expect(name).toContain('golden-ami');
+            expect(imageName).toContain('golden-ami');
         });
 
-        it(`should not be older than ${MAX_AMI_AGE_DAYS} days`, () => {
+        it('should not be older than 30 days', () => {
             const creationDate = image.CreationDate;
             expect(creationDate).toBeDefined();
 

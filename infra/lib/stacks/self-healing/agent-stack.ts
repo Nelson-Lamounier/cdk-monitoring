@@ -14,7 +14,7 @@
  * - SSM parameters for cross-stack discovery
  */
 
-import * as path from 'path';
+import * as path from 'node:path';
 
 import { NagSuppressions } from 'cdk-nag';
 
@@ -74,6 +74,8 @@ export interface SelfHealingAgentStackProps extends cdk.StackProps {
     readonly notificationEmail?: string;
     /** Retention in days for S3 session memory objects */
     readonly memoryRetentionDays?: number;
+    /** Application Inference Profile ARN for FinOps cost attribution */
+    readonly inferenceProfileArn: string;
 }
 
 /**
@@ -175,7 +177,7 @@ export class SelfHealingAgentStack extends cdk.Stack {
         this.agentFunction = new lambdaNode.NodejsFunction(this, 'AgentFunction', {
             functionName: `${namePrefix}-agent`,
             runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'self-healing', 'index.ts'),
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'index.ts'),
             handler: 'handler',
             memorySize: props.lambdaMemoryMb,
             timeout: cdk.Duration.seconds(props.lambdaTimeoutSeconds),
@@ -184,6 +186,7 @@ export class SelfHealingAgentStack extends cdk.Stack {
             environment: {
                 GATEWAY_URL: props.gatewayUrl,
                 FOUNDATION_MODEL: props.foundationModel,
+                INFERENCE_PROFILE_ARN: props.inferenceProfileArn,
                 DRY_RUN: props.enableDryRun ? 'true' : 'false',
                 SYSTEM_PROMPT: props.systemPrompt,
                 COGNITO_TOKEN_ENDPOINT: props.cognitoTokenEndpoint,
@@ -292,6 +295,8 @@ export class SelfHealingAgentStack extends cdk.Stack {
                 'bedrock:InvokeModelWithResponseStream',
             ],
             resources: [
+                // Application Inference Profile (primary invocation target)
+                props.inferenceProfileArn,
                 // Cross-region inference profile (local region, account-scoped)
                 `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${props.foundationModel}`,
                 // Foundation model in ANY region (cross-region routing target)

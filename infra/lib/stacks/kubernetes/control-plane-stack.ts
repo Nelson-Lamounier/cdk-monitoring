@@ -32,18 +32,13 @@
  * ```
  */
 
-import * as path from 'path';
 
-import { NagSuppressions } from 'cdk-nag';
+
 
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -152,9 +147,6 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             this, 'LogKmsKey',
             ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/kms-key-arn`),
         );
-        const ebsVolumeId = ssm.StringParameter.valueForStringParameter(
-            this, `${props.ssmPrefix}/ebs-volume-id`,
-        );
         const scriptsBucketName = ssm.StringParameter.valueForStringParameter(
             this, `${props.ssmPrefix}/scripts-bucket`,
         );
@@ -189,6 +181,11 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             // Required: Kubernetes pod overlay networking (Calico) uses pod IPs
             // that don't match ENI IPs — AWS drops this traffic unless disabled.
             disableSourceDestCheck: true,
+            // Data volume — auto-provisioned by AWS at boot via block device mapping.
+            // Replaces the legacy CDK-managed ec2.Volume + ebs-detach Lambda pattern.
+            // Volume is ephemeral (deleteOnTermination: true); cluster state is
+            // recovered from S3-based etcd snapshots on node replacement.
+            dataVolumeSizeGb: configs.storage.volumeSizeGb,
         });
 
         // Single-node cluster: max=1 (EBS can only attach to one instance)
@@ -210,7 +207,6 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             bootstrapRole: 'control-plane',
             ssmPrefix: props.ssmPrefix,
             clusterIdentifier: namePrefix,
-            enableTerminationLifecycleHook: true,
             useSignals: configs.compute.useSignals,
             signalsTimeoutMinutes: configs.compute.signalsTimeoutMinutes,
             subnetSelection: {
@@ -278,7 +274,6 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
         new UserDataBuilder(userData, { skipPreamble: true })
             .addCustomScript(`
 # Export runtime values (CDK tokens resolved at synth time)
-export VOLUME_ID="${ebsVolumeId}"
 export MOUNT_POINT="${configs.storage.mountPoint}"
 export STACK_NAME="${this.stackName}"
 export ASG_LOGICAL_ID="${asgLogicalId}"
@@ -297,7 +292,6 @@ export API_DNS_NAME="${apiDnsName}"
 
 # Persist env vars for SSM Automation to source later
 cat > /etc/profile.d/k8s-env.sh << 'ENVEOF'
-export VOLUME_ID="${ebsVolumeId}"
 export MOUNT_POINT="${configs.storage.mountPoint}"
 export STACK_NAME="${this.stackName}"
 export ASG_LOGICAL_ID="${asgLogicalId}"
@@ -470,90 +464,7 @@ echo "SSM Automation will be triggered by the CI pipeline"
             tier: ssm.ParameterTier.STANDARD,
         });
 
-        // =====================================================================
-        // EBS Detach Lifecycle Lambda + EventBridge Rule
-        //
-        // The ASG lifecycle hook (enableTerminationLifecycleHook) pauses
-        // instance termination and emits an EventBridge event. This Lambda
-        // catches that event, gracefully detaches tagged EBS volumes, waits
-        // for them to reach 'available', then completes the lifecycle action.
-        //
-        // Without this: hook fires → no handler → timeout → force-detach →
-        // new instance finds volume 'in-use' → UPDATE_FAILED.
-        // =====================================================================
-        const ebsDetachLifecycleFn = new lambdaNode.NodejsFunction(this, 'EbsDetachLifecycleFunction', {
-            functionName: `${namePrefix}-ebs-detach-lifecycle`,
-            runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'ebs-detach', 'index.ts'),
-            handler: 'handler',
-            memorySize: 256,
-            timeout: cdk.Duration.minutes(4), // Must be < lifecycle hook timeout (5 min)
-            logGroup: new logs.LogGroup(this, 'EbsDetachLifecycleLogGroup', {
-                logGroupName: `/aws/lambda/${namePrefix}-ebs-detach-lifecycle`,
-                retention: logs.RetentionDays.TWO_WEEKS,
-                removalPolicy: cdk.RemovalPolicy.DESTROY,
-                encryptionKey: logGroupKmsKey,
-            }),
-            tracing: lambda.Tracing.ACTIVE,
-            description: `Graceful EBS detach on ASG termination for ${namePrefix}`,
-            environment: {
-                VOLUME_TAG_KEY: 'ManagedBy',
-                VOLUME_TAG_VALUE: 'MonitoringStack',
-            },
-            bundling: {
-                minify: true,
-                sourceMap: true,
-                externalModules: ['@aws-sdk/*'],
-            },
-        });
 
-        // Grant EC2 + ASG permissions for EBS detachment and lifecycle completion
-        ebsDetachLifecycleFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'ManageEbsVolumes',
-            effect: iam.Effect.ALLOW,
-            actions: [
-                'ec2:DescribeVolumes',
-                'ec2:DescribeInstances',
-                'ec2:DetachVolume',
-            ],
-            resources: ['*'],
-        }));
-
-        ebsDetachLifecycleFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'CompleteLifecycleAction',
-            effect: iam.Effect.ALLOW,
-            actions: ['autoscaling:CompleteLifecycleAction'],
-            resources: [`arn:aws:autoscaling:${this.region}:${this.account}:autoScalingGroup:*:autoScalingGroupName/${namePrefix}-asg`],
-        }));
-
-        // EventBridge rule: catch lifecycle hook events for this ASG
-        new events.Rule(this, 'EbsDetachLifecycleRule', {
-            ruleName: `${namePrefix}-ebs-detach-lifecycle`,
-            description: `Trigger EBS detach Lambda on ${namePrefix} ASG termination lifecycle`,
-            eventPattern: {
-                source: ['aws.autoscaling'],
-                detailType: ['EC2 Instance-terminate Lifecycle Action'],
-                detail: {
-                    AutoScalingGroupName: [`${namePrefix}-asg`],
-                },
-            },
-            targets: [new eventsTargets.LambdaFunction(ebsDetachLifecycleFn, {
-                retryAttempts: 2,
-                maxEventAge: cdk.Duration.minutes(5),
-            })],
-        });
-
-        NagSuppressions.addResourceSuppressions(
-            ebsDetachLifecycleFn,
-            [{
-                id: 'AwsSolutions-IAM5',
-                reason: 'EC2 DetachVolume/DescribeVolumes require wildcard — volumes and instances are dynamic (resolved by tag at runtime)',
-            }, {
-                id: 'AwsSolutions-L1',
-                reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
-            }],
-            true,
-        );
 
 
 
@@ -627,7 +538,6 @@ interface MonitoringIamGrantsProps {
  * Grant monitoring-tier IAM permissions to the instance role.
  *
  * Permissions:
- * - EBS volume management (attach/detach/describe)
  * - ECR pull (deploy container images to Kubernetes)
  * - Elastic IP association
  * - SSM parameter write (cluster discovery)
@@ -639,17 +549,6 @@ function grantMonitoringPermissions(
 ): void {
     const { ssmPrefix, region, account } = props;
 
-    role.addToPrincipalPolicy(new iam.PolicyStatement({
-        sid: 'EbsVolumeManagement',
-        effect: iam.Effect.ALLOW,
-        actions: [
-            'ec2:AttachVolume',
-            'ec2:DetachVolume',
-            'ec2:DescribeVolumes',
-            'ec2:DescribeInstances',
-        ],
-        resources: ['*'],
-    }));
 
     // AWS Cloud Controller Manager — read-only EC2 permissions
     // The CCM's Node Lifecycle Controller uses these to detect
@@ -666,6 +565,51 @@ function grantMonitoringPermissions(
             'ec2:DescribeVpcs',
         ],
         resources: ['*'],
+    }));
+
+    // AWS EBS CSI Driver — volume lifecycle permissions
+    // The CSI controller (runs on control-plane) handles CreateVolume,
+    // DeleteVolume, AttachVolume, DetachVolume RPCs. The CSI node agent
+    // (DaemonSet on all nodes) handles NodeStageVolume / NodePublishVolume.
+    role.addToPrincipalPolicy(new iam.PolicyStatement({
+        sid: 'EbsCsiDriverVolumeLifecycle',
+        effect: iam.Effect.ALLOW,
+        actions: [
+            'ec2:CreateVolume',
+            'ec2:DeleteVolume',
+            'ec2:AttachVolume',
+            'ec2:DetachVolume',
+            'ec2:ModifyVolume',
+            'ec2:DescribeVolumes',
+            'ec2:DescribeVolumesModifications',
+            'ec2:DescribeInstances',
+            'ec2:DescribeAvailabilityZones',
+            'ec2:CreateSnapshot',
+            'ec2:DeleteSnapshot',
+            'ec2:DescribeSnapshots',
+            'ec2:CreateTags',
+        ],
+        resources: ['*'],
+    }));
+
+    // KMS permissions for EBS CSI Driver encrypted volumes
+    role.addToPrincipalPolicy(new iam.PolicyStatement({
+        sid: 'EbsCsiDriverKms',
+        effect: iam.Effect.ALLOW,
+        actions: [
+            'kms:Decrypt',
+            'kms:Encrypt',
+            'kms:ReEncrypt*',
+            'kms:GenerateDataKey*',
+            'kms:CreateGrant',
+            'kms:DescribeKey',
+        ],
+        resources: ['*'],
+        conditions: {
+            StringEquals: {
+                'kms:ViaService': `ec2.${region}.amazonaws.com`,
+            },
+        },
     }));
 
     role.addToPrincipalPolicy(new iam.PolicyStatement({

@@ -2,7 +2,7 @@
  * @format
  * Bedrock Agent Stack Unit Tests
  *
- * Tests for the Bedrock Agent, Guardrail, Action Group, and Agent Alias.
+ * Tests for the Bedrock Agent, Guardrail, and Agent Alias.
  */
 
 import { Template } from 'aws-cdk-lib/assertions';
@@ -43,8 +43,6 @@ describe('BedrockAgentStack', () => {
                 enableContentFilters: true,
                 blockedInputMessaging: 'Sorry, I cannot process that request.',
                 blockedOutputsMessaging: 'Sorry, I cannot provide that response.',
-                actionGroupLambdaMemoryMb: 256,
-                actionGroupLambdaTimeoutSeconds: 30,
                 removalPolicy: cdk.RemovalPolicy.DESTROY,
                 env: TEST_ENV_EU,
             },
@@ -76,9 +74,9 @@ describe('BedrockAgentStack', () => {
             template = Template.fromStack(stack);
         });
 
-        it('should create Lambda functions', () => {
-            // Action Group Lambda only (no more VectorKnowledgeBase custom resource Lambdas)
-            template.resourceCountIs('AWS::Lambda::Function', 1);
+        it('should not create any Lambda functions', () => {
+            // No Action Group Lambda (removed per security review)
+            template.resourceCountIs('AWS::Lambda::Function', 0);
         });
 
         it('should create SSM parameters for agent outputs', () => {

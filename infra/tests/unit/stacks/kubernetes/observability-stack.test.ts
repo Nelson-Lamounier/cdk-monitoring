@@ -86,9 +86,9 @@ describe('KubernetesObservabilityStack', () => {
             const dashboardBody = getDashboardBody(dashboard);
 
             // Verify all 3 ASG names appear in the dashboard body
-            expect(dashboardBody).toContain(`${NAME_PREFIX}-control-plane`);
-            expect(dashboardBody).toContain(`${NAME_PREFIX}-app-worker`);
-            expect(dashboardBody).toContain(`${NAME_PREFIX}-mon-worker`);
+            expect(dashboardBody).toContain(`${NAME_PREFIX}-asg`);
+            expect(dashboardBody).toContain(`${NAME_PREFIX}-worker-asg`);
+            expect(dashboardBody).toContain(`${NAME_PREFIX}-mon-worker-asg`);
         });
 
         it('should include NLB metrics', () => {
@@ -121,57 +121,36 @@ describe('KubernetesObservabilityStack', () => {
     // =========================================================================
     // Optional Sections
     // =========================================================================
-    describe('Optional Sections', () => {
-        it('should include Step Functions metrics when stateMachineName is provided', () => {
-            const { template } = createObservabilityStack({
-                stateMachineName: 'k8s-dev-bootstrap-orchestrator',
-            });
+    describe('Dynamic Scope Sections', () => {
+        it('should include Step Functions metrics using SEARCH expression', () => {
+            const { template } = createObservabilityStack();
             const dashboard = template.findResources('AWS::CloudWatch::Dashboard');
             const dashboardBody = getDashboardBody(dashboard);
 
             expect(dashboardBody).toContain('AWS/States');
+            expect(dashboardBody).toContain('SEARCH');
             expect(dashboardBody).toContain('ExecutionsStarted');
             expect(dashboardBody).toContain('ExecutionsFailed');
         });
 
-        it('should NOT include Step Functions metrics when stateMachineName is omitted', () => {
+        it('should include Lambda metrics using SEARCH expression', () => {
             const { template } = createObservabilityStack();
-            const dashboard = template.findResources('AWS::CloudWatch::Dashboard');
-            const dashboardBody = getDashboardBody(dashboard);
-
-            expect(dashboardBody).not.toContain('AWS/States');
-        });
-
-        it('should include Lambda metrics when lambdaFunctions are provided', () => {
-            const { template } = createObservabilityStack({
-                lambdaFunctions: [
-                    { functionName: 'k8s-dev-bootstrap-router', label: 'Bootstrap Router' },
-                ],
-            });
             const dashboard = template.findResources('AWS::CloudWatch::Dashboard');
             const dashboardBody = getDashboardBody(dashboard);
 
             expect(dashboardBody).toContain('AWS/Lambda');
-            expect(dashboardBody).toContain('k8s-dev-bootstrap-router');
+            expect(dashboardBody).toContain('SEARCH');
+            expect(dashboardBody).toContain('Errors');
         });
 
-        it('should NOT include Lambda metrics when lambdaFunctions is omitted', () => {
-            const { template } = createObservabilityStack();
-            const dashboard = template.findResources('AWS::CloudWatch::Dashboard');
-            const dashboardBody = getDashboardBody(dashboard);
-
-            expect(dashboardBody).not.toContain('AWS/Lambda');
-        });
-
-        it('should include CloudFront metrics when distributionId is provided', () => {
+        it('should include CloudFront metrics when distributionId SSM path is provided', () => {
             const { template } = createObservabilityStack({
-                cloudFrontDistributionId: 'E1234567890ABC',
+                cloudFrontDistributionIdSsmPath: '/nextjs/development/cloudfront/distribution-id',
             });
             const dashboard = template.findResources('AWS::CloudWatch::Dashboard');
             const dashboardBody = getDashboardBody(dashboard);
 
             expect(dashboardBody).toContain('AWS/CloudFront');
-            expect(dashboardBody).toContain('E1234567890ABC');
         });
 
         it('should NOT include CloudFront metrics when distributionId is omitted', () => {

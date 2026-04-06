@@ -1,0 +1,17 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "DynamoDbAdminWrite",
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:UpdateItem",
+                "dynamodb:DeleteItem"
+            ],
+            "Resource": [
+                "arn:aws:dynamodb:eu-west-1:771826808455:table/bedrock-dev-ai-content",
+                "arn:aws:dynamodb:eu-west-1:771826808455:table/bedrock-dev-ai-content/index/*"
+            ]
+        }
+    ]
+}
