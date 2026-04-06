@@ -909,9 +909,9 @@ async function publishReport(payload: ReportPayload): Promise<void> {
 function sanitiseAlarmKey(alarmName: string): string {
     return alarmName
         .toLowerCase()
-        .replace(/[^a-z0-9-]/g, '-')
-        .replace(/-+/g, '-')
-        .replace(/^-|-$/g, '');
+        .replaceAll(/[^a-z0-9-]/g, '-')
+        .replaceAll(/-+/g, '-')
+        .replaceAll(/^-|-$/g, '');
 }
 
 /**
