@@ -261,16 +261,13 @@ async function readDraftFromS3(bucket: string, key: string): Promise<string> {
  */
 function extractAuthorDirection(draftContent: string): string {
     const lines = draftContent.split('\n');
-    const directionLines: string[] = [];
+    let endIndex = lines.findIndex(line => line.trim().startsWith('```'));
+    if (endIndex === -1) endIndex = lines.length;
 
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;                          // skip blank lines
-        if (trimmed.startsWith('#')) continue;            // skip headings
-        if (trimmed.startsWith('```')) break;             // stop at code blocks
-        if (/^[A-Za-z-]+:\s/.test(trimmed)) continue;    // skip metadata (e.g. "Category: ...")
-        directionLines.push(trimmed);
-    }
+    const directionLines = lines
+        .slice(0, endIndex)
+        .map(line => line.trim())
+        .filter(trimmed => trimmed && !trimmed.startsWith('#') && !/^[A-Za-z-]+:\s/.test(trimmed));
 
     const direction = directionLines.join(' ').trim();
     console.log(`[research] Author direction extracted (${direction.length} chars)`);
@@ -364,32 +361,25 @@ function buildResearchMessage(
     const parts: string[] = [
         `## Pipeline Mode: ${mode}`,
         ``,
-    ];
-
-    if (kbPassages.length > 0) {
-        parts.push(
-            `## Knowledge Base Context`,
-            `The following ${kbPassages.length} passages were retrieved from the project's infrastructure documentation:`,
-            ``
-        );
-
-        for (const [i, passage] of kbPassages.entries()) {
-            parts.push(
-                `### Passage ${i + 1} (score: ${passage.score.toFixed(3)}, source: ${passage.sourceUri})`,
-                passage.text,
-                ``
-            );
-        }
-    }
-
-    parts.push(
+        ...(kbPassages.length > 0
+            ? [
+                  `## Knowledge Base Context`,
+                  `The following ${kbPassages.length} passages were retrieved from the project's infrastructure documentation:`,
+                  ``,
+                  ...kbPassages.flatMap((passage, i) => [
+                      `### Passage ${i + 1} (score: ${passage.score.toFixed(3)}, source: ${passage.sourceUri})`,
+                      passage.text,
+                      ``
+                  ])
+              ]
+            : []),
         `## Draft Content`,
         `--- BEGIN DRAFT ---`,
         draftContent,
         `--- END DRAFT ---`,
         ``,
         `Analyse this draft and return the JSON research brief.`
-    );
+    ];
 
     return parts.join('\n');
 }
