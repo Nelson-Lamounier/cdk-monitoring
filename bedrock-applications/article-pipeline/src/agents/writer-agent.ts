@@ -42,10 +42,10 @@ const WRITER_MODEL = process.env.FOUNDATION_MODEL ?? 'eu.anthropic.claude-sonnet
 const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? WRITER_MODEL;
 
 /** Maximum output tokens for Writer Agent response (full MDX articles need substantial headroom) */
-const WRITER_MAX_TOKENS = parseInt(process.env.MAX_TOKENS ?? '32768', 10);
+const WRITER_MAX_TOKENS = Number.parseInt(process.env.MAX_TOKENS ?? '32768', 10);
 
 /** Default thinking budget (overridden by Research Agent complexity tier) */
-const DEFAULT_THINKING_BUDGET = parseInt(process.env.THINKING_BUDGET_TOKENS ?? '16000', 10);
+const DEFAULT_THINKING_BUDGET = Number.parseInt(process.env.THINKING_BUDGET_TOKENS ?? '16000', 10);
 
 // =============================================================================
 // USER MESSAGE BUILDER
@@ -61,123 +61,150 @@ const DEFAULT_THINKING_BUDGET = parseInt(process.env.THINKING_BUDGET_TOKENS ?? '
  * @param retryAttempt - Current retry attempt (0-based)
  * @returns Formatted user message
  */
-function buildWriterMessage(
-    research: ResearchResult,
-    retryAttempt: number,
-    version: number,
-): string {
+function buildContextSection(research: ResearchResult, retryAttempt: number, version: number): string[] {
     const parts: string[] = [];
 
-    // Header with mode and complexity
-    parts.push(`## Content Generation Request`);
-    parts.push(`- Pipeline Mode: ${research.mode}`);
-    parts.push(`- Complexity: ${research.complexity.tier} — ${research.complexity.reason}`);
-    parts.push(`- Suggested Title: ${research.suggestedTitle}`);
-    parts.push(`- Suggested Tags: ${research.suggestedTags.join(', ')}`);
-
     if (retryAttempt > 0) {
-        parts.push(``);
-        parts.push(`> ⚠️ This is retry attempt ${retryAttempt}. The previous version did not pass QA.`);
-        parts.push(`> Pay extra attention to technical accuracy and code correctness.`);
+        parts.push(
+            ``,
+            `> ⚠️ This is retry attempt ${retryAttempt}. The previous version did not pass QA.`,
+            `> Pay extra attention to technical accuracy and code correctness.`
+        );
     }
 
-    // Author's Direction — HIGHEST PRIORITY
-    // Placed first so the model treats it as the primary creative brief.
     if (research.authorDirection) {
-        parts.push(``);
-        parts.push(`## ⚡ Author's Direction`);
-        parts.push(`> This is the author's specific creative direction for this article.`);
-        parts.push(`> Your article MUST directly address these instructions.`);
-        parts.push(`> Do NOT let KB context or standard templates override this direction.`);
-        parts.push(``);
-        parts.push(research.authorDirection);
+        parts.push(
+            ``,
+            `## ⚡ Author's Direction`,
+            `> This is the author's specific creative direction for this article.`,
+            `> Your article MUST directly address these instructions.`,
+            `> Do NOT let KB context or standard templates override this direction.`,
+            ``,
+            research.authorDirection
+        );
     }
 
-    // Previous Version Context — differentiation guide (v2+ only)
     if (research.previousVersionContent) {
         const previousVersion = version - 1;
-        parts.push(``);
-        parts.push(`## 🔄 Previous Version (v${previousVersion})`);
-        parts.push(`> A previous version of this article already exists. The author has submitted`);
-        parts.push(`> a NEW prompt with DIFFERENT creative direction (see "Author's Direction" above).`);
-        parts.push(`> You MUST generate a substantially different article that addresses the new direction.`);
-        parts.push(`> Do NOT simply rephrase, extend, or lightly edit the previous version.`);
-        parts.push(``);
-        parts.push(`--- BEGIN PREVIOUS VERSION ---`);
-        parts.push(research.previousVersionContent);
-        parts.push(`--- END PREVIOUS VERSION ---`);
+        parts.push(
+            ``,
+            `## 🔄 Previous Version (v${previousVersion})`,
+            `> A previous version of this article already exists. The author has submitted`,
+            `> a NEW prompt with DIFFERENT creative direction (see "Author's Direction" above).`,
+            `> You MUST generate a substantially different article that addresses the new direction.`,
+            `> Do NOT simply rephrase, extend, or lightly edit the previous version.`,
+            ``,
+            `--- BEGIN PREVIOUS VERSION ---`,
+            research.previousVersionContent,
+            `--- END PREVIOUS VERSION ---`
+        );
     }
 
     // KB context (if KB-augmented mode)
     if (research.kbPassages.length > 0) {
-        parts.push(``);
-        parts.push(`## Knowledge Base Context`);
-        parts.push(`The following passages are from the project's real infrastructure documentation:`);
-        parts.push(``);
-
+        parts.push(
+            ``,
+            `## Knowledge Base Context`,
+            `The following passages are from the project's real infrastructure documentation:`,
+            ``
+        );
         for (const [i, passage] of research.kbPassages.entries()) {
-            parts.push(`### KB Passage ${i + 1} (relevance: ${passage.score.toFixed(3)})`);
-            parts.push(passage.text);
-            parts.push(``);
+            parts.push(
+                `### KB Passage ${i + 1} (relevance: ${passage.score.toFixed(3)})`,
+                passage.text,
+                ``
+            );
         }
     }
 
+    return parts;
+}
+
+function buildOutlineAndFactsSection(research: ResearchResult): string[] {
+    const parts: string[] = [];
+
     // Research brief — outline
     if (research.outline.length > 0) {
-        parts.push(``);
-        parts.push(`## Proposed Article Outline`);
-        parts.push(`The Research Agent suggests the following structure:`);
-        parts.push(``);
-
+        parts.push(
+            ``,
+            `## Proposed Article Outline`,
+            `The Research Agent suggests the following structure:`,
+            ``
+        );
         for (const section of research.outline) {
             const visualMarker = section.needsVisual ? ' 📊' : '';
             parts.push(`- **${section.heading}** (~${section.wordBudget} words)${visualMarker}`);
-            for (const point of section.keyPoints) {
-                parts.push(`  - ${point}`);
+            if (section.keyPoints.length > 0) {
+                parts.push(...section.keyPoints.map(point => `  - ${point}`));
             }
         }
     }
 
     // Technical facts
     if (research.technicalFacts.length > 0) {
-        parts.push(``);
-        parts.push(`## Verified Technical Facts`);
-        parts.push(`These facts were extracted from the draft and KB. Preserve them accurately:`);
-        parts.push(``);
-        for (const fact of research.technicalFacts) {
-            parts.push(`- ${fact}`);
-        }
+        parts.push(
+            ``,
+            `## Verified Technical Facts`,
+            `These facts were extracted from the draft and KB. Preserve them accurately:`,
+            ``,
+            ...research.technicalFacts.map(fact => `- ${fact}`)
+        );
     }
 
-    // SEO research brief (keyword targets + suggested references)
+    return parts;
+}
+
+function buildSeoSection(research: ResearchResult): string[] {
+    const parts: string[] = [];
+
     if (research.seoResearch) {
-        parts.push(``);
-        parts.push(`## SEO Research Brief`);
-        parts.push(`- Primary Keyword: ${research.seoResearch.primaryKeyword}`);
+        parts.push(
+            ``,
+            `## SEO Research Brief`,
+            `- Primary Keyword: ${research.seoResearch.primaryKeyword}`
+        );
         if (research.seoResearch.secondaryKeywords.length > 0) {
             parts.push(`- Secondary Keywords: ${research.seoResearch.secondaryKeywords.join(', ')}`);
         }
         if (research.seoResearch.suggestedReferences.length > 0) {
-            parts.push(``);
-            parts.push(`### Suggested Authoritative References`);
-            parts.push(`The Research Agent identified these external links for credibility:`);
-            for (const ref of research.seoResearch.suggestedReferences) {
-                parts.push(`- **${ref.label}**: [${ref.url}](${ref.url})`);
-                if (ref.relevance) {
-                    parts.push(`  *Relevance: ${ref.relevance}*`);
-                }
-            }
+            parts.push(
+                ``,
+                `### Suggested Authoritative References`,
+                `The Research Agent identified these external links for credibility:`,
+                ...research.seoResearch.suggestedReferences.flatMap(ref => 
+                    ref.relevance 
+                        ? [`- **${ref.label}**: [${ref.url}](${ref.url})`, `  *Relevance: ${ref.relevance}*`] 
+                        : [`- **${ref.label}**: [${ref.url}](${ref.url})`]
+                )
+            );
         }
     }
 
-    // Raw draft content
-    parts.push(``);
-    parts.push(`## Source Draft`);
-    parts.push(`--- BEGIN DRAFT ---`);
-    parts.push(research.draftContent);
-    parts.push(`--- END DRAFT ---`);
-    parts.push(``);
-    parts.push(`Generate the complete MDX article. Return the JSON output as specified in your system prompt.`);
+    return parts;
+}
+
+function buildWriterMessage(
+    research: ResearchResult,
+    retryAttempt: number,
+    version: number,
+): string {
+    const parts: string[] = [
+        `## Content Generation Request`,
+        `- Pipeline Mode: ${research.mode}`,
+        `- Complexity: ${research.complexity.tier} — ${research.complexity.reason}`,
+        `- Suggested Title: ${research.suggestedTitle}`,
+        `- Suggested Tags: ${research.suggestedTags.join(', ')}`,
+        ...buildContextSection(research, retryAttempt, version),
+        ...buildOutlineAndFactsSection(research),
+        ...buildSeoSection(research),
+        ``,
+        `## Source Draft`,
+        `--- BEGIN DRAFT ---`,
+        research.draftContent,
+        `--- END DRAFT ---`,
+        ``,
+        `Generate the complete MDX article. Return the JSON output as specified in your system prompt.`
+    ];
 
     return parts.join('\n');
 }
@@ -185,6 +212,62 @@ function buildWriterMessage(
 // =============================================================================
 // RESPONSE PARSER
 // =============================================================================
+
+/**
+ * Parse the Writer Agent's JSON response into a typed WriterResult.
+ *
+ * @param responseText - Raw text response from Bedrock
+ * @returns Validated WriterResult
+ * @throws Error if required fields are missing
+ */
+function parseArticleMetadata(metadata: Record<string, unknown>): ArticleMetadata {
+    return {
+        title: typeof metadata.title === 'string' ? metadata.title : 'Untitled Article',
+        description: typeof metadata.description === 'string' ? metadata.description : '',
+        tags: Array.isArray(metadata.tags) ? metadata.tags.filter((t): t is string => typeof t === 'string') : [],
+        slug: typeof metadata.slug === 'string' ? metadata.slug : 'untitled',
+        publishDate: typeof metadata.publishDate === 'string' ? metadata.publishDate : new Date().toISOString().split('T')[0],
+        readingTime: typeof metadata.readingTime === 'number' ? metadata.readingTime : 8,
+        category: typeof metadata.category === 'string' ? metadata.category : 'DevOps',
+        aiSummary: typeof metadata.aiSummary === 'string' ? metadata.aiSummary : '',
+        technicalConfidence: typeof metadata.technicalConfidence === 'number'
+            ? Math.max(0, Math.min(100, metadata.technicalConfidence))
+            : 70,
+        skillsDemonstrated: Array.isArray(metadata.skillsDemonstrated)
+            ? metadata.skillsDemonstrated.filter((s): s is string => typeof s === 'string')
+            : [],
+        processingNote: typeof metadata.processingNote === 'string' ? metadata.processingNote : '',
+        primaryKeyword: typeof metadata.primaryKeyword === 'string' ? metadata.primaryKeyword : undefined,
+        secondaryKeywords: Array.isArray(metadata.secondaryKeywords)
+            ? metadata.secondaryKeywords.filter((k): k is string => typeof k === 'string')
+            : undefined,
+    };
+}
+
+function parseShotListArray(rawShotList: unknown[]): ShotListItem[] {
+    return rawShotList
+        .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+        .map((item) => ({
+            id: typeof item.id === 'string' ? item.id : 'unknown',
+            type: ['diagram', 'screenshot', 'hero'].includes(item.type as string)
+                ? (item.type as 'diagram' | 'screenshot' | 'hero')
+                : 'diagram',
+            instruction: typeof item.instruction === 'string' ? item.instruction : '',
+            context: typeof item.context === 'string' ? item.context : '',
+        }));
+}
+
+function parseSuggestedReferencesArray(rawRefs: unknown[]): SuggestedReference[] {
+    return rawRefs
+        .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null)
+        .map((r) => ({
+            label: typeof r.label === 'string' ? r.label : '',
+            url: typeof r.url === 'string' ? r.url : '',
+            relevance: typeof r.relevance === 'string' ? r.relevance : '',
+            usedInline: typeof r.usedInline === 'boolean' ? r.usedInline : false,
+        }))
+        .filter((r) => r.label && r.url);
+}
 
 /**
  * Parse the Writer Agent's JSON response into a typed WriterResult.
@@ -206,56 +289,14 @@ function parseWriterResponse(responseText: string): WriterResult {
         throw new TypeError('Writer Agent: Missing "metadata" object in response');
     }
 
-    // Build validated metadata
-    const validatedMetadata: ArticleMetadata = {
-        title: typeof metadata.title === 'string' ? metadata.title : 'Untitled Article',
-        description: typeof metadata.description === 'string' ? metadata.description : '',
-        tags: Array.isArray(metadata.tags) ? metadata.tags.filter((t): t is string => typeof t === 'string') : [],
-        slug: typeof metadata.slug === 'string' ? metadata.slug : 'untitled',
-        publishDate: typeof metadata.publishDate === 'string' ? metadata.publishDate : new Date().toISOString().split('T')[0],
-        readingTime: typeof metadata.readingTime === 'number' ? metadata.readingTime : 8,
-        category: typeof metadata.category === 'string' ? metadata.category : 'DevOps',
-        aiSummary: typeof metadata.aiSummary === 'string' ? metadata.aiSummary : '',
-        technicalConfidence: typeof metadata.technicalConfidence === 'number'
-            ? Math.max(0, Math.min(100, metadata.technicalConfidence))
-            : 70,
-        skillsDemonstrated: Array.isArray(metadata.skillsDemonstrated)
-            ? metadata.skillsDemonstrated.filter((s): s is string => typeof s === 'string')
-            : [],
-        processingNote: typeof metadata.processingNote === 'string' ? metadata.processingNote : '',
-        primaryKeyword: typeof metadata.primaryKeyword === 'string' ? metadata.primaryKeyword : undefined,
-        secondaryKeywords: Array.isArray(metadata.secondaryKeywords)
-            ? metadata.secondaryKeywords.filter((k): k is string => typeof k === 'string')
-            : undefined,
-    };
-
-    // Build validated shot list
+    const validatedMetadata = parseArticleMetadata(metadata);
     const rawShotList = Array.isArray(parsed.shotList) ? parsed.shotList : [];
-    const shotList: ShotListItem[] = rawShotList
-        .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
-        .map((item) => ({
-            id: typeof item.id === 'string' ? item.id : 'unknown',
-            type: ['diagram', 'screenshot', 'hero'].includes(item.type as string)
-                ? (item.type as 'diagram' | 'screenshot' | 'hero')
-                : 'diagram',
-            instruction: typeof item.instruction === 'string' ? item.instruction : '',
-            context: typeof item.context === 'string' ? item.context : '',
-        }));
-
-    // Build validated suggested references
+    const shotList = parseShotListArray(rawShotList);
     const rawRefs = Array.isArray(parsed.suggestedReferences) ? parsed.suggestedReferences : [];
-    const suggestedReferences: SuggestedReference[] = rawRefs
-        .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null)
-        .map((r) => ({
-            label: typeof r.label === 'string' ? r.label : '',
-            url: typeof r.url === 'string' ? r.url : '',
-            relevance: typeof r.relevance === 'string' ? r.relevance : '',
-            usedInline: typeof r.usedInline === 'boolean' ? r.usedInline : false,
-        }))
-        .filter((r) => r.label && r.url);
+    const suggestedReferences = parseSuggestedReferencesArray(rawRefs);
 
     return {
-        content: parsed.content as string,
+        content: parsed.content,
         metadata: validatedMetadata,
         shotList,
         suggestedReferences: suggestedReferences.length > 0 ? suggestedReferences : undefined,
