@@ -324,7 +324,10 @@ export class StrategistPipelineStack extends cdk.Stack {
         strategistTable.grantWriteData(researchFn);
         researchFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: [props.researchProfileArn],
+            resources: [
+                props.researchProfileArn,
+                'arn:aws:bedrock:*::foundation-model/*',
+            ],
         }));
         if (props.knowledgeBaseArn) {
             researchFn.addToRolePolicy(new iam.PolicyStatement({
@@ -336,7 +339,10 @@ export class StrategistPipelineStack extends cdk.Stack {
         // Strategist: Bedrock InvokeModel, DynamoDB write (persist analysis)
         strategistFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: [props.strategistProfileArn],
+            resources: [
+                props.strategistProfileArn,
+                'arn:aws:bedrock:*::foundation-model/*',
+            ],
         }));
         strategistTable.grantWriteData(strategistFn);
         assetsBucket.grantWrite(strategistFn); // S3 offload for analysisXml
@@ -374,7 +380,10 @@ export class StrategistPipelineStack extends cdk.Stack {
         // Resume Builder: Bedrock InvokeModel, DynamoDB read/write
         resumeBuilderFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: [props.resumeBuilderProfileArn],
+            resources: [
+                props.resumeBuilderProfileArn,
+                'arn:aws:bedrock:*::foundation-model/*',
+            ],
         }));
         strategistTable.grantReadWriteData(resumeBuilderFn);
 
@@ -384,7 +393,10 @@ export class StrategistPipelineStack extends cdk.Stack {
         // Coach: Bedrock InvokeModel, DynamoDB read/write
         coachFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: [props.coachProfileArn],
+            resources: [
+                props.coachProfileArn,
+                'arn:aws:bedrock:*::foundation-model/*',
+            ],
         }));
         strategistTable.grantReadWriteData(coachFn);
 
