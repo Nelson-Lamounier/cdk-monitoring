@@ -53,11 +53,10 @@ jobs:
       # 2. AWS Credentials
       # ------------------------------------------------------------------
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
 
       # ------------------------------------------------------------------
       # 3. Restore Docker image from cache and extract static assets
