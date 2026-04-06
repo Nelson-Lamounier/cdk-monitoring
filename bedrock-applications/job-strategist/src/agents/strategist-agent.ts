@@ -200,7 +200,7 @@ function extractMetadataFromXml(xml: string): StrategistAnalysisResult['metadata
  * @returns Cover letter text
  */
 function extractCoverLetter(xml: string): string {
-    const coverLetterRegex = /<cover_letter><!\[CDATA\[([\s\S]*?)\]\]><\/cover_letter>/;
+    const coverLetterRegex = /<cover_letter><!\[CDATA\[(.*?)\]\]><\/cover_letter>/s;
     const result = coverLetterRegex.exec(xml);
     return result?.[1]?.trim() ?? '';
 }
@@ -232,7 +232,7 @@ function countXmlElements(xml: string, tag: string): number {
  */
 function extractAdditions(xml: string): ResumeAdditionSuggestion[] {
     const additions: ResumeAdditionSuggestion[] = [];
-    const regex = /<addition>\s*<section>(.*?)<\/section>\s*<suggested_bullet>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/suggested_bullet>\s*<source_citation>(.*?)<\/source_citation>\s*<\/addition>/gs;
+    const regex = /<addition>\s*<section>(.*?)<\/section>\s*<suggested_bullet>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/suggested_bullet>\s*<source_citation>(.*?)<\/source_citation>\s*<\/addition>/gs;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(xml)) !== null) {
         additions.push({
@@ -255,7 +255,7 @@ function extractAdditions(xml: string): ResumeAdditionSuggestion[] {
  */
 function extractReframes(xml: string): ResumeReframeSuggestion[] {
     const reframes: ResumeReframeSuggestion[] = [];
-    const regex = /<reframe>\s*<original>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/original>\s*<suggested>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/suggested>\s*<rationale>(.*?)<\/rationale>\s*<\/reframe>/gs;
+    const regex = /<reframe>\s*<original>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/original>\s*<suggested>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/suggested>\s*<rationale>(.*?)<\/rationale>\s*<\/reframe>/gs;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(xml)) !== null) {
         reframes.push({
