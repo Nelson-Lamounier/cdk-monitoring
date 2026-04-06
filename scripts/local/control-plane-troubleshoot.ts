@@ -488,7 +488,7 @@ async function diagnoseAutomation(
             checks.push({
                 name: `Automation: ${meta.DocumentName ?? 'unknown'} (${startTime})`,
                 passed: !isFailed,
-                detail: `Status: ${status}, Duration: ${duration}${meta.FailureMessage ? `, Failure: ${meta.FailureMessage}` : ''}`,
+                detail: `Status: ${status}, Duration: ${duration}` + (meta.FailureMessage ? `, Failure: ${meta.FailureMessage}` : ''),
                 severity: isFailed ? 'critical' : undefined,
             });
 
@@ -716,7 +716,7 @@ async function diagnoseDRAndCerts(
     checks.push({
         name: 'DR: Restored files',
         passed: adminConf && pkiDir,
-        detail: `admin.conf: ${adminConf ? '✓' : '✗'}, PKI dir: ${pkiDir ? `✓ (${pkiCount} files)` : '✗'}, Manifests: ${manifestsCount}`,
+        detail: `admin.conf: ${adminConf ? '✓' : '✗'}, PKI dir: ${pkiDir ? '✓ (' + pkiCount + ' files)' : '✗'}, Manifests: ${manifestsCount}`,
         severity: adminConf && pkiDir ? undefined : 'critical',
     });
 
@@ -1262,7 +1262,11 @@ function printReport(report: DiagnosticReport): void {
     const criticalChecks = report.checks.filter((c) => !c.passed && c.severity === 'critical');
     const warningChecks = report.checks.filter((c) => !c.passed && c.severity === 'warning');
 
-    console.log(`  ${log.red(`${criticalChecks.length} critical`)} | ${log.yellow(`${warningChecks.length} warnings`)} | ${log.green(`${report.checks.filter((c) => c.passed).length} passed`)}`);
+    const criticalText = `${criticalChecks.length} critical`;
+    const warningText = `${warningChecks.length} warnings`;
+    const passCount = report.checks.filter((c) => c.passed).length;
+    const passedText = `${passCount} passed`;
+    console.log(`  ${log.red(criticalText)} | ${log.yellow(warningText)} | ${log.green(passedText)}`);
     console.log('');
 
     for (const [i, rec] of report.recommendations.entries()) {

@@ -296,7 +296,10 @@ export class BedrockPipelineStack extends cdk.Stack {
         contentTable.grantReadData(researchFn);
         researchFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: [props.researchProfileArn],
+            resources: [
+                props.researchProfileArn,
+                'arn:aws:bedrock:*::foundation-model/*',
+            ],
         }));
         if (props.knowledgeBaseArn) {
             researchFn.addToRolePolicy(new iam.PolicyStatement({
@@ -308,7 +311,10 @@ export class BedrockPipelineStack extends cdk.Stack {
         // Writer: Bedrock InvokeModel only
         writerFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: [props.writerProfileArn],
+            resources: [
+                props.writerProfileArn,
+                'arn:aws:bedrock:*::foundation-model/*',
+            ],
         }));
 
         // QA: S3 write (review/), DynamoDB write, Bedrock InvokeModel
@@ -316,7 +322,10 @@ export class BedrockPipelineStack extends cdk.Stack {
         contentTable.grantWriteData(qaFn);
         qaFn.addToRolePolicy(new iam.PolicyStatement({
             actions: ['bedrock:InvokeModel'],
-            resources: [props.qaProfileArn],
+            resources: [
+                props.qaProfileArn,
+                'arn:aws:bedrock:*::foundation-model/*',
+            ],
         }));
 
         // Publish: S3 read/write/delete, DynamoDB read/write (needs Query for supersede logic)
