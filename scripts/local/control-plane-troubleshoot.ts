@@ -329,7 +329,7 @@ async function diagnoseEC2Instance(
             name: 'EC2: Instance state',
             passed: state === 'running',
             detail: `State: ${state}, Type: ${instance.InstanceType}, AZ: ${instance.Placement?.AvailabilityZone}`,
-            severity: state !== 'running' ? 'critical' : undefined,
+            severity: state === 'running' ? undefined : 'critical',
         });
 
         checks.push({
@@ -674,14 +674,7 @@ async function diagnoseDRAndCerts(
     // Check certificate SANs vs current IP
     const certExists = extractValue(output, 'CERT_EXISTS') === 'true';
 
-    if (!certExists) {
-        checks.push({
-            name: 'DR: API server certificate',
-            passed: false,
-            detail: 'apiserver.crt does NOT exist — certificate was not restored or not yet generated',
-            severity: 'critical',
-        });
-    } else {
+    if (certExists) {
         const sanLine = output.split('=== CERT_SANS ===')[1]?.split('\n').find(
             (line) => line.includes('IP Address:'),
         ) ?? '';
@@ -705,6 +698,13 @@ async function diagnoseDRAndCerts(
             passed: true,
             detail: `Expires: ${certExpiry}`,
         });
+    } else {
+        checks.push({
+            name: 'DR: API server certificate',
+            passed: false,
+            detail: 'apiserver.crt does NOT exist — certificate was not restored or not yet generated',
+            severity: 'critical',
+        });
     }
 
     // DR file state
@@ -717,7 +717,7 @@ async function diagnoseDRAndCerts(
         name: 'DR: Restored files',
         passed: adminConf && pkiDir,
         detail: `admin.conf: ${adminConf ? '✓' : '✗'}, PKI dir: ${pkiDir ? `✓ (${pkiCount} files)` : '✗'}, Manifests: ${manifestsCount}`,
-        severity: !adminConf || !pkiDir ? 'critical' : undefined,
+        severity: adminConf && pkiDir ? undefined : 'critical',
     });
 
     // Bootstrap summary
@@ -731,7 +731,7 @@ async function diagnoseDRAndCerts(
                 passed: overallStatus === 'success',
                 detail: `Status: ${overallStatus}, Failure code: ${summary.failure_code ?? 'none'}`,
                 raw: summarySection,
-                severity: overallStatus !== 'success' ? 'critical' : undefined,
+                severity: overallStatus === 'success' ? undefined : 'critical',
             });
 
             // Parse individual step statuses
@@ -876,7 +876,7 @@ async function diagnoseKubernetes(
         name: 'K8s: API server health (/healthz)',
         passed: apiHealth.includes('ok'),
         detail: apiHealth.includes('ok') ? 'API server is healthy' : `API server unhealthy: ${apiHealth.substring(0, 200)}`,
-        severity: !apiHealth.includes('ok') ? 'critical' : undefined,
+        severity: apiHealth.includes('ok') ? undefined : 'critical',
     });
 
     // Node status
@@ -948,7 +948,7 @@ async function diagnoseKubernetes(
         name: 'K8s: Kubelet service',
         passed: kubeletStatus.includes('active'),
         detail: `systemctl: ${kubeletStatus}`,
-        severity: !kubeletStatus.includes('active') ? 'critical' : undefined,
+        severity: kubeletStatus.includes('active') ? undefined : 'critical',
     });
 
     // Kubelet errors
@@ -1404,11 +1404,11 @@ async function main(): Promise<void> {
     report.metadata = metadata;
 
     // ── Phase 4: Kubernetes Diagnostics ──────────────────────────────────
-    if (!skipK8s) {
+    if (skipK8s) {
+        log.warn('Skipping Kubernetes diagnostics (--skip-k8s)');
+    } else {
         const k8sChecks = await diagnoseKubernetes(clients.ssm, params.instanceId);
         report.checks.push(...k8sChecks);
-    } else {
-        log.warn('Skipping Kubernetes diagnostics (--skip-k8s)');
     }
 
     // ── Phase 5: Automatic Repair ────────────────────────────────────────
