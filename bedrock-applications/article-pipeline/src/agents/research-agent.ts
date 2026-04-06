@@ -137,7 +137,7 @@ export function analyseComplexity(markdown: string): ComplexityAnalysis {
     let reason: string;
 
     const isLong = charCount > 8_000;
-    const isCodeHeavy = codeRatio > 0.30;
+    const isCodeHeavy = codeRatio > 0.3;
     const hasManyCodeBlocks = codeBlockCount >= 6;
     const hasIacBlocks = yamlFrontmatterBlocks >= 2;
     const isStructurallyComplex = uniqueHeadingCount >= 8;

@@ -35,7 +35,6 @@ import type {
     ToolConfiguration,
     ToolResultBlock,
     ToolResultContentBlock,
-    ToolUseBlock,
 } from '@aws-sdk/client-bedrock-runtime';
 import {
     CognitoIdentityProviderClient,
@@ -683,7 +682,7 @@ function buildToolConfig(tools: AgentTool[]): ToolConfiguration {
             name: tool.name,
             description: tool.description,
             inputSchema: {
-                json: tool.inputSchema as Record<string, unknown>,
+                json: tool.inputSchema,
             },
         },
     } as Tool));
@@ -757,7 +756,7 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<{ text:
             const toolResults: ContentBlock[] = [];
 
             for (const block of toolUseBlocks) {
-                const toolUse = block.toolUse as ToolUseBlock;
+                const toolUse = block.toolUse;
                 const toolName = toolUse.name ?? 'unknown';
                 const toolInput = (toolUse.input ?? {}) as Record<string, unknown>;
 
