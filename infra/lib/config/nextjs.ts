@@ -54,31 +54,38 @@ export const ASSETS_BUCKET_STEM = 'article-assets';
 // =============================================================================
 
 /**
- * NextAuth.js (Auth.js v5) cookies forwarded by CloudFront to the origin.
+ * Authentication cookies forwarded by CloudFront to the origin.
  *
  * CloudFront OriginRequestPolicy has a hard limit of **10 cookies**.
+ *
+ * This list contains cookies for two authentication systems:
+ * - **Cognito PKCE** (start-admin) — `__session`, `oauth_state`, `pkce_verifier`
+ * - **NextAuth.js v5** (retained for future use) — session, CSRF, callback cookies
+ *
  * We include both `__Secure-`/`__Host-` prefixed variants (used when
  * the browser sees HTTPS) and non-prefixed variants (used when the
  * origin connection is HTTP — which is the case here because CloudFront
  * connects to Traefik via HTTP_ONLY).
  *
- * Dropped to stay within the 10-cookie limit:
- * - `__Secure-authjs.nonce` / `authjs.nonce` — transient, only used
- *   during the initial OAuth redirect and consumed immediately.
+ * Removed (stale — no longer used by any app):
+ * - `__Secure-authjs.pkce.code_verifier` / `authjs.pkce.code_verifier`
+ * - `authjs.state`
  *
  * @see https://authjs.dev/getting-started/deployment#cookies
  */
 export const AUTH_COOKIES = [
-    '__Secure-authjs.session-token',
-    '__Host-authjs.csrf-token',
-    'authjs.callback-url',
-    '__Secure-authjs.callback-url',
-    '__Secure-authjs.state',
-    '__Secure-authjs.pkce.code_verifier',
-    'authjs.session-token',
-    'authjs.csrf-token',
-    'authjs.state',
-    'authjs.pkce.code_verifier',
+    // ── Active: Cognito PKCE (start-admin) ──────────────────────────
+    '__session',                         // JWT access token
+    'oauth_state',                       // PKCE state parameter
+    'pkce_verifier',                     // PKCE code verifier
+    // ── Retained: NextAuth.js session cookies (future use) ──────────
+    '__Secure-authjs.session-token',     // Primary session token
+    '__Host-authjs.csrf-token',          // CSRF protection
+    'authjs.callback-url',              // OAuth callback URL
+    '__Secure-authjs.callback-url',     // Secure variant
+    'authjs.session-token',             // Non-secure session fallback
+    'authjs.csrf-token',                // Non-secure CSRF fallback
+    '__Secure-authjs.state',            // Retained as safety margin
 ] as const;
 
 /**
