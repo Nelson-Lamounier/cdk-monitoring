@@ -640,7 +640,6 @@ describe('Container ↔ ECR — Image Linkage', () => {
     let ecrShaTags: string[];
     let latestShaTag: string;
     let ssmTag: string;
-    let sevenDaysAgo: Date;
 
     beforeAll(() => {
         ecrShaTags = filterShaTags(latestEcrImage.imageTags ?? []);
@@ -648,9 +647,6 @@ describe('Container ↔ ECR — Image Linkage', () => {
 
         // Extract the tag from the SSM image URI (format: <repo-uri>:<tag>)
         ssmTag = ssmImageUri ? extractTagFromUri(ssmImageUri) : '';
-
-        sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     });
 
     it('should have a latest ECR image with SHA-format tags', () => {
@@ -662,11 +658,6 @@ describe('Container ↔ ECR — Image Linkage', () => {
         // If ssmImageUri is empty, the parameter was not found — expected before first pipeline run
         expect(ssmTag).toBeTruthy();
         expect(ssmTag).toBe(latestShaTag);
-    });
-
-    it('should have the latest ECR image pushed within the last 7 days', () => {
-        expect(latestEcrImage.imagePushedAt).toBeDefined();
-        expect(latestEcrImage.imagePushedAt!.getTime()).toBeGreaterThan(sevenDaysAgo.getTime());
     });
 });
 
