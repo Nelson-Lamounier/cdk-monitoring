@@ -2,7 +2,7 @@
   "metadataAttributes": {
     "doc_type": "runbook",
     "domain": "kubernetes",
-    "tags": "ec2,asg,bootstrap,self-healing,step-functions,ssm-automation,eip-failover",
-    "status": "accepted"
+    "title": "EC2 Instance Terminated Unexpectedly",
+    "tags": "ec2, asg, bootstrap, self-healing, step-functions, ssm-automation, eip-failover"
   }
 }

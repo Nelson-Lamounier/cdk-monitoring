@@ -16,7 +16,7 @@ related_docs:
   - kubernetes/bootstrap-pipeline.md
   - kubernetes/adrs/argocd-over-flux.md
   - operations/ci-cd-implementation.md
-last_updated: "2026-03-31"
+last_updated: "2026-04-06"
 author: Nelson Lamounier
 status: accepted
 ---

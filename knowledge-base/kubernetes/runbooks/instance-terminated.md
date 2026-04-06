@@ -118,6 +118,17 @@ After automatic recovery completes (typically 8–12 minutes):
 ---
 
 *Commands and paths above are real values from the cdk-monitoring repository.*
+
+## Troubleshooting
+
+### Control Plane Fails to Start After ASG Replacement
+
+**What happened:** The ASG replaces the control plane instance. The S3 DR restore successfully recovers `/etc/kubernetes/pki` and `admin.conf`. However, the API server never starts, `kubectl` commands fail silently during bootstrap, and the automation attempts to renew the API server certificate, burning through the Let's Encrypt / AWS 5-certificates-per-week rate limit.
+
+**Why:** The bootstrap scripts (`_handle_second_run()`) erroneously assumed that if `admin.conf` exists, the cluster is already running and only needs a DNS update. However, on ASG replacement, the root filesystem is fresh: there is no kubelet config, containerd isn't running, and static pod manifests (`/etc/kubernetes/manifests`) are missing. The certificate renewal was also unnecessary because the node's external IP changes, but TLS is validated against the internal DNS name (`k8s-api.k8s.internal`), which is already in the existing certificate's SAN list.
+
+**Fix:** The logic was refactored to check for the existence of `kube-apiserver.yaml`. If missing (indicating a fresh root FS from an ASG replacement), it triggers a zero-cert-regeneration reconstruction flow `_reconstruct_control_plane()`. This flow executes targeted `kubeadm init phase` subcommands (kubeconfig, control-plane, etcd, kubelet-start) to reconstruct the control plane using the mathematically valid PKI recovered from S3, without hitting certificate limits. It also includes an automated RBAC repair for the `kubeadm:cluster-admins` cluster role binding if access is lost after reconstruction.
+
 ## Transferable Skills Demonstrated
 
 - **Auto-healing infrastructure** — designing self-recovery workflows with Step Functions and SSM
