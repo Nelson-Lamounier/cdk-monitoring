@@ -23,7 +23,7 @@ move_file() {
     mkdir -p "$(dirname "$dst")"
 
     # Move the markdown file
-    if [ -f "$src" ]; then
+    if [[ -f "$src" ]]; then
         mv "$src" "$dst"
         echo "  📦 $(basename "$src") → $dst"
     else
@@ -34,7 +34,7 @@ move_file() {
     # Move the sidecar .metadata.json if it exists
     local src_sidecar="${src}.metadata.json"
     local dst_sidecar="${dst}.metadata.json"
-    if [ -f "$src_sidecar" ]; then
+    if [[ -f "$src_sidecar" ]]; then
         mv "$src_sidecar" "$dst_sidecar"
     fi
 
@@ -143,10 +143,10 @@ echo ""
 echo "🧹 Cleaning up empty directories..."
 
 for dir in adrs architecture code cost implementation live-infra runbooks self-reflection; do
-    if [ -d "$dir" ] && [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+    if [[ -d "$dir" ]] && [[ -z "$(ls -A "$dir" 2>/dev/null)" ]]; then
         rmdir "$dir"
         echo "  🗑️  Removed empty: $dir/"
-    elif [ -d "$dir" ]; then
+    elif [[ -d "$dir" ]]; then
         echo "  ⚠️  Not empty (skipped): $dir/ — contains: $(ls "$dir")"
     fi
 done
