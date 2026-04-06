@@ -54,9 +54,10 @@ run_on_instance() {
         --output text)
 
     # Wait for the command to complete
-    local status="InProgress"
+    local STATUS_IN_PROGRESS="InProgress"
+    local status="$STATUS_IN_PROGRESS"
     local attempts=0
-    while [[ "$status" == "InProgress" ]] && [[ $attempts -lt 60 ]]; do
+    while [[ "$status" == "$STATUS_IN_PROGRESS" ]] && [[ $attempts -lt 60 ]]; do
         sleep 3
         status=$(aws ssm get-command-invocation \
             --region "$REGION" \
@@ -64,11 +65,11 @@ run_on_instance() {
             --command-id "$cmd_id" \
             --instance-id "$instance_id" \
             --query 'Status' \
-            --output text 2>/dev/null || echo "InProgress")
+            --output text 2>/dev/null || echo "$STATUS_IN_PROGRESS")
         ((attempts++))
     done
 
-    if [[ "$status" == "InProgress" ]]; then
+    if [[ "$status" == "$STATUS_IN_PROGRESS" ]]; then
         fail "Command timed out after $((attempts * 3))s"
         return 1
     fi
