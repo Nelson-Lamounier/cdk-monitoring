@@ -31,10 +31,15 @@ import type { Instance, InstanceStatus } from '@aws-sdk/client-ec2';
 import {
     SSMClient,
     GetAutomationExecutionCommand,
+    GetCommandInvocationCommand,
     DescribeInstanceInformationCommand,
     GetParameterCommand,
 } from '@aws-sdk/client-ssm';
-import type { AutomationExecution, InstanceInformation } from '@aws-sdk/client-ssm';
+import type {
+    AutomationExecution,
+    InstanceInformation,
+    StepExecution,
+} from '@aws-sdk/client-ssm';
 
 import type { Environment } from '../../../lib/config';
 import { k8sSsmPrefix } from '../../../lib/config/ssm-paths';
@@ -71,6 +76,15 @@ const EXPECTED_SSM_STATUS = 'Online';
 
 /** EC2 status check expected value */
 const EXPECTED_STATUS_CHECK = 'ok';
+
+/**
+ * Maximum number of output lines to show inline in CI logs.
+ * The full output is always available via the CloudWatch Logs link.
+ */
+const MAX_INLINE_OUTPUT_LINES = 80;
+
+/** CloudWatch log group path template for bootstrap SSM commands */
+const CW_LOG_GROUP_BOOTSTRAP = `/ssm${PREFIX}/bootstrap`;
 
 /** SSM Automation execution status indicating success */
 const EXECUTION_STATUS_SUCCESS = 'Success';
@@ -268,6 +282,68 @@ async function getInstanceBootstrapRole(instanceId: string): Promise<string | un
 
 const roleDataMap = new Map<string, RoleData>();
 
+/**
+ * Fetch the full command output via GetCommandInvocation.
+ *
+ * SSM's `FailureMessage` truncates output to ~2500 characters, making
+ * it nearly impossible to diagnose bootstrap failures from CI logs.
+ * This function fetches the complete stdout/stderr (up to 24KB each)
+ * for the underlying `aws:runCommand` step.
+ *
+ * @param commandId - The SSM RunCommand ID from the step's Outputs
+ * @param instanceId - The target EC2 instance ID
+ * @returns Object with stdout, stderr, and the response code
+ */
+async function getFullCommandOutput(
+    commandId: string,
+    instanceId: string,
+): Promise<{ stdout: string; stderr: string; responseCode: string } | undefined> {
+    try {
+        const result = await ssm.send(new GetCommandInvocationCommand({
+            CommandId: commandId,
+            InstanceId: instanceId,
+        }));
+        return {
+            stdout: result.StandardOutputContent ?? '',
+            stderr: result.StandardErrorContent ?? '',
+            responseCode: String(result.ResponseCode ?? 'unknown'),
+        };
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Build a CloudWatch Logs Insights console URL for a specific command.
+ *
+ * Generates a direct link to the CloudWatch Logs console filtered to the
+ * log stream for the failed SSM RunCommand invocation. This provides
+ * access to the completely untruncated output regardless of size.
+ *
+ * @param commandId - SSM RunCommand ID
+ * @param instanceId - EC2 instance ID
+ * @returns Direct URL to the CloudWatch Logs console
+ */
+function buildCloudWatchLink(commandId: string, instanceId: string): string {
+    // SSM RunCommand creates log streams with the format: <command-id>/<instance-id>/aws-runShellScript/stdout
+    const logStream = `${commandId}/${instanceId}/aws-runShellScript/stdout`;
+    const encodedGroup = encodeURIComponent(CW_LOG_GROUP_BOOTSTRAP);
+    const encodedStream = encodeURIComponent(logStream);
+    return `https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}` +
+        `#logsV2:log-groups/log-group/${encodedGroup}/log-events/${encodedStream}`;
+}
+
+/**
+ * Extract the last N lines from a multi-line string.
+ * Helps keep CI output readable while showing the most relevant failure context.
+ */
+function lastNLines(text: string, n: number): string {
+    const lines = text.split('\n');
+    if (lines.length <= n) return text;
+    return `... (${lines.length - n} lines truncated, see CloudWatch link below) ...\n` +
+        lines.slice(-n).join('\n');
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -357,7 +433,7 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
             let failedStepsDiagnostic: string;
 
             // Depends on: roleDataMap populated in top-level beforeAll
-            beforeAll(() => {
+            beforeAll(async () => {
                 const data = roleDataMap.get(target.label) ?? {};
                 executionStatus = data.automationExecution?.AutomationExecutionStatus ?? VACUOUS;
                 executionId = data.automationExecution?.AutomationExecutionId ?? VACUOUS;
@@ -365,12 +441,62 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
                 // Pre-compute failure diagnostics (outside it() per jest/no-conditional-in-test)
                 if (executionStatus !== VACUOUS && EXECUTION_FAILURE_STATUSES.has(executionStatus)) {
                     const failedSteps = (data.automationExecution?.StepExecutions ?? [])
-                        .filter((s) => s.StepStatus === 'Failed')
-                        .map((s) => `${s.StepName}: ${s.FailureMessage ?? 'unknown'}`);
+                        .filter((s: StepExecution) => s.StepStatus === 'Failed');
 
-                    failedStepsDiagnostic = failedSteps.length > 0
-                        ? `\n  Failed steps:\n    ${failedSteps.join('\n    ')}`
-                        : '';
+                    // Resolve the target instance ID for this execution
+                    const targetInstanceId =
+                        data.automationExecution?.Parameters?.InstanceId?.[0]
+                        ?? data.instance?.InstanceId;
+
+                    // Build diagnostic lines with full command output
+                    const diagnosticParts: string[] = [];
+
+                    for (const step of failedSteps) {
+                        const stepName = step.StepName ?? 'unknown';
+                        diagnosticParts.push(`\n${'═'.repeat(72)}`);
+                        diagnosticParts.push(`  FAILED STEP: ${stepName}`);
+                        diagnosticParts.push(`${'═'.repeat(72)}`);
+
+                        // Extract CommandId from step outputs (SSM stores it as aws:runCommand output)
+                        const commandId = step.Outputs?.['CommandId']?.[0]
+                            ?? step.Outputs?.['RunCommandOutput']?.[0];
+
+                        if (commandId && targetInstanceId) {
+                            // Fetch full, untruncated output via GetCommandInvocation
+                            const fullOutput = await getFullCommandOutput(commandId, targetInstanceId);
+
+                            if (fullOutput) {
+                                diagnosticParts.push(`\n  Response code: ${fullOutput.responseCode}`);
+                                diagnosticParts.push(`\n  ── stdout (last ${MAX_INLINE_OUTPUT_LINES} lines) ──`);
+                                diagnosticParts.push(lastNLines(fullOutput.stdout, MAX_INLINE_OUTPUT_LINES));
+
+                                if (fullOutput.stderr.trim()) {
+                                    diagnosticParts.push(`\n  ── stderr (last ${MAX_INLINE_OUTPUT_LINES} lines) ──`);
+                                    diagnosticParts.push(lastNLines(fullOutput.stderr, MAX_INLINE_OUTPUT_LINES));
+                                }
+                            } else {
+                                diagnosticParts.push(
+                                    `\n  ⚠ Could not fetch full output (CommandId: ${commandId})`,
+                                );
+                            }
+
+                            // Always provide CloudWatch link for complete, untruncated output
+                            diagnosticParts.push(`\n  📋 Full output (CloudWatch Logs):`);
+                            diagnosticParts.push(`     ${buildCloudWatchLink(commandId, targetInstanceId)}`);
+                        } else {
+                            // Fallback to truncated FailureMessage if CommandId unavailable
+                            diagnosticParts.push(`\n  FailureMessage (truncated by SSM):`);
+                            diagnosticParts.push(`    ${step.FailureMessage ?? 'unknown'}`);
+                            diagnosticParts.push(
+                                `\n  ⚠ CommandId not found in step outputs — check CloudWatch manually:`,
+                            );
+                            diagnosticParts.push(
+                                `     Log group: ${CW_LOG_GROUP_BOOTSTRAP}`,
+                            );
+                        }
+                    }
+
+                    failedStepsDiagnostic = diagnosticParts.join('\n');
 
                     console.error(
                         `[FAILED] ${target.label} automation ${executionStatus}${failedStepsDiagnostic}`,
@@ -381,7 +507,7 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
 
                 if (executionStatus === VACUOUS) {
                     console.warn(
-                        `[VACUOUS] No execution found for ${target.label} \u2014 skipping`,
+                        `[VACUOUS] No execution found for ${target.label} — skipping`,
                     );
                 }
             });
