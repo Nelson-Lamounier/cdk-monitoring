@@ -82,7 +82,7 @@ function buildQaMessage(
     technicalFacts: string[],
     mode: string,
 ): string {
-    const parts: string[] = [
+    const baseParts = [
         `Review the following blog article produced by an AI Writer agent.`,
         ``,
         `## Article Metadata (Writer Agent Output)`,
@@ -99,19 +99,16 @@ function buildQaMessage(
         `- Shot List Count: ${writer.shotList.length}`,
     ];
 
-    // Include Research Agent's technical facts for cross-referencing
-    if (technicalFacts.length > 0) {
-        parts.push(
-            ``,
-            `## Technical Facts from Research Agent`,
-            `Cross-reference the article content against these verified facts:`
-        );
-        for (const fact of technicalFacts) {
-            parts.push(`- ${fact}`);
-        }
-    }
+    const techParts = technicalFacts.length > 0
+        ? [
+              ``,
+              `## Technical Facts from Research Agent`,
+              `Cross-reference the article content against these verified facts:`,
+              ...technicalFacts.map(f => `- ${f}`),
+          ]
+        : [];
 
-    parts.push(
+    const footerParts = [
         ``,
         `## Full Article Content`,
         ``,
@@ -120,9 +117,9 @@ function buildQaMessage(
         `--- END ARTICLE ---`,
         ``,
         `Perform your quality review and return the JSON result object.`
-    );
+    ];
 
-    return parts.join('\n');
+    return [...baseParts, ...techParts, ...footerParts].join('\n');
 }
 
 // =============================================================================
