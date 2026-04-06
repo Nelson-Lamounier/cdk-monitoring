@@ -417,7 +417,6 @@ export class KubernetesEdgeStack extends cdk.Stack {
 
         // Cache Policies
         const staticAssetsCachePolicy = new cloudfront.CachePolicy(this, 'StaticAssetsCachePolicy', {
-            cachePolicyName: `${envName}-${namePrefix}-static-assets`,
             comment: 'Cache policy for immutable static assets (1 year TTL)',
             defaultTtl: cfConfig.staticAssetsTtl.default,
             maxTtl: cfConfig.staticAssetsTtl.max,
@@ -438,7 +437,6 @@ export class KubernetesEdgeStack extends cdk.Stack {
         //   Cache-Control: s-maxage=<revalidate>, stale-while-revalidate
         // and that Traefik does NOT strip or override these headers.
         const dynamicContentCachePolicy = new cloudfront.CachePolicy(this, 'DynamicContentCachePolicy', {
-            cachePolicyName: `${envName}-${namePrefix}-dynamic-content`,
             comment: 'Cache policy for ISR pages with revalidation',
             defaultTtl: cfConfig.dynamicContentTtl.default,
             maxTtl: cfConfig.dynamicContentTtl.max,
@@ -452,9 +450,26 @@ export class KubernetesEdgeStack extends cdk.Stack {
 
         const noCachePolicy = cloudfront.CachePolicy.CACHING_DISABLED;
 
+        // Auth-aware no-cache policy: MaxTTL must be >0 so CloudFront permits
+        // CookieBehavior.ALL — but the origin sends Cache-Control: no-store,
+        // so CloudFront will never cache an actual response.  The critical
+        // difference from CACHING_DISABLED is that CookieBehavior.ALL causes
+        // CloudFront to forward Set-Cookie response headers back to the viewer,
+        // which is required for the Auth.js CSRF double-submit flow.
+        const authNoCachePolicy = new cloudfront.CachePolicy(this, 'AuthNoCachePolicy', {
+            comment: 'No caching — passes Set-Cookie headers for Auth.js CSRF/session flow',
+            defaultTtl: cdk.Duration.seconds(0),
+            maxTtl: cdk.Duration.seconds(1),
+            minTtl: cdk.Duration.seconds(0),
+            cookieBehavior: cloudfront.CacheCookieBehavior.all(),
+            queryStringBehavior: cloudfront.CacheQueryStringBehavior.all(),
+            headerBehavior: cloudfront.CacheHeaderBehavior.none(),
+            enableAcceptEncodingGzip: false,
+            enableAcceptEncodingBrotli: false,
+        });
+
         // Origin Request Policy (forwarded to Traefik/EIP)
         const eipOriginRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'EipOriginRequestPolicy', {
-            originRequestPolicyName: `${envName}-${namePrefix}-eip-origin`,
             comment: 'Forward necessary headers to EIP/Traefik origin',
             headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(...cfConfig.originRequestHeaders),
             queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.all(),
@@ -464,7 +479,6 @@ export class KubernetesEdgeStack extends cdk.Stack {
         // Admin/Auth Origin Request Policy — forwards NextAuth.js session cookies
         // Required for login, session validation, and CSRF protection on admin routes.
         const adminOriginRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'AdminOriginRequestPolicy', {
-            originRequestPolicyName: `${envName}-${namePrefix}-admin-origin`,
             comment: 'Forward headers + NextAuth.js session cookies for admin/auth routes',
             headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(...cfConfig.originRequestHeaders),
             queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.all(),
@@ -514,7 +528,53 @@ export class KubernetesEdgeStack extends cdk.Stack {
                     compress: true,
                     description: 'Article images and media',
                 },
-                // API routes
+                // Videos
+                {
+                    pathPattern: CLOUDFRONT_PATH_PATTERNS.assets.videos,
+                    origin: s3Origin,
+                    cachePolicy: staticAssetsCachePolicy, // Uses the exact same heavy-cache TTL edge optimization layer
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+                    compress: true,
+                    description: 'Article videos and media',
+                },
+                // NextAuth.js callback/session routes — must forward cookies
+                // IMPORTANT: Must be listed BEFORE /api/* because CloudFront
+                // evaluates behaviours in listed order (first match wins),
+                // NOT by path specificity.
+                {
+                    pathPattern: CLOUDFRONT_PATH_PATTERNS.authCallback,
+                    origin: eipOrigin,
+                    cachePolicy: authNoCachePolicy,
+                    originRequestPolicy: adminOriginRequestPolicy,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    compress: false,
+                    description: 'NextAuth.js auth callbacks (no caching, Set-Cookie forwarded)',
+                },
+                // Admin pages — caching disabled, cookies forwarded for session validation
+                {
+                    pathPattern: CLOUDFRONT_PATH_PATTERNS.admin,
+                    origin: eipOrigin,
+                    cachePolicy: authNoCachePolicy,
+                    originRequestPolicy: adminOriginRequestPolicy,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    compress: true,
+                    description: 'Admin pages (no caching, Set-Cookie forwarded for auth)',
+                },
+                // Admin API routes — caching disabled, cookies forwarded for session validation
+                {
+                    pathPattern: CLOUDFRONT_PATH_PATTERNS.adminApi,
+                    origin: eipOrigin,
+                    cachePolicy: authNoCachePolicy,
+                    originRequestPolicy: adminOriginRequestPolicy,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    compress: true,
+                    description: 'Admin API routes (no caching, Set-Cookie forwarded for auth)',
+                },
+                // API routes — general (catch-all for /api/* after more specific patterns above)
                 {
                     pathPattern: CLOUDFRONT_PATH_PATTERNS.api,
                     origin: eipOrigin,
@@ -525,30 +585,6 @@ export class KubernetesEdgeStack extends cdk.Stack {
                     compress: false,
                     description: 'Next.js API routes (no caching)',
                 },
-                // NextAuth.js callback/session routes — must forward cookies
-                // Placed after /api/* but CloudFront evaluates most-specific path first,
-                // so /api/auth/* takes precedence over /api/* automatically.
-                {
-                    pathPattern: CLOUDFRONT_PATH_PATTERNS.authCallback,
-                    origin: eipOrigin,
-                    cachePolicy: noCachePolicy,
-                    originRequestPolicy: adminOriginRequestPolicy,
-                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-                    compress: false,
-                    description: 'NextAuth.js auth callbacks (no caching, cookies forwarded)',
-                },
-                // Admin pages — caching disabled, cookies forwarded for session validation
-                {
-                    pathPattern: CLOUDFRONT_PATH_PATTERNS.admin,
-                    origin: eipOrigin,
-                    cachePolicy: noCachePolicy,
-                    originRequestPolicy: adminOriginRequestPolicy,
-                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-                    compress: true,
-                    description: 'Admin pages (no caching, cookies forwarded for auth)',
-                },
             ],
             errorResponses: CLOUDFRONT_ERROR_RESPONSES.map((err) => ({
                 ...err,
@@ -556,6 +592,7 @@ export class KubernetesEdgeStack extends cdk.Stack {
             })),
             enableLogging: loggingEnabled,
             logPrefix,
+            logIncludeCookies: true,
             priceClass: cfConfig.priceClass,
             httpVersion: cfConfig.httpVersion,
             enableIpv6: true,
@@ -779,3 +816,4 @@ export class KubernetesEdgeStack extends cdk.Stack {
         return reader.getResponseField('Parameter.Value');
     }
 }
+

@@ -121,14 +121,18 @@ export interface NextjsSsmPaths {
         readonly distributionId: string;
     };
 
-    // --- Authentication (NextAuth.js) ---
+    // --- Authentication (Cognito + NextAuth.js) ---
     readonly auth: {
+        /** Cognito User Pool ID */
+        readonly cognitoUserPoolId: string;
+        /** Cognito User Pool Client ID */
+        readonly cognitoClientId: string;
+        /** Cognito OIDC Issuer URL */
+        readonly cognitoIssuerUrl: string;
+        /** Cognito Hosted UI domain */
+        readonly cognitoDomain: string;
         /** NextAuth.js JWT signing secret */
         readonly nextauthSecret: string;
-        /** Admin username for Credentials provider */
-        readonly adminUsername: string;
-        /** Admin password for Credentials provider */
-        readonly adminPassword: string;
         /** NextAuth.js base URL (e.g., https://nelsonlamounier.com) */
         readonly nextauthUrl: string;
     };
@@ -183,11 +187,13 @@ export function nextjsSsmPaths(
             distributionId: `${prefix}/cloudfront/distribution-id`,
         },
 
-        // Authentication (NextAuth.js)
+        // Authentication (Cognito + NextAuth.js)
         auth: {
+            cognitoUserPoolId: `${prefix}/auth/cognito-user-pool-id`,
+            cognitoClientId: `${prefix}/auth/cognito-client-id`,
+            cognitoIssuerUrl: `${prefix}/auth/cognito-issuer-url`,
+            cognitoDomain: `${prefix}/auth/cognito-domain`,
             nextauthSecret: `${prefix}/auth/nextauth-secret`,
-            adminUsername: `${prefix}/auth/admin-username`,
-            adminPassword: `${prefix}/auth/admin-password`,
             nextauthUrl: `${prefix}/auth/nextauth-url`,
         },
 
@@ -371,8 +377,6 @@ export interface K8sSsmPaths {
     readonly monitoringSgId: string;
 
     // --- Storage ---
-    /** Persistent EBS data volume ID */
-    readonly ebsVolumeId: string;
     /** S3 bucket name for k8s scripts and manifests */
     readonly scriptsBucket: string;
 
@@ -387,6 +391,8 @@ export interface K8sSsmPaths {
     readonly kmsKeyArn: string;
 
     // --- NLB (Network Load Balancer) ---
+    /** NLB full name (for CloudWatch metrics) */
+    readonly nlbFullName: string;
     /** NLB HTTP (port 80) target group ARN */
     readonly nlbHttpTargetGroupArn: string;
     /** NLB HTTPS (port 443) target group ARN */
@@ -421,7 +427,6 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
         monitoringSgId: `${prefix}/monitoring-sg-id`,
 
         // Storage
-        ebsVolumeId: `${prefix}/ebs-volume-id`,
         scriptsBucket: `${prefix}/scripts-bucket`,
 
         // DNS
@@ -432,6 +437,7 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
         kmsKeyArn: `${prefix}/kms-key-arn`,
 
         // NLB
+        nlbFullName: `${prefix}/nlb-full-name`,
         nlbHttpTargetGroupArn: `${prefix}/nlb-http-target-group-arn`,
         nlbHttpsTargetGroupArn: `${prefix}/nlb-https-target-group-arn`,
 
@@ -447,16 +453,22 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
 // BEDROCK SSM PATHS
 // =============================================================================
 
-/** Bedrock SSM prefix: /bedrock/{environment} */
+/**
+ * Bedrock SSM prefix: /bedrock-{env}
+ *
+ * Uses the `flatName` convention (e.g. `bedrock-dev`) to match
+ * the `namePrefix` used by the Bedrock stacks when publishing
+ * SSM parameters. This aligns with `flatName('bedrock', '', environment)`.
+ */
 export function bedrockSsmPrefix(environment: Environment): string {
-    return `/bedrock/${environment}`;
+    return `/bedrock-${shortEnv(environment)}`;
 }
 
 /**
  * SSM parameter paths for the Bedrock Agent stack.
  */
 export interface BedrockSsmPaths {
-    /** The prefix itself: /bedrock/{environment} */
+    /** The prefix itself: /bedrock-{env} */
     readonly prefix: string;
     /** Bedrock Agent ID */
     readonly agentId: string;
@@ -468,11 +480,30 @@ export interface BedrockSsmPaths {
     readonly apiUrl: string;
     /** S3 data bucket name (for Knowledge Base documents) */
     readonly dataBucketName: string;
+    /** S3 assets bucket name (for draft uploads and published articles) */
+    readonly assetsBucketName: string;
     /** AI Content DynamoDB table name (articles, metadata) */
     readonly contentTableName: string;
     /** AI Content DynamoDB table ARN */
     readonly contentTableArn: string;
-    /** Wildcard path for IAM: /bedrock/{environment}/* */
+    /**
+     * Shared secret for on-demand ISR cache revalidation.
+     *
+     * Used by the Publisher Lambda to call POST /api/revalidate on the
+     * Next.js pod after publishing an article, triggering immediate
+     * cache purge for the articles listing and detail pages.
+     *
+     * @remarks
+     * Created manually via CLI (not CDK-managed):
+     * ```bash
+     * aws ssm put-parameter \
+     *   --name "/bedrock-dev/revalidation-secret" \
+     *   --value "$(openssl rand -base64 32)" \
+     *   --type SecureString
+     * ```
+     */
+    readonly revalidationSecret: string;
+    /** Wildcard path for IAM: /bedrock-{env}/* */
     readonly wildcard: string;
 }
 
@@ -489,8 +520,10 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
         agentAliasId: `${prefix}/agent-alias-id`,
         apiUrl: `${prefix}/api-url`,
         dataBucketName: `${prefix}/data-bucket-name`,
+        assetsBucketName: `${prefix}/assets-bucket-name`,
         contentTableName: `${prefix}/content-table-name`,
         contentTableArn: `${prefix}/content-table-arn`,
+        revalidationSecret: `${prefix}/revalidation-secret`,
         wildcard: `${prefix}/*`,
     };
 }

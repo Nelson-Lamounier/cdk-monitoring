@@ -10,7 +10,7 @@
  * ## Architecture Role
  * This builder implements Layer 2 of the 3-layer bootstrap architecture:
  *   - **Layer 1 — Golden AMI:** Pre-bakes binaries (Docker, containerd, kubeadm, Helm, Calico)
- *   - **Layer 2 — User Data (THIS):** Infrastructure readiness stub (EBS attach, cfn-signal)
+ *   - **Layer 2 — User Data (THIS):** Infrastructure readiness stub (cfn-signal, env export)
  *   - **Layer 3 — SSM Automation:** All K8s readiness logic (kubeadm init/join, CNI, ArgoCD)
  *
  * User Data intentionally does NOT perform K8s cluster operations. Those are
@@ -19,7 +19,6 @@
  *
  * ## Available Methods
  * - `updateSystem()` - Run system package updates
- * - `attachEbsVolume()` - Attach and mount an EBS volume
  * - `sendCfnSignal()` - Send CloudFormation signal for ASG validation
  * - `triggerSsmConfiguration()` - Fire SSM Run Command (fire-and-forget)
  * - `addCustomScript()` - Add any custom script section
@@ -49,7 +48,6 @@
  * const userData = ec2.UserData.forLinux();
  * new UserDataBuilder(userData)
  *     .updateSystem()
- *     .attachEbsVolume({ volumeId: props.volumeId, mountPoint: '/data' })
  *     .sendCfnSignal({ stackName: stack.stackName, asgLogicalId })
  *     .triggerSsmConfiguration({
  *         documentName: ssmDocumentName,
@@ -66,22 +64,6 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 // TYPES & INTERFACES
 // =============================================================================
 
-/**
- * Configuration for EBS volume attachment.
- * Used by `attachEbsVolume()` method.
- */
-export interface EbsVolumeConfig {
-    /** EBS volume ID (supports CDK Tokens) */
-    volumeId: string;
-    /** Mount point path */
-    mountPoint: string;
-    /** Device name @default '/dev/xvdf' */
-    deviceName?: string;
-    /** Filesystem type @default 'xfs' */
-    fsType?: string;
-    /** SSM parameter path to look up volume ID dynamically */
-    ssmParameterPath?: string;
-}
 
 /**
  * Configuration for downloading and starting the monitoring stack from S3.
@@ -209,177 +191,11 @@ dnf update -y`);
     }
 
 
-
-    /**
-     * Attach and mount an EBS volume.
-     *
-     * Handles:
-     * - Attaching the volume to the instance
-     * - Waiting for the device to appear (including NVMe mapping)
-     * - Creating filesystem if needed
-     * - Mounting and adding to fstab
-     *
-     * @param config - EBS volume configuration (volumeId supports CDK Tokens)
-     * @remarks Generic - can be used by any project.
-     * @returns this - for method chaining
-     */
-    attachEbsVolume(config: EbsVolumeConfig): this {
-        const deviceName = config.deviceName ?? '/dev/xvdf';
-        const fsType = config.fsType ?? 'xfs';
-        const mountPoint = config.mountPoint;
-
-        // Use SSM parameter if provided, otherwise use direct volume ID
-        const volumeIdScript = config.ssmParameterPath
-            ? `VOLUME_ID=$(aws ssm get-parameter --name "${config.ssmParameterPath}" --query "Parameter.Value" --output text --region $REGION)`
-            : `VOLUME_ID="${config.volumeId}"`;
-
-        this.userData.addCommands(`
-# Attach and mount EBS volume
-echo "=== Attaching EBS volume ==="
-
-# Get instance metadata using IMDSv2 (required for HttpTokens: required)
-# Always fetch a fresh token with max TTL (6h) to avoid expiration across methods
-IMDS_TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" \\
-  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-
-INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \\
-  http://169.254.169.254/latest/meta-data/instance-id)
-REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \\
-  http://169.254.169.254/latest/meta-data/placement/region)
-AZ=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \\
-  http://169.254.169.254/latest/meta-data/placement/availability-zone)
-
-# Validate metadata was retrieved (fail fast if empty)
-if [ -z "$INSTANCE_ID" ] || [ -z "$REGION" ]; then
-    echo "ERROR: Failed to retrieve instance metadata via IMDSv2"
-    echo "INSTANCE_ID='$INSTANCE_ID' REGION='$REGION'"
-    exit 1
-fi
-
-${volumeIdScript}
-
-echo "Instance: $INSTANCE_ID, Region: $REGION, AZ: $AZ"
-echo "Volume ID: $VOLUME_ID"
-
-# Wait for volume to become available (handles ASG rolling update race condition).
-# During rolling updates the lifecycle hook Lambda detaches the volume from the
-# old instance. This may take 10-30s. Poll until the volume is available.
-# If it's still attached after 120s, force-detach it.
-EBS_MAX_WAIT=300
-EBS_FORCE_DETACH_AFTER=120
-EBS_POLL_INTERVAL=10
-EBS_WAITED=0
-EBS_FORCE_DETACHED=false
-
-while true; do
-    VOLUME_STATE=$(aws ec2 describe-volumes --volume-ids $VOLUME_ID --query "Volumes[0].State" --output text --region $REGION 2>/dev/null || echo "not-found")
-    echo "Volume state: $VOLUME_STATE (waited \${EBS_WAITED}s / \${EBS_MAX_WAIT}s)"
-
-    if [ "$VOLUME_STATE" = "available" ]; then
-        echo "Attaching volume $VOLUME_ID to $INSTANCE_ID as ${deviceName}..."
-        aws ec2 attach-volume --volume-id $VOLUME_ID --instance-id $INSTANCE_ID --device ${deviceName} --region $REGION
-
-        echo "Waiting for volume to attach..."
-        aws ec2 wait volume-in-use --volume-ids $VOLUME_ID --region $REGION
-        sleep 5
-        echo "Volume attached successfully"
-        break
-
-    elif [ "$VOLUME_STATE" = "in-use" ]; then
-        ATTACHED_INSTANCE=$(aws ec2 describe-volumes --volume-ids $VOLUME_ID --query "Volumes[0].Attachments[0].InstanceId" --output text --region $REGION)
-        if [ "$ATTACHED_INSTANCE" = "$INSTANCE_ID" ]; then
-            echo "Volume is already attached to this instance"
-            break
-        fi
-
-        # Force-detach if the old instance hasn't released the volume after 120s
-        if [ $EBS_WAITED -ge $EBS_FORCE_DETACH_AFTER ] && [ "$EBS_FORCE_DETACHED" = "false" ]; then
-            echo "WARNING: Volume still attached to $ATTACHED_INSTANCE after \${EBS_FORCE_DETACH_AFTER}s. Force-detaching..."
-            aws ec2 detach-volume --volume-id $VOLUME_ID --instance-id $ATTACHED_INSTANCE --force --region $REGION || true
-            EBS_FORCE_DETACHED=true
-        else
-            echo "Volume attached to $ATTACHED_INSTANCE (terminating). Waiting for detach..."
-        fi
-
-    elif [ "$VOLUME_STATE" = "detaching" ]; then
-        echo "Volume is detaching from old instance. Waiting..."
-
-    else
-        echo "ERROR: Volume not found or in unexpected state: $VOLUME_STATE"
-        exit 1
-    fi
-
-    if [ $EBS_WAITED -ge $EBS_MAX_WAIT ]; then
-        echo "ERROR: Volume did not become available after \${EBS_MAX_WAIT}s"
-        exit 1
-    fi
-
-    sleep $EBS_POLL_INTERVAL
-    EBS_WAITED=$((EBS_WAITED + EBS_POLL_INTERVAL))
-done
-
-# Wait for device to appear (NVMe instances remap /dev/xvdf → /dev/nvmeXn1)
-DEVICE="${deviceName}"
-NVME_DEVICE=""
-
-for i in {1..30}; do
-    # Check if the expected block device name exists directly
-    if [ -b "$DEVICE" ]; then
-        echo "Device $DEVICE is ready"
-        break
-    fi
-
-    # On NVMe instances, use ebsnvme-id (Amazon Linux built-in) to map volume → device
-    # This is more reliable than parsing lsblk serial numbers which can change format
-    for nvme_dev in /dev/nvme*n1; do
-        [ -b "$nvme_dev" ] || continue
-        MAPPED_VOL=$(ebsnvme-id -v "$nvme_dev" 2>/dev/null || echo "")
-        if [ "$MAPPED_VOL" = "$VOLUME_ID" ]; then
-            echo "Found NVMe device via ebsnvme-id: $nvme_dev → $VOLUME_ID"
-            NVME_DEVICE="$nvme_dev"
-            break
-        fi
-    done
-
-    if [ -n "$NVME_DEVICE" ] && [ -b "$NVME_DEVICE" ]; then
-        DEVICE="$NVME_DEVICE"
-        break
-    fi
-
-    echo "Waiting for device... ($i/30)"
-    sleep 2
-done
-
-if [ ! -b "$DEVICE" ]; then
-    echo "ERROR: Device $DEVICE not found after 60 seconds"
-    exit 1
-fi
-
-FSTYPE=$(blkid -o value -s TYPE $DEVICE 2>/dev/null || echo "")
-if [ -z "$FSTYPE" ]; then
-    echo "No filesystem found, creating ${fsType} filesystem..."
-    mkfs.${fsType} $DEVICE
-fi
-
-mkdir -p ${mountPoint}
-echo "Mounting $DEVICE to ${mountPoint}..."
-mount $DEVICE ${mountPoint}
-
-if ! grep -q "${mountPoint}" /etc/fstab; then
-    echo "$DEVICE ${mountPoint} ${fsType} defaults,nofail 0 2" >> /etc/fstab
-    echo "Added mount to /etc/fstab"
-fi
-
-chown -R ec2-user:ec2-user ${mountPoint}
-echo "EBS volume mounted at ${mountPoint}"`);
-        return this;
-    }
-
     /**
      * Send CloudFormation signal for ASG deployment validation.
      *
      * Signals SUCCESS to CloudFormation, indicating infrastructure is ready.
-     * Should be called after critical setup (EBS attach) but before
+     * Should be called after critical setup but before
      * non-critical steps (SSM app config).
      *
      * @param config - CFN signal configuration (supports CDK Tokens)

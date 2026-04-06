@@ -17,6 +17,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { type DeployableEnvironment, Environment, environmentRemovalPolicy } from '../environments';
+import { MODELS } from '../shared/model-registry';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -73,7 +74,7 @@ export const SELF_HEALING_CONFIGS: Record<DeployableEnvironment, SelfHealingConf
     [Environment.DEVELOPMENT]: {
         logRetention: logs.RetentionDays.ONE_WEEK,
         removalPolicy: environmentRemovalPolicy(Environment.DEVELOPMENT),
-        foundationModel: 'eu.anthropic.claude-sonnet-4-6',
+        foundationModel: MODELS.SELF_HEALING_AGENT,
         enableDryRun: true,     // Safe — agent proposes but does not act
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
     },
@@ -81,7 +82,7 @@ export const SELF_HEALING_CONFIGS: Record<DeployableEnvironment, SelfHealingConf
     [Environment.STAGING]: {
         logRetention: logs.RetentionDays.TWO_WEEKS,
         removalPolicy: environmentRemovalPolicy(Environment.STAGING),
-        foundationModel: 'eu.anthropic.claude-sonnet-4-6',
+        foundationModel: MODELS.SELF_HEALING_AGENT,
         enableDryRun: true,     // Still cautious in staging
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
     },
@@ -89,7 +90,7 @@ export const SELF_HEALING_CONFIGS: Record<DeployableEnvironment, SelfHealingConf
     [Environment.PRODUCTION]: {
         logRetention: logs.RetentionDays.ONE_MONTH,
         removalPolicy: environmentRemovalPolicy(Environment.PRODUCTION),
-        foundationModel: 'eu.anthropic.claude-sonnet-4-6',
+        foundationModel: MODELS.SELF_HEALING_AGENT,
         enableDryRun: false,    // Agent is trusted to act in production
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
     },

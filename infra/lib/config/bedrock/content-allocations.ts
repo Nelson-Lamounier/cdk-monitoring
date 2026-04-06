@@ -13,6 +13,7 @@
  */
 
 import { type DeployableEnvironment, Environment } from '../environments';
+import { MODELS } from '../shared/model-registry';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -62,7 +63,7 @@ export const CONTENT_ALLOCATIONS: Record<DeployableEnvironment, ContentAllocatio
             reservedConcurrency: 2,
         },
         model: {
-            foundationModel: 'eu.anthropic.claude-sonnet-4-6',
+            foundationModel: MODELS.ARTICLE_MONOLITH,
             maxTokens: 16384,
             thinkingBudgetTokens: 4096,
         },
@@ -75,7 +76,7 @@ export const CONTENT_ALLOCATIONS: Record<DeployableEnvironment, ContentAllocatio
             reservedConcurrency: 3,
         },
         model: {
-            foundationModel: 'eu.anthropic.claude-sonnet-4-6',
+            foundationModel: MODELS.ARTICLE_MONOLITH,
             maxTokens: 16384,
             thinkingBudgetTokens: 10240,
         },
@@ -88,7 +89,7 @@ export const CONTENT_ALLOCATIONS: Record<DeployableEnvironment, ContentAllocatio
             reservedConcurrency: 5,
         },
         model: {
-            foundationModel: 'eu.anthropic.claude-sonnet-4-6',
+            foundationModel: MODELS.ARTICLE_MONOLITH,
             maxTokens: 16384,
             thinkingBudgetTokens: 16000,
         },

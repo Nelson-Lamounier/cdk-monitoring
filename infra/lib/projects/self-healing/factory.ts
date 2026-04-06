@@ -17,6 +17,7 @@ import { Environment, cdkEnvironment } from '../../config/environments';
 import { Project, getProjectConfig } from '../../config/projects';
 import { getSelfHealingAllocations } from '../../config/self-healing/allocations';
 import { getSelfHealingConfigs } from '../../config/self-healing/configurations';
+import { SYSTEM_INFERENCE_PROFILES } from '../../config/shared/model-registry';
 import {
     IProjectFactory,
     ProjectFactoryContext,
@@ -86,6 +87,8 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
                 removalPolicy: configs.removalPolicy,
                 throttlingRateLimit: allocs.gateway.throttlingRateLimit,
                 throttlingBurstLimit: allocs.gateway.throttlingBurstLimit,
+                sonnetProfileSourceArn: SYSTEM_INFERENCE_PROFILES.CLAUDE_SONNET_4_6,
+                environmentName: this.environment,
                 env,
             }
         );
@@ -116,6 +119,7 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
                 cognitoClientId: gatewayStack.userPoolClientId,
                 cognitoScopes: gatewayStack.oauthScopes,
                 notificationEmail: process.env.NOTIFICATION_EMAIL,
+                inferenceProfileArn: gatewayStack.agentProfileArn,
                 env,
             }
         );

@@ -343,7 +343,7 @@ const DEFAULT_K8S_SECURITY_GROUPS: K8sSecurityGroupConfig = {
         rules: [
             // ----- Self-referencing (intra-cluster) -----
             { port: 2379, endPort: 2380, protocol: 'tcp', source: 'self', description: 'etcd client and peer (intra-cluster)' },
-            { port: 6443, protocol: 'tcp', source: 'self', description: 'K8s API server (intra-cluster)' },
+            { port: 6443, protocol: 'tcp', source: 'vpcCidr', description: 'K8s API server (intra-cluster / VPC)' },
             { port: 10250, protocol: 'tcp', source: 'self', description: 'kubelet API (intra-cluster)' },
             { port: 10257, protocol: 'tcp', source: 'self', description: 'kube-controller-manager (intra-cluster)' },
             { port: 10259, protocol: 'tcp', source: 'self', description: 'kube-scheduler (intra-cluster)' },

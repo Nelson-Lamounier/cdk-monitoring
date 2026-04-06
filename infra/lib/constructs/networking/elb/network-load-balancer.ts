@@ -284,6 +284,13 @@ export class NetworkLoadBalancerConstruct extends Construct {
     }
 
     /**
+     * Get the load balancer full name (useful for CloudWatch metrics).
+     */
+    public get loadBalancerFullName(): string {
+        return this.loadBalancer.loadBalancerFullName;
+    }
+
+    /**
      * Get the load balancer DNS name.
      */
     public get dnsName(): string {
