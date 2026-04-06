@@ -88,11 +88,10 @@ jobs:
         run: just build
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          audience: sts.amazonaws.com
 
       # -----------------------------------------------------------------------
       # Step 1 — Deploy Next.js Secrets
@@ -150,11 +149,10 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
 
       - name: Wait for ArgoCD Token
         id: argocd-token
