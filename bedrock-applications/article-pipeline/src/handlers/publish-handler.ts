@@ -33,6 +33,7 @@ import {
     DynamoDBDocumentClient,
     UpdateCommand,
     QueryCommand,
+    GetCommand,
 } from '@aws-sdk/lib-dynamodb';
 
 // =============================================================================
@@ -197,6 +198,25 @@ async function promoteVersionToMetadata(
     const datePrefix = now.slice(0, 10);
     const pk = `ARTICLE#${slug}`;
 
+    // =====================================================================
+    // Read the VERSION record being published so we can copy its
+    // consumer-facing article fields (title, description, tags, etc.)
+    // into METADATA. This ensures METADATA always reflects the
+    // published version's data — not a stale or skeleton record.
+    // =====================================================================
+    const versionRecord = await ddbClient.send(new GetCommand({
+        TableName: TABLE_NAME,
+        Key: { pk, sk: `VERSION#v${version}` },
+    }));
+    const vr = versionRecord.Item;
+
+    if (!vr) {
+        console.warn(
+            `[publish] VERSION#v${version} not found for "${slug}" — ` +
+            `METADATA will be updated without article fields`,
+        );
+    }
+
     // Find any currently published VERSION record to supersede
     const existingPublished = await ddbClient.send(new QueryCommand({
         TableName: TABLE_NAME,
@@ -232,7 +252,11 @@ async function promoteVersionToMetadata(
     }
 
     // Update METADATA record — promote version to published state
-    console.log(`[publish] Updating METADATA → published, version=v${version}`);
+    // and copy consumer-facing fields from the VERSION record.
+    console.log(
+        `[publish] Updating METADATA → published, version=v${version}, ` +
+        `title="${String(vr?.title ?? slug)}"`,
+    );
     await ddbClient.send(new UpdateCommand({
         TableName: TABLE_NAME,
         Key: { pk, sk: 'METADATA' },
@@ -244,8 +268,22 @@ async function promoteVersionToMetadata(
             'contentRef = :contentRef',
             'gsi1pk = :gsi1pk',
             'gsi1sk = :gsi1sk',
+            // Consumer-facing article fields from VERSION record
+            'title = :title',
+            'description = :description',
+            'tags = :tags',
+            'category = :category',
+            'slug = :slug',
+            'readingTimeMinutes = :readingTime',
+            'aiSummary = :aiSummary',
+            '#d = :publishDate',
+            'version = :version',
+            'entityType = :entityType',
         ].join(', '),
-        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeNames: {
+            '#status': 'status',
+            '#d': 'date',
+        },
         ExpressionAttributeValues: {
             ':published': 'published',
             ':version': version,
@@ -253,6 +291,15 @@ async function promoteVersionToMetadata(
             ':contentRef': `s3://${ASSETS_BUCKET}/${PUBLISHED_PREFIX}${slug}.mdx`,
             ':gsi1pk': 'STATUS#published',
             ':gsi1sk': `${datePrefix}#${slug}`,
+            ':title': (vr?.title as string | undefined) ?? slug,
+            ':description': (vr?.description as string | undefined) ?? '',
+            ':tags': (vr?.tags as string[] | undefined) ?? [],
+            ':category': (vr?.category as string | undefined) ?? '',
+            ':slug': slug,
+            ':readingTime': (vr?.readingTime as number | undefined) ?? 0,
+            ':aiSummary': (vr?.aiSummary as string | undefined) ?? '',
+            ':publishDate': (vr?.publishDate as string | undefined) ?? datePrefix,
+            ':entityType': 'ARTICLE_METADATA',
         },
     }));
 }

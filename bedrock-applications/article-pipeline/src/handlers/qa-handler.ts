@@ -155,16 +155,23 @@ async function writeVersionToDynamoDB(
         Item: item,
     }));
 
-    // Update METADATA with latestVersion pointer AND GSI keys.
+    // =====================================================================
+    // Upsert METADATA with all consumer-facing article fields.
+    //
+    // This ensures that pipeline-generated articles have a complete
+    // METADATA record immediately — the admin dashboard and public site
+    // read title, description, tags, etc. directly from METADATA.
     //
     // CRITICAL: Both gsi1pk AND gsi1sk MUST be set together.
     // DynamoDB GSIs require both the partition key and sort key to be
     // present on an item for it to be projected into the index. If
     // either is missing, the item is invisible to GSI queries — which
     // is how the frontend's admin dashboard discovers articles.
+    // =====================================================================
     const metadataGsi1sk = `${datePrefix}#${context.slug}`;
     console.log(
-        `[qa-handler] Updating METADATA — latestVersion=v${context.version}, ` +
+        `[qa-handler] Upserting METADATA — latestVersion=v${context.version}, ` +
+        `status=${articleStatus}, title="${writer.data.metadata.title}", ` +
         `gsi1pk=STATUS#${articleStatus}, gsi1sk=${metadataGsi1sk}`,
     );
     await ddbClient.send(new UpdateCommand({
@@ -173,12 +180,46 @@ async function writeVersionToDynamoDB(
             pk: `ARTICLE#${context.slug}`,
             sk: 'METADATA',
         },
-        UpdateExpression: 'SET latestVersion = :v, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk',
+        UpdateExpression: [
+            'SET latestVersion = :v',
+            'updatedAt = :now',
+            'gsi1pk = :gsi1pk',
+            'gsi1sk = :gsi1sk',
+            // Consumer-facing article fields
+            'slug = :slug',
+            'title = :title',
+            'description = :description',
+            'tags = :tags',
+            'category = :category',
+            'contentRef = :contentRef',
+            'aiSummary = :aiSummary',
+            'readingTimeMinutes = :readingTime',
+            '#s = :status',
+            'version = :version',
+            'entityType = :entityType',
+            '#d = :publishDate',
+        ].join(', '),
+        ExpressionAttributeNames: {
+            '#s': 'status',
+            '#d': 'date',
+        },
         ExpressionAttributeValues: {
             ':v': context.version,
             ':now': now,
             ':gsi1pk': `STATUS#${articleStatus}`,
             ':gsi1sk': metadataGsi1sk,
+            ':slug': context.slug,
+            ':title': writer.data.metadata.title,
+            ':description': writer.data.metadata.description,
+            ':tags': writer.data.metadata.tags,
+            ':category': writer.data.metadata.category,
+            ':contentRef': `s3://${ASSETS_BUCKET}/${REVIEW_PREFIX}v${context.version}/${context.slug}.mdx`,
+            ':aiSummary': writer.data.metadata.aiSummary,
+            ':readingTime': writer.data.metadata.readingTime,
+            ':status': articleStatus,
+            ':version': context.version,
+            ':entityType': 'ARTICLE_METADATA',
+            ':publishDate': writer.data.metadata.publishDate,
         },
     }));
 }
