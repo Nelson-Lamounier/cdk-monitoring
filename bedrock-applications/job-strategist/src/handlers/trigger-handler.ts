@@ -134,8 +134,8 @@ async function handleAnalyse(body: AnalyseRequest): Promise<APIGatewayProxyResul
     // Generate slug and execution name
     const slug = `${body.targetCompany}-${body.targetRole}`
         .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '')
+        .replaceAll(/[^a-z0-9]+/g, '-')
+        .replaceAll(/^-|-$/g, '')
         .substring(0, 60);
 
     const now = new Date().toISOString();
@@ -212,7 +212,7 @@ async function handleAnalyse(body: AnalyseRequest): Promise<APIGatewayProxyResul
             gsi1pk: 'APP_STATUS#analysing',
             gsi1sk: `${datePrefix}#${slug}`,
             // GSI2 — company index
-            gsi2pk: `COMPANY#${body.targetCompany.toLowerCase().replace(/\s+/g, '-')}`,
+            gsi2pk: `COMPANY#${body.targetCompany.toLowerCase().replaceAll(/\s+/g, '-')}`,
             gsi2sk: `${datePrefix}#${slug}`,
         },
     }));
