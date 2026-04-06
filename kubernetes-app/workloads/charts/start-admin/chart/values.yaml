@@ -1,0 +1,112 @@
+# @format
+# Default values for the start-admin-app Helm chart.
+# Override per-environment via start-admin-values.yaml.
+
+namespace: start-admin
+
+# ---------------------------------------------------------------------------
+# Application Image
+# ---------------------------------------------------------------------------
+image:
+  repository: "" # Overridden at deploy time via --set image.repository=<ECR_URI>
+  tag: "" # Overridden by start-admin-values.yaml or ArgoCD Image Updater write-back
+  pullPolicy: Always
+
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+replicas: 1
+port: 5001
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Security context for the pod
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+
+# Security context for the container
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false # TanStack Start may write to temp directories at runtime
+
+# ---------------------------------------------------------------------------
+# Node Placement
+# ---------------------------------------------------------------------------
+nodeSelector:
+  workload: frontend
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 5001
+
+# ---------------------------------------------------------------------------
+# Health Probes
+# ---------------------------------------------------------------------------
+probes:
+  readiness:
+    path: /admin/
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  liveness:
+    path: /admin/
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# ---------------------------------------------------------------------------
+# Ingress (Traefik IngressRoute CRD)
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  # PathPrefix(/admin) takes priority over the site's PathPrefix(/)
+  # via Traefik's longest-prefix-match resolution — no priority annotation needed.
+  matchRule: "PathPrefix(`/admin`)"
+
+# ---------------------------------------------------------------------------
+# Secrets (injected via deploy.py → Kubernetes Secret)
+#
+# Expected keys:
+#   COGNITO_CLIENT_ID      — Cognito app client ID
+#   COGNITO_ISSUER_URL     — Cognito user pool issuer URL
+#   DYNAMODB_TABLE_NAME    — DynamoDB table name
+#   JWT_SECRET             — JWT verification secret
+#   PUBLISH_LAMBDA_ARN     — Article publish Lambda ARN
+#   VERSION_HISTORY_ARN    — Version history Lambda ARN
+# ---------------------------------------------------------------------------
+secrets:
+  name: start-admin-secrets
+
+# ---------------------------------------------------------------------------
+# Resource Quota (namespace-level limits)
+# ---------------------------------------------------------------------------
+# Sized for solo-developer: 1 replica, no blue/green overhead.
+# Formula: per-pod limit × 1.5 safety margin
+resourceQuota:
+  hard:
+    requests.cpu: "300m"
+    requests.memory: 384Mi
+    limits.cpu: "750m"
+    limits.memory: 768Mi
+    persistentvolumeclaims: "1"
+
+# ---------------------------------------------------------------------------
+# Network Policy
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  nodesCidr: "10.0.0.0/16"
+  podCidr: "192.168.0.0/16"
