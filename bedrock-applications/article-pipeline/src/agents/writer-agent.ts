@@ -62,125 +62,109 @@ const DEFAULT_THINKING_BUDGET = Number.parseInt(process.env.THINKING_BUDGET_TOKE
  * @returns Formatted user message
  */
 function buildContextSection(research: ResearchResult, retryAttempt: number, version: number): string[] {
-    const parts: string[] = [];
-
-    if (retryAttempt > 0) {
-        parts.push(
-            ``,
-            `> ⚠️ This is retry attempt ${retryAttempt}. The previous version did not pass QA.`,
-            `> Pay extra attention to technical accuracy and code correctness.`
-        );
-    }
-
-    if (research.authorDirection) {
-        parts.push(
-            ``,
-            `## ⚡ Author's Direction`,
-            `> This is the author's specific creative direction for this article.`,
-            `> Your article MUST directly address these instructions.`,
-            `> Do NOT let KB context or standard templates override this direction.`,
-            ``,
-            research.authorDirection
-        );
-    }
-
-    if (research.previousVersionContent) {
-        const previousVersion = version - 1;
-        parts.push(
-            ``,
-            `## 🔄 Previous Version (v${previousVersion})`,
-            `> A previous version of this article already exists. The author has submitted`,
-            `> a NEW prompt with DIFFERENT creative direction (see "Author's Direction" above).`,
-            `> You MUST generate a substantially different article that addresses the new direction.`,
-            `> Do NOT simply rephrase, extend, or lightly edit the previous version.`,
-            ``,
-            `--- BEGIN PREVIOUS VERSION ---`,
-            research.previousVersionContent,
-            `--- END PREVIOUS VERSION ---`
-        );
-    }
-
-    // KB context (if KB-augmented mode)
-    if (research.kbPassages.length > 0) {
-        parts.push(
-            ``,
-            `## Knowledge Base Context`,
-            `The following passages are from the project's real infrastructure documentation:`,
-            ``
-        );
-        for (const [i, passage] of research.kbPassages.entries()) {
-            parts.push(
-                `### KB Passage ${i + 1} (relevance: ${passage.score.toFixed(3)})`,
-                passage.text,
-                ``
-            );
-        }
-    }
-
-    return parts;
+    return [
+        ...(retryAttempt > 0
+            ? [
+                  ``,
+                  `> ⚠️ This is retry attempt ${retryAttempt}. The previous version did not pass QA.`,
+                  `> Pay extra attention to technical accuracy and code correctness.`
+              ]
+            : []),
+        ...(research.authorDirection
+            ? [
+                  ``,
+                  `## ⚡ Author's Direction`,
+                  `> This is the author's specific creative direction for this article.`,
+                  `> Your article MUST directly address these instructions.`,
+                  `> Do NOT let KB context or standard templates override this direction.`,
+                  ``,
+                  research.authorDirection
+              ]
+            : []),
+        ...(research.previousVersionContent
+            ? [
+                  ``,
+                  `## 🔄 Previous Version (v${version - 1})`,
+                  `> A previous version of this article already exists. The author has submitted`,
+                  `> a NEW prompt with DIFFERENT creative direction (see "Author's Direction" above).`,
+                  `> You MUST generate a substantially different article that addresses the new direction.`,
+                  `> Do NOT simply rephrase, extend, or lightly edit the previous version.`,
+                  ``,
+                  `--- BEGIN PREVIOUS VERSION ---`,
+                  research.previousVersionContent,
+                  `--- END PREVIOUS VERSION ---`
+              ]
+            : []),
+        ...(research.kbPassages.length > 0
+            ? [
+                  ``,
+                  `## Knowledge Base Context`,
+                  `The following passages are from the project's real infrastructure documentation:`,
+                  ``,
+                  ...research.kbPassages.flatMap((passage, i) => [
+                      `### KB Passage ${i + 1} (relevance: ${passage.score.toFixed(3)})`,
+                      passage.text,
+                      ``
+                  ])
+              ]
+            : [])
+    ];
 }
 
 function buildOutlineAndFactsSection(research: ResearchResult): string[] {
-    const parts: string[] = [];
-
-    // Research brief — outline
-    if (research.outline.length > 0) {
-        parts.push(
-            ``,
-            `## Proposed Article Outline`,
-            `The Research Agent suggests the following structure:`,
-            ``
-        );
-        for (const section of research.outline) {
-            const visualMarker = section.needsVisual ? ' 📊' : '';
-            parts.push(`- **${section.heading}** (~${section.wordBudget} words)${visualMarker}`);
-            if (section.keyPoints.length > 0) {
-                parts.push(...section.keyPoints.map(point => `  - ${point}`));
-            }
-        }
-    }
-
-    // Technical facts
-    if (research.technicalFacts.length > 0) {
-        parts.push(
-            ``,
-            `## Verified Technical Facts`,
-            `These facts were extracted from the draft and KB. Preserve them accurately:`,
-            ``,
-            ...research.technicalFacts.map(fact => `- ${fact}`)
-        );
-    }
-
-    return parts;
+    return [
+        ...(research.outline.length > 0
+            ? [
+                  ``,
+                  `## Proposed Article Outline`,
+                  `The Research Agent suggests the following structure:`,
+                  ``,
+                  ...research.outline.flatMap(section => {
+                      const visualMarker = section.needsVisual ? ' 📊' : '';
+                      const heading = `- **${section.heading}** (~${section.wordBudget} words)${visualMarker}`;
+                      return section.keyPoints.length > 0
+                          ? [heading, ...section.keyPoints.map(point => `  - ${point}`)]
+                          : [heading];
+                  })
+              ]
+            : []),
+        ...(research.technicalFacts.length > 0
+            ? [
+                  ``,
+                  `## Verified Technical Facts`,
+                  `These facts were extracted from the draft and KB. Preserve them accurately:`,
+                  ``,
+                  ...research.technicalFacts.map(fact => `- ${fact}`)
+              ]
+            : [])
+    ];
 }
 
 function buildSeoSection(research: ResearchResult): string[] {
-    const parts: string[] = [];
-
-    if (research.seoResearch) {
-        parts.push(
-            ``,
-            `## SEO Research Brief`,
-            `- Primary Keyword: ${research.seoResearch.primaryKeyword}`
-        );
-        if (research.seoResearch.secondaryKeywords.length > 0) {
-            parts.push(`- Secondary Keywords: ${research.seoResearch.secondaryKeywords.join(', ')}`);
-        }
-        if (research.seoResearch.suggestedReferences.length > 0) {
-            parts.push(
-                ``,
-                `### Suggested Authoritative References`,
-                `The Research Agent identified these external links for credibility:`,
-                ...research.seoResearch.suggestedReferences.flatMap(ref => 
-                    ref.relevance 
-                        ? [`- **${ref.label}**: [${ref.url}](${ref.url})`, `  *Relevance: ${ref.relevance}*`] 
-                        : [`- **${ref.label}**: [${ref.url}](${ref.url})`]
-                )
-            );
-        }
+    if (!research.seoResearch) {
+        return [];
     }
 
-    return parts;
+    return [
+        ``,
+        `## SEO Research Brief`,
+        `- Primary Keyword: ${research.seoResearch.primaryKeyword}`,
+        ...(research.seoResearch.secondaryKeywords.length > 0
+            ? [`- Secondary Keywords: ${research.seoResearch.secondaryKeywords.join(', ')}`]
+            : []),
+        ...(research.seoResearch.suggestedReferences.length > 0
+            ? [
+                  ``,
+                  `### Suggested Authoritative References`,
+                  `The Research Agent identified these external links for credibility:`,
+                  ...research.seoResearch.suggestedReferences.flatMap(ref =>
+                      ref.relevance
+                          ? [`- **${ref.label}**: [${ref.url}](${ref.url})`, `  *Relevance: ${ref.relevance}*`]
+                          : [`- **${ref.label}**: [${ref.url}](${ref.url})`]
+                  )
+              ]
+            : [])
+    ];
 }
 
 function buildWriterMessage(
