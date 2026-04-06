@@ -8,6 +8,7 @@ Handles:
 """
 from __future__ import annotations
 
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ from common import (
     patch_provider_id,
     run_cmd,
     ssm_get,
+    validate_kubeadm_token,
 )
 from boot_helpers.config import BootConfig
 
@@ -30,6 +32,8 @@ from boot_helpers.config import BootConfig
 KUBELET_CONF = "/etc/kubernetes/kubelet.conf"
 CA_CERT_PATH = "/etc/kubernetes/pki/ca.crt"
 CP_MAX_WAIT_SECONDS = 300
+API_REACHABLE_TIMEOUT = 300  # seconds to wait for TCP connectivity
+API_REACHABLE_POLL_INTERVAL = 10  # seconds between TCP probes
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -141,6 +145,88 @@ def resolve_control_plane_endpoint(cfg: BootConfig) -> str:
     )
 
 
+def _parse_host_port(endpoint: str) -> tuple[str, str]:
+    """Split an endpoint string into (host, port).
+
+    Args:
+        endpoint: Endpoint in ``host:port`` format.
+
+    Returns:
+        Tuple of (host, port). Defaults port to ``6443`` if omitted.
+    """
+    if ":" in endpoint:
+        host, port = endpoint.rsplit(":", 1)
+        return host, port
+    return endpoint, "6443"
+
+
+def tcp_probe(host: str, port: str) -> bool:
+    """Test TCP connectivity to a host:port using Python's socket module.
+
+    Uses ``socket.create_connection()`` with a 5-second timeout to attempt
+    a zero-I/O TCP connection. This is a lightweight probe that does not
+    perform TLS and has zero external binary dependencies.
+
+    Args:
+        host: Target hostname or IP address.
+        port: Target port number (string — converted internally).
+
+    Returns:
+        ``True`` if the TCP connection succeeded, ``False`` otherwise.
+    """
+    try:
+        conn = socket.create_connection((host, int(port)), timeout=5)
+        conn.close()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def wait_for_api_server_reachable(endpoint: str) -> None:
+    """Block until the API server accepts TCP connections.
+
+    Polls the API server endpoint with Python socket TCP probes every
+    ``API_REACHABLE_POLL_INTERVAL`` seconds until a connection succeeds
+    or ``API_REACHABLE_TIMEOUT`` is exceeded.
+
+    This gate prevents burning expensive ``kubeadm join`` retry budget
+    against an unreachable API server (e.g. during CP initialisation or
+    Route 53 propagation).
+
+    Args:
+        endpoint: API server endpoint in ``host:port`` format.
+
+    Raises:
+        RuntimeError: If the API server is not reachable within the timeout.
+    """
+    host, port = _parse_host_port(endpoint)
+    log_info(
+        f"Waiting for API server TCP connectivity: {host}:{port} "
+        f"(timeout={API_REACHABLE_TIMEOUT}s)"
+    )
+
+    waited = 0
+    while waited < API_REACHABLE_TIMEOUT:
+        if tcp_probe(host, port):
+            log_info(
+                f"✓ API server is reachable at {host}:{port} (waited {waited}s)"
+            )
+            return
+
+        log_info(
+            f"API server not yet reachable ({waited}s / {API_REACHABLE_TIMEOUT}s) "
+            f"— retrying in {API_REACHABLE_POLL_INTERVAL}s"
+        )
+        time.sleep(API_REACHABLE_POLL_INTERVAL)
+        waited += API_REACHABLE_POLL_INTERVAL
+
+    raise RuntimeError(
+        f"API server at {host}:{port} not reachable after {API_REACHABLE_TIMEOUT}s. "
+        f"Check that the control plane is running, the DNS record has propagated, "
+        f"and security groups allow TCP {port} from this worker node."
+    )
+
+
 def join_cluster(endpoint: str, cfg: BootConfig) -> None:
     """Join the cluster with retry logic."""
     log_info(f"Joining kubeadm cluster as worker node (label={cfg.node_label})")
@@ -177,8 +263,8 @@ def join_cluster(endpoint: str, cfg: BootConfig) -> None:
     for attempt in range(1, cfg.join_max_retries + 1):
         log_info(f"=== kubeadm join attempt {attempt}/{cfg.join_max_retries} ===")
 
-        join_token = ssm_get(token_ssm, decrypt=True)
-        if not join_token:
+        raw_token = ssm_get(token_ssm, decrypt=True)
+        if not raw_token:
             log_warn(f"Join token not available (attempt {attempt}/{cfg.join_max_retries})")
             if attempt < cfg.join_max_retries:
                 time.sleep(cfg.join_retry_interval)
@@ -186,6 +272,11 @@ def join_cluster(endpoint: str, cfg: BootConfig) -> None:
             raise RuntimeError(
                 f"Join token never became available after {cfg.join_max_retries} attempts"
             )
+
+        # Validate and sanitise the token — guards against backslash
+        # injection from SSM SecureString shell encoding
+        join_token = validate_kubeadm_token(raw_token, source="SSM")
+        log_info(f"Join token validated (length={len(join_token)})")
 
         ca_hash = ssm_get(ca_hash_ssm)
         if not ca_hash:
@@ -197,13 +288,57 @@ def join_cluster(endpoint: str, cfg: BootConfig) -> None:
                 f"CA hash never became available after {cfg.join_max_retries} attempts"
             )
 
+        # Pre-retry TCP diagnostic — log whether the API server is
+        # reachable before each attempt so CloudWatch captures the cause
+        host, port = _parse_host_port(endpoint)
+        reachable = tcp_probe(host, port)
+        log_info(
+            f"Pre-join TCP probe: {host}:{port} → "
+            f"{'reachable' if reachable else 'UNREACHABLE'}"
+        )
+
+        if not reachable:
+            log_warn(
+                f"API server not reachable on attempt {attempt} — "
+                f"skipping join, waiting {cfg.join_retry_interval}s"
+            )
+            if attempt < cfg.join_max_retries:
+                time.sleep(cfg.join_retry_interval)
+                continue
+            raise RuntimeError(
+                f"API server at {endpoint} unreachable on all "
+                f"{cfg.join_max_retries} attempts"
+            )
+
+        # Verify the API server is actually serving HTTPS, not just accepting
+        # TCP connections. A passing TCP probe does not guarantee the API server
+        # is healthy enough to process a kubeadm join (TLS discovery + CSR signing).
+        healthz = run_cmd(
+            ["curl", "-sk", "--max-time", "10",
+             f"https://{host}:{port}/healthz"],
+            check=False, capture=True,
+        )
+        if healthz.returncode != 0 or "ok" not in healthz.stdout.lower():
+            log_warn(
+                f"API server /healthz not OK on attempt {attempt} "
+                f"(stdout={healthz.stdout.strip()!r}) — "
+                f"waiting {cfg.join_retry_interval}s before retry"
+            )
+            if attempt < cfg.join_max_retries:
+                time.sleep(cfg.join_retry_interval)
+                continue
+            raise RuntimeError(
+                f"API server at {endpoint} not healthy after "
+                f"{cfg.join_max_retries} attempts"
+            )
+
         log_info("Running kubeadm join...")
         try:
             result = run_cmd(
                 ["kubeadm", "join", endpoint,
                  "--token", join_token,
                  "--discovery-token-ca-cert-hash", ca_hash],
-                check=False, capture=False, timeout=120,
+                check=False, capture=False, timeout=300,
             )
         except subprocess.TimeoutExpired:
             log_warn(
@@ -235,14 +370,35 @@ def join_cluster(endpoint: str, cfg: BootConfig) -> None:
 
 
 def wait_for_kubelet() -> None:
-    """Wait for kubelet to become active."""
+    """Wait for kubelet to become active and stable.
+
+    Checks both systemd active state and the presence of
+    /var/lib/kubelet/config.yaml — written by kubeadm join on success.
+    A crash-looping kubelet (missing config) will pass is-active transiently
+    but never have the config file, so we detect that early and fail fast.
+    """
     log_info("Waiting for kubelet to become active...")
+    kubelet_config = "/var/lib/kubelet/config.yaml"
+
     for i in range(1, 61):
+        # Fail fast: if kubelet has been trying for >10s and config still
+        # doesn't exist, kubeadm join didn't complete — no point waiting.
+        if i > 10 and not Path(kubelet_config).exists():
+            log_warn(
+                f"kubelet config not found after {i}s — "
+                f"kubeadm join likely did not complete successfully"
+            )
+            run_cmd(
+                ["journalctl", "-u", "kubelet", "--no-pager", "-n", "20"],
+                check=False,
+            )
+            return
+
         result = run_cmd(
             ["systemctl", "is-active", "--quiet", "kubelet"],
             check=False,
         )
-        if result.returncode == 0:
+        if result.returncode == 0 and Path(kubelet_config).exists():
             log_info(f"kubelet is active (waited {i}s)")
             return
         if i == 60:
@@ -275,6 +431,7 @@ def step_join_cluster(cfg: BootConfig) -> None:
             return
 
         endpoint = resolve_control_plane_endpoint(cfg)
+        wait_for_api_server_reachable(endpoint)
         join_cluster(endpoint, cfg)
         wait_for_kubelet()
 

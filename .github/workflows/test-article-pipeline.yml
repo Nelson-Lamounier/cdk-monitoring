@@ -1,0 +1,302 @@
+# =============================================================================
+# Workflow: Test Article Pipeline (E2E)
+# =============================================================================
+#
+# End-to-end test for the Bedrock multi-agent article pipeline.
+# Uploads a test draft to S3 drafts/ prefix, monitors the Step Functions
+# execution, and reports results.
+#
+# This workflow:
+#   1. Resolves SSM parameters for infrastructure references
+#   2. Creates a minimal test draft (.md) in the drafts/ S3 prefix
+#   3. Starts the Step Functions state machine directly
+#   4. Polls execution status until completion or timeout
+#   5. Reports results including QA score and article status
+#
+# =============================================================================
+
+name: Test Article Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: 'Article topic for the test draft'
+        required: false
+        default: 'Kubernetes Pod Security Standards - A Practical Guide'
+        type: string
+      dry_run:
+        description: 'Dry run — verify infra only, skip execution'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: test-article-pipeline
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  SSM_PREFIX: bedrock-dev
+
+jobs:
+  test-pipeline:
+    name: Execute Pipeline Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: development
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # ------------------------------------------------------------------
+      # 2. AWS Credentials (OIDC)
+      # ------------------------------------------------------------------
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ------------------------------------------------------------------
+      # 3. Resolve SSM Parameters
+      # ------------------------------------------------------------------
+      - name: Resolve Infrastructure
+        id: infra
+        run: |
+          echo "## 🔍 Infrastructure Resolution" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          resolve_param() {
+            local PARAM_NAME="$1"
+            local OUTPUT_KEY="$2"
+            VALUE=$(aws ssm get-parameter \
+              --name "/${{ env.SSM_PREFIX }}/${PARAM_NAME}" \
+              --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+            if [ -n "$VALUE" ]; then
+              echo "::add-mask::$VALUE"
+              echo "${OUTPUT_KEY}=${VALUE}" >> $GITHUB_OUTPUT
+              echo "- ✅ \`${PARAM_NAME}\` resolved" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ❌ \`${PARAM_NAME}\` **not found**" >> $GITHUB_STEP_SUMMARY
+              echo "::error::SSM parameter ${PARAM_NAME} not found"
+              exit 1
+            fi
+          }
+
+          resolve_param "pipeline-state-machine-arn" "sfn_arn"
+          resolve_param "assets-bucket-name" "bucket_name"
+          resolve_param "content-table-name" "table_name"
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      # ------------------------------------------------------------------
+      # 4. Create Test Draft
+      # ------------------------------------------------------------------
+      - name: Create Test Draft
+        id: draft
+        env:
+          INPUT_TOPIC: ${{ inputs.topic }}
+        run: |
+          TOPIC="$INPUT_TOPIC"
+          SLUG=$(echo "$TOPIC" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          PIPELINE_ID="test-$(date -u +%Y%m%d-%H%M%S)"
+
+          echo "slug=${SLUG}" >> $GITHUB_OUTPUT
+          echo "pipeline_id=${PIPELINE_ID}" >> $GITHUB_OUTPUT
+
+          cat > /tmp/test-draft.md << EOF
+          ---
+          title: "${TOPIC}"
+          slug: "${SLUG}"
+          category: "infrastructure"
+          requestedAt: "${TIMESTAMP}"
+          source: "github-actions-test"
+          pipelineId: "${PIPELINE_ID}"
+          ---
+
+          # ${TOPIC}
+
+          Generate a comprehensive technical article about ${TOPIC}.
+          Focus on practical implementation patterns and real-world examples.
+          EOF
+
+          echo "## 📝 Test Draft" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Topic**: ${TOPIC}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Slug**: \`${SLUG}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pipeline ID**: \`${PIPELINE_ID}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Upload to S3
+          BUCKET="${{ steps.infra.outputs.bucket_name }}"
+          S3_KEY="drafts/${SLUG}.md"
+
+          aws s3 cp /tmp/test-draft.md "s3://${BUCKET}/${S3_KEY}" \
+            --content-type "text/markdown"
+
+          echo "- ✅ Draft uploaded to \`s3://${BUCKET}/${S3_KEY}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      # ------------------------------------------------------------------
+      # 5. Start Step Functions (or skip for dry run)
+      # ------------------------------------------------------------------
+      - name: Start Pipeline Execution
+        if: ${{ inputs.dry_run != true }}
+        id: execute
+        run: |
+          SFN_ARN="${{ steps.infra.outputs.sfn_arn }}"
+          SLUG="${{ steps.draft.outputs.slug }}"
+          PIPELINE_ID="${{ steps.draft.outputs.pipeline_id }}"
+          BUCKET="${{ steps.infra.outputs.bucket_name }}"
+          TABLE="${{ steps.infra.outputs.table_name }}"
+
+          INPUT=$(jq -n \
+            --arg slug "$SLUG" \
+            --arg pipelineId "$PIPELINE_ID" \
+            --arg bucket "$BUCKET" \
+            --arg table "$TABLE" \
+            --arg draftKey "drafts/${SLUG}.md" \
+            '{
+              context: {
+                slug: $slug,
+                pipelineId: $pipelineId,
+                assetsBucket: $bucket,
+                tableName: $table,
+                draftKey: $draftKey,
+                retryAttempt: 0,
+                cumulativeCostUsd: 0,
+                cumulativeTokens: 0
+              }
+            }')
+
+          echo "## ⚡ Step Functions Execution" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          EXECUTION_ARN=$(aws stepfunctions start-execution \
+            --state-machine-arn "$SFN_ARN" \
+            --name "${PIPELINE_ID}" \
+            --input "$INPUT" \
+            --query 'executionArn' --output text)
+
+          echo "::add-mask::$EXECUTION_ARN"
+          echo "execution_arn=${EXECUTION_ARN}" >> $GITHUB_OUTPUT
+          echo "- 🚀 Execution started: \`${PIPELINE_ID}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      # ------------------------------------------------------------------
+      # 6. Monitor Execution
+      # ------------------------------------------------------------------
+      - name: Monitor Execution
+        if: ${{ inputs.dry_run != true }}
+        id: monitor
+        run: |
+          EXECUTION_ARN="${{ steps.execute.outputs.execution_arn }}"
+          MAX_WAIT=1800  # 30 minutes
+          POLL_INTERVAL=30
+          ELAPSED=0
+
+          echo "### Monitoring Progress" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            STATUS=$(aws stepfunctions describe-execution \
+              --execution-arn "$EXECUTION_ARN" \
+              --query 'status' --output text)
+
+            echo "  [${ELAPSED}s] Status: ${STATUS}"
+
+            if [ "$STATUS" = "SUCCEEDED" ] || [ "$STATUS" = "FAILED" ] || \
+               [ "$STATUS" = "TIMED_OUT" ] || [ "$STATUS" = "ABORTED" ]; then
+              echo "status=${STATUS}" >> $GITHUB_OUTPUT
+              break
+            fi
+
+            sleep $POLL_INTERVAL
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
+          done
+
+          if [ $ELAPSED -ge $MAX_WAIT ]; then
+            echo "status=TIMED_OUT" >> $GITHUB_OUTPUT
+            echo "::warning::Execution timed out after ${MAX_WAIT}s"
+          fi
+
+          # Get full execution result
+          RESULT=$(aws stepfunctions describe-execution \
+            --execution-arn "$EXECUTION_ARN" \
+            --output json)
+
+          FINAL_STATUS=$(echo "$RESULT" | jq -r '.status')
+          START_TIME=$(echo "$RESULT" | jq -r '.startDate')
+          STOP_TIME=$(echo "$RESULT" | jq -r '.stopDate // "still running"')
+
+          echo "- **Status**: \`${FINAL_STATUS}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Started**: ${START_TIME}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Finished**: ${STOP_TIME}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$FINAL_STATUS" = "SUCCEEDED" ]; then
+            OUTPUT=$(echo "$RESULT" | jq -r '.output // "{}"')
+            QA_SCORE=$(echo "$OUTPUT" | jq -r '.qa.data.overallScore // "N/A"')
+            PASSED=$(echo "$OUTPUT" | jq -r '.passed // "N/A"')
+            ARTICLE_STATUS=$(echo "$OUTPUT" | jq -r '.articleStatus // "N/A"')
+            COST=$(echo "$OUTPUT" | jq -r '.context.cumulativeCostUsd // "N/A"')
+            TOKENS=$(echo "$OUTPUT" | jq -r '.context.cumulativeTokens // "N/A"')
+
+            echo "### 📊 Pipeline Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| QA Score | ${QA_SCORE} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Passed | ${PASSED} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Article Status | ${ARTICLE_STATUS} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Cost (USD) | \$${COST} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Total Tokens | ${TOKENS} |" >> $GITHUB_STEP_SUMMARY
+          elif [ "$FINAL_STATUS" = "FAILED" ]; then
+            ERROR=$(echo "$RESULT" | jq -r '.error // "unknown"')
+            CAUSE=$(echo "$RESULT" | jq -r '.cause // "no cause provided"' | head -c 500)
+            echo "### ❌ Execution Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Error**: \`${ERROR}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Cause**: ${CAUSE}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      # ------------------------------------------------------------------
+      # 7. Dry Run Summary
+      # ------------------------------------------------------------------
+      - name: Dry Run Summary
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "## 🏁 Dry Run Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Infrastructure verified, draft uploaded. No execution started." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To run the full pipeline, re-trigger without the dry_run flag." >> $GITHUB_STEP_SUMMARY
+
+      # ------------------------------------------------------------------
+      # 8. Final Report
+      # ------------------------------------------------------------------
+      - name: Final Report
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          STATUS="${{ steps.monitor.outputs.status }}"
+
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$STATUS" = "SUCCEEDED" ]; then
+            echo "### ✅ Pipeline test PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Pipeline test FAILED — Status: ${STATUS}" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

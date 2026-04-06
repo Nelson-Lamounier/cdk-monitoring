@@ -68,6 +68,7 @@
 | [CloudWatch & Steampipe Data Paths](cloudwatch-steampipe-data-paths.md) | CloudWatch metric and Steampipe query reference |
 | [Frontend Consumer Guide](frontend-consumer-guide.md) | API contracts and data flow for the Next.js frontend |
 | [GitHub Workflow Dispatch](gh-workflow-dispatch.md) | Manual workflow trigger reference |
+| [RUM Dashboard Review](rum-dashboard-review.md) | Real User Monitoring metrics, design, and Faro/Alloy architecture |
 
 ---
 

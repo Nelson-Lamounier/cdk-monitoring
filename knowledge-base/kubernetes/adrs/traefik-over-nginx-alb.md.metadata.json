@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "adr",
+    "domain": "kubernetes",
+    "tags": "traefik,nginx,alb,ingress,ingressroute,daemonset,hostnetwork,observability",
+    "status": "accepted"
+  }
+}

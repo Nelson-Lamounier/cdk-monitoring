@@ -327,6 +327,50 @@ export class KubernetesMonitoringWorkerStack extends cdk.Stack {
             iam.ManagedPolicy.fromAwsManagedPolicyName('job-function/ViewOnlyAccess'),
         );
 
+        // AWS EBS CSI Driver — volume lifecycle permissions
+        // The CSI node agent (DaemonSet) handles NodeStageVolume / NodePublishVolume.
+        // The monitoring worker node hosts PVCs for Prometheus, Grafana, Loki, Tempo.
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'EbsCsiDriverVolumeLifecycle',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ec2:CreateVolume',
+                'ec2:DeleteVolume',
+                'ec2:AttachVolume',
+                'ec2:DetachVolume',
+                'ec2:ModifyVolume',
+                'ec2:DescribeVolumes',
+                'ec2:DescribeVolumesModifications',
+                'ec2:DescribeInstances',
+                'ec2:DescribeAvailabilityZones',
+                'ec2:CreateSnapshot',
+                'ec2:DeleteSnapshot',
+                'ec2:DescribeSnapshots',
+                'ec2:CreateTags',
+            ],
+            resources: ['*'],
+        }));
+
+        // KMS permissions for EBS CSI Driver encrypted volumes
+        launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'EbsCsiDriverKms',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'kms:Decrypt',
+                'kms:Encrypt',
+                'kms:ReEncrypt*',
+                'kms:GenerateDataKey*',
+                'kms:CreateGrant',
+                'kms:DescribeKey',
+            ],
+            resources: ['*'],
+            conditions: {
+                StringEquals: {
+                    'kms:ViaService': `ec2.${this.region}.amazonaws.com`,
+                },
+            },
+        }));
+
         // Grant additional read-only permissions for Steampipe cloud inventory
         // ViewOnlyAccess doesn't include S3 config hydration, Route53, CloudFront,
         // WAF, or CloudWatch Logs actions that Steampipe needs for dashboard queries

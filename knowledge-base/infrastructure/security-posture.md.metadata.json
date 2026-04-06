@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "live-infra",
+    "domain": "infrastructure",
+    "tags": "security,guardduty,inspector,security-hub,access-analyzer,encryption,network-security",
+    "status": "accepted"
+  }
+}

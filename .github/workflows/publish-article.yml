@@ -1,40 +1,33 @@
 # =============================================================================
-# Workflow: Publish Article Drafts
+# Workflow: Verify Article Pipeline Readiness
 # =============================================================================
 #
-# Push-to-Compute pipeline for the Bedrock Publisher (manual trigger).
+# Pre-flight verification for the multi-agent article pipeline.
+# Ensures all infrastructure is correctly deployed and ready for the
+# admin dashboard to trigger article generation via Step Functions.
 #
-# Triggered via workflow_dispatch (Actions UI or GitHub CLI). Optionally
-# accepts an article_path input to publish a single draft; if omitted,
-# publishes all .md files in articles-draft/.
+# This workflow does NOT trigger article creation — the admin dashboard
+# handles that. It verifies:
+#   1. SSM parameters are resolvable (DynamoDB table, S3 bucket, SFN ARN)
+#   2. Step Functions state machine exists and is ACTIVE
+#   3. All 5 agent Lambdas are deployed and configured
+#   4. DynamoDB table is accessible
+#   5. S3 bucket prefixes are reachable
 #
-# Steps:
-#   1. Detects target .md files (from input or directory scan)
-#   2. Resolves infrastructure names from SSM
-#   3. Uploads each file to s3://{bucket}/drafts/{filename}.md
-#   4. Waits for and monitors the Publisher Lambda processing
-#   5. Verifies S3 output and DynamoDB metadata
-#   6. Reports full results in the GitHub Step Summary
-#
-# The Lambda handles: Bedrock transformation → S3 published/ → DynamoDB
+# Run this after deploying Bedrock infrastructure to confirm readiness.
 # =============================================================================
 
-name: Publish Article Drafts
+name: Verify Article Pipeline
 
 on:
   workflow_dispatch:
-    inputs:
-      article_path:
-        description: "Path to the article draft (e.g. articles-draft/my-article.md)"
-        required: false
-        type: string
 
 permissions:
   id-token: write
   contents: read
 
 concurrency:
-  group: publish-articles
+  group: verify-article-pipeline
   cancel-in-progress: false
 
 env:
@@ -42,10 +35,10 @@ env:
   SSM_PREFIX: bedrock-dev
 
 jobs:
-  publish:
-    name: Publish & Verify
+  verify:
+    name: Pipeline Readiness Check
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     environment: development
 
     steps:
@@ -54,400 +47,275 @@ jobs:
       # ------------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 2
 
       # ------------------------------------------------------------------
-      # 2. Detect changed .md files in articles-draft/
-      # ------------------------------------------------------------------
-      - name: Detect Articles
-        id: detect
-        run: |
-          # Use input path if provided, otherwise scan articles-draft/
-          if [ -n "${{ inputs.article_path }}" ]; then
-            if [ ! -f "${{ inputs.article_path }}" ]; then
-              echo "::error::File not found: ${{ inputs.article_path }}"
-              exit 1
-            fi
-            CHANGED_FILES="${{ inputs.article_path }}"
-          else
-            CHANGED_FILES=$(find articles-draft -name '*.md' ! -name 'README.md' -type f | sort || true)
-          fi
-
-          if [ -z "$CHANGED_FILES" ]; then
-            echo "No article drafts found."
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          FILE_COUNT=$(echo "$CHANGED_FILES" | wc -l | tr -d ' ')
-          echo "has_changes=true" >> $GITHUB_OUTPUT
-          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
-
-          # Build slug list for verification (filename without .md extension)
-          SLUGS=""
-          while IFS= read -r F; do
-            SLUG=$(basename "$F" .md)
-            SLUGS="${SLUGS}${SLUG},"
-          done <<< "$CHANGED_FILES"
-          SLUGS="${SLUGS%,}"
-          echo "slugs=$SLUGS" >> $GITHUB_OUTPUT
-
-          {
-            echo "files<<EOF"
-            echo "$CHANGED_FILES"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
-
-          echo "## 📝 Article Drafts Detected" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| File | Slug |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
-          while IFS= read -r F; do
-            SLUG=$(basename "$F" .md)
-            echo "| \`$(basename "$F")\` | \`$SLUG\` |" >> $GITHUB_STEP_SUMMARY
-          done <<< "$CHANGED_FILES"
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-      # ------------------------------------------------------------------
-      # 3. AWS Credentials (OIDC)
+      # 2. AWS Credentials (OIDC)
       # ------------------------------------------------------------------
       - name: Configure AWS Credentials
-        if: steps.detect.outputs.has_changes == 'true'
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
 
       # ------------------------------------------------------------------
-      # 4. Resolve infrastructure names from SSM
+      # 3. Resolve SSM Parameters
       # ------------------------------------------------------------------
       - name: Resolve Infrastructure
-        if: steps.detect.outputs.has_changes == 'true'
         id: infra
         run: |
-          BUCKET_NAME=$(aws ssm get-parameter \
-            --name "/${{ env.SSM_PREFIX }}/assets-bucket-name" \
-            --query 'Parameter.Value' --output text)
-          echo "::add-mask::$BUCKET_NAME"
-          echo "bucket_name=$BUCKET_NAME" >> $GITHUB_OUTPUT
-
-          TABLE_NAME=$(aws ssm get-parameter \
-            --name "/${{ env.SSM_PREFIX }}/content-table-name" \
-            --query 'Parameter.Value' --output text)
-          echo "::add-mask::$TABLE_NAME"
-          echo "table_name=$TABLE_NAME" >> $GITHUB_OUTPUT
-
-          LAMBDA_ARN=$(aws ssm get-parameter \
-            --name "/${{ env.SSM_PREFIX }}/publisher-function-arn" \
-            --query 'Parameter.Value' --output text)
-          # Extract function name from ARN
-          LAMBDA_NAME=$(echo "$LAMBDA_ARN" | awk -F: '{print $NF}')
-          echo "::add-mask::$LAMBDA_ARN"
-          echo "::add-mask::$LAMBDA_NAME"
-          echo "lambda_name=$LAMBDA_NAME" >> $GITHUB_OUTPUT
-
-          echo "## 🏗️ Infrastructure" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔍 SSM Parameter Resolution" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Resource | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| S3 Bucket | ✅ Resolved |" >> $GITHUB_STEP_SUMMARY
-          echo "| DynamoDB Table | ✅ Resolved |" >> $GITHUB_STEP_SUMMARY
-          echo "| Lambda Function | ✅ Resolved |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
 
-      # ------------------------------------------------------------------
-      # 5. Upload each draft to S3 drafts/ prefix
-      # ------------------------------------------------------------------
-      - name: Upload Drafts to S3
-        if: steps.detect.outputs.has_changes == 'true'
-        id: upload
-        run: |
-          BUCKET="${{ steps.infra.outputs.bucket_name }}"
-          UPLOAD_COUNT=0
-          FAILED_COUNT=0
-          UPLOAD_TIME=$(date -u +%s)
+          SSM_OK=0
+          SSM_FAIL=0
 
-          echo "## ⬆️ S3 Upload" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          resolve_param() {
+            local PARAM_NAME="$1"
+            local OUTPUT_KEY="$2"
 
-          while IFS= read -r FILE; do
-            FILENAME=$(basename "$FILE")
-            echo "Uploading: $FILENAME → drafts/"
+            VALUE=$(aws ssm get-parameter \
+              --name "/${{ env.SSM_PREFIX }}/${PARAM_NAME}" \
+              --query 'Parameter.Value' --output text 2>/dev/null || echo "")
 
-            if aws s3 cp "$FILE" "s3://$BUCKET/drafts/$FILENAME" \
-              --content-type "text/markdown"; then
-              echo "- ✅ \`$FILENAME\` uploaded to drafts/" >> $GITHUB_STEP_SUMMARY
-              UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
+            if [ -n "$VALUE" ]; then
+              echo "::add-mask::$VALUE"
+              echo "${OUTPUT_KEY}=${VALUE}" >> $GITHUB_OUTPUT
+              echo "| \`${PARAM_NAME}\` | ✅ Resolved |" >> $GITHUB_STEP_SUMMARY
+              SSM_OK=$((SSM_OK + 1))
             else
-              echo "- ❌ \`$FILENAME\` — upload failed" >> $GITHUB_STEP_SUMMARY
-              FAILED_COUNT=$((FAILED_COUNT + 1))
+              echo "| \`${PARAM_NAME}\` | ❌ **Not found** |" >> $GITHUB_STEP_SUMMARY
+              SSM_FAIL=$((SSM_FAIL + 1))
             fi
-          done <<< "${{ steps.detect.outputs.files }}"
+          }
+
+          resolve_param "content-table-name" "table_name"
+          resolve_param "content-table-arn" "table_arn"
+          resolve_param "assets-bucket-name" "bucket_name"
+          resolve_param "pipeline-publish-function-arn" "publisher_arn"
+          resolve_param "pipeline-state-machine-arn" "sfn_arn"
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "upload_time=$UPLOAD_TIME" >> $GITHUB_OUTPUT
+          echo "ssm_ok=$SSM_OK" >> $GITHUB_OUTPUT
+          echo "ssm_fail=$SSM_FAIL" >> $GITHUB_OUTPUT
 
-          if [ "$FAILED_COUNT" -gt 0 ]; then
-            echo "::error::${FAILED_COUNT} file(s) failed to upload"
-            exit 1
+          if [ "$SSM_FAIL" -gt 0 ]; then
+            echo "::warning::${SSM_FAIL} SSM parameter(s) not found"
           fi
 
       # ------------------------------------------------------------------
-      # 6. Wait for Lambda processing
+      # 4. Verify Step Functions State Machine
       # ------------------------------------------------------------------
-      - name: Wait for Bedrock Processing
-        if: steps.detect.outputs.has_changes == 'true'
-        id: wait
+      - name: Verify Step Functions
+        id: sfn
         run: |
-          LAMBDA_NAME="${{ steps.infra.outputs.lambda_name }}"
-          LOG_GROUP="/aws/lambda/$LAMBDA_NAME"
-          FILE_COUNT="${{ steps.detect.outputs.file_count }}"
-          UPLOAD_TIME="${{ steps.upload.outputs.upload_time }}"
-          START_MS=$((UPLOAD_TIME * 1000))
-
-          echo "## ⏳ Bedrock Processing" >> $GITHUB_STEP_SUMMARY
+          SFN_ARN="${{ steps.infra.outputs.sfn_arn }}"
+          echo "## ⚡ Step Functions State Machine" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "Waiting for Lambda to process $FILE_COUNT article(s)..."
-          echo "Log group: $LOG_GROUP"
-          echo "Start time (ms): $START_MS"
-
-          MAX_WAIT=300
-          POLL_INTERVAL=15
-          ELAPSED=0
-          PROCESSING_COMPLETE=false
-
-          echo "Waiting 20s for S3 event delivery + cold start..."
-          sleep 20
-          ELAPSED=20
-
-          while [ $ELAPSED -lt $MAX_WAIT ]; do
-            echo "Checking logs... (${ELAPSED}s / ${MAX_WAIT}s)"
-
-            # CloudWatch filter pattern: ? prefix = OR between terms
-            LOGS=$(aws logs filter-log-events \
-              --log-group-name "$LOG_GROUP" \
-              --start-time "$START_MS" \
-              --filter-pattern '?"All records processed successfully" ?"Failed to process"' \
-              --query 'events[*].message' \
-              --output text 2>/dev/null || echo "")
-
-            if [ -n "$LOGS" ]; then
-              echo "--- Log match found ---"
-              echo "$LOGS"
-
-              if echo "$LOGS" | grep -q "All records processed successfully"; then
-                echo "✅ Lambda processing completed successfully!"
-                PROCESSING_COMPLETE=true
-                echo "processing_status=success" >> $GITHUB_OUTPUT
-                break
-              fi
-
-              if echo "$LOGS" | grep -q "Failed to process"; then
-                echo "❌ Lambda processing failed!"
-                PROCESSING_COMPLETE=true
-                echo "processing_status=error" >> $GITHUB_OUTPUT
-                break
-              fi
-            fi
-
-            sleep $POLL_INTERVAL
-            ELAPSED=$((ELAPSED + POLL_INTERVAL))
-          done
-
-          if [ "$PROCESSING_COMPLETE" = false ]; then
-            echo "⚠️ Timed out waiting for Lambda (${MAX_WAIT}s)"
-            echo "processing_status=timeout" >> $GITHUB_OUTPUT
+          if [ -z "$SFN_ARN" ]; then
+            echo "- ❌ State machine ARN not found in SSM" >> $GITHUB_STEP_SUMMARY
+            echo "sfn_status=missing" >> $GITHUB_OUTPUT
+            exit 0
           fi
 
-          # ---- Capture full Lambda logs ----
-          echo ""
-          echo "========== Full Lambda Logs =========="
-          FULL_LOGS=$(aws logs filter-log-events \
-            --log-group-name "$LOG_GROUP" \
-            --start-time "$START_MS" \
-            --query 'events[*].message' \
-            --output text 2>/dev/null || echo "No logs found")
+          SFN_STATUS=$(aws stepfunctions describe-state-machine \
+            --state-machine-arn "$SFN_ARN" \
+            --query 'status' --output text 2>/dev/null || echo "NOT_FOUND")
 
-          # Show raw logs in runner output for debugging
-          echo "$FULL_LOGS"
+          SFN_NAME=$(aws stepfunctions describe-state-machine \
+            --state-machine-arn "$SFN_ARN" \
+            --query 'name' --output text 2>/dev/null || echo "unknown")
 
-          # Write key lines to Step Summary
-          echo "### Lambda Logs" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          KEY_LINES=$(echo "$FULL_LOGS" | grep -E "Processing|Complexity|Invoking|Transform complete|Content written|Metadata written|Failed|ERROR|shotList|Director|All records" || echo "No matching log lines found")
-          echo "$KEY_LINES" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          # ---- Check for errors ----
-          ERROR_LOGS=$(echo "$FULL_LOGS" | grep -E "ERROR|Failed|Exception" || true)
-          if [ -n "$ERROR_LOGS" ]; then
-            echo "### ❌ Errors Detected" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "$ERROR_LOGS" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            # Only override status if not already set
-            if [ "$PROCESSING_COMPLETE" = false ]; then
-              echo "processing_status=error" >> $GITHUB_OUTPUT
-            fi
-          elif [ "$PROCESSING_COMPLETE" = false ]; then
-            echo "- ⏳ No completion or error signals found in logs" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$SFN_STATUS" = "ACTIVE" ]; then
+            echo "- ✅ **${SFN_NAME}** — Status: \`${SFN_STATUS}\`" >> $GITHUB_STEP_SUMMARY
+            echo "sfn_status=active" >> $GITHUB_OUTPUT
+          else
+            echo "- ❌ **${SFN_NAME}** — Status: \`${SFN_STATUS}\`" >> $GITHUB_STEP_SUMMARY
+            echo "sfn_status=${SFN_STATUS}" >> $GITHUB_OUTPUT
           fi
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       # ------------------------------------------------------------------
-      # 7. Verify S3 published output
+      # 5. Verify Agent Lambdas
       # ------------------------------------------------------------------
-      - name: Verify S3 Output
-        if: steps.detect.outputs.has_changes == 'true'
-        id: s3check
+      - name: Verify Agent Lambdas
+        id: lambdas
         run: |
-          BUCKET="${{ steps.infra.outputs.bucket_name }}"
-          SLUGS="${{ steps.detect.outputs.slugs }}"
+          PREFIX="${{ env.SSM_PREFIX }}"
+          # Pipeline Lambda naming convention: {prefix}-pipeline-{agent}
+          AGENTS=("trigger" "research" "writer" "qa" "publish")
 
-          echo "## 📦 S3 Verification" >> $GITHUB_STEP_SUMMARY
+          echo "## 🤖 Agent Lambda Functions" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Agent | Function | Status | Memory |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|----------|--------|--------|" >> $GITHUB_STEP_SUMMARY
 
-          S3_OK=0
-          S3_MISSING=0
+          LAMBDA_OK=0
+          LAMBDA_FAIL=0
 
-          IFS=',' read -ra SLUG_ARRAY <<< "$SLUGS"
-          for SLUG in "${SLUG_ARRAY[@]}"; do
-            PUBLISHED_KEY="published/${SLUG}.mdx"
+          for AGENT in "${AGENTS[@]}"; do
+            FN_NAME="${PREFIX}-pipeline-${AGENT}"
 
-            # Check if published file exists
-            if aws s3api head-object --bucket "$BUCKET" --key "$PUBLISHED_KEY" 2>/dev/null; then
-              SIZE=$(aws s3api head-object --bucket "$BUCKET" --key "$PUBLISHED_KEY" \
-                --query 'ContentLength' --output text)
-              MODIFIED=$(aws s3api head-object --bucket "$BUCKET" --key "$PUBLISHED_KEY" \
-                --query 'LastModified' --output text)
-              echo "- ✅ \`$PUBLISHED_KEY\` — ${SIZE} bytes (${MODIFIED})" >> $GITHUB_STEP_SUMMARY
-              S3_OK=$((S3_OK + 1))
+            RESULT=$(aws lambda get-function-configuration \
+              --function-name "$FN_NAME" \
+              --query '{State: State, MemorySize: MemorySize, Runtime: Runtime}' \
+              --output json 2>/dev/null || echo '{"State":"NOT_FOUND"}')
+
+            STATE=$(echo "$RESULT" | jq -r '.State')
+            MEMORY=$(echo "$RESULT" | jq -r '.MemorySize // "N/A"')
+
+            if [ "$STATE" = "Active" ]; then
+              echo "| ${AGENT^} | \`${FN_NAME}\` | ✅ Active | ${MEMORY} MB |" >> $GITHUB_STEP_SUMMARY
+              LAMBDA_OK=$((LAMBDA_OK + 1))
             else
-              echo "- ❌ \`$PUBLISHED_KEY\` — **not found**" >> $GITHUB_STEP_SUMMARY
-              S3_MISSING=$((S3_MISSING + 1))
+              echo "| ${AGENT^} | \`${FN_NAME}\` | ❌ ${STATE} | — |" >> $GITHUB_STEP_SUMMARY
+              LAMBDA_FAIL=$((LAMBDA_FAIL + 1))
             fi
           done
 
-          # Full listing of all published articles
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### All Published Files" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          aws s3 ls "s3://$BUCKET/published/" 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "(no files)" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "s3_ok=$S3_OK" >> $GITHUB_OUTPUT
-          echo "s3_missing=$S3_MISSING" >> $GITHUB_OUTPUT
+          echo "lambda_ok=$LAMBDA_OK" >> $GITHUB_OUTPUT
+          echo "lambda_fail=$LAMBDA_FAIL" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
-      # 8. Verify DynamoDB metadata
+      # 6. Verify DynamoDB Table
       # ------------------------------------------------------------------
-      - name: Verify DynamoDB Metadata
-        if: steps.detect.outputs.has_changes == 'true'
-        id: ddbcheck
+      - name: Verify DynamoDB Table
+        id: ddb
         run: |
           TABLE="${{ steps.infra.outputs.table_name }}"
-          SLUGS="${{ steps.detect.outputs.slugs }}"
-
-          echo "## 🗄️ DynamoDB Verification" >> $GITHUB_STEP_SUMMARY
+          echo "## 🗄️ DynamoDB Table" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          DDB_OK=0
-          DDB_MISSING=0
+          if [ -z "$TABLE" ]; then
+            echo "- ❌ Table name not found in SSM" >> $GITHUB_STEP_SUMMARY
+            echo "ddb_status=missing" >> $GITHUB_OUTPUT
+            exit 0
+          fi
 
-          IFS=',' read -ra SLUG_ARRAY <<< "$SLUGS"
-          for SLUG in "${SLUG_ARRAY[@]}"; do
-            PK="ARTICLE#${SLUG}"
+          TABLE_STATUS=$(aws dynamodb describe-table \
+            --table-name "$TABLE" \
+            --query 'Table.TableStatus' --output text 2>/dev/null || echo "NOT_FOUND")
 
-            # Query METADATA record
-            RESULT=$(aws dynamodb get-item \
-              --table-name "$TABLE" \
-              --key "{\"pk\":{\"S\":\"$PK\"},\"sk\":{\"S\":\"METADATA\"}}" \
-              --projection-expression "title, readingTime, shotListCount, updatedAt" \
-              --output json 2>/dev/null || echo "{}")
+          ITEM_COUNT=$(aws dynamodb describe-table \
+            --table-name "$TABLE" \
+            --query 'Table.ItemCount' --output text 2>/dev/null || echo "0")
 
-            if echo "$RESULT" | jq -e '.Item' > /dev/null 2>&1; then
-              TITLE=$(echo "$RESULT" | jq -r '.Item.title.S // "N/A"')
-              READING_TIME=$(echo "$RESULT" | jq -r '.Item.readingTime.N // "N/A"')
-              SHOT_COUNT=$(echo "$RESULT" | jq -r '.Item.shotListCount.N // "0"')
-              UPDATED=$(echo "$RESULT" | jq -r '.Item.updatedAt.S // "N/A"')
+          if [ "$TABLE_STATUS" = "ACTIVE" ]; then
+            echo "- ✅ **${TABLE}** — Status: \`ACTIVE\`, Items: ${ITEM_COUNT}" >> $GITHUB_STEP_SUMMARY
+            echo "ddb_status=active" >> $GITHUB_OUTPUT
+          else
+            echo "- ❌ **${TABLE}** — Status: \`${TABLE_STATUS}\`" >> $GITHUB_STEP_SUMMARY
+            echo "ddb_status=${TABLE_STATUS}" >> $GITHUB_OUTPUT
+          fi
 
-              echo "- ✅ \`$PK\`" >> $GITHUB_STEP_SUMMARY
-              echo "  - **Title:** $TITLE" >> $GITHUB_STEP_SUMMARY
-              echo "  - **Reading Time:** ${READING_TIME} min" >> $GITHUB_STEP_SUMMARY
-              echo "  - **Shot List:** ${SHOT_COUNT} items" >> $GITHUB_STEP_SUMMARY
-              echo "  - **Updated:** $UPDATED" >> $GITHUB_STEP_SUMMARY
-              DDB_OK=$((DDB_OK + 1))
+          # Show existing articles
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Existing Articles" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          aws dynamodb scan --table-name "$TABLE" \
+            --filter-expression "sk = :sk" \
+            --expression-attribute-values '{":sk":{"S":"METADATA"}}' \
+            --projection-expression "pk, title, updatedAt" \
+            --max-items 10 \
+            --output json 2>/dev/null | jq -c '.Items[] | {slug: .pk.S, title: .title.S, updated: .updatedAt.S}' >> $GITHUB_STEP_SUMMARY || echo "(no records)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      # ------------------------------------------------------------------
+      # 7. Verify S3 Bucket Prefixes
+      # ------------------------------------------------------------------
+      - name: Verify S3 Bucket
+        id: s3
+        run: |
+          BUCKET="${{ steps.infra.outputs.bucket_name }}"
+          echo "## 📦 S3 Bucket Prefixes" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -z "$BUCKET" ]; then
+            echo "- ❌ Bucket name not found in SSM" >> $GITHUB_STEP_SUMMARY
+            echo "s3_status=missing" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          PREFIXES=("drafts/" "published/" "review/" "content/" "knowledge-base/")
+
+          echo "| Prefix | Status | Object Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|-------------|" >> $GITHUB_STEP_SUMMARY
+
+          for PREFIX in "${PREFIXES[@]}"; do
+            COUNT=$(aws s3api list-objects-v2 \
+              --bucket "$BUCKET" \
+              --prefix "$PREFIX" \
+              --max-keys 100 \
+              --query 'KeyCount' --output text 2>/dev/null || echo "0")
+
+            if [ "$COUNT" != "0" ] && [ "$COUNT" != "None" ]; then
+              echo "| \`${PREFIX}\` | ✅ Accessible | ${COUNT} object(s) |" >> $GITHUB_STEP_SUMMARY
             else
-              echo "- ❌ \`$PK\` — **METADATA record not found**" >> $GITHUB_STEP_SUMMARY
-              DDB_MISSING=$((DDB_MISSING + 1))
+              echo "| \`${PREFIX}\` | ⚠️ Empty | 0 |" >> $GITHUB_STEP_SUMMARY
             fi
           done
 
-          # Full table scan for overview of all articles
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### All Articles in DynamoDB" >> $GITHUB_STEP_SUMMARY
-          echo '```json' >> $GITHUB_STEP_SUMMARY
-          aws dynamodb scan --table-name "$TABLE" \
-            --projection-expression "pk, sk, title, updatedAt" \
-            --max-items 10 \
-            --output json 2>/dev/null | jq '.Items[] | {pk: .pk.S, sk: .sk.S, title: .title.S, updatedAt: .updatedAt.S}' >> $GITHUB_STEP_SUMMARY || echo "(no records)" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "ddb_ok=$DDB_OK" >> $GITHUB_OUTPUT
-          echo "ddb_missing=$DDB_MISSING" >> $GITHUB_OUTPUT
+          echo "s3_status=ok" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
-      # 9. Final Summary
+      # 8. Final Readiness Summary
       # ------------------------------------------------------------------
-      - name: Pipeline Result
-        if: steps.detect.outputs.has_changes == 'true'
+      - name: Pipeline Readiness Report
         run: |
-          PROCESSING="${{ steps.wait.outputs.processing_status }}"
-          S3_OK="${{ steps.s3check.outputs.s3_ok }}"
-          S3_MISSING="${{ steps.s3check.outputs.s3_missing }}"
-          DDB_OK="${{ steps.ddbcheck.outputs.ddb_ok }}"
-          DDB_MISSING="${{ steps.ddbcheck.outputs.ddb_missing }}"
+          SSM_FAIL="${{ steps.infra.outputs.ssm_fail }}"
+          SFN_STATUS="${{ steps.sfn.outputs.sfn_status }}"
+          LAMBDA_OK="${{ steps.lambdas.outputs.lambda_ok }}"
+          LAMBDA_FAIL="${{ steps.lambdas.outputs.lambda_fail }}"
+          DDB_STATUS="${{ steps.ddb.outputs.ddb_status }}"
 
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🏁 Pipeline Result" >> $GITHUB_STEP_SUMMARY
+          echo "## 🏁 Pipeline Readiness" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
 
-          if [ "$PROCESSING" = "success" ]; then
-            echo "| Lambda Processing | ✅ Success |" >> $GITHUB_STEP_SUMMARY
-          elif [ "$PROCESSING" = "timeout" ]; then
-            echo "| Lambda Processing | ⚠️ Timed out |" >> $GITHUB_STEP_SUMMARY
+          # SSM
+          if [ "$SSM_FAIL" = "0" ]; then
+            echo "| SSM Parameters | ✅ All resolved |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| Lambda Processing | ❌ Error |" >> $GITHUB_STEP_SUMMARY
+            echo "| SSM Parameters | ❌ ${SSM_FAIL} missing |" >> $GITHUB_STEP_SUMMARY
           fi
 
-          if [ "$S3_MISSING" = "0" ] && [ "$S3_OK" != "0" ]; then
-            echo "| S3 Published Output | ✅ ${S3_OK} file(s) |" >> $GITHUB_STEP_SUMMARY
+          # Step Functions
+          if [ "$SFN_STATUS" = "active" ]; then
+            echo "| Step Functions | ✅ Active |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| S3 Published Output | ❌ ${S3_MISSING} missing |" >> $GITHUB_STEP_SUMMARY
+            echo "| Step Functions | ❌ ${SFN_STATUS} |" >> $GITHUB_STEP_SUMMARY
           fi
 
-          if [ "$DDB_MISSING" = "0" ] && [ "$DDB_OK" != "0" ]; then
-            echo "| DynamoDB Metadata | ✅ ${DDB_OK} record(s) |" >> $GITHUB_STEP_SUMMARY
+          # Lambdas
+          if [ "$LAMBDA_FAIL" = "0" ] && [ "$LAMBDA_OK" != "0" ]; then
+            echo "| Agent Lambdas | ✅ ${LAMBDA_OK}/5 active |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| DynamoDB Metadata | ❌ ${DDB_MISSING} missing |" >> $GITHUB_STEP_SUMMARY
+            echo "| Agent Lambdas | ❌ ${LAMBDA_FAIL} not found |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # DynamoDB
+          if [ "$DDB_STATUS" = "active" ]; then
+            echo "| DynamoDB Table | ✅ Active |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| DynamoDB Table | ❌ ${DDB_STATUS} |" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Fail the workflow if processing errored
-          if [ "$PROCESSING" = "error" ]; then
-            echo "::error::Bedrock processing failed — check Lambda logs above"
-            exit 1
+          # Overall verdict
+          if [ "$SSM_FAIL" = "0" ] && [ "$SFN_STATUS" = "active" ] && \
+             [ "$LAMBDA_FAIL" = "0" ] && [ "$DDB_STATUS" = "active" ]; then
+            echo "### ✅ Pipeline is READY for admin dashboard triggers" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ⚠️ Pipeline has issues — review above checks" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Run \`deploy-bedrock.yml\` to deploy missing infrastructure." >> $GITHUB_STEP_SUMMARY
           fi

@@ -1,0 +1,106 @@
+# .github/workflows/kb-staleness-audit.yml
+# Monthly audit of Knowledge Base document staleness
+#
+# Creates a GitHub Issue listing documents with `last_updated` > 90 days.
+# Runs on the 1st of every month at 09:00 UTC.
+
+name: KB Staleness Audit
+
+on:
+  schedule:
+    - cron: '0 9 1 * *'  # 1st of each month at 09:00 UTC
+  workflow_dispatch:       # Manual trigger
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  staleness-audit:
+    name: Check KB Document Staleness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Audit document staleness
+        id: audit
+        run: |
+          echo "## Knowledge Base Staleness Report" > /tmp/kb-report.md
+          echo "" >> /tmp/kb-report.md
+          echo "Generated: $(date -u '+%Y-%m-%d %H:%M UTC')" >> /tmp/kb-report.md
+          echo "" >> /tmp/kb-report.md
+
+          STALE_COUNT=0
+          TOTAL_COUNT=0
+          MISSING_DATE=0
+          NOW_EPOCH=$(date +%s)
+
+          echo "### Stale Documents (>90 Days)" >> /tmp/kb-report.md
+          echo "" >> /tmp/kb-report.md
+          echo "| Document | Domain | Last Updated | Days Old |" >> /tmp/kb-report.md
+          echo "|:---------|:-------|:-------------|:---------|" >> /tmp/kb-report.md
+
+          for f in $(find knowledge-base/ -name '*.md' \
+            ! -name 'README.md' \
+            ! -name 'index.md' \
+            ! -path '*/scripts/*' | sort); do
+
+            TOTAL_COUNT=$((TOTAL_COUNT + 1))
+            REL_PATH=$(echo "$f" | sed 's|knowledge-base/||')
+            DOMAIN=$(echo "$REL_PATH" | cut -d/ -f1)
+
+            LAST_UPDATED=$(grep '^last_updated:' "$f" | head -1 | \
+              sed 's/last_updated: *"\{0,1\}\([0-9-]*\)"\{0,1\}/\1/')
+
+            if [ -z "$LAST_UPDATED" ]; then
+              MISSING_DATE=$((MISSING_DATE + 1))
+              continue
+            fi
+
+            DOC_EPOCH=$(date -d "$LAST_UPDATED" +%s 2>/dev/null || echo "0")
+            if [ "$DOC_EPOCH" -eq 0 ]; then
+              MISSING_DATE=$((MISSING_DATE + 1))
+              continue
+            fi
+
+            DAYS_OLD=$(( (NOW_EPOCH - DOC_EPOCH) / 86400 ))
+            if [ "$DAYS_OLD" -gt 90 ]; then
+              STALE_COUNT=$((STALE_COUNT + 1))
+              echo "| \`$REL_PATH\` | $DOMAIN | $LAST_UPDATED | **${DAYS_OLD}** |" >> /tmp/kb-report.md
+            fi
+          done
+
+          echo "" >> /tmp/kb-report.md
+          echo "### Summary" >> /tmp/kb-report.md
+          echo "" >> /tmp/kb-report.md
+          echo "- **Total documents:** $TOTAL_COUNT" >> /tmp/kb-report.md
+          echo "- **Stale (>90 days):** $STALE_COUNT" >> /tmp/kb-report.md
+          echo "- **Missing date:** $MISSING_DATE" >> /tmp/kb-report.md
+          echo "" >> /tmp/kb-report.md
+
+          if [ "$STALE_COUNT" -eq 0 ]; then
+            echo "✅ All documents are up to date." >> /tmp/kb-report.md
+          else
+            echo "⚠️ $STALE_COUNT document(s) need review. Use \`/kb-sync\` to update them." >> /tmp/kb-report.md
+          fi
+
+          echo "stale_count=$STALE_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Issue
+        if: steps.audit.outputs.stale_count != '0'
+        uses: peter-evans/create-issue-from-file@e8ef132d6df98ed982188e460ebb3b5d4ef3a9cd # v5.0.1
+        with:
+          title: "KB Staleness Report — $(date -u '+%B %Y')"
+          content-filepath: /tmp/kb-report.md
+          labels: |
+            documentation
+            knowledge-base
+            maintenance
+
+      - name: Summary
+        run: |
+          echo "## KB Staleness Audit" >> $GITHUB_STEP_SUMMARY
+          cat /tmp/kb-report.md >> $GITHUB_STEP_SUMMARY

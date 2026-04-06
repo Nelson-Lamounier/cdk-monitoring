@@ -1,21 +1,23 @@
-# Compiled output
+# ── Compiled Output ──────────────────────────────────────────────────────────
 dist/
 *.js
 !jest.config.js
 !jest.integration.config.js
+!.eslint-local-rules.mjs
+!eslint.config.mjs
 *.d.ts
 !lib/**/*.d.ts
 
-# Dependencies
+# ── Dependencies ─────────────────────────────────────────────────────────────
 node_modules/
 
-# CDK
+# ── CDK ──────────────────────────────────────────────────────────────────────
 .cdk.staging
 cdk.out/
 cdk-outputs/
 cdk.context.json
 
-# Yarn 4+
+# ── Yarn 4+ ──────────────────────────────────────────────────────────────────
 .yarn/*
 !.yarn/patches
 !.yarn/plugins
@@ -23,39 +25,42 @@ cdk.context.json
 !.yarn/sdks
 !.yarn/versions
 
-# Testing
+# ── Testing ──────────────────────────────────────────────────────────────────
 coverage/
 
-# IDE
+# ── IDE ──────────────────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# OS
+# ── OS ───────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Environment
+# ── Environment & Secrets ────────────────────────────────────────────────────
 .env
 .env.local
 .env.bootstrap
+.env.*.local
 
-# Logs
+# ── Logs ─────────────────────────────────────────────────────────────────────
 *.log
 scripts/local/diagnostics/.troubleshoot-logs/*
 !scripts/local/diagnostics/.troubleshoot-logs/.gitkeep
 
-# Generated docs & reports
+# ── Generated Docs & Reports ────────────────────────────────────────────────
 docs/
 security-reports/
 
-# AI tooling
+# ── AI Tooling ───────────────────────────────────────────────────────────────
 .gemini/
 .agent/
+.agents/
 
-# Python
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
+venv/
 .venv/
 .ruff_cache/
 .pytest_cache/
@@ -63,11 +68,23 @@ __pycache__/
 .pyre_configuration
 .pyre/
 
-# Scratch / one-off files
+# ── Scratch / One-off Files ──────────────────────────────────────────────────
 *.txt
-
-
-.agents/rules/
-.agents/agents/
-
+!requirements.txt
+sample.*
 bedrock-generated.md
+
+# ── Draft Content & Internal Docs ────────────────────────────────────────────
+certification.md
+cognito_infrastructure_review.md
+PROMPT.md
+
+# ── Build Benchmarks ────────────────────────────────────────────────────────
+install-timer.*
+
+# ── MCP Development ─────────────────────────────────────────────────────────
+docker-compose.mcp.yml
+
+# ── MCP Server Build Artefacts ───────────────────────────────────────────────
+mcp-servers/*/dist/
+mcp-servers/*/build/

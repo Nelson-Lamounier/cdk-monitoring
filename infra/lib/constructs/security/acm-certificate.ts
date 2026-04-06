@@ -183,7 +183,7 @@ export class AcmCertificateDnsValidationConstruct extends Construct {
         // ========================================
         // IAM PERMISSIONS (added to passed Lambda)
         // ========================================
-        // ACM certificate management
+        // ACM certificate management — always needed when the construct is active
         this.validationFunction.addToRolePolicy(
             new iam.PolicyStatement({
                 effect: iam.Effect.ALLOW,
@@ -197,14 +197,18 @@ export class AcmCertificateDnsValidationConstruct extends Construct {
             }),
         );
 
-        // Cross-account role assumption
-        this.validationFunction.addToRolePolicy(
-            new iam.PolicyStatement({
-                effect: iam.Effect.ALLOW,
-                actions: ['sts:AssumeRole'],
-                resources: [props.crossAccountRoleArn],
-            }),
-        );
+        // Cross-account role assumption — only when a valid ARN is provided.
+        // When crossAccountRoleArn is empty (e.g. missing env var during CI synth),
+        // skip this statement to avoid IAM rejecting an empty resource string.
+        if (props.crossAccountRoleArn) {
+            this.validationFunction.addToRolePolicy(
+                new iam.PolicyStatement({
+                    effect: iam.Effect.ALLOW,
+                    actions: ['sts:AssumeRole'],
+                    resources: [props.crossAccountRoleArn],
+                }),
+            );
+        }
 
         // ========================================
         // CUSTOM RESOURCE PROVIDER

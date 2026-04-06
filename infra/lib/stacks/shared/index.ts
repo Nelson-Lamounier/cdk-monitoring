@@ -17,3 +17,6 @@ export type { FinOpsStackProps, BudgetConfig } from './finops-stack';
 
 export { CrossplaneStack } from './crossplane-stack';
 export type { CrossplaneStackProps } from './crossplane-stack';
+
+export { CognitoAuthStack } from './cognito-auth-stack';
+export type { CognitoAuthStackProps } from './cognito-auth-stack';

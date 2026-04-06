@@ -190,7 +190,6 @@ describe('KubernetesControlPlaneStack', () => {
         describe('CDK token env var exports', () => {
             // These env vars carry CDK-resolved values into the boot script
             const requiredExports = [
-                'VOLUME_ID',
                 'MOUNT_POINT',
                 'STACK_NAME',
                 'ASG_LOGICAL_ID',

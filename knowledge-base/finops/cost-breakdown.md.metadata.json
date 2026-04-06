@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "cost",
+    "domain": "finops",
+    "title": "Infrastructure Cost Breakdown",
+    "tags": "cost, finops, ec2, spot, s3, cloudfront, lambda, budget, pricing, cost-optimisation, self-managed, eks-comparison, opencost, reserved-instances, emf"
+  }
+}

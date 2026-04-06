@@ -38,7 +38,7 @@
     "test:verbose": "CDK_BUNDLING_STACKS='[]' VERBOSE_TESTS=1 jest --verbose",
     "test:validate-patterns": "bash scripts/validate-test-patterns.sh",
     "// === LINTING ===": "",
-    "lint": "eslint . --max-warnings 65",
+    "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix",
     "lint:stacks": "yarn lint:cdk",
     "lint:cdk": "tsc && ENABLE_CDK_NAG=false cdk ls > /dev/null && echo 'CDK validation successful'",
@@ -67,8 +67,8 @@
     ]
   },
   "devDependencies": {
-    "@aws-cdk/integ-runner": "latest",
-    "@aws-cdk/integ-tests-alpha": "latest",
+    "@aws-cdk/integ-runner": "^2.197.8",
+    "@aws-cdk/integ-tests-alpha": "^2.197.0-alpha.0",
     "@aws-sdk/client-acm": "^3.1001.0",
     "@aws-sdk/client-cloudwatch": "^3.1012.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.1013.0",
@@ -76,9 +76,6 @@
     "@aws-sdk/client-sfn": "^3.1010.0",
     "@aws-sdk/client-sqs": "^3.1001.0",
     "@aws-sdk/client-sts": "^3.1001.0",
-    "@babel/core": "^7.28.5",
-    "@babel/preset-env": "^7.28.5",
-    "@babel/preset-typescript": "^7.28.5",
     "@eslint/js": "^9.0.0",
     "@jest/test-sequencer": "^29.7.0",
     "@types/aws-lambda": "^8.10.159",
@@ -91,7 +88,6 @@
     "aws-cdk": "^2.232.1",
     "aws-sdk-client-mock": "^4.1.0",
     "aws-sdk-client-mock-jest": "^4.1.0",
-    "babel-jest": "^29.7.0",
     "dependency-cruiser": "^17.3.7",
     "esbuild": "^0.27.3",
     "eslint": "^9.32.0",
@@ -108,8 +104,6 @@
     "prettier": "3.8.0",
     "ts-jest": "^29.1.1",
     "ts-node": "^10.9.2",
-    "ts-prune": "^0.10.3",
-    "ts-prune-ex": "^0.0.5",
     "tsx": "^4.21.0",
     "turbo": "^2.6.1",
     "typedoc": "^0.28.17",
@@ -157,12 +151,5 @@
     "constructs": "^10.4.4",
     "dotenv": "^16.3.1",
     "source-map-support": "^0.5.21"
-  },
-  "resolutions": {
-    "markdown-it": ">=14.1.1",
-    "fast-xml-parser": ">=5.3.6",
-    "tar": ">=7.5.11",
-    "flatted": ">=3.4.2",
-    "picomatch": "^3.0.0"
   }
 }

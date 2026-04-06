@@ -60,6 +60,8 @@ spec:
               name: http
               protocol: TCP
           env:
+            - name: AUTH_TRUST_HOST
+              value: "true"
             - name: OTEL_SDK_DISABLED
               value: "{{ not .Values.otel.enabled }}"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

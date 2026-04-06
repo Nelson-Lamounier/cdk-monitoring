@@ -18,7 +18,8 @@ on:
   #     - "infra/lib/stacks/self-healing/**"
   #     - "infra/lib/config/self-healing/**"
   #     - "infra/lib/projects/self-healing/**"
-  #     - "infra/lambda/self-healing/**"
+  #     - "bedrock-applications/self-healing/**"
+  #     - "bedrock-applications/shared/**"
   #     - "infra/bin/app.ts"
   #     - ".github/workflows/deploy-self-healing.yml"
   #     - ".github/workflows/_deploy-stack.yml"
@@ -90,6 +91,7 @@ jobs:
     name: Smoke Test
     needs: [deploy-agent]
     runs-on: ubuntu-latest
+    environment: development
     permissions:
       id-token: write
       contents: read
@@ -101,13 +103,15 @@ jobs:
           node-version: '22'
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
 
       - name: Install Dependencies
-        run: cd infra && yarn install --frozen-lockfile
+        run: |
+          corepack enable
+          cd infra && yarn install --immutable
 
       - name: Run Smoke Tests
         run: just ci-integration-test self-healing development

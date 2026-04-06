@@ -37,8 +37,7 @@ class BootConfig:
         hosted_zone_id: Route 53 hosted zone for API DNS.
         api_dns_name: DNS name for the K8s API server.
         s3_bucket: S3 bucket containing bootstrap content.
-        mount_point: Local mount point for the EBS data volume.
-        volume_id: EBS volume ID to attach.
+        mount_point: Local mount point for the data volume.
         calico_version: Calico CNI version.
         environment: Deployment environment name.
         node_label: Kubernetes node label (worker nodes only).
@@ -77,9 +76,6 @@ class BootConfig:
     mount_point: str = field(
         default_factory=lambda: os.environ.get("MOUNT_POINT", "/data"),
     )
-    volume_id: str = field(
-        default_factory=lambda: os.environ.get("VOLUME_ID", ""),
-    )
     calico_version: str = field(
         default_factory=lambda: os.environ.get("CALICO_VERSION", "v3.29.3"),
     )
@@ -92,8 +88,12 @@ class BootConfig:
     log_group_name: str = field(
         default_factory=lambda: os.environ.get("LOG_GROUP_NAME", ""),
     )
+    # Timeout budget constraint: each retry cycle costs ~155s
+    # (120s join timeout + ~5s kubeadm reset + 30s sleep).
+    # SSM Automation step timeout is 900s, so max safe retries = 5
+    # (5 × 155s = 775s, leaving ~125s headroom for S3 sync + setup).
     join_max_retries: int = field(
-        default_factory=lambda: int(os.environ.get("JOIN_MAX_RETRIES", "10")),
+        default_factory=lambda: int(os.environ.get("JOIN_MAX_RETRIES", "5")),
     )
     join_retry_interval: int = field(
         default_factory=lambda: int(os.environ.get("JOIN_RETRY_INTERVAL", "30")),

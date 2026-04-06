@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "implementation",
+    "domain": "kubernetes",
+    "title": "Kubernetes Bootstrap System Scripts",
+    "tags": "bootstrap, argocd, tls, etcd, disaster-recovery, python, shell, ssm, deploy-helpers, certificate, troubleshooting, x509, calico"
+  }
+}

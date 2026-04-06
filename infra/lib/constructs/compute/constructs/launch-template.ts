@@ -165,6 +165,21 @@ export interface LaunchTemplateConstructProps {
      * @default false (AWS default: source/dest check enabled)
      */
     readonly disableSourceDestCheck?: boolean;
+
+    /**
+     * Optional data volume size in GB.
+     *
+     * When set, a second EBS GP3 block device is added at ``/dev/xvdf``.
+     * The volume is created fresh with each instance launch
+     * (``deleteOnTermination: true``) — cluster state is recovered from
+     * S3-based etcd snapshots, not from the volume itself.
+     *
+     * This replaces the legacy pattern of a separate CDK-managed
+     * ``ec2.Volume`` with manual ``attach-volume`` + ``ebs-detach`` Lambda.
+     *
+     * @default undefined — no data volume attached
+     */
+    readonly dataVolumeSizeGb?: number;
 }
 
 /**
@@ -263,6 +278,19 @@ export class LaunchTemplateConstruct extends Construct {
                         throughput: volumeThroughput,
                     }),
                 },
+                // Data volume — only added when dataVolumeSizeGb is set.
+                // Auto-provisioned by AWS at boot; Python bootstrap only
+                // needs to format + mount (no EC2 attach-volume API call).
+                ...(props.dataVolumeSizeGb ? [{
+                    deviceName: '/dev/xvdf',
+                    volume: ec2.BlockDeviceVolume.ebs(props.dataVolumeSizeGb, {
+                        volumeType: ec2.EbsDeviceVolumeType.GP3,
+                        encrypted: true,
+                        deleteOnTermination: true,
+                        iops: volumeIops,
+                        throughput: volumeThroughput,
+                    }),
+                }] : []),
             ],
             detailedMonitoring: props.detailedMonitoring ?? true,
             requireImdsv2: true,

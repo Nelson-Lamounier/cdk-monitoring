@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "implementation",
+    "domain": "kubernetes",
+    "title": "Kubernetes Bootstrap Pipeline",
+    "tags": "bootstrap, ssm-automation, step-functions, golden-ami, kubeadm, user-data, ec2"
+  }
+}

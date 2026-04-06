@@ -1,0 +1,9 @@
+{
+  "title": "Bootstrap Token Corruption — SSM SecureString Backslash Injection",
+  "domain": "kubernetes",
+  "category": "runbook",
+  "created": "2026-03-30",
+  "lastUpdated": "2026-03-30",
+  "status": "active",
+  "tags": ["kubeadm", "ssm", "bootstrap", "troubleshooting", "token-validation"]
+}

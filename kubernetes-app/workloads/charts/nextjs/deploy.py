@@ -58,11 +58,13 @@ FRONTEND_SECRET_MAP: dict[str, str] = {
     "dynamodb-table-name": "DYNAMODB_TABLE_NAME",
     "assets-bucket-name": "ASSETS_BUCKET_NAME",
     "api-gateway-url": "NEXT_PUBLIC_API_URL",
-    # NextAuth.js admin authentication
+    # Cognito + NextAuth.js admin authentication
     "auth/nextauth-secret": "NEXTAUTH_SECRET",
-    "auth/admin-username": "ADMIN_USERNAME",
-    "auth/admin-password": "ADMIN_PASSWORD",
     "auth/nextauth-url": "NEXTAUTH_URL",
+    "auth/cognito-user-pool-id": "AUTH_COGNITO_USER_POOL_ID",
+    "auth/cognito-client-id": "AUTH_COGNITO_ID",
+    "auth/cognito-issuer-url": "AUTH_COGNITO_ISSUER",
+    "auth/cognito-domain": "AUTH_COGNITO_DOMAIN",
 }
 
 
@@ -177,6 +179,44 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
     except client_error_cls:
         log_info("No Bedrock assets-bucket-name override found; using resolved value")
 
+    # Bedrock Agent: resolve API URL, API key, and revalidation secret.
+    # api-url is a plain String; agent-api-key and revalidation-secret
+    # are SecureStrings.
+    #
+    # Manual secret creation (one-time):
+    #   aws ssm put-parameter \
+    #     --name "/bedrock-dev/revalidation-secret" \
+    #     --value "$(openssl rand -base64 32)" \
+    #     --type SecureString
+    _BEDROCK_AGENT_PARAMS: dict[str, str] = {
+        "api-url": "BEDROCK_AGENT_API_URL",
+        "agent-api-key": "BEDROCK_AGENT_API_KEY",
+        "revalidation-secret": "REVALIDATION_SECRET",
+        "pipeline-publish-function-arn": "PUBLISH_LAMBDA_ARN",
+        # Job Strategist pipeline (Stacks 7 & 8)
+        "strategist-table-name": "STRATEGIST_TABLE_NAME",
+        "strategist-trigger-function-arn": "STRATEGIST_TRIGGER_ARN",
+    }
+    for param_suffix, env_var in _BEDROCK_AGENT_PARAMS.items():
+        bedrock_path = f"/bedrock-{cfg.short_env}/{param_suffix}"
+        log_info("Resolving Bedrock Agent param", env_var=env_var, ssm_path=bedrock_path)
+        try:
+            resp = ssm_client.get_parameter(Name=bedrock_path, WithDecryption=True)
+            secrets[env_var] = resp["Parameter"]["Value"]
+            log_info("Resolved Bedrock Agent param", env_var=env_var)
+        except client_error_cls:
+            log_warn("Bedrock Agent param not found", env_var=env_var, ssm_path=bedrock_path)
+
+    # Derived config: SSM prefix for Bedrock parameters.
+    # Used by publish-draft API route to locate infrastructure.
+    secrets["SSM_BEDROCK_PREFIX"] = f"/bedrock-{cfg.short_env}"
+
+    # DynamoDB GSI names — constants matching CDK ai-content-stack.ts.
+    # Explicitly injected rather than relying on fallback defaults in
+    # the frontend code (dynamodb-articles.ts).
+    secrets["DYNAMODB_GSI1_NAME"] = "gsi1-status-date"
+    secrets["DYNAMODB_GSI2_NAME"] = "gsi2-tag-date"
+
     return secrets
 
 
@@ -186,12 +226,24 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
 
 _NEXTJS_SECRET_KEYS = [
     "DYNAMODB_TABLE_NAME",
+    "DYNAMODB_GSI1_NAME",
+    "DYNAMODB_GSI2_NAME",
     "ASSETS_BUCKET_NAME",
     "NEXT_PUBLIC_API_URL",
     "NEXTAUTH_SECRET",
-    "ADMIN_USERNAME",
-    "ADMIN_PASSWORD",
     "NEXTAUTH_URL",
+    "AUTH_COGNITO_USER_POOL_ID",
+    "AUTH_COGNITO_ID",
+    "AUTH_COGNITO_ISSUER",
+    "AUTH_COGNITO_DOMAIN",
+    "BEDROCK_AGENT_API_URL",
+    "BEDROCK_AGENT_API_KEY",
+    "REVALIDATION_SECRET",
+    "SSM_BEDROCK_PREFIX",
+    "PUBLISH_LAMBDA_ARN",
+    # Job Strategist pipeline
+    "STRATEGIST_TABLE_NAME",
+    "STRATEGIST_TRIGGER_ARN",
 ]
 
 
@@ -210,6 +262,14 @@ def create_nextjs_k8s_secrets(v1: object, cfg: NextjsConfig) -> None:
         value = cfg.secrets.get(key, "")
         if value:
             secret_data[key] = value
+
+    # NextAuth.js expects a client secret by default for OIDC providers.
+    # Since we use a Public Client (`generateSecret: false`), we inject
+    # a dummy string to bypass internal crash loops on boot.
+    secret_data["AUTH_COGNITO_SECRET"] = "public-client-no-secret"
+
+    # Enable Grafana Faro RUM
+    secret_data["NEXT_PUBLIC_FARO_ENABLED"] = "true"
 
     # AWS_REGION is always needed for SDK calls — inject from config
     secret_data["AWS_REGION"] = cfg.aws_region

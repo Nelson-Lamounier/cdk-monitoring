@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "architecture",
+    "domain": "infrastructure",
+    "tags": "cdk,typescript,cloudformation,stack-architecture,20-stacks,aws,kubernetes,bedrock,jest,unit-testing,integration-testing,template-assertions",
+    "status": "accepted"
+  }
+}

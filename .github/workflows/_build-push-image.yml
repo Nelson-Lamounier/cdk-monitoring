@@ -71,7 +71,7 @@ on:
         value: ${{ jobs.push.outputs.image-uri }}
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  AWS_REGION: 'eu-west-1'
 
 jobs:
   # ===========================================================================
@@ -107,7 +107,7 @@ jobs:
           build-args: |
             NODE_ENV=production
             NEXT_TELEMETRY_DISABLED=1
-            NEXT_PUBLIC_API_URL=${{ inputs.api-url }}
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
           outputs: type=docker,dest=/tmp/docker-image.tar
 
       - name: Cache Docker Image
@@ -155,11 +155,10 @@ jobs:
       # AWS Credentials
       # ----------------------------------------------------------------
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
 
       # ----------------------------------------------------------------
       # Restore and load Docker image from cache

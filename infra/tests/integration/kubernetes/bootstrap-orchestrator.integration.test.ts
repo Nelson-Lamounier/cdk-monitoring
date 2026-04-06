@@ -51,7 +51,7 @@ import type { Environment } from '../../../lib/config';
  */
 const VACUOUS = 'VACUOUS_PASS' as const;
 
-const CDK_ENV = (process.env.CDK_ENV ?? 'development') as Environment;
+const _CDK_ENV = (process.env.CDK_ENV ?? 'development') as Environment;
 const REGION = process.env.AWS_REGION ?? 'eu-west-1';
 
 /** Minutes to look back for recent executions */
@@ -158,7 +158,7 @@ async function waitForExecution(executionArn: string): Promise<string> {
 
 let stateMachine: StateMachineListItem | undefined;
 let recentExecutions: ExecutionListItem[] = [];
-let executionResults: Map<string, string> = new Map();
+const executionResults = new Map<string, string>();
 
 // =============================================================================
 // Tests

@@ -91,7 +91,7 @@ export class BedrockApiStack extends cdk.Stack {
         this.invokeFunction = new lambdaNode.NodejsFunction(this, 'InvokeFunction', {
             functionName: `${namePrefix}-invoke-agent`,
             runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'bedrock', 'invoke-agent', 'index.ts'),
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'chatbot', 'src', 'index.ts'),
             handler: 'handler',
             memorySize: props.lambdaMemoryMb,
             timeout: cdk.Duration.seconds(props.lambdaTimeoutSeconds),

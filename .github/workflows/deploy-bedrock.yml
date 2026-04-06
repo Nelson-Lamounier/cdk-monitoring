@@ -1,37 +1,31 @@
 # @format
 # @description Deploy Bedrock AI Infrastructure to Development
 #
-# Deploys the 5-stack Bedrock architecture in dependency order:
-#   1. Bedrock-Data       — S3 bucket for Knowledge Base documents + drafts
-#   2. Bedrock-Kb         — Bedrock Knowledge Base (Pinecone vector store)
-#   3. Bedrock-Agent      — Bedrock Agent, Knowledge Base, Guardrail
-#   4. Bedrock-Api        — API Gateway + Lambda for agent invocation
-#   5. Bedrock-Content    — MD-to-Blog pipeline (S3 event → Lambda → DynamoDB)
+# Deploys the 8-stack Bedrock architecture in dependency order:
+#   1. Bedrock-Data               — S3 bucket for Knowledge Base documents + drafts
+#   2. Bedrock-Kb                 — Bedrock Knowledge Base (Pinecone vector store)
+#   3. Bedrock-Agent              — Bedrock Agent, Knowledge Base, Guardrail
+#   4. Bedrock-Api                — API Gateway + Lambda for agent invocation
+#   5. Bedrock-Content            — DynamoDB table + legacy monolith publisher
+#   6. Bedrock-Pipeline           — Multi-agent Step Functions (Research → Writer → QA)
+#   7. Bedrock-Strategist-Data    — Job Strategist DynamoDB table
+#   8. Bedrock-Strategist-Pipeline — Job Strategist (Analysis SM + Coaching SM)
 #
-# After deploy, the sync-kb-docs job:
-#   - Syncs knowledge-base/ → S3
-#   - Triggers Bedrock KB ingestion (re-indexes Pinecone)
-#   - Optionally uploads a test brief to drafts/ (if article-slug input is set)
+# For KB document syncing (without deploying stacks), use sync-kb-docs.yml.
 
 name: Deploy Bedrock (Dev)
 
 on:
-  workflow_dispatch:
-    inputs:
-      article-slug:
-        description: >
-          Optional article slug to trigger KB-augmented generation.
-          Leave empty to skip. Example: self-managed-kubernetes-on-aws-with-cdk
-        required: false
-        default: ''
-        type: string
+  workflow_dispatch: {}
   # push:
   #   branches: [develop]
   #   paths:
   #     - "infra/lib/stacks/bedrock/**"
   #     - "infra/lib/config/bedrock/**"
   #     - "infra/lib/projects/bedrock/**"
-  #     - "bedrock-publisher/src/**"
+  #     - "bedrock-applications/article-pipeline/**"
+  #     - "bedrock-applications/shared/**"
+  #     - "bedrock-applications/chatbot/**"
   #     - "infra/bin/app.ts"
   #     - ".github/workflows/deploy-bedrock*.yml"
   #     - ".github/workflows/_deploy-stack.yml"
@@ -121,8 +115,11 @@ jobs:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # ===========================================================================
-  # Stack 5: Content (MD-to-Blog Agentic Pipeline + KB-Augmented Mode)
+  # Stack 5: Content (DynamoDB article metadata table + legacy monolith)
   # Depends on: Data (S3 bucket) + KB (Knowledge Base ID for retrieval)
+  #
+  # Creates the shared DynamoDB table consumed by both the monolith publisher
+  # and the multi-agent Pipeline. The monolith Lambda is pending deprecation.
   # ===========================================================================
   deploy-content:
     name: Deploy Content Stack
@@ -140,114 +137,70 @@ jobs:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # ===========================================================================
-  # KB Pipeline: Sync docs → Ingest into Pinecone → Optionally generate article
-  # Depends on: Data (S3 bucket) + KB (knowledge-base-id SSM parameter)
+  # Stack 6: Pipeline (Multi-Agent Step Functions — Research → Writer → QA)
+  # Depends on: Data (S3 bucket) + Content (DynamoDB table for article metadata)
+  #
+  # Deploys the Step Functions state machine and per-agent Lambdas.
+  # Application code: bedrock-applications/article-pipeline/
+  # The admin dashboard triggers executions; this only deploys infrastructure.
   # ===========================================================================
-  sync-kb-docs:
-    name: Sync KB Documents to S3
-    needs: [deploy-data, deploy-kb]
-    runs-on: ubuntu-latest
-    environment: development
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  deploy-pipeline:
+    name: Deploy Pipeline Stack
+    needs: [deploy-data, deploy-content]
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Bedrock-Pipeline-development
+      project: bedrock
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+      use-container: false
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  # ===========================================================================
+  # Stack 7: Strategist Data (DynamoDB for job applications)
+  # Depends on: Data (S3 bucket for resume storage)
+  #
+  # Stateful resources for the job strategist pipeline.
+  # Independent lifecycle from pipeline Lambdas.
+  # ===========================================================================
+  deploy-strategist-data:
+    name: Deploy Strategist Data Stack
+    needs: [deploy-data]
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Bedrock-Strategist-Data-development
+      project: bedrock
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+      use-container: false
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
-      - name: Validate KB document quality
-        run: |
-          echo "Validating knowledge-base/ documents..."
-          ERRORS=0
-          for f in $(find knowledge-base/ -name '*.md' ! -name 'README.md' ! -name '.gitkeep'); do
-            SIZE=$(wc -c < "$f" | tr -d ' ')
-            if [ "$SIZE" -lt 500 ]; then
-              echo "::error file=$f::KB document too small (${SIZE} bytes < 500 min). Enrich before syncing."
-              ERRORS=$((ERRORS + 1))
-            fi
-            # Check for unfilled placeholder sections (empty HTML comments in Decision/Consequences)
-            if grep -qP '^\s*<!-- .*(Describe|Fill in|Document|What I gained)' "$f"; then
-              echo "::warning file=$f::Contains unfilled placeholder sections — enrich before publishing."
-            fi
-          done
-          if [ "$ERRORS" -gt 0 ]; then
-            echo "::error::${ERRORS} KB document(s) below minimum size. Aborting sync."
-            exit 1
-          fi
-          echo "All KB documents passed validation."
-
-      - name: Sync KB documents to S3
-        id: sync
-        run: |
-          BUCKET_NAME=$(aws ssm get-parameter \
-            --name "/bedrock-dev/data-bucket-name" \
-            --query "Parameter.Value" \
-            --output text)
-          echo "bucket-name=${BUCKET_NAME}" >> "$GITHUB_OUTPUT"
-          echo "Syncing knowledge-base/ to s3://${BUCKET_NAME}/knowledge-base/"
-          aws s3 sync knowledge-base/ "s3://${BUCKET_NAME}/knowledge-base/" \
-            --delete \
-            --exclude "README.md"
-
-      - name: Trigger KB ingestion (re-index Pinecone)
-        id: ingest
-        run: |
-          KB_ID=$(aws ssm get-parameter \
-            --name "/bedrock-dev/knowledge-base-id" \
-            --query "Parameter.Value" \
-            --output text)
-          DS_ID=$(aws bedrock-agent list-data-sources \
-            --knowledge-base-id "${KB_ID}" \
-            --query "dataSourceSummaries[0].dataSourceId" \
-            --output text)
-          echo "Triggering ingestion for KB=${KB_ID}, DS=${DS_ID}"
-
-          JOB_ID=$(aws bedrock-agent start-ingestion-job \
-            --knowledge-base-id "${KB_ID}" \
-            --data-source-id "${DS_ID}" \
-            --query "ingestionJob.ingestionJobId" \
-            --output text)
-          echo "Ingestion job started: ${JOB_ID}"
-
-          # Poll until complete (5 min timeout)
-          for i in $(seq 1 30); do
-            sleep 10
-            STATUS=$(aws bedrock-agent get-ingestion-job \
-              --knowledge-base-id "${KB_ID}" \
-              --data-source-id "${DS_ID}" \
-              --ingestion-job-id "${JOB_ID}" \
-              --query "ingestionJob.status" \
-              --output text)
-            echo "Ingestion status (${i}/30): ${STATUS}"
-            if [ "${STATUS}" = "COMPLETE" ]; then
-              echo "✅ KB ingestion complete"
-              break
-            elif [ "${STATUS}" = "FAILED" ]; then
-              echo "❌ KB ingestion failed"
-              exit 1
-            fi
-          done
-
-      - name: Upload test brief to S3 (triggers article generation)
-        if: inputs.article-slug != ''
-        run: |
-          SLUG="${{ inputs.article-slug }}"
-          BUCKET_NAME="${{ steps.sync.outputs.bucket-name }}"
-          BRIEF="articles-draft/${SLUG}.md"
-
-          if [ ! -f "${BRIEF}" ]; then
-            echo "::error::Brief not found: ${BRIEF}"
-            echo "Available briefs:"
-            ls -1 articles-draft/*.md 2>/dev/null || echo "  (none)"
-            exit 1
-          fi
-
-          echo "Uploading brief: ${BRIEF} ($(wc -c < "${BRIEF}" | tr -d ' ') bytes)"
-          aws s3 cp "${BRIEF}" \
-            "s3://${BUCKET_NAME}/drafts/${SLUG}.md"
-          echo "✅ Brief uploaded — Lambda should trigger shortly"
-
-
+  # ===========================================================================
+  # Stack 8: Strategist Pipeline (Iterative Two-Pipeline Step Functions)
+  # Depends on: Data (S3) + Strategist Data (DynamoDB) + Content (resume)
+  #
+  # 2 state machines:
+  #   Analysis SM: Research → Strategist → AnalysisPersist
+  #   Coaching SM: CoachLoader → Coach
+  # Application code: bedrock-applications/job-strategist/
+  # ===========================================================================
+  deploy-strategist-pipeline:
+    name: Deploy Strategist Pipeline Stack
+    needs: [deploy-data, deploy-strategist-data, deploy-content]
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: Bedrock-Strategist-Pipeline-development
+      project: bedrock
+      environment: development
+      aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: never
+      use-container: false
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}

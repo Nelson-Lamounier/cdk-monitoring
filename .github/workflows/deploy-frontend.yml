@@ -46,7 +46,7 @@ permissions:
 
 env:
   ENVIRONMENT: development
-  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  AWS_REGION: 'eu-west-1'
 
 jobs:
   # ===========================================================================
@@ -57,11 +57,10 @@ jobs:
     uses: ./.github/workflows/_build-push-image.yml
     with:
       environment: development
-      image-tag: ${{ github.sha }}
+      image-tag: ${{ github.sha }}-r${{ github.run_attempt }}
       ssm-ecr-param: /shared/ecr/development/repository-uri
       frontend-repo: Nelson-Lamounier/frontend-portfolio
       frontend-ref: ${{ github.event.inputs.frontend-ref || github.event.client_payload.ref || 'main' }}
-      api-url: ${{ vars.NEXT_PUBLIC_API_URL || '' }}
       push-to-dockerhub: false
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
@@ -100,17 +99,16 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
 
       - name: Resolve Image URI
         id: resolve-image
         run: |
-          # Construct image URI directly from SSM + commit SHA
-          # (bypasses reusable workflow output propagation)
+          # Construct image URI from SSM + composite tag (sha-rN)
+          # Composite tag prevents ECR overwrites on pipeline retries
           ECR_URL=$(aws ssm get-parameter \
             --name "/shared/ecr/${{ env.ENVIRONMENT }}/repository-uri" \
             --query 'Parameter.Value' \
@@ -121,11 +119,12 @@ jobs:
             exit 1
           fi
 
-          IMAGE_URI="${ECR_URL}:${{ github.sha }}"
+          IMAGE_TAG="${{ github.sha }}-r${{ github.run_attempt }}"
+          IMAGE_URI="${ECR_URL}:${IMAGE_TAG}"
           echo "::add-mask::$ECR_URL"
           echo "::add-mask::$IMAGE_URI"
           echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
-          echo "[PASS] Resolved image URI from SSM"
+          echo "[PASS] Resolved image URI from SSM (tag: ${IMAGE_TAG})"
 
       - name: Update SSM for ArgoCD
         run: |
@@ -145,6 +144,8 @@ jobs:
           echo "## Kubernetes Deployment" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: Updated in SSM ✅" >> $GITHUB_STEP_SUMMARY
           echo "- **SSM Parameter Updated**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "ArgoCD Image Updater will detect the new tag and trigger BlueGreen promotion." >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
   # Job 4: Migrate Articles (independent — can run in parallel with deploy)

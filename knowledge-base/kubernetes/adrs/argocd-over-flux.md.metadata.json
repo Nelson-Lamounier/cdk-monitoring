@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "adr",
+    "domain": "kubernetes",
+    "tags": "argocd,flux,gitops,image-updater,sync-waves,app-of-apps",
+    "status": "accepted"
+  }
+}

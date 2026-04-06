@@ -160,6 +160,15 @@ sns-orphans environment region="eu-west-1":
 cw-log-audit environment region="eu-west-1":
     npx tsx scripts/local/cloudwatch-log-audit.ts --env {{environment}} --profile $(just _profile {{environment}}) --region {{region}}
 
+# Fetch recent CloudWatch log events + SSM Run Command history as JSON
+# Output is printed to terminal and saved to scripts/local/diagnostics/
+# Usage: just cw-last-query /aws/lambda/my-function development
+#        just cw-last-query /aws/eks/my-cluster development --instance-id i-0abc123 --hours 6 --limit 100
+#        just cw-last-query /aws/eks/my-cluster development --region us-east-1
+[group('cdk')]
+cw-last-query log-group environment *EXTRA_ARGS:
+    npx tsx scripts/local/cw-last-query.ts --log-group {{log-group}} --env {{environment}} --profile $(just _profile {{environment}}) {{EXTRA_ARGS}}
+
 # Troubleshoot CloudFormation stack deployments — diagnose slow, stuck, or failed operations
 # Usage: just cfn-troubleshoot ComputeStack-development development
 [group('cdk')]
@@ -459,6 +468,12 @@ ci-integration-test project environment *ARGS:
 test-integration project environment *ARGS:
     cd infra && NODE_OPTIONS='--experimental-vm-modules' AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPattern="tests/integration/{{project}}" {{ARGS}}
 
+# Run a specific integration test file locally (with AWS profile)
+# Usage: just test-integration-file tests/integration/kubernetes/bluegreen.integration.test.ts development
+[group('test')]
+test-integration-file path environment *ARGS:
+    cd infra && NODE_OPTIONS='--experimental-vm-modules' AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js {{path}} {{ARGS}}
+
 # Run Golden AMI integration test locally
 # Verifies AMI properties, security posture, tags, and pipeline freshness.
 # Usage: just test-golden-ami development
@@ -720,6 +735,13 @@ ec2-disable-source-dest-check instance-id region="eu-west-1" profile="dev-accoun
 ssm-run-controlplane instance-id env="development" region="eu-west-1" profile="dev-account":
     #!/usr/bin/env bash
     set -euo pipefail
+    # Map full env name → short env (matches CDK shortEnv() used in doc names)
+    case "{{env}}" in
+      development) SHORT_ENV="dev" ;;
+      staging)     SHORT_ENV="stg" ;;
+      production)  SHORT_ENV="prd" ;;
+      *)           SHORT_ENV="{{env}}" ;;
+    esac
     SSM_PREFIX="/k8s/{{env}}"
     S3_BUCKET=$(aws ssm get-parameter \
       --name "${SSM_PREFIX}/scripts-bucket" \
@@ -727,7 +749,7 @@ ssm-run-controlplane instance-id env="development" region="eu-west-1" profile="d
       --region {{region}} --profile {{profile}})
     echo "Starting control-plane bootstrap on {{instance-id}}..."
     EXEC_ID=$(aws ssm start-automation-execution \
-      --document-name "k8s-{{env}}-bootstrap-control-plane" \
+      --document-name "k8s-${SHORT_ENV}-bootstrap-control-plane" \
       --parameters "InstanceId={{instance-id}},SsmPrefix=${SSM_PREFIX},S3Bucket=${S3_BUCKET},Region={{region}}" \
       --region {{region}} --profile {{profile}} \
       --query "AutomationExecutionId" --output text)
@@ -742,6 +764,13 @@ ssm-run-controlplane instance-id env="development" region="eu-west-1" profile="d
 ssm-run-worker instance-id env="development" region="eu-west-1" profile="dev-account":
     #!/usr/bin/env bash
     set -euo pipefail
+    # Map full env name → short env (matches CDK shortEnv() used in doc names)
+    case "{{env}}" in
+      development) SHORT_ENV="dev" ;;
+      staging)     SHORT_ENV="stg" ;;
+      production)  SHORT_ENV="prd" ;;
+      *)           SHORT_ENV="{{env}}" ;;
+    esac
     SSM_PREFIX="/k8s/{{env}}"
     S3_BUCKET=$(aws ssm get-parameter \
       --name "${SSM_PREFIX}/scripts-bucket" \
@@ -749,7 +778,7 @@ ssm-run-worker instance-id env="development" region="eu-west-1" profile="dev-acc
       --region {{region}} --profile {{profile}})
     echo "Starting worker bootstrap on {{instance-id}}..."
     EXEC_ID=$(aws ssm start-automation-execution \
-      --document-name "k8s-{{env}}-bootstrap-worker" \
+      --document-name "k8s-${SHORT_ENV}-bootstrap-worker" \
       --parameters "InstanceId={{instance-id}},SsmPrefix=${SSM_PREFIX},S3Bucket=${S3_BUCKET},Region={{region}}" \
       --region {{region}} --profile {{profile}} \
       --query "AutomationExecutionId" --output text)
@@ -2160,3 +2189,16 @@ clean-logs:
 install:
     yarn install
 
+
+
+
+
+# =============================================================================
+# GITHUB WORKFLOW AUTOMATION
+# =============================================================================
+
+# Commit local changes to .github/ and automatically dispatch a workflow on the current branch.
+# Usage: just gh-dispatch deploy-frontend.yml
+[group('gh')]
+gh-dispatch workflow:
+    npx tsx scripts/local/gh-dispatch.ts {{workflow}}

@@ -59,6 +59,7 @@ jobs:
       any-tests: ${{ steps.filter.outputs.any-tests }}
       k8s-content: ${{ steps.filter.outputs.k8s-content }}
       frontend-ops: ${{ steps.filter.outputs.frontend-ops }}
+      kb-content: ${{ steps.filter.outputs.kb-content }}
       # Computed: should we run all tests?
       run-all: ${{ steps.compute.outputs.run-all }}
 
@@ -86,7 +87,7 @@ jobs:
             any-src:
               - 'infra/lib/**/*.ts'
               - 'bin/**/*.ts'
-              - 'bedrock-publisher/src/**/*.ts'
+
             any-tests:
               - 'infra/tests/**/*.ts'
             k8s-content:
@@ -97,6 +98,16 @@ jobs:
               - 'frontend-ops/**'
               - '.github/workflows/deploy-frontend.yml'
               - '.github/workflows/_sync-assets.yml'
+            kb-content:
+              - 'knowledge-base/**'
+              - 'infra/**'
+              - 'kubernetes-app/**'
+
+              - 'bedrock-applications/**'
+              - 'mcp-servers/**'
+              - 'frontend-ops/**'
+              - 'scripts/**'
+              - '.github/workflows/**'
 
       - name: Compute Run Flags
         id: compute
@@ -565,6 +576,37 @@ jobs:
           echo "| Next.js | ✅ | ✅ | ✅ |" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
+  # Knowledge Base Drift Detection (Warn Only)
+  #
+  # Compares changed code files against knowledge-base/.kb-map.yml to detect
+  # when KB documents may need updating. Emits GitHub annotations as warnings
+  # but never blocks the build.
+  # ============================================================================
+  kb-drift-check:
+    name: KB Drift Detection
+    needs: [detect-changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: needs.detect-changes.outputs.kb-content == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # Full history for git diff
+
+      - name: Run KB drift detection
+        run: python3 scripts/kb-drift-check.py --base origin/${{ github.base_ref || 'main' }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Knowledge Base Drift Detection" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Checked code changes against \`knowledge-base/.kb-map.yml\` for stale KB documents." >> $GITHUB_STEP_SUMMARY
+          echo "See job logs for details." >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
   # CI Summary
   # ============================================================================
   ci-success:
@@ -583,6 +625,7 @@ jobs:
       - build
       - validate-cdk
       - validate-helm
+      - kb-drift-check
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -621,6 +664,10 @@ jobs:
           echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- CDK Validation: ${{ needs.validate-cdk.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Helm Validation: ${{ needs.validate-helm.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Knowledge Base" >> $GITHUB_STEP_SUMMARY
+          echo "- KB Drift Detection: ${{ needs.kb-drift-check.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Fail if ANY upstream job failed (skipped jobs are acceptable)

@@ -1,0 +1,214 @@
+# @format
+# @description Sync Knowledge Base documents to S3 and trigger Bedrock ingestion
+#
+# Lightweight, decoupled workflow that syncs knowledge-base/ markdown files
+# to S3 and triggers Pinecone re-ingestion — WITHOUT deploying CDK stacks.
+#
+# Use deploy-bedrock.yml for full infrastructure changes (stack creation/updates).
+# Use THIS workflow for content-only changes (new/updated KB documents).
+#
+# Prerequisites (already deployed by Bedrock-Data + Bedrock-Kb stacks):
+#   - S3 bucket: /bedrock-dev/data-bucket-name (SSM)
+#   - Knowledge Base ID: /bedrock-dev/knowledge-base-id (SSM)
+#   - At least one DataSource configured on the Knowledge Base
+
+name: Sync KB Docs
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "knowledge-base/**"
+      - "!knowledge-base/README.md"
+  workflow_dispatch:
+    inputs:
+      article-slug:
+        description: >
+          Optional article slug to trigger KB-augmented generation.
+          Leave empty to skip. Example: self-managed-kubernetes-on-aws-with-cdk
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: sync-kb-docs-development
+  cancel-in-progress: true
+
+jobs:
+  sync-and-ingest:
+    name: Validate, Sync & Ingest
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+      # -----------------------------------------------------------------
+      # Step 1: Validate KB document quality
+      # -----------------------------------------------------------------
+      - name: Validate KB document quality
+        run: |
+          echo "Validating knowledge-base/ documents..."
+          ERRORS=0
+          WARNINGS=0
+
+          # Collect all KB markdown files (exclude README, index, scripts)
+          KB_FILES=$(find knowledge-base/ -name '*.md' \
+            ! -name 'README.md' \
+            ! -name 'index.md' \
+            ! -path '*/scripts/*')
+
+          for f in $KB_FILES; do
+            BASENAME=$(basename "$f")
+
+            # --- Check 1: Minimum file size ---
+            SIZE=$(wc -c < "$f" | tr -d ' ')
+            if [ "$SIZE" -lt 500 ]; then
+              echo "::error file=$f::KB document too small (${SIZE} bytes < 500 min). Enrich before syncing."
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # --- Check 2: YAML frontmatter presence ---
+            if ! head -1 "$f" | grep -q '^---$'; then
+              echo "::error file=$f::Missing YAML frontmatter. All KB docs require structured metadata."
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # --- Check 3: .metadata.json sidecar file ---
+            SIDECAR="${f}.metadata.json"
+            if [ ! -f "$SIDECAR" ]; then
+              echo "::error file=$f::Missing sidecar file: ${SIDECAR}"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # --- Check 4: Required sections ---
+            if ! grep -q '^## Summary$' "$f"; then
+              echo "::warning file=$f::Missing '## Summary' section — reduces chunk-0 semantic density."
+              WARNINGS=$((WARNINGS + 1))
+            fi
+            if ! grep -q '^## Keywords$' "$f"; then
+              echo "::warning file=$f::Missing '## Keywords' section — reduces search discoverability."
+              WARNINGS=$((WARNINGS + 1))
+            fi
+
+            # --- Check 5: Unfilled placeholder sections ---
+            if grep -qP '^\s*<!-- .*(Describe|Fill in|Document|What I gained)' "$f"; then
+              echo "::warning file=$f::Contains unfilled placeholder sections — enrich before publishing."
+              WARNINGS=$((WARNINGS + 1))
+            fi
+
+            # --- Check 6: Staleness detection (>90 days) ---
+            LAST_UPDATED=$(grep '^last_updated:' "$f" | head -1 | sed 's/last_updated: *"\{0,1\}\([0-9-]*\)"\{0,1\}/\1/')
+            if [ -n "$LAST_UPDATED" ]; then
+              DOC_EPOCH=$(date -d "$LAST_UPDATED" +%s 2>/dev/null || echo "0")
+              if [ "$DOC_EPOCH" -gt 0 ]; then
+                DAYS_OLD=$(( ($(date +%s) - DOC_EPOCH) / 86400 ))
+                if [ "$DAYS_OLD" -gt 90 ]; then
+                  echo "::warning file=$f::Document is ${DAYS_OLD} days old (last_updated: ${LAST_UPDATED}). Consider reviewing."
+                  WARNINGS=$((WARNINGS + 1))
+                fi
+              fi
+            fi
+          done
+
+          echo ""
+          echo "=== Validation Summary ==="
+          echo "  Files checked: $(echo "$KB_FILES" | wc -l | tr -d ' ')"
+          echo "  Errors:   ${ERRORS}"
+          echo "  Warnings: ${WARNINGS}"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::${ERRORS} KB document(s) failed validation. Fix errors before syncing."
+            exit 1
+          fi
+          echo "✅ All KB documents passed validation."
+
+      # -----------------------------------------------------------------
+      # Step 2: Sync KB documents to S3
+      # -----------------------------------------------------------------
+      - name: Sync KB documents to S3
+        id: sync
+        run: |
+          BUCKET_NAME=$(aws ssm get-parameter \
+            --name "/bedrock-dev/data-bucket-name" \
+            --query "Parameter.Value" \
+            --output text)
+          echo "bucket-name=${BUCKET_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Syncing knowledge-base/ to s3://${BUCKET_NAME}/knowledge-base/"
+          aws s3 sync knowledge-base/ "s3://${BUCKET_NAME}/knowledge-base/" \
+            --delete \
+            --exclude "README.md"
+
+      # -----------------------------------------------------------------
+      # Step 3: Trigger Bedrock KB ingestion (re-index Pinecone)
+      # -----------------------------------------------------------------
+      - name: Trigger KB ingestion (re-index Pinecone)
+        id: ingest
+        run: |
+          KB_ID=$(aws ssm get-parameter \
+            --name "/bedrock-dev/knowledge-base-id" \
+            --query "Parameter.Value" \
+            --output text)
+          DS_ID=$(aws bedrock-agent list-data-sources \
+            --knowledge-base-id "${KB_ID}" \
+            --query "dataSourceSummaries[0].dataSourceId" \
+            --output text)
+          echo "Triggering ingestion for KB=${KB_ID}, DS=${DS_ID}"
+
+          JOB_ID=$(aws bedrock-agent start-ingestion-job \
+            --knowledge-base-id "${KB_ID}" \
+            --data-source-id "${DS_ID}" \
+            --query "ingestionJob.ingestionJobId" \
+            --output text)
+          echo "Ingestion job started: ${JOB_ID}"
+
+          # Poll until complete (5 min timeout)
+          for i in $(seq 1 30); do
+            sleep 10
+            STATUS=$(aws bedrock-agent get-ingestion-job \
+              --knowledge-base-id "${KB_ID}" \
+              --data-source-id "${DS_ID}" \
+              --ingestion-job-id "${JOB_ID}" \
+              --query "ingestionJob.status" \
+              --output text)
+            echo "Ingestion status (${i}/30): ${STATUS}"
+            if [ "${STATUS}" = "COMPLETE" ]; then
+              echo "✅ KB ingestion complete"
+              break
+            elif [ "${STATUS}" = "FAILED" ]; then
+              echo "❌ KB ingestion failed"
+              exit 1
+            fi
+          done
+
+      # -----------------------------------------------------------------
+      # Step 4: Optional — upload test brief for article generation
+      # -----------------------------------------------------------------
+      - name: Upload test brief to S3 (triggers article generation)
+        if: github.event_name == 'workflow_dispatch' && inputs.article-slug != ''
+        run: |
+          SLUG="${{ inputs.article-slug }}"
+          BUCKET_NAME="${{ steps.sync.outputs.bucket-name }}"
+          BRIEF="articles-draft/${SLUG}.md"
+
+          if [ ! -f "${BRIEF}" ]; then
+            echo "::error::Brief not found: ${BRIEF}"
+            echo "Available briefs:"
+            ls -1 articles-draft/*.md 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
+
+          echo "Uploading brief: ${BRIEF} ($(wc -c < "${BRIEF}" | tr -d ' ') bytes)"
+          aws s3 cp "${BRIEF}" \
+            "s3://${BUCKET_NAME}/drafts/${SLUG}.md"
+          echo "✅ Brief uploaded — Lambda should trigger shortly"

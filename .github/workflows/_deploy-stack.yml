@@ -163,11 +163,10 @@ jobs:
         uses: ./.github/actions/setup-node-yarn
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        uses: ./.github/actions/configure-aws
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ inputs.aws-region }}
-          audience: sts.amazonaws.com
 
       - name: Resolve AWS Account ID
         id: resolve-account

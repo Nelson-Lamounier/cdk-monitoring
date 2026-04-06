@@ -45,6 +45,7 @@
 #   3c. MonitoringWorker (Monitoring worker node)
 #   4.  AppIam           (Application-tier IAM grants)
 #   5.  Edge             (CloudFront + ACM + WAF in us-east-1)
+#   5b. ✅ Verify Edge    (Integration test — behaviour order, auth cookies, Set-Cookie)
 #
 # ─── Post-Deploy (manifests managed by ArgoCD GitOps) ──────────────
 #   6.  ArgoCD Health Gate          (wait for GitOps sync)
@@ -813,6 +814,52 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Verify Edge Stack (5b) — Auth Cookie Forwarding + Behaviour Ordering
+  #
+  # Post-deployment integration tests that validate the LIVE CloudFront
+  # distribution against the three CSRF root causes:
+  #   1. Auth/admin behaviours use CookieBehavior: all (Set-Cookie passthrough)
+  #   2. OriginRequestPolicy cookie names contain no wildcards
+  #   3. Auth-sensitive patterns appear before /api/* catch-all
+  #
+  # This gate prevents auth regressions from reaching production.
+  # ===========================================================================
+  verify-edge-stack:
+    name: Verify Edge Stack
+    needs: [setup, deploy-edge]
+    if: always() && needs.deploy-edge.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run Edge Stack Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes/edge-stack $CDK_ENV --verbose
+
+  # ===========================================================================
   # Deploy Observability Stack (2f) — CloudWatch Pre-Deployment Dashboard
   #
   # Runs in parallel with Golden AMI, SSM Automation, and API stacks.
@@ -917,6 +964,7 @@ jobs:
         deploy-argocd-worker,
         deploy-api,
         deploy-edge,
+        verify-edge-stack,
         deploy-observability,
         verify-bootstrap,
       ]
@@ -933,6 +981,7 @@ jobs:
         || needs.deploy-argocd-worker.result == 'failure'
         || needs.deploy-api.result == 'failure'
         || needs.deploy-edge.result == 'failure'
+        || needs.verify-edge-stack.result == 'failure'
         || needs.deploy-observability.result == 'failure'
         || needs.verify-bootstrap.result == 'failure'
       )
@@ -996,6 +1045,7 @@ jobs:
       - deploy-argocd-worker
       - deploy-api
       - deploy-edge
+      - verify-edge-stack
       - deploy-observability
       - verify-bootstrap
       - deployment-failure-alert
@@ -1065,6 +1115,7 @@ jobs:
           DEPLOY_ARGOCD_WORKER_RESULT: ${{ needs.deploy-argocd-worker.result || 'skipped' }}
           DEPLOY_API_RESULT: ${{ needs.deploy-api.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
+          VERIFY_EDGE_RESULT: ${{ needs.verify-edge-stack.result || 'skipped' }}
           DEPLOY_OBSERVABILITY_RESULT: ${{ needs.deploy-observability.result || 'skipped' }}
           VERIFY_RESULT: "moved-to-ssm-pipeline"
           SMOKE_TESTS_RESULT: "moved-to-ssm-pipeline"

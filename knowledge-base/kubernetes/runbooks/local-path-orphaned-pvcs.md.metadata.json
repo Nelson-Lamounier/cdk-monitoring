@@ -1,0 +1,7 @@
+{
+  "title": "Runbook: Orphaned Local-Path PVCs (Archived)",
+  "topic": "kubernetes",
+  "tags": ["kubernetes", "storage", "local-path", "monitoring", "troubleshooting", "pvc", "archived"],
+  "format": "markdown",
+  "last_updated": "2026-03-31"
+}

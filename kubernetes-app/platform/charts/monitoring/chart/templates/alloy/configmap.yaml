@@ -20,12 +20,24 @@ data:
         listen_address = "0.0.0.0"
         listen_port    = {{ .Values.alloy.service.faroPort }}
 
-        cors_allowed_origins = ["*"]
+        cors_allowed_origins = [{{ range $i, $origin := .Values.alloy.ingress.corsAllowedOrigins }}{{ if $i }}, {{ end }}{{ $origin | quote }}{{ end }}]
       }
 
       output {
-        logs   = [loki.write.default.receiver]
+        logs   = [loki.process.faro.receiver]
         traces = [otelcol.exporter.otlp.tempo.input]
+      }
+    }
+
+    // --- Relabel Faro Logs ---
+    // Inject the job="faro" static label required by the RUM dashboard queries
+    loki.process "faro" {
+      forward_to = [loki.write.default.receiver]
+      
+      stage.static_labels {
+        values = {
+          job = "faro",
+        }
       }
     }
 

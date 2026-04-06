@@ -1,0 +1,9 @@
+{
+  "metadataAttributes": {
+    "doc_type": "code-analysis",
+    "domain": "frontend",
+    "title": "Frontend Integration — Infrastructure & Deployment",
+    "tags": "nextjs,argo-rollouts,bluegreen,api-gateway,traefik,ecr",
+    "status": "accepted"
+  }
+}

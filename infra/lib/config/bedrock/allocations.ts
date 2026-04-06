@@ -14,6 +14,7 @@
  */
 
 import { type DeployableEnvironment, Environment } from '../environments';
+import { MODELS } from '../shared/model-registry';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -29,15 +30,6 @@ export interface AgentAllocation {
     readonly idleSessionTtlInSeconds: number;
 }
 
-/**
- * Lambda allocation for Action Group handlers
- */
-export interface ActionGroupLambdaAllocation {
-    /** Lambda memory in MB */
-    readonly memoryMb: number;
-    /** Lambda timeout in seconds */
-    readonly timeoutSeconds: number;
-}
 
 /**
  * Lambda allocation for API invoke handler
@@ -77,7 +69,6 @@ export interface ApiGatewayAllocation {
 export interface BedrockAllocations {
     readonly agent: AgentAllocation;
     readonly knowledgeBase: KnowledgeBaseAllocation;
-    readonly actionGroupLambda: ActionGroupLambdaAllocation;
     readonly apiLambda: ApiLambdaAllocation;
     readonly apiGateway: ApiGatewayAllocation;
 }
@@ -92,17 +83,13 @@ export interface BedrockAllocations {
 export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocations> = {
     [Environment.DEVELOPMENT]: {
         agent: {
-            foundationModel: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+            foundationModel: MODELS.CHATBOT_AGENT,
             idleSessionTtlInSeconds: 600, // 10 minutes
         },
         knowledgeBase: {
-            embeddingsModel: 'amazon.titan-embed-text-v2:0',
+            embeddingsModel: MODELS.KB_EMBEDDINGS,
             pineconeConnectionString: 'https://portfolio-kb-79dyhsi.svc.aped-4627-b74a.pinecone.io',
             pineconeNamespace: 'portfolio-dev',
-        },
-        actionGroupLambda: {
-            memoryMb: 256,
-            timeoutSeconds: 30,
         },
         apiLambda: {
             memoryMb: 256,
@@ -116,17 +103,13 @@ export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocatio
 
     [Environment.STAGING]: {
         agent: {
-            foundationModel: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+            foundationModel: MODELS.CHATBOT_AGENT,
             idleSessionTtlInSeconds: 900, // 15 minutes
         },
         knowledgeBase: {
-            embeddingsModel: 'amazon.titan-embed-text-v2:0',
+            embeddingsModel: MODELS.KB_EMBEDDINGS,
             pineconeConnectionString: 'https://portfolio-kb-79dyhsi.svc.aped-4627-b74a.pinecone.io',
             pineconeNamespace: 'portfolio-stg',
-        },
-        actionGroupLambda: {
-            memoryMb: 512,
-            timeoutSeconds: 30,
         },
         apiLambda: {
             memoryMb: 512,
@@ -140,17 +123,13 @@ export const BEDROCK_ALLOCATIONS: Record<DeployableEnvironment, BedrockAllocatio
 
     [Environment.PRODUCTION]: {
         agent: {
-            foundationModel: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+            foundationModel: MODELS.CHATBOT_AGENT,
             idleSessionTtlInSeconds: 1800, // 30 minutes
         },
         knowledgeBase: {
-            embeddingsModel: 'amazon.titan-embed-text-v2:0',
+            embeddingsModel: MODELS.KB_EMBEDDINGS,
             pineconeConnectionString: 'https://portfolio-kb-79dyhsi.svc.aped-4627-b74a.pinecone.io',
             pineconeNamespace: 'portfolio-prd',
-        },
-        actionGroupLambda: {
-            memoryMb: 1024,
-            timeoutSeconds: 60,
         },
         apiLambda: {
             memoryMb: 1024,

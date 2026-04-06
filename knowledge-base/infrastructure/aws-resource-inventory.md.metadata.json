@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "live-infra",
+    "domain": "infrastructure",
+    "tags": "inventory,aws,resources,ec2,s3,lambda,cloudformation",
+    "status": "accepted"
+  }
+}

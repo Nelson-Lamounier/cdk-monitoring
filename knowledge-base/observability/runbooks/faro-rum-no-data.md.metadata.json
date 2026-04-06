@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "runbook",
+    "domain": "observability",
+    "tags": "faro,rum,grafana,loki,alloy,troubleshooting,no-data",
+    "status": "accepted"
+  }
+}

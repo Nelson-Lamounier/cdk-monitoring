@@ -1,36 +1,29 @@
 /**
  * @format
- * AI Content Stack
+ * AI Content Stack — Data Layer
  *
- * Event-driven MD-to-Blog pipeline for the Bedrock project.
- * Transforms raw `.md` files uploaded to `drafts/` into polished `.mdx`
- * blog posts in `published/`, writing AI-enhanced metadata to DynamoDB.
+ * Manages the DynamoDB article metadata table and SSM parameter exports
+ * for the Bedrock content pipeline.
  *
- * Architecture (Metadata Brain model):
- *   S3 (drafts/*.md) → Lambda (Converse API)
- *     → S3 (published/*.mdx + content/v{n}/*.mdx)
- *     → DynamoDB (ARTICLE#slug / METADATA + CONTENT#v{ts})
+ * DynamoDB entity schema:
+ *   pk: ARTICLE#<slug>
+ *   sk: METADATA          — latest AI-enhanced metadata + s3Key pointer
+ *   sk: CONTENT#v<ts>     — versioned content pointer with s3Key
  *
- * DynamoDB stores only AI-enhanced metadata and an s3Key pointer.
- * Content blobs live in S3, bypassing the 400KB DynamoDB item limit.
+ * Content blobs are stored in S3 at content/v{n}/<slug>.mdx.
  *
- * Uses Claude 4.6 Sonnet via the Bedrock Converse API with:
- * - Prompt Caching (cachePoint content blocks)
- * - Adaptive Thinking (inferenceConfig.thinking)
+ * The multi-agent Pipeline stack (BedrockPipelineStack) handles article
+ * generation via Step Functions. The admin dashboard triggers executions.
+ *
+ * @deprecated The monolith Lambda publisher has been removed. Article
+ * generation is now handled by BedrockPipelineStack (Step Functions).
+ * This stack is retained for the DynamoDB table and SSM exports.
  */
-
-import * as path from 'path';
-
-import { NagSuppressions } from 'cdk-nag';
 
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -41,41 +34,27 @@ import { Construct } from 'constructs';
 // =============================================================================
 
 /**
- * Props for AiContentStack
+ * Props for AiContentStack (Data Layer)
+ *
+ * After the monolith deprecation, this stack only creates the DynamoDB
+ * table, SSM parameter exports, and grant helpers. Lambda/Bedrock/SQS
+ * configuration has moved to BedrockPipelineStack.
  */
 export interface AiContentStackProps extends cdk.StackProps {
     /** Name prefix for resources (e.g. 'bedrock-development') */
     readonly namePrefix: string;
-    /** Name of the S3 bucket for raw drafts and published output (from DataStack) */
+    /** Name of the S3 bucket for content blobs (from DataStack) */
     readonly assetsBucketName: string;
-    /** S3 key prefix for raw draft markdown files */
-    readonly draftPrefix: string;
     /** S3 key prefix for published MDX output */
     readonly publishedPrefix: string;
     /** S3 key prefix for versioned content blobs (Metadata Brain) */
     readonly contentPrefix: string;
-    /** S3 object suffix filter for event notifications */
-    readonly draftSuffix: string;
-    /** Foundation model ID for Converse API */
-    readonly foundationModel: string;
-    /** Maximum output tokens */
-    readonly maxTokens: number;
-    /** Adaptive Thinking budget tokens */
-    readonly thinkingBudgetTokens: number;
-    /** Lambda memory in MB */
-    readonly lambdaMemoryMb: number;
-    /** Lambda timeout in seconds */
-    readonly lambdaTimeoutSeconds: number;
-    /** Reserved concurrent executions for cost control */
-    readonly lambdaReservedConcurrency?: number;
-    /** CloudWatch log retention */
+    /** CloudWatch log retention (kept for any future stack-level logging) */
     readonly logRetention: logs.RetentionDays;
     /** Removal policy for stateful resources */
     readonly removalPolicy: cdk.RemovalPolicy;
-    /** Bedrock Knowledge Base ID for KB-augmented article generation (optional) */
-    readonly knowledgeBaseId?: string;
-    /** Bedrock Knowledge Base ARN for IAM permissions (optional) */
-    readonly knowledgeBaseArn?: string;
+    /** Runtime environment name (e.g. 'development') */
+    readonly environmentName: string;
 }
 
 // =============================================================================
@@ -83,29 +62,18 @@ export interface AiContentStackProps extends cdk.StackProps {
 // =============================================================================
 
 /**
- * AI Content Stack — MD-to-Blog Agentic Pipeline (Metadata Brain).
+ * AI Content Stack — Data Layer.
  *
  * Creates:
  * - DynamoDB table for AI-enhanced article metadata (Metadata Brain model)
- * - Lambda function using Bedrock Converse API (Claude 4.6)
- * - S3 event notification on drafts/ prefix
+ * - SSM parameter exports for cross-stack consumption
+ * - Grant helper for consumer applications (Next.js on K8s)
  *
- * DynamoDB entity schema:
- *   pk: ARTICLE#<slug>
- *   sk: METADATA          — latest AI-enhanced metadata + s3Key pointer
- *   sk: CONTENT#v<ts>     — versioned content pointer with s3Key
- *
- * Content blobs are stored in S3 at content/v{n}/<slug>.mdx.
+ * Article generation is handled by BedrockPipelineStack (Step Functions).
  */
 export class AiContentStack extends cdk.Stack {
     /** DynamoDB table for AI-enhanced article metadata */
     public readonly contentTable: dynamodb.TableV2;
-
-    /** Lambda function for content transformation */
-    public readonly publisherFunction: lambdaNode.NodejsFunction;
-
-    /** Dead Letter Queue for failed S3 event processing */
-    public readonly publisherDlq: sqs.Queue;
 
     /** The S3 bucket (for grantContentRead) */
     private readonly assetsBucket: s3.IBucket;
@@ -113,7 +81,7 @@ export class AiContentStack extends cdk.Stack {
     /** The content prefix (for grantContentRead) */
     private readonly contentPrefix: string;
 
-    /** Table name (for SSM export) */
+    /** Table name (for cross-stack consumption) */
     public readonly tableName: string;
 
     constructor(scope: Construct, id: string, props: AiContentStackProps) {
@@ -193,198 +161,12 @@ export class AiContentStack extends cdk.Stack {
         this.tableName = this.contentTable.tableName;
 
         // =================================================================
-        // SQS — Dead Letter Queue for publisher Lambda
-        //
-        // Captures failed S3 event processing (e.g., Bedrock throttling,
-        // timeout, malformed markdown) so events are not silently lost.
-        // =================================================================
-        this.publisherDlq = new sqs.Queue(this, 'PublisherDlq', {
-            queueName: `${namePrefix}-publisher-dlq`,
-            retentionPeriod: cdk.Duration.days(14),
-            enforceSSL: true,
-            encryption: sqs.QueueEncryption.SQS_MANAGED,
-            removalPolicy: props.removalPolicy,
-        });
-
-        // =================================================================
-        // Lambda — Content Publisher (Bedrock Converse API)
-        //
-        // Uses NodejsFunction for esbuild bundling from the
-        // bedrock-publisher package.
-        //
-        // ── VPC ISOLATION ROADMAP ──────────────────────────────────────
-        // Currently runs OUTSIDE the VPC. All traffic (S3, DynamoDB,
-        // Bedrock) uses public AWS endpoints over TLS. Data never leaves
-        // the AWS backbone, but does not use VPC Endpoints.
-        //
-        // To enable full VPC isolation (IP never touches public internet):
-        //
-        // 1. SharedVpcStack — add ISOLATED subnets:
-        //    subnetConfiguration: [
-        //      { name: 'Public',  subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
-        //      { name: 'Private', subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 },
-        //    ]
-        //
-        // 2. SharedVpcStack — add Bedrock Runtime Interface Endpoint:
-        //    vpc.addInterfaceEndpoint('BedrockRuntimeEndpoint', {
-        //      service: ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME,
-        //      subnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
-        //      privateDnsEnabled: true,
-        //    });
-        //    Cost: ~$7.20/mo per AZ (2 AZs = ~$14.40/mo)
-        //    S3 + DynamoDB Gateway Endpoints are already provisioned (free).
-        //
-        // 3. This Lambda — add VPC + subnet config:
-        //    vpc: sharedVpc,
-        //    vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
-        //    (Import VPC via Vpc.fromLookup with 'shared-vpc-{env}' name tag)
-        //
-        // Note: PRIVATE_ISOLATED subnets have NO internet access at all.
-        //       If the Lambda needs outbound internet (e.g., external APIs),
-        //       use PRIVATE_WITH_EGRESS + a NAT Gateway (~$32/mo per AZ).
-        // ───────────────────────────────────────────────────────────────
-        this.publisherFunction = new lambdaNode.NodejsFunction(this, 'PublisherFunction', {
-            functionName: `${namePrefix}-ai-publisher`,
-            runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-publisher', 'src', 'index.ts'),
-            handler: 'handler',
-            memorySize: props.lambdaMemoryMb,
-            timeout: cdk.Duration.seconds(props.lambdaTimeoutSeconds),
-            environment: {
-                ASSETS_BUCKET: assetsBucket.bucketName,
-                DRAFT_PREFIX: props.draftPrefix,
-                PUBLISHED_PREFIX: props.publishedPrefix,
-                CONTENT_PREFIX: props.contentPrefix,
-                TABLE_NAME: this.contentTable.tableName,
-                FOUNDATION_MODEL: props.foundationModel,
-                MAX_TOKENS: String(props.maxTokens),
-                THINKING_BUDGET_TOKENS: String(props.thinkingBudgetTokens),
-                ...(props.knowledgeBaseId ? { KNOWLEDGE_BASE_ID: props.knowledgeBaseId } : {}),
-            },
-            description: `MD-to-Blog publisher using ${props.foundationModel} for ${namePrefix}`,
-            logGroup: new logs.LogGroup(this, 'PublisherLogGroup', {
-                logGroupName: `/aws/lambda/${namePrefix}-ai-publisher`,
-                retention: props.logRetention,
-                removalPolicy: props.removalPolicy,
-            }),
-            bundling: {
-                minify: true,
-                sourceMap: true,
-                externalModules: [
-                    // AWS SDK v3 is included in the Lambda runtime
-                    '@aws-sdk/*',
-                ],
-            },
-            deadLetterQueue: this.publisherDlq,
-            deadLetterQueueEnabled: true,
-            retryAttempts: 2,
-            // FinOps: cap parallel Bedrock invocations
-            ...(props.lambdaReservedConcurrency !== undefined
-                ? { reservedConcurrentExecutions: props.lambdaReservedConcurrency }
-                : {}),
-        });
-
-        // CDK-Nag suppression: NODEJS_22_X is the latest Node.js LTS runtime;
-        // AwsSolutions-L1 may not recognize it as latest yet.
-        NagSuppressions.addResourceSuppressions(
-            this.publisherFunction,
-            [
-                {
-                    id: 'AwsSolutions-L1',
-                    reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
-                },
-            ],
-            true,
-        );
-
-        // =================================================================
-        // IAM — Bedrock InvokeModel permission
-        //
-        // Cross-region inference profiles (eu.anthropic.*) route requests
-        // to the underlying foundation model in ANY EU region
-        // (eu-north-1, eu-west-3, etc.). The IAM policy must cover:
-        //   1. The inference profile itself in the local region
-        //   2. The foundation model in ANY region (wildcard)
-        // =================================================================
-        const baseModelId = props.foundationModel.replace(/^eu\./, '');
-        this.publisherFunction.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'InvokeBedrockModel',
-            effect: iam.Effect.ALLOW,
-            actions: [
-                'bedrock:InvokeModel',
-                'bedrock:InvokeModelWithResponseStream',
-            ],
-            resources: [
-                // Cross-region inference profile (local region, account-scoped)
-                `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${props.foundationModel}`,
-                // Foundation model in ANY region (cross-region routing target)
-                `arn:aws:bedrock:*::foundation-model/${baseModelId}`,
-            ],
-        }));
-
-        // =================================================================
-        // IAM — S3 read/write on specific prefixes
-        //
-        // Lambda reads from drafts/, writes to published/ AND content/
-        // =================================================================
-        assetsBucket.grantRead(this.publisherFunction, `${props.draftPrefix}*`);
-        assetsBucket.grantWrite(this.publisherFunction, `${props.publishedPrefix}*`);
-        assetsBucket.grantWrite(this.publisherFunction, `${props.contentPrefix}*`);
-
-        // =================================================================
-        // IAM — DynamoDB write access
-        // =================================================================
-        this.contentTable.grantWriteData(this.publisherFunction);
-
-        // =================================================================
-        // IAM — Bedrock Retrieve permission for KB-augmented mode
-        //
-        // Allows the publisher Lambda to query the Knowledge Base
-        // (Pinecone-backed) for relevant context when generating
-        // articles from short briefs.
-        // =================================================================
-        if (props.knowledgeBaseArn) {
-            this.publisherFunction.addToRolePolicy(new iam.PolicyStatement({
-                sid: 'RetrieveFromKnowledgeBase',
-                effect: iam.Effect.ALLOW,
-                actions: ['bedrock:Retrieve'],
-                resources: [props.knowledgeBaseArn],
-            }));
-        }
-
-        // =================================================================
-        // S3 Event Notification — Trigger on new drafts
-        // =================================================================
-        assetsBucket.addEventNotification(
-            s3.EventType.OBJECT_CREATED,
-            new s3n.LambdaDestination(this.publisherFunction),
-            {
-                prefix: props.draftPrefix,
-                suffix: props.draftSuffix,
-            },
-        );
-
-        // =================================================================
         // SSM Parameter Exports
         // =================================================================
         new ssm.StringParameter(this, 'ContentTableNameParam', {
             parameterName: `/${namePrefix}/content-table-name`,
             stringValue: this.contentTable.tableName,
             description: `AI Content metadata table name for ${namePrefix}`,
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'PublisherFunctionArnParam', {
-            parameterName: `/${namePrefix}/publisher-function-arn`,
-            stringValue: this.publisherFunction.functionArn,
-            description: `AI Publisher Lambda ARN for ${namePrefix}`,
-            tier: ssm.ParameterTier.STANDARD,
-        });
-
-        new ssm.StringParameter(this, 'PublisherDlqUrlParam', {
-            parameterName: `/${namePrefix}/publisher-dlq-url`,
-            stringValue: this.publisherDlq.queueUrl,
-            description: `Publisher DLQ URL for ${namePrefix}`,
             tier: ssm.ParameterTier.STANDARD,
         });
 
@@ -416,16 +198,6 @@ export class AiContentStack extends cdk.Stack {
             value: this.contentTable.tableName,
             description: 'AI Content metadata table name',
         });
-
-        new cdk.CfnOutput(this, 'PublisherFunctionArn', {
-            value: this.publisherFunction.functionArn,
-            description: 'AI Publisher Lambda function ARN',
-        });
-
-        new cdk.CfnOutput(this, 'PublisherFunctionName', {
-            value: this.publisherFunction.functionName,
-            description: 'AI Publisher Lambda function name',
-        });
     }
 
     // =====================================================================
@@ -443,6 +215,8 @@ export class AiContentStack extends cdk.Stack {
      * Use this when the Next.js app on K8s needs to:
      * 1. Query ARTICLE#slug / METADATA from DynamoDB
      * 2. Fetch the MDX content blob from S3 using the s3Key pointer
+     *
+     * @param grantee - The IAM principal to grant read access to
      *
      * @example
      * ```typescript

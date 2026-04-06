@@ -8,7 +8,6 @@ entry point. Each step is wrapped in a StepRunner for structured
 logging, timing, and idempotency guards.
 
 Steps (in order):
-    0.  attach_ebs_volume — Attach, format, and mount the EBS data volume
     1.  validate_ami       — Verify Golden AMI binaries and kernel settings
     2.  restore_backup     — Restore etcd + certs from S3 if EBS is empty (DR)
     3.  init_kubeadm       — kubeadm init + publish join credentials to SSM
@@ -42,7 +41,6 @@ Usage:
     python3 control_plane.py
 """
 
-import glob
 import json
 import os
 import re
@@ -68,6 +66,7 @@ from common import (
     ssm_put,
     step_install_cloudwatch_agent,
     step_validate_ami,
+    validate_kubeadm_token,
 )
 from common import (
     SSM_PREFIX as DEFAULT_SSM_PREFIX,
@@ -87,21 +86,29 @@ HOSTED_ZONE_ID = os.environ.get("HOSTED_ZONE_ID", "")
 API_DNS_NAME = os.environ.get("API_DNS_NAME", "k8s-api.k8s.internal")
 S3_BUCKET = os.environ.get("S3_BUCKET", "")
 MOUNT_POINT = os.environ.get("MOUNT_POINT", "/data")
-VOLUME_ID = os.environ.get("VOLUME_ID", "")
 CALICO_VERSION = os.environ.get("CALICO_VERSION", "v3.29.3")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 
 ADMIN_CONF = "/etc/kubernetes/admin.conf"
-KUBECONFIG_ENV = {"KUBECONFIG": ADMIN_CONF}
+SUPER_ADMIN_CONF = "/etc/kubernetes/super-admin.conf"
+HEALTHZ_PATH = "/healthz"
+ROOT_KUBECONFIG = "/root/.kube/config"
+ROOT_SUPER_ADMIN_KUBECONFIG = "/root/.kube/super-admin.conf"
+
+
+def _bootstrap_kubeconfig_env() -> dict[str, str]:
+    """Return the best kubeconfig env for bootstrap operations.
+
+    Prefers super-admin.conf (kubeadm 1.30+) which bypasses RBAC,
+    making bootstrap operations resilient to missing ClusterRoleBindings.
+    Falls back to admin.conf for first-boot (before kubeadm init creates it).
+    """
+    if Path(SUPER_ADMIN_CONF).exists():
+        return {"KUBECONFIG": SUPER_ADMIN_CONF}
+    return {"KUBECONFIG": ADMIN_CONF}
+
 CALICO_MARKER = "/etc/kubernetes/.calico-installed"
 CCM_MARKER = "/etc/kubernetes/.ccm-installed"
-EBS_ATTACH_MARKER = "/etc/kubernetes/.ebs-attached"
-
-# EBS attachment constants
-EBS_DEVICE_NAME = "/dev/xvdf"
-EBS_FILESYSTEM = "ext4"
-EBS_MAX_ATTACH_RETRIES = 30
-EBS_RETRY_INTERVAL_SECONDS = 10
 
 # DR backup paths
 DR_BACKUP_PREFIX = "dr-backups"
@@ -109,301 +116,6 @@ DR_RESTORE_MARKER = "/etc/kubernetes/.dr-restored"
 
 
 # =============================================================================
-# Step 0 — Attach and Mount EBS Data Volume
-# =============================================================================
-
-def _resolve_nvme_device() -> str:
-    """Resolve the NVMe device path for the attached EBS volume.
-
-    On Nitro-based instances (t3, m5, c5, etc.), EBS volumes attached as
-    /dev/xvdf appear as /dev/nvme<N>n1 in the kernel. This function finds
-    the correct NVMe device by checking for any non-root NVMe block device.
-
-    Returns:
-        The device path (e.g. '/dev/nvme1n1') or empty string if not found.
-    """
-    # Check traditional device name first
-    if Path(EBS_DEVICE_NAME).exists():
-        return EBS_DEVICE_NAME
-
-    # Scan NVMe devices — the root volume is always nvme0n1
-    nvme_devices = sorted(glob.glob("/dev/nvme[1-9]n1"))
-    if nvme_devices:
-        return nvme_devices[0]
-
-    return ""
-
-
-def _is_already_mounted(mount_point: str) -> bool:
-    """Check if the mount point is already a mounted filesystem."""
-    result = run_cmd(
-        ["mountpoint", "-q", mount_point],
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def _describe_volume(volume_id: str) -> dict:
-    """Describe an EBS volume and return its state and attachment info.
-
-    Returns:
-        Dict with keys: 'state', 'attached_instance', 'device'.
-    """
-    result = run_cmd(
-        ["aws", "ec2", "describe-volumes",
-         "--volume-ids", volume_id,
-         "--query", "Volumes[0].{State:State,Attachments:Attachments}",
-         "--output", "json",
-         "--region", AWS_REGION],
-        check=True,
-    )
-    data = json.loads(result.stdout)
-    attachments = data.get("Attachments", []) or []
-    attached_instance = attachments[0]["InstanceId"] if attachments else ""
-    device = attachments[0]["Device"] if attachments else ""
-
-    return {
-        "state": data.get("State", "unknown"),
-        "attached_instance": attached_instance,
-        "device": device,
-    }
-
-
-def _wait_for_volume_available(volume_id: str, instance_id: str) -> str:
-    """Wait for the EBS volume to become available for attachment.
-
-    Handles ASG replacement: if the volume is still attached to the old
-    (terminating) instance, this retries until it transitions to 'available'.
-    If the volume is already attached to THIS instance, returns 'already-attached'.
-
-    Returns:
-        'available'          — volume is ready to attach
-        'already-attached'   — volume is already attached to this instance
-
-    Raises:
-        RuntimeError if the volume does not become available within the retry window.
-    """
-    for attempt in range(1, EBS_MAX_ATTACH_RETRIES + 1):
-        info = _describe_volume(volume_id)
-        state = info["state"]
-        attached_to = info["attached_instance"]
-
-        if state == "available":
-            log_info(f"Volume {volume_id} is available (attempt {attempt})")
-            return "available"
-
-        if state == "in-use" and attached_to == instance_id:
-            log_info(
-                f"Volume {volume_id} already attached to this instance — "
-                f"skipping attach"
-            )
-            return "already-attached"
-
-        if state == "in-use":
-            log_warn(
-                f"Volume {volume_id} still attached to {attached_to} "
-                f"(ASG replacement in progress). "
-                f"Waiting {EBS_RETRY_INTERVAL_SECONDS}s... "
-                f"(attempt {attempt}/{EBS_MAX_ATTACH_RETRIES})"
-            )
-        else:
-            log_warn(
-                f"Volume {volume_id} in unexpected state '{state}'. "
-                f"Waiting {EBS_RETRY_INTERVAL_SECONDS}s... "
-                f"(attempt {attempt}/{EBS_MAX_ATTACH_RETRIES})"
-            )
-
-        time.sleep(EBS_RETRY_INTERVAL_SECONDS)
-
-    raise RuntimeError(
-        f"EBS volume {volume_id} did not become available after "
-        f"{EBS_MAX_ATTACH_RETRIES * EBS_RETRY_INTERVAL_SECONDS}s. "
-        f"Check if the old EC2 instance has fully terminated."
-    )
-
-
-def _attach_volume(volume_id: str, instance_id: str) -> None:
-    """Attach the EBS volume to this instance."""
-    log_info(
-        f"Attaching volume {volume_id} to {instance_id} "
-        f"as {EBS_DEVICE_NAME}..."
-    )
-    run_cmd(
-        ["aws", "ec2", "attach-volume",
-         "--volume-id", volume_id,
-         "--instance-id", instance_id,
-         "--device", EBS_DEVICE_NAME,
-         "--region", AWS_REGION],
-        check=True,
-    )
-    log_info(f"Attach command sent for {volume_id}")
-
-
-def _wait_for_device() -> str:
-    """Wait for the block device to appear in the OS after attachment.
-
-    Returns:
-        The resolved device path (e.g. '/dev/nvme1n1' or '/dev/xvdf').
-
-    Raises:
-        RuntimeError if the device does not appear within 60 seconds.
-    """
-    log_info("Waiting for block device to appear...")
-    for i in range(1, 61):
-        device = _resolve_nvme_device()
-        if device:
-            log_info(f"Block device appeared: {device} (waited {i}s)")
-            return device
-        time.sleep(1)
-
-    raise RuntimeError(
-        f"Block device did not appear within 60s after attachment. "
-        f"Expected {EBS_DEVICE_NAME} or /dev/nvme<N>n1. "
-        f"Run 'lsblk' to inspect available devices."
-    )
-
-
-def _format_if_needed(device: str) -> bool:
-    """Format the EBS volume with ext4 if it has no filesystem.
-
-    Returns True if formatting was performed, False if already formatted.
-    """
-    result = run_cmd(
-        ["blkid", "-o", "value", "-s", "TYPE", device],
-        check=False,
-    )
-    existing_fs = result.stdout.strip()
-
-    if existing_fs:
-        log_info(f"Device {device} already has filesystem: {existing_fs}")
-        return False
-
-    log_info(f"No filesystem on {device} — formatting as {EBS_FILESYSTEM}")
-    run_cmd(
-        ["mkfs", "-t", EBS_FILESYSTEM, device],
-        check=True,
-    )
-    log_info(f"Formatted {device} as {EBS_FILESYSTEM}")
-    return True
-
-
-def _mount_volume(device: str, mount_point: str) -> None:
-    """Mount the device and ensure persistence via fstab."""
-    Path(mount_point).mkdir(parents=True, exist_ok=True)
-
-    # Mount the device
-    log_info(f"Mounting {device} at {mount_point}")
-    run_cmd(["mount", device, mount_point], check=True)
-
-    # Add fstab entry for reboot persistence (idempotent)
-    fstab = Path("/etc/fstab")
-    fstab_content = fstab.read_text() if fstab.exists() else ""
-    if mount_point not in fstab_content:
-        # Use nofail so the instance still boots if the volume is missing
-        entry = f"{device}  {mount_point}  {EBS_FILESYSTEM}  defaults,nofail  0  2\n"
-        with fstab.open("a") as f:
-            f.write(entry)
-        log_info(f"fstab entry added: {entry.strip()}")
-    else:
-        log_info(f"fstab already contains entry for {mount_point}")
-
-
-def _ensure_data_directories(mount_point: str) -> None:
-    """Create the required subdirectory structure on the data volume.
-
-    These directories match what the Golden AMI component creates
-    in the root filesystem at build time. Once the EBS volume is
-    mounted over /data, they need to exist on the volume itself.
-    """
-    subdirs = ["kubernetes", "k8s-bootstrap", "app-deploy"]
-    for subdir in subdirs:
-        path = Path(mount_point) / subdir
-        path.mkdir(parents=True, exist_ok=True)
-    log_info(
-        f"Data directories ensured: "
-        f"{', '.join(str(Path(mount_point) / d) for d in subdirs)}"
-    )
-
-
-def step_attach_ebs_volume() -> None:
-    """Step 0: Attach, format (if needed), and mount the EBS data volume.
-
-    This step runs before everything else to ensure /data is on the
-    persistent EBS volume rather than the ephemeral root volume.
-
-    Handles:
-    - Idempotent re-runs (marker file + mountpoint check)
-    - ASG replacement (waits for volume to detach from old instance)
-    - NVMe device naming on Nitro instances
-    - First-boot formatting (only if volume has no filesystem)
-    - fstab entry for reboot persistence
-    """
-    with StepRunner("attach-ebs-volume", skip_if=EBS_ATTACH_MARKER) as step:
-        if step.skipped:
-            return
-
-        if not VOLUME_ID:
-            log_warn(
-                "VOLUME_ID not set — skipping EBS attachment. "
-                "Kubernetes data will use the root volume (not persistent)."
-            )
-            step.details["action"] = "skipped_no_volume_id"
-            return
-
-        # Already mounted (e.g. manual recovery or previous partial run)
-        if _is_already_mounted(MOUNT_POINT):
-            log_info(
-                f"{MOUNT_POINT} is already a mount point — "
-                f"skipping attachment"
-            )
-            step.details["action"] = "skipped_already_mounted"
-            _ensure_data_directories(MOUNT_POINT)
-            return
-
-        instance_id = get_imds_value("instance-id")
-        if not instance_id:
-            raise RuntimeError(
-                "Failed to retrieve instance ID from IMDS. "
-                "Cannot attach EBS volume without knowing the instance ID."
-            )
-
-        step.details["volume_id"] = VOLUME_ID
-        step.details["instance_id"] = instance_id
-        step.details["mount_point"] = MOUNT_POINT
-
-        # Wait for volume to be available (handles ASG replacement)
-        availability = _wait_for_volume_available(VOLUME_ID, instance_id)
-
-        # Attach if not already attached to this instance
-        if availability == "available":
-            _attach_volume(VOLUME_ID, instance_id)
-            device = _wait_for_device()
-            step.details["action"] = "attached"
-        else:
-            # Already attached to this instance — resolve the device
-            device = _resolve_nvme_device()
-            if not device:
-                device = _wait_for_device()
-            step.details["action"] = "already_attached"
-
-        step.details["device"] = device
-
-        # Format if this is a brand-new volume
-        formatted = _format_if_needed(device)
-        step.details["formatted"] = formatted
-
-        # Mount and add fstab entry
-        _mount_volume(device, MOUNT_POINT)
-
-        # Ensure directory structure exists on the volume
-        _ensure_data_directories(MOUNT_POINT)
-
-        log_info(
-            f"✓ EBS volume {VOLUME_ID} attached as {device}, "
-            f"mounted at {MOUNT_POINT}"
-        )
-
-
 # Step 1 — Validate Golden AMI
 # Imported from common: step_validate_ami()
 
@@ -414,24 +126,23 @@ def step_attach_ebs_volume() -> None:
 
 
 def _label_control_plane_node() -> None:
-    """Apply workload and environment labels to the control plane node.
+    """Apply role and workload labels to the control plane node.
 
-    Enables Grafana dashboards to identify the control plane by role
-    rather than by IP address. Idempotent — re-labelling an already-labelled
-    node is a no-op.
+    Uses the node hostname from IMDS to identify the node directly,
+    avoiding the chicken-and-egg problem where the role label selector
+    returns nothing on a fresh node that hasn't been labelled yet.
     """
     hostname = run_cmd(
-        ["kubectl", "get", "nodes",
-         "-l", "node-role.kubernetes.io/control-plane=",
-         "-o", "jsonpath={.items[0].metadata.name}"],
-        check=False, env=KUBECONFIG_ENV,
+        ["hostname", "-f"],
+        check=False,
     )
     node_name = hostname.stdout.strip()
     if not node_name:
-        log_warn("Could not resolve control plane node name — skipping labelling")
+        log_warn("Could not resolve node hostname — skipping labelling")
         return
 
     labels = {
+        "node-role.kubernetes.io/control-plane": "",
         "workload": "control-plane",
         "environment": ENVIRONMENT,
     }
@@ -439,7 +150,7 @@ def _label_control_plane_node() -> None:
 
     result = run_cmd(
         ["kubectl", "label", "node", node_name, "--overwrite", *label_args],
-        check=False, env=KUBECONFIG_ENV,
+        check=False, env=_bootstrap_kubeconfig_env(),
     )
     if result.returncode == 0:
         log_info(f"Control plane node labelled: {', '.join(label_args)}")
@@ -481,18 +192,464 @@ def _update_dns_record(private_ip: str) -> None:
     log_info(f"DNS updated: {API_DNS_NAME} → {private_ip}")
 
 
-def _handle_second_run() -> None:
-    """Handle second-run: update DNS and refresh kubeconfig."""
-    log_info("Cluster already initialized — running second-run maintenance")
+def _get_apiserver_cert_ips() -> list[str]:
+    """Extract the IP SANs from the current API server certificate.
+
+    Returns a list of IP addresses the cert is currently valid for,
+    so we can detect when the instance IP has changed (e.g. after ASG replacement).
+    """
+    result = run_cmd(
+        ["openssl", "x509", "-in", "/etc/kubernetes/pki/apiserver.crt",
+         "-noout", "-text"],
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+
+    ips: list[str] = []
+    in_san = False
+    for line in result.stdout.splitlines():
+        if "Subject Alternative Name" in line:
+            in_san = True
+            continue
+        if in_san:
+            for part in line.split(","):
+                part = part.strip()
+                if part.startswith("IP Address:"):
+                    ips.append(part.removeprefix("IP Address:").strip())
+            break
+    return ips
+
+
+def _renew_apiserver_cert(private_ip: str, public_ip: str) -> None:
+    """Regenerate the API server certificate with the current instance IPs.
+
+    Called when the instance has a new private IP that is not covered by the
+    existing cert SANs — the typical case after ASG replacement where the new
+    EC2 instance gets a different IP from the original.
+
+    Steps:
+        1. Delete the stale apiserver cert/key (kubeadm will not overwrite them).
+        2. Re-run ``kubeadm init phase certs apiserver`` with the correct SANs.
+        3. Restart the kube-apiserver static pod by removing its container so
+           kubelet recreates it from the updated manifest.
+        4. Wait up to 60 s for the API server to become healthy again.
+    """
+    log_info(f"Renewing API server certificate for IP {private_ip}...")
+
+    # Build the full SAN list — must include everything the original init used
+    extra_sans = f"127.0.0.1,{private_ip},{API_DNS_NAME}"
+    if public_ip:
+        extra_sans += f",{public_ip}"
+
+    # Step 1: Remove stale cert/key so kubeadm regenerates them
+    for path in ["/etc/kubernetes/pki/apiserver.crt", "/etc/kubernetes/pki/apiserver.key"]:
+        if Path(path).exists():
+            Path(path).unlink()
+            log_info(f"Removed stale cert: {path}")
+
+    # Step 2: Regenerate with correct SANs
+    result = run_cmd(
+        [
+            "kubeadm", "init", "phase", "certs", "apiserver",
+            f"--apiserver-advertise-address={private_ip}",
+            f"--apiserver-cert-extra-sans={extra_sans}",
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"kubeadm cert regeneration failed: {result.stderr.strip()}"
+        )
+    log_info("✓ API server certificate regenerated")
+
+    # Step 3: Force kube-apiserver static pod to reload the new cert.
+    # Removing the running container causes kubelet to recreate it immediately.
+    log_info("Restarting kube-apiserver static pod to pick up new certificate...")
+    run_cmd(
+        ["bash", "-c",
+         "crictl rm $(crictl ps --name kube-apiserver -q) 2>/dev/null || true"],
+        check=False,
+    )
+
+    # Step 4: Wait for the API server to come back up
+    log_info("Waiting for API server to become healthy after cert renewal...")
+    for i in range(1, 61):
+        probe = run_cmd(
+            ["kubectl", "get", "--raw", HEALTHZ_PATH],
+            check=False, env=_bootstrap_kubeconfig_env(),
+        )
+        if probe.returncode == 0 and "ok" in probe.stdout.lower():
+            log_info(f"✓ API server healthy after cert renewal (waited {i}s)")
+            return
+        time.sleep(1)
+
+    raise RuntimeError(
+        "API server did not become healthy within 60s after cert renewal. "
+        "Check 'crictl ps' and 'journalctl -u kubelet' for details."
+    )
+
+
+# ── Bootstrap & Addon Guards ─────────────────────────────────────────────
+# On DR restore, admin.conf is recovered from S3 but kubeadm init is
+# skipped — critical resources are never created:
+#   1. cluster-info ConfigMap (kube-public) — kubeadm join discovery
+#   2. Bootstrap RBAC bindings — CSR creation & auto-approval
+#   3. kube-proxy DaemonSet — ClusterIP routing
+#   4. CoreDNS Deployment — DNS resolution
+# These guards detect and repair all missing components.
+
+
+def _ensure_bootstrap_token() -> None:
+    """Verify bootstrap resources and restore any missing after DR.
+
+    On a DR restore, ``kubeadm init`` is skipped because ``admin.conf`` was
+    recovered from S3.  This means three categories of resources are missing:
+
+    1. **cluster-info** ConfigMap (``kube-public``) — ``kubeadm join`` TLS
+       discovery hangs without it.
+    2. **kubeadm-config** ConfigMap (``kube-system``) — ``kubeadm join``
+       preflight reads cluster configuration from it.
+    3. **kubelet-config** ConfigMap (``kube-system``) — ``kubeadm join``
+       downloads kubelet settings from it.
+    4. **Bootstrap RBAC** bindings — CSR creation & auto-approval for new
+       nodes (``kubeadm:kubelet-bootstrap``, ``kubeadm:node-autoapprove-*``).
+
+    Uses idempotent ``kubeadm init phase`` subcommands — safe to call even
+    when all resources already exist.
+    """
+    result = run_cmd(
+        ["kubectl", "get", "configmap", "cluster-info", "-n", "kube-public"],
+        check=False, env=_bootstrap_kubeconfig_env(),
+    )
+    if result.returncode == 0 and "cluster-info" in result.stdout:
+        log_info("cluster-info ConfigMap already present — bootstrap-token phase OK")
+        return
+
+    log_warn(
+        "cluster-info ConfigMap MISSING — restoring bootstrap resources"
+    )
+
+    # Phase 1: Upload kubeadm + kubelet config ConfigMaps to kube-system.
+    # Without these, kubeadm join fails at preflight with RBAC errors
+    # reading kubeadm-config and kubelet-config.
+    run_cmd([
+        "kubeadm", "init", "phase", "upload-config", "kubeadm",
+        f"--pod-network-cidr={POD_CIDR}",
+    ])
+    log_info("✓ kubeadm-config ConfigMap restored (with podSubnet)")
+
+    run_cmd(["kubeadm", "init", "phase", "upload-config", "kubelet"])
+    log_info("✓ kubelet-config ConfigMap restored")
+
+    # Phase 2: Create bootstrap tokens, cluster-info ConfigMap, and RBAC.
+    run_cmd(["kubeadm", "init", "phase", "bootstrap-token"])
+    log_info(
+        "✓ Bootstrap restoration complete — cluster-info, kubeadm-config, "
+        "kubelet-config ConfigMaps and RBAC bindings created"
+    )
+
+
+def _ensure_kube_proxy() -> None:
+    """Verify kube-proxy DaemonSet exists; re-deploy if missing.
+
+    On a DR restore, admin.conf is recovered from the S3 backup but
+    ``kubeadm init`` is skipped — kube-proxy never gets deployed.
+    Without kube-proxy, ClusterIP routing (10.96.0.1) breaks and the
+    entire cluster cascades into failure: CCM crash-loops, the
+    ``uninitialized`` taint persists, and ``kubeadm join`` hangs.
+
+    Uses ``kubeadm init phase addon kube-proxy`` which is idempotent —
+    safe to call even if the DaemonSet already exists.
+    """
+    result = run_cmd(
+        ["kubectl", "get", "daemonset", "kube-proxy", "-n", "kube-system"],
+        check=False, env=_bootstrap_kubeconfig_env(),
+    )
+    if result.returncode == 0 and "kube-proxy" in result.stdout:
+        log_info("kube-proxy DaemonSet already present — no action needed")
+        return
+
+    log_warn(
+        "kube-proxy DaemonSet MISSING — deploying via "
+        "kubeadm init phase addon kube-proxy"
+    )
 
     private_ip = get_imds_value("local-ipv4")
-    if private_ip:
+    if not private_ip:
+        raise RuntimeError(
+            "Cannot deploy kube-proxy: failed to retrieve private IP from IMDS"
+        )
+
+    run_cmd([
+        "kubeadm", "init", "phase", "addon", "kube-proxy",
+        f"--apiserver-advertise-address={private_ip}",
+        f"--pod-network-cidr={POD_CIDR}",
+    ])
+    log_info("✓ kube-proxy DaemonSet deployed")
+
+    # Wait for at least one pod to reach Running
+    for i in range(1, 61):
+        result = run_cmd(
+            ["kubectl", "get", "pods", "-n", "kube-system",
+             "-l", "k8s-app=kube-proxy", "--no-headers"],
+            check=False, env=_bootstrap_kubeconfig_env(),
+        )
+        if result.returncode == 0 and "Running" in result.stdout:
+            log_info(f"kube-proxy pod running (waited {i}s)")
+            return
+        time.sleep(1)
+
+    log_warn(
+        "kube-proxy pod not Running after 60s — continuing "
+        "(may self-heal once networking stabilises)"
+    )
+
+
+def _ensure_coredns() -> None:
+    """Verify CoreDNS Deployment exists; re-deploy if missing.
+
+    CoreDNS is deployed by ``kubeadm init`` alongside kube-proxy.
+    On the second-run path (DR restore), both are missing.
+
+    Uses ``kubeadm init phase addon coredns`` which is idempotent.
+    """
+    result = run_cmd(
+        ["kubectl", "get", "deployment", "coredns", "-n", "kube-system"],
+        check=False, env=_bootstrap_kubeconfig_env(),
+    )
+    if result.returncode == 0 and "coredns" in result.stdout:
+        log_info("CoreDNS deployment already present — no action needed")
+        return
+
+    log_warn(
+        "CoreDNS deployment MISSING — deploying via "
+        "kubeadm init phase addon coredns"
+    )
+    run_cmd([
+        "kubeadm", "init", "phase", "addon", "coredns",
+        f"--service-cidr={SERVICE_CIDR}",
+    ])
+    log_info("✓ CoreDNS deployment deployed")
+
+
+def _reconstruct_control_plane(private_ip: str, public_ip: str) -> None:
+    """Reconstruct control plane infrastructure on a fresh root filesystem.
+
+    After ASG replacement, the root filesystem is empty — only the EBS
+    volume with etcd data survives, and the S3 DR restore has recovered
+    ``/etc/kubernetes/pki/`` and ``admin.conf``.  However, the following
+    are missing and must be recreated:
+
+    - containerd is not running
+    - kubelet has no configuration (``/etc/sysconfig/kubelet``)
+    - ECR credential provider is not configured for kubelet
+    - static pod manifests (``/etc/kubernetes/manifests/``) are empty
+    - kubeconfigs for controller-manager/scheduler are absent
+    - DNS A record still points to the old instance
+    - **API server certificate** has old instance IPs in its SANs
+
+    This function uses ``kubeadm init phase`` subcommands to regenerate
+    manifests and kubeconfigs from existing PKI.  The apiserver certificate
+    is **always regenerated** because its SANs contain instance-specific
+    IPs that change on every ASG replacement.  Without this step the
+    kubelet cannot verify the API server certificate and node registration
+    fails.
+    """
+    log_info("=== Reconstructing control plane from restored PKI ===")
+
+    # ── 1. Start containerd ─────────────────────────────────────────
+    run_cmd(["systemctl", "start", "containerd"])
+    log_info("containerd started")
+
+    # ── 2. Configure ECR credential provider for kubelet ────────────
+    ensure_ecr_credential_provider()
+
+    # ── 3. Write kubelet args with new instance IP ──────────────────
+    Path("/etc/sysconfig").mkdir(parents=True, exist_ok=True)
+    Path("/etc/sysconfig/kubelet").write_text(
+        "KUBELET_EXTRA_ARGS="
+        "--cloud-provider=external"
+        f" --node-ip={private_ip}"
+        f" --image-credential-provider-config={ECR_PROVIDER_CONFIG}"
+        " --image-credential-provider-bin-dir=/usr/local/bin\n"
+    )
+    log_info(f"Kubelet args configured: cloud-provider=external, node-ip={private_ip}")
+
+    # ── 4. Update DNS → new private IP ──────────────────────────────
+    _update_dns_record(private_ip)
+
+    # ── 5. Regenerate kubeconfigs from existing PKI ─────────────────
+    # These use the existing CA cert/key in /etc/kubernetes/pki/ and
+    # do NOT regenerate any certificates.
+    api_endpoint = f"{API_DNS_NAME}:6443"
+    log_info("Regenerating kubeconfigs from existing PKI...")
+    run_cmd([
+        "kubeadm", "init", "phase", "kubeconfig", "all",
+        f"--control-plane-endpoint={api_endpoint}",
+    ])
+    log_info("✓ Kubeconfigs regenerated (admin, kubelet, controller-manager, scheduler)")
+
+    # ── 6. Generate kubelet configuration ───────────────────────────
+    log_info("Generating kubelet configuration...")
+    run_cmd([
+        "kubeadm", "init", "phase", "kubelet-start",
+        f"--node-name={run_cmd(['hostname', '-f'], check=False).stdout.strip()}",
+    ], check=False)  # Non-fatal: kubelet may already be partially configured
+    log_info("✓ Kubelet configuration generated")
+
+    # ── 7. Renew API server certificate with current instance IPs ───
+    # The restored cert contains the OLD instance's private/public IPs
+    # as SANs.  The kubelet connects via the raw IP address (not DNS),
+    # so TLS verification fails if the cert doesn't include the new IP.
+    # This MUST happen before generating static pod manifests.
+    cert_ips = _get_apiserver_cert_ips()
+    if private_ip not in cert_ips:
+        log_warn(
+            f"API server cert SANs {cert_ips} do not include "
+            f"current IP {private_ip} — regenerating certificate"
+        )
+        _renew_apiserver_cert(private_ip, public_ip)
+    else:
+        log_info(f"API server cert already includes {private_ip} — no renewal needed")
+
+    # ── 8. Generate static pod manifests ────────────────────────────
+    # These use existing certs and create the YAML manifests that
+    # kubelet watches to start kube-apiserver, controller-manager,
+    # and kube-scheduler as static pods.
+    log_info("Generating control plane static pod manifests...")
+    run_cmd([
+        "kubeadm", "init", "phase", "control-plane", "all",
+        f"--control-plane-endpoint={api_endpoint}",
+        f"--kubernetes-version={K8S_VERSION}",
+    ])
+    log_info("✓ Control plane manifests generated (apiserver, controller-manager, scheduler)")
+
+    # ── 9. Generate etcd static pod manifest ────────────────────────
+    log_info("Generating etcd static pod manifest...")
+    run_cmd([
+        "kubeadm", "init", "phase", "etcd", "local",
+    ])
+    log_info("✓ etcd manifest generated")
+
+    # ── 10. Start kubelet → static pods start automatically ─────────
+    # Kubelet is enabled in the Golden AMI (systemctl enable kubelet)
+    # but needs an explicit start since there was no kubeadm init to
+    # trigger it.
+    log_info("Starting kubelet service...")
+    run_cmd(["systemctl", "restart", "kubelet"])
+
+    # ── 11. Wait for API server to become healthy ───────────────────
+    log_info("Waiting for API server to become healthy...")
+    for i in range(1, 91):
+        probe = run_cmd(
+            ["kubectl", "get", "--raw", HEALTHZ_PATH],
+            check=False, env=_bootstrap_kubeconfig_env(),
+        )
+        if probe.returncode == 0 and "ok" in probe.stdout.lower():
+            log_info(f"✓ API server healthy (waited {i}s)")
+            break
+        if i == 90:
+            log_warn(
+                "API server did not become healthy in 90s. "
+                "Check 'crictl ps' and 'journalctl -u kubelet' for details."
+            )
+        time.sleep(1)
+
+    # ── 12. Copy kubeconfig for user access ─────────────────────────
+    Path("/root/.kube").mkdir(parents=True, exist_ok=True)
+    run_cmd(["cp", "-f", ADMIN_CONF, ROOT_KUBECONFIG])
+    run_cmd(["chmod", "600", ROOT_KUBECONFIG])
+    if Path(SUPER_ADMIN_CONF).exists():
+        run_cmd(["cp", "-f", SUPER_ADMIN_CONF, ROOT_SUPER_ADMIN_KUBECONFIG])
+        run_cmd(["chmod", "600", ROOT_SUPER_ADMIN_KUBECONFIG])
+
+    log_info("=== Control plane reconstruction complete ===")
+
+
+def _is_apiserver_running() -> bool:
+    """Check if the kube-apiserver is currently responding to health probes.
+
+    Returns ``True`` if the API server responds with 'ok' to ``/healthz``,
+    ``False`` otherwise.  Used to determine whether the control plane
+    needs full reconstruction (ASG replacement) or just maintenance
+    (in-place restart).
+    """
+    probe = run_cmd(
+        ["kubectl", "get", "--raw", HEALTHZ_PATH],
+        check=False, env=_bootstrap_kubeconfig_env(),
+    )
+    return probe.returncode == 0 and "ok" in probe.stdout.lower()
+
+
+def _handle_second_run() -> None:
+    """Handle second-run: reconstruct control plane if needed, then maintain.
+
+    Called when ``admin.conf`` already exists (i.e. the cluster was
+    previously initialised).  This is the normal path after ASG
+    replacement when DR restore recovers the control plane state.
+
+    Two sub-scenarios:
+    1. **ASG replacement** (API server NOT running) — the root filesystem
+       is fresh, only PKI + admin.conf were restored from S3.  Must
+       reconstruct static pod manifests, kubeconfigs, and kubelet config
+       using ``kubeadm init phase`` commands before any kubectl will work.
+    2. **In-place restart** (API server already running) — kubelet and
+       control plane pods survived the restart.  Only DNS update and
+       addon verification are needed.
+    """
+    log_info("Cluster already initialised — running second-run maintenance")
+
+    private_ip = get_imds_value("local-ipv4")
+    public_ip = get_imds_value("public-ipv4")
+    instance_id = get_imds_value("instance-id")
+
+    if not private_ip:
+        raise RuntimeError("Failed to retrieve private IP from IMDS")
+
+    # ── Determine if the control plane needs full reconstruction ────
+    # On ASG replacement, the root filesystem is fresh — kubelet is
+    # not running and there are no static pod manifests.  We detect
+    # this by checking if the kube-apiserver manifests exist.
+    manifests_dir = Path("/etc/kubernetes/manifests")
+    apiserver_manifest = manifests_dir / "kube-apiserver.yaml"
+
+    if not apiserver_manifest.exists():
+        log_info(
+            "Static pod manifests missing — ASG replacement detected. "
+            "Reconstructing control plane from restored PKI..."
+        )
+        _reconstruct_control_plane(private_ip, public_ip or "")
+    elif not _is_apiserver_running():
+        log_info(
+            "API server manifest exists but not responding — "
+            "attempting reconstruction..."
+        )
+        _reconstruct_control_plane(private_ip, public_ip or "")
+    else:
+        log_info("API server already running — skipping reconstruction")
+        # Still update DNS to point to current instance
         _update_dns_record(private_ip)
 
+    # ── Safety net: verify apiserver cert SANs match current IP ─────
+    # Even when reconstruction is skipped (API server was already running
+    # from a partial kubeadm init), the cert may have stale IPs.  This
+    # catches the edge case where kubeadm init failed AFTER generating
+    # manifests but BEFORE the cert was regenerated with new SANs.
+    cert_ips = _get_apiserver_cert_ips()
+    if cert_ips and private_ip not in cert_ips:
+        log_warn(
+            f"API server cert SANs {cert_ips} do not include "
+            f"current IP {private_ip} — renewing certificate"
+        )
+        _renew_apiserver_cert(private_ip, public_ip or "")
+
+    # ── Post-reconstruction maintenance ─────────────────────────────
     api_endpoint = f"{API_DNS_NAME}:6443"
     log_info(f"Publishing DNS endpoint to SSM: {api_endpoint}")
     ssm_put(f"{SSM_PREFIX}/control-plane-endpoint", api_endpoint)
 
+    # Set up kubeconfig for ssm-user
     result = run_cmd(["id", "ssm-user"], check=False)
     if result.returncode == 0:
         Path("/home/ssm-user/.kube").mkdir(parents=True, exist_ok=True)
@@ -502,15 +659,68 @@ def _handle_second_run() -> None:
 
     _publish_kubeconfig_to_ssm()
 
-    result = run_cmd(
+    # ── Ensure bootstrap infrastructure is present ──────────────────
+    # On DR restore, kubeadm init is skipped because admin.conf was
+    # recovered from S3.  This means the cluster-info ConfigMap,
+    # bootstrap RBAC bindings, kube-proxy, and CoreDNS are never
+    # created.  Without cluster-info, kubeadm join hangs during TLS
+    # discovery.  Without kube-proxy, ClusterIP routing breaks and
+    # the entire cluster cascades into failure.
+    _ensure_bootstrap_token()
+    _ensure_kube_proxy()
+    _ensure_coredns()
+
+    # ── Ensure RBAC bindings are intact ─────────────────────────────
+    admin_result = run_cmd(
         ["kubectl", "get", "nodes"],
-        check=False, env=KUBECONFIG_ENV,
+        check=False, env={"KUBECONFIG": ADMIN_CONF},
     )
-    if result.returncode != 0:
-        log_warn("API server not responding — certs may need renewal + restart")
-    else:
-        log_info("API server healthy — second-run maintenance complete")
-        _label_control_plane_node()
+
+    if admin_result.returncode != 0:
+        output = (admin_result.stderr + admin_result.stdout).strip()
+        if "Forbidden" in output:
+            log_warn(
+                "admin.conf got 403 Forbidden. RBAC binding "
+                "'kubeadm:cluster-admins' is missing. Attempting repair..."
+            )
+
+            rbac_manifest = """
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubeadm:cluster-admins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: kubernetes-admin
+"""
+            repair_result = run_cmd(
+                ["kubectl", "apply", "-f", "-"],
+                input=rbac_manifest.encode(),
+                check=False, env=_bootstrap_kubeconfig_env(),
+            )
+            if repair_result.returncode != 0:
+                raise RuntimeError(
+                    f"Failed to repair RBAC binding: {repair_result.stderr}"
+                )
+
+            log_info("✓ RBAC binding kubeadm:cluster-admins repaired successfully")
+        else:
+            log_warn(f"admin.conf failed for a non-RBAC reason: {output}")
+
+    # ── Publish SSM params and back up certs ────────────────────────
+    _publish_ssm_params(private_ip, public_ip or "", instance_id or "")
+    _backup_certificates()
+
+    # ── Set providerID for AWS CCM ──────────────────────────────────
+    patch_provider_id(kubeconfig=ROOT_KUBECONFIG)
+
+    log_info("API server healthy — second-run maintenance complete")
+    _label_control_plane_node()
 
 
 def _init_cluster() -> None:
@@ -543,6 +753,14 @@ def _init_cluster() -> None:
     log_info("Running kubeadm init...")
     _update_dns_record(private_ip)
 
+    # In case of DR restore from an old backup that didn't include admin.conf,
+    # pki/ will exist but contain apiserver certs with the old instance IP.
+    # We must remove them so kubeadm init regenerates them with the new IP.
+    for path in ["/etc/kubernetes/pki/apiserver.crt", "/etc/kubernetes/pki/apiserver.key"]:
+        if Path(path).exists():
+            Path(path).unlink()
+            log_info(f"Removed stale cert to ensure regeneration with new IP: {path}")
+
     api_endpoint = f"{API_DNS_NAME}:6443"
     init_cmd = [
         "kubeadm", "init",
@@ -557,8 +775,11 @@ def _init_cluster() -> None:
     run_cmd(init_cmd, capture=False, timeout=300)
 
     Path("/root/.kube").mkdir(parents=True, exist_ok=True)
-    run_cmd(["cp", "-f", ADMIN_CONF, "/root/.kube/config"])
-    run_cmd(["chmod", "600", "/root/.kube/config"])
+    run_cmd(["cp", "-f", ADMIN_CONF, ROOT_KUBECONFIG])
+    run_cmd(["chmod", "600", ROOT_KUBECONFIG])
+    if Path(SUPER_ADMIN_CONF).exists():
+        run_cmd(["cp", "-f", SUPER_ADMIN_CONF, ROOT_SUPER_ADMIN_KUBECONFIG])
+        run_cmd(["chmod", "600", ROOT_SUPER_ADMIN_KUBECONFIG])
 
     result = run_cmd(["id", "ssm-user"], check=False)
     if result.returncode == 0:
@@ -572,7 +793,7 @@ def _init_cluster() -> None:
     for i in range(1, 91):
         result = run_cmd(
             ["kubectl", "get", "nodes"],
-            check=False, env=KUBECONFIG_ENV,
+            check=False, env=_bootstrap_kubeconfig_env(),
         )
         if result.returncode == 0:
             log_info(f"Control plane is ready (waited {i} seconds)")
@@ -587,7 +808,7 @@ def _init_cluster() -> None:
     # Set providerID immediately so the AWS CCM can map this node
     # to its EC2 instance — required for auto-deletion of dead nodes.
     # Control plane uses admin kubeconfig (kubelet.conf not yet trusted).
-    patch_provider_id(kubeconfig="/root/.kube/config")
+    patch_provider_id(kubeconfig=ROOT_KUBECONFIG)
 
     _publish_ssm_params(private_ip, public_ip, instance_id)
     _publish_kubeconfig_to_ssm()
@@ -600,9 +821,13 @@ def _publish_ssm_params(private_ip: str, public_ip: str, instance_id: str) -> No
 
     token_result = run_cmd(
         ["kubeadm", "token", "create", "--ttl", "24h"],
-        env=KUBECONFIG_ENV,
+        env=_bootstrap_kubeconfig_env(),
     )
-    join_token = token_result.stdout.strip()
+    # Validate token format before writing to SSM — catches corruption at source
+    join_token = validate_kubeadm_token(
+        token_result.stdout.strip(), source="kubeadm token create"
+    )
+    log_info(f"Join token created and validated (length={len(join_token)})")
 
     ca_hash_cmd = (
         "openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | "
@@ -619,7 +844,7 @@ def _publish_ssm_params(private_ip: str, public_ip: str, instance_id: str) -> No
     ssm_put(f"{SSM_PREFIX}/instance-id", instance_id)
 
     log_info("Cluster credentials published to SSM successfully")
-    run_cmd(["kubectl", "get", "nodes", "-o", "wide"], check=False, env=KUBECONFIG_ENV)
+    run_cmd(["kubectl", "get", "nodes", "-o", "wide"], check=False, env=_bootstrap_kubeconfig_env())
 
 
 def _publish_kubeconfig_to_ssm() -> None:
@@ -675,7 +900,14 @@ def _backup_certificates() -> None:
 
     try:
         log_info("Backing up PKI certificates to S3...")
-        run_cmd(["tar", "czf", archive_path, "-C", "/etc/kubernetes", "pki"])
+        
+        paths_to_tar = ["pki"]
+        if Path("/etc/kubernetes/admin.conf").exists():
+            paths_to_tar.append("admin.conf")
+        if Path("/etc/kubernetes/super-admin.conf").exists():
+            paths_to_tar.append("super-admin.conf")
+            
+        run_cmd(["tar", "czf", archive_path, "-C", "/etc/kubernetes"] + paths_to_tar)
 
         s3_key = f"{DR_BACKUP_PREFIX}/pki/{timestamp}.tar.gz"
         run_cmd([
@@ -898,22 +1130,54 @@ def step_install_calico() -> None:
 
         run_cmd(
             ["kubectl", "apply", "--server-side", "--force-conflicts", "-f", source],
-            env=KUBECONFIG_ENV,
+            env=_bootstrap_kubeconfig_env(),
         )
+
+        # The tigera-operator uses the kubernetes ClusterIP (10.96.0.1) by default
+        # to reach the API server. On a fresh node the pod network doesn't exist yet,
+        # so that address is unreachable — the operator loops on i/o timeout and never
+        # reconciles the Installation CR. Providing this ConfigMap tells the operator
+        # to use the node IP directly, bypassing the ClusterIP entirely.
+        private_ip = get_imds_value("local-ipv4")
+        if private_ip:
+            log_info(
+                f"Creating kubernetes-services-endpoint ConfigMap "
+                f"(operator → {private_ip}:6443)"
+            )
+            endpoint_cm = f"""apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-services-endpoint
+  namespace: tigera-operator
+data:
+  KUBERNETES_SERVICE_HOST: "{private_ip}"
+  KUBERNETES_SERVICE_PORT: "6443"
+"""
+            run_cmd(
+                ["kubectl", "apply", "-f", "-"],
+                input=endpoint_cm.encode(),
+                env=_bootstrap_kubeconfig_env(),
+            )
+        else:
+            log_warn(
+                "Could not retrieve private IP from IMDS — "
+                "skipping kubernetes-services-endpoint ConfigMap. "
+                "Calico operator may fail to reach the API server."
+            )
 
         log_info("Waiting for Calico operator deployment...")
         run_cmd(
             ["kubectl", "wait", "--for=condition=Available",
              "deployment/tigera-operator", "-n", "tigera-operator",
              "--timeout=120s"],
-            check=False, env=KUBECONFIG_ENV,
+            check=False, env=_bootstrap_kubeconfig_env(),
         )
 
         # Apply Installation CR
         log_info("Applying Calico Installation resource...")
         run_cmd(
             f"echo '{CALICO_INSTALLATION}' | kubectl apply -f -",
-            shell=True, env=KUBECONFIG_ENV,
+            shell=True, env=_bootstrap_kubeconfig_env(),
         )
 
         # Wait for pods
@@ -921,7 +1185,7 @@ def step_install_calico() -> None:
         for i in range(1, 121):
             result = run_cmd(
                 ["kubectl", "get", "pods", "-n", "calico-system", "--no-headers"],
-                check=False, env=KUBECONFIG_ENV,
+                check=False, env=_bootstrap_kubeconfig_env(),
             )
             if result.returncode == 0 and result.stdout.strip():
                 lines = result.stdout.strip().splitlines()
@@ -934,7 +1198,7 @@ def step_install_calico() -> None:
                     log_warn(f"Calico pods not fully ready after 120s ({running}/{total})")
                     run_cmd(
                         ["kubectl", "get", "pods", "-n", "calico-system"],
-                        check=False, env=KUBECONFIG_ENV,
+                        check=False, env=_bootstrap_kubeconfig_env(),
                     )
             time.sleep(1)
 
@@ -964,6 +1228,8 @@ nodeSelector:
   node-role.kubernetes.io/control-plane: ""
 tolerations:
   - key: node-role.kubernetes.io/control-plane
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/master
     effect: NoSchedule
   - key: node.cloudprovider.kubernetes.io/uninitialized
     value: "true"
@@ -1004,9 +1270,9 @@ def step_install_ccm() -> None:
             run_cmd(
                 ["helm", "repo", "add", "aws-cloud-controller-manager",
                  CCM_HELM_REPO, "--force-update"],
-                env=KUBECONFIG_ENV,
+                env=_bootstrap_kubeconfig_env(),
             )
-            run_cmd(["helm", "repo", "update"], env=KUBECONFIG_ENV)
+            run_cmd(["helm", "repo", "update"], env=_bootstrap_kubeconfig_env())
 
             # Install (or upgrade if already present) the CCM
             log_info("Installing AWS Cloud Controller Manager...")
@@ -1016,7 +1282,7 @@ def step_install_ccm() -> None:
                  "--namespace", CCM_HELM_NAMESPACE,
                  "--values", str(values_path),
                  "--wait", "--timeout", "120s"],
-                env=KUBECONFIG_ENV,
+                env=_bootstrap_kubeconfig_env(),
             )
             log_info("✓ AWS CCM Helm release installed")
 
@@ -1027,7 +1293,7 @@ def step_install_ccm() -> None:
                 result = run_cmd(
                     ["kubectl", "get", "nodes", "-o",
                      "jsonpath={.items[*].spec.taints}"],
-                    check=False, env=KUBECONFIG_ENV,
+                    check=False, env=_bootstrap_kubeconfig_env(),
                 )
                 if result.returncode == 0:
                     taints_json = result.stdout.strip()
@@ -1046,6 +1312,10 @@ def step_install_ccm() -> None:
                     f"{CCM_TAINT_TIMEOUT_SECONDS}s — ArgoCD may fail to schedule. "
                     f"Check CCM pod logs: kubectl logs -n kube-system "
                     f"-l app.kubernetes.io/name=aws-cloud-controller-manager"
+                )
+                # Raise so StepRunner does NOT write the marker — forces retry
+                raise RuntimeError(
+                    "CCM installed but taint not removed — step will retry on next run"
                 )
 
             step.details["helm_release"] = CCM_HELM_RELEASE
@@ -1257,7 +1527,7 @@ def step_bootstrap_argocd() -> None:
         log_info(
             "ArgoCD bootstrap complete. "
             "ArgoCD now manages: traefik, metrics-server, "
-            "local-path-provisioner, monitoring, nextjs"
+            "aws-ebs-csi-driver, monitoring, nextjs"
         )
         step.details["argocd_dir"] = str(argocd_dir)
 
@@ -1285,7 +1555,7 @@ def step_verify_cluster() -> None:
         log_info("Checking node readiness...")
         result = run_cmd(
             ["kubectl", "get", "nodes", "--no-headers"],
-            check=False, env=KUBECONFIG_ENV,
+            check=False, env=_bootstrap_kubeconfig_env(),
         )
         node_ready = False
         if result.returncode == 0:
@@ -1303,7 +1573,7 @@ def step_verify_cluster() -> None:
         for ns in REQUIRED_NAMESPACES:
             result = run_cmd(
                 ["kubectl", "get", "pods", "-n", ns, "--no-headers"],
-                check=False, env=KUBECONFIG_ENV,
+                check=False, env=_bootstrap_kubeconfig_env(),
             )
             if result.returncode != 0 or not result.stdout.strip():
                 log_warn(f"  ⚠ No pods found in namespace {ns}")
@@ -1327,7 +1597,7 @@ def step_verify_cluster() -> None:
         log_info("Checking ArgoCD...")
         result = run_cmd(
             ["kubectl", "get", "pods", "-n", "argocd", "--no-headers"],
-            check=False, env=KUBECONFIG_ENV,
+            check=False, env=_bootstrap_kubeconfig_env(),
         )
         if result.returncode != 0 or not result.stdout.strip():
             log_warn("  ⚠ ArgoCD namespace not found or empty (may not be bootstrapped yet)")
@@ -1396,13 +1666,91 @@ def step_install_etcd_backup() -> None:
 
 
 # =============================================================================
+# Step 11 — Install Token Rotator Timer
+# =============================================================================
+
+TOKEN_ROTATOR_MARKER = "/etc/systemd/system/kubeadm-token-rotator.timer"
+
+TOKEN_ROTATOR_SCRIPT = """\
+#!/bin/bash
+set -euo pipefail
+
+# Generate a new token valid for 24 hours
+export KUBECONFIG=/etc/kubernetes/admin.conf
+TOKEN=$(kubeadm token create --ttl 24h)
+
+# Validate token format before writing to SSM
+if ! echo "$TOKEN" | grep -qE '^[a-z0-9]{{6}}\.[a-z0-9]{{16}}$'; then
+    echo "ERROR: kubeadm token create returned invalid token: $TOKEN" >&2
+    exit 1
+fi
+
+# Push the token to SSM
+aws ssm put-parameter \\
+    --name "{SSM_PREFIX}/join-token" \\
+    --value "$TOKEN" \\
+    --type "SecureString" \\
+    --overwrite \\
+    --region "{AWS_REGION}"
+
+echo "Successfully rotated join token and updated SSM."
+"""
+
+
+def step_install_token_rotator() -> None:
+    """Step 11: Install a systemd timer to rotate the kubeadm join token.
+
+    Generates a new token every 12 hours and pushes it to SSM,
+    ensuring workers can always join the cluster.
+    """
+    with StepRunner("install-token-rotator", skip_if=TOKEN_ROTATOR_MARKER) as step:
+        if step.skipped:
+            return
+
+        script_path = Path("/usr/local/bin/rotate-join-token.sh")
+        script_content = TOKEN_ROTATOR_SCRIPT.format(
+            SSM_PREFIX=SSM_PREFIX,
+            AWS_REGION=AWS_REGION,
+        )
+        script_path.write_text(script_content)
+        run_cmd(["chmod", "755", str(script_path)])
+
+        service_path = Path("/etc/systemd/system/kubeadm-token-rotator.service")
+        service_path.write_text(
+            "[Unit]\n"
+            "Description=Rotate kubeadm join token and update SSM\n"
+            "After=network-online.target\n\n"
+            "[Service]\n"
+            "Type=oneshot\n"
+            "ExecStart=/usr/local/bin/rotate-join-token.sh\n"
+        )
+
+        timer_path = Path(TOKEN_ROTATOR_MARKER)
+        timer_path.write_text(
+            "[Unit]\n"
+            "Description=Run kubeadm token rotator every 12 hours\n\n"
+            "[Timer]\n"
+            "OnBootSec=1h\n"
+            "OnUnitActiveSec=12h\n"
+            "RandomizedDelaySec=5m\n\n"
+            "[Install]\n"
+            "WantedBy=timers.target\n"
+        )
+
+        run_cmd(["systemctl", "daemon-reload"])
+        run_cmd(["systemctl", "enable", "--now", "kubeadm-token-rotator.timer"])
+
+        step.details["installed"] = True
+        log_info("✓ kubeadm token rotator timer installed")
+
+
+# =============================================================================
 # Main — Sequential Control Plane Bootstrap
 # =============================================================================
 
 def main() -> None:
     """Execute all control plane bootstrap steps in order."""
     steps = [
-        step_attach_ebs_volume,
         step_validate_ami,
         step_restore_from_backup,
         step_init_kubeadm,
@@ -1414,6 +1762,7 @@ def main() -> None:
         step_verify_cluster,
         step_install_cloudwatch_agent,
         step_install_etcd_backup,
+        step_install_token_rotator,
     ]
 
     log_info(f"Control plane bootstrap starting ({len(steps)} steps)")

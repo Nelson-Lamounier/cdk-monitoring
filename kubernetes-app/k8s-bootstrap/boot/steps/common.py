@@ -19,6 +19,7 @@ Usage from a step script:
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -32,6 +33,8 @@ from typing import Optional, Union
 # =============================================================================
 
 STATUS_FILE = Path("/tmp/bootstrap-status.json")
+RUN_SUMMARY_DIR = Path("/opt/k8s-bootstrap")
+RUN_SUMMARY_FILE = RUN_SUMMARY_DIR / "run_summary.json"
 SSM_PREFIX = os.environ.get("SSM_PREFIX", "/k8s/development")
 AWS_REGION = os.environ.get("AWS_REGION", "eu-west-1")
 
@@ -85,6 +88,7 @@ def run_cmd(
     timeout: int = 300,
     env: Optional[dict] = None,
     capture: bool = True,
+    input: Optional[bytes] = None,
 ) -> CmdResult:
     """
     Execute a command with structured logging and timing.
@@ -96,6 +100,7 @@ def run_cmd(
         timeout: Seconds before killing the process.
         env: Additional environment variables (merged with os.environ).
         capture: Capture stdout/stderr (False to stream live).
+        input: Optional byte string to pass as standard input.
 
     Returns:
         CmdResult with exit code, output, and timing.
@@ -117,6 +122,7 @@ def run_cmd(
             text=True,
             timeout=timeout,
             env=merged_env,
+            input=input.decode('utf-8') if input else None,
         )
     except subprocess.TimeoutExpired:
         duration = time.monotonic() - start
@@ -218,6 +224,56 @@ def ssm_put(
 
 
 # =============================================================================
+# kubeadm Token Validation
+# =============================================================================
+
+KUBEADM_TOKEN_REGEX = re.compile(r"^[a-z0-9]{6}\.[a-z0-9]{16}$")
+
+
+def validate_kubeadm_token(token: str, source: str = "SSM") -> str:
+    """Validate and sanitise a kubeadm join token.
+
+    Strips whitespace and leading escape characters that can be
+    introduced by shell encoding during SSM SecureString retrieval,
+    then validates the token matches kubeadm's expected format.
+
+    A valid kubeadm bootstrap token has the format::
+
+        [a-z0-9]{6}.[a-z0-9]{16}
+
+    Args:
+        token: Raw token string from SSM or kubeadm.
+        source: Description of where the token came from (for error messages).
+
+    Returns:
+        The sanitised token string.
+
+    Raises:
+        ValueError: If the token is empty or doesn't match the expected format.
+    """
+    if not token:
+        raise ValueError(
+            f"Empty kubeadm join token received from {source}"
+        )
+
+    # Strip whitespace, then any leading backslash characters injected
+    # by shell escaping during SSM SecureString retrieval
+    sanitised = token.strip().lstrip("\\").strip()
+
+    if not KUBEADM_TOKEN_REGEX.match(sanitised):
+        # Truncate for safe logging — never log a full token
+        preview = token[:30] if len(token) > 30 else token
+        raise ValueError(
+            f"Invalid kubeadm join token from {source}: "
+            f"'{sanitised}' does not match expected format "
+            f"[a-z0-9]{{6}}.[a-z0-9]{{16}}. "
+            f"Raw value (truncated): '{preview}'"
+        )
+
+    return sanitised
+
+
+# =============================================================================
 # Idempotency Guards
 # =============================================================================
 
@@ -314,6 +370,7 @@ class StepRunner:
                 f"Step '{self.step_name}' FAILED in {duration:.1f}s",
                 error=str(exc_val),
             )
+            self._persist_run_summary()
             return False  # Propagate exception
 
         self._status.status = "success"
@@ -323,6 +380,7 @@ class StepRunner:
         if self.skip_if:
             mark_done(self.skip_if)
 
+        self._persist_run_summary()
         return False
 
     @property
@@ -332,6 +390,68 @@ class StepRunner:
     @property
     def status(self) -> StepStatus:
         return self._status
+
+    def _persist_run_summary(self) -> None:
+        """Persist a machine-readable run_summary.json for AI agent diagnostics.
+
+        The self-healing agent fetches this file via SSM to identify the
+        specific failure mode (AMI_MISMATCH, S3_FORBIDDEN, KUBEADM_FAIL, etc.)
+        without parsing unstructured CloudWatch logs.
+        """
+        try:
+            RUN_SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
+
+            # Load existing summary (accumulates across steps)
+            existing: dict = {}
+            if RUN_SUMMARY_FILE.exists():
+                try:
+                    existing = json.loads(RUN_SUMMARY_FILE.read_text())
+                except (json.JSONDecodeError, OSError):
+                    existing = {}
+
+            steps: list = existing.get("steps", [])
+            steps.append(asdict(self._status))
+
+            # Derive an overall failure_code from the error string
+            failure_code = self._classify_failure() if self._status.status == "failed" else None
+
+            summary = {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "overall_status": "failed" if any(
+                    s.get("status") == "failed" for s in steps
+                ) else "success",
+                "failure_code": failure_code,
+                "total_steps": len(steps),
+                "failed_steps": [s["step_name"] for s in steps if s.get("status") == "failed"],
+                "steps": steps,
+            }
+            RUN_SUMMARY_FILE.write_text(json.dumps(summary, indent=2))
+        except OSError as e:
+            log_warn(f"Could not persist run_summary.json: {e}")
+
+    def _classify_failure(self) -> str:
+        """Classify the failure into a machine-readable code for AI triage.
+
+        Returns:
+            One of: AMI_MISMATCH, S3_FORBIDDEN, KUBEADM_FAIL,
+            CALICO_TIMEOUT, ARGOCD_SYNC_FAIL, CW_AGENT_FAIL, UNKNOWN.
+        """
+        error = self._status.error.lower()
+        step = self.step_name.lower()
+
+        if "ami" in step or "golden" in error:
+            return "AMI_MISMATCH"
+        if "403" in error or "forbidden" in error or "accessdenied" in error:
+            return "S3_FORBIDDEN"
+        if "kubeadm" in step or "kubeadm" in error:
+            return "KUBEADM_FAIL"
+        if "calico" in error or "tigera" in error:
+            return "CALICO_TIMEOUT"
+        if "argocd" in error or "argo" in step:
+            return "ARGOCD_SYNC_FAIL"
+        if "cloudwatch" in step or "cw-agent" in step:
+            return "CW_AGENT_FAIL"
+        return "UNKNOWN"
 
 
 # =============================================================================
@@ -778,5 +898,66 @@ def step_install_cloudwatch_agent() -> None:
         else:
             log_warn("CloudWatch Agent may not be running — check agent logs")
             step.details["agent_status"] = "unknown"
+
+
+# =============================================================================
+# Shared Step — Install ArgoCD CLI
+# =============================================================================
+
+# ArgoCD CLI version — aligned with the cluster-bootstrapped ArgoCD version.
+# Update this when upgrading ArgoCD in the Helm chart.
+ARGOCD_CLI_VERSION = os.environ.get("ARGOCD_CLI_VERSION", "v2.14.12")
+ARGOCD_CLI_PATH = "/usr/local/bin/argocd"
+_ARGOCD_CLI_URL = (
+    f"https://github.com/argoproj/argo-cd/releases/download/{ARGOCD_CLI_VERSION}"
+    "/argocd-linux-amd64"
+)
+
+
+def step_install_argocd_cli() -> None:
+    """Install the ArgoCD CLI binary if not already present.
+
+    Downloads the official release binary from the ArgoCD GitHub releases
+    page for the version pinned by ARGOCD_CLI_VERSION. The binary is
+    installed to /usr/local/bin/argocd.
+
+    The CLI is needed by the verify step to check ArgoCD Application sync
+    status and by the self-healing agent for targeted app management.
+
+    Skips installation if the binary is already present and executable.
+    """
+    with StepRunner("install-argocd-cli",
+                    skip_if="/tmp/.step-argocd-cli.done") as step:
+        if step.skipped:
+            return
+
+        # Check if already installed
+        existing = shutil.which("argocd")
+        if existing:
+            result = run_cmd(["argocd", "version", "--client", "--short"],
+                             check=False)
+            if result.returncode == 0:
+                log_info(f"ArgoCD CLI already installed: {result.stdout.strip()}")
+                step.details["existing_version"] = result.stdout.strip()
+                step.details["action"] = "skipped-existing"
+                return
+
+        log_info(f"Downloading ArgoCD CLI {ARGOCD_CLI_VERSION}...")
+        run_cmd(
+            ["curl", "-sSL", "-o", ARGOCD_CLI_PATH, _ARGOCD_CLI_URL],
+            timeout=120,
+        )
+        os.chmod(ARGOCD_CLI_PATH, 0o755)
+
+        # Verify installation
+        result = run_cmd(["argocd", "version", "--client", "--short"],
+                         check=False)
+        if result.returncode == 0:
+            log_info(f"ArgoCD CLI installed: {result.stdout.strip()}")
+            step.details["installed_version"] = result.stdout.strip()
+            step.details["action"] = "installed"
+        else:
+            log_warn("ArgoCD CLI installed but version check failed")
+            step.details["action"] = "installed-unverified"
 
 

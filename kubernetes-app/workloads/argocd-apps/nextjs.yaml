@@ -24,13 +24,14 @@ metadata:
     # when a new image is pushed to ECR by the CI pipeline.
     #
     # Strategy: 'newest-build' picks the most recently built image by timestamp.
-    # Filter:   Only considers SHA-format tags (7-40 hex chars).
+    # Filter:   Accepts SHA tags with optional run-attempt suffix (e.g. abc123-r1).
+    #           The -rN suffix prevents ECR tag overwrites on pipeline retries.
     # Write-back: Commits .argocd-source-nextjs.yaml to Git so selfHeal
     #             enforces the updated tag instead of reverting it.
     # -----------------------------------------------------------------------
     argocd-image-updater.argoproj.io/image-list: "nextjs=771826808455.dkr.ecr.eu-west-1.amazonaws.com/nextjs-frontend"
     argocd-image-updater.argoproj.io/nextjs.update-strategy: newest-build
-    argocd-image-updater.argoproj.io/nextjs.allow-tags: "regexp:^[0-9a-f]{7,40}$"
+    argocd-image-updater.argoproj.io/nextjs.allow-tags: "regexp:^[0-9a-f]{7,40}(-r[0-9]+)?$"
     argocd-image-updater.argoproj.io/nextjs.helm.image-name: image.repository
     argocd-image-updater.argoproj.io/nextjs.helm.image-tag: image.tag
     argocd-image-updater.argoproj.io/write-back-method: "git:secret:argocd/repo-cdk-monitoring"

@@ -164,13 +164,67 @@ async function main(): Promise<void> {
 
   logger.success(`Uploaded ${uploaded} files to S3`)
 
-  // Delete stale files from S3 that no longer exist locally
+  // Step 3.5: Sync public assets (images, favicon, etc.) to S3
+  const publicDir = join(projectRoot, 'public')
+  if (existsSync(publicDir)) {
+    logger.info('Syncing public directory assets to S3 root...')
+    const publicFiles = getAllFiles(publicDir)
+    let publicUploaded = 0
+    
+    for (const filePath of publicFiles) {
+      const relativePath = relative(publicDir, filePath)
+      const s3Key = relativePath // 'images/logo.png', 'favicon.ico', etc.
+      const contentType = lookup(filePath) || 'application/octet-stream'
+      const fileContent = readFileSync(filePath)
+
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: s3Key,
+          Body: fileContent,
+          ContentType: contentType,
+          // Public items (like images/favicon) are mutated more often than hashed Next.js assets
+          CacheControl: 'public, max-age=86400, must-revalidate', 
+        }),
+      )
+      publicUploaded++
+    }
+    logger.success(`Uploaded ${publicUploaded} public files to S3`)
+    uploaded += publicUploaded
+  }
+
+  // -----------------------------------------------------------------------
+  // BlueGreen-safe cleanup: preserve the previous build's assets
+  //
+  // During an Argo Rollout BlueGreen promotion, the old pod continues
+  // serving traffic for ~2-5 minutes (Image Updater poll + analysis +
+  // auto-promote). The old pod's HTML references /_next/static/<oldBuildId>/
+  // paths. If we delete those, CSS/JS 404 → site breaks.
+  //
+  // Strategy:
+  //   - Keep: current build ID + most recent previous build ID
+  //   - Delete: build IDs older than the previous one
+  //   - Shared dirs (chunks/, css/, media/) have content-hashed filenames
+  //     so old files there can be safely removed.
+  // -----------------------------------------------------------------------
+
+  // Discover the current build ID from local files
+  const localBuildIds = readdirSync(staticDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => !['chunks', 'css', 'media'].includes(name))
+
+  const currentBuildId = localBuildIds.length > 0 ? localBuildIds[0] : undefined
+
   const localKeys = new Set(
     allFiles.map((f) => `_next/static/${relative(staticDir, f)}`),
   )
 
   let continuationToken: string | undefined
-  const staleKeys: string[] = []
+
+  // Collect all S3 keys and identify build ID directories
+  const s3BuildIds = new Set<string>()
+  const allS3Keys: string[] = []
 
   do {
     const listResult = await s3.send(
@@ -182,13 +236,55 @@ async function main(): Promise<void> {
     )
 
     for (const obj of listResult.Contents || []) {
-      if (obj.Key && !localKeys.has(obj.Key)) {
-        staleKeys.push(obj.Key)
+      if (obj.Key) {
+        allS3Keys.push(obj.Key)
+        // Extract build ID from keys like _next/static/<buildId>/file.js
+        const segments = obj.Key.replace('_next/static/', '').split('/')
+        if (segments.length > 0 && !['chunks', 'css', 'media'].includes(segments[0])) {
+          s3BuildIds.add(segments[0])
+        }
       }
     }
 
     continuationToken = listResult.NextContinuationToken
   } while (continuationToken)
+
+  // Determine which build IDs to keep (current + most recent previous)
+  const buildIdsToKeep = new Set<string>()
+  if (currentBuildId) {
+    buildIdsToKeep.add(currentBuildId)
+  }
+
+  // Keep one previous build ID for BlueGreen transition safety
+  for (const buildId of s3BuildIds) {
+    if (buildId !== currentBuildId) {
+      buildIdsToKeep.add(buildId)
+      break // keep only the most recent previous one
+    }
+  }
+
+  logger.info(`Build IDs in S3: ${[...s3BuildIds].join(', ') || 'none'}`)
+  logger.info(`Keeping build IDs: ${[...buildIdsToKeep].join(', ') || 'none'}`)
+
+  // Delete stale files:
+  // - Build ID dirs: delete entire directories for old build IDs (not current or previous)
+  // - Shared dirs (chunks/css/media): NO LONGER DELETED here! 
+  //   Deleting these immediately breaks old pods during Blue/Green transitions 
+  //   because old HTML relies on old CSS chunk hashes. S3 lifecycle rules should clean these later.
+  const staleKeys: string[] = []
+
+  for (const key of allS3Keys) {
+    const relativePart = key.replace('_next/static/', '')
+    const topDir = relativePart.split('/')[0]
+
+    if (['chunks', 'css', 'media'].includes(topDir)) {
+      // KEEP all chunks/css/media to preserve active Blue/Green environments
+      continue
+    } else if (!buildIdsToKeep.has(topDir)) {
+      // Old build ID directory — safe to remove entirely
+      staleKeys.push(key)
+    }
+  }
 
   if (staleKeys.length > 0) {
     // Delete in batches of 1000 (S3 limit)
@@ -201,7 +297,9 @@ async function main(): Promise<void> {
         }),
       )
     }
-    logger.success(`Deleted ${staleKeys.length} stale files from S3`)
+    logger.success(`Deleted ${staleKeys.length} stale files from S3 (preserved ${buildIdsToKeep.size} build ID(s))`)
+  } else {
+    logger.success('No stale files to delete')
   }
 
   // Step 4: Verify sync
@@ -254,8 +352,8 @@ async function main(): Promise<void> {
           InvalidationBatch: {
             CallerReference: `sync-${Date.now()}`,
             Paths: {
-              Quantity: 2,
-              Items: ['/_next/static/*', '/_next/data/*'],
+              Quantity: 4,
+              Items: ['/_next/static/*', '/_next/data/*', '/images/*', '/videos/*'],
             },
           },
         }),

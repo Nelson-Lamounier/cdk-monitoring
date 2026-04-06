@@ -1,0 +1,9 @@
+#!/bin/bash
+aws ssm send-command \
+  --instance-ids i-0ba4871c3781f1bb3 \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["cat << '\''INNER_EOF'\'' > /usr/local/bin/rotate-join-token.sh", "#!/bin/bash", "set -euo pipefail", "export KUBECONFIG=/etc/kubernetes/admin.conf", "TOKEN=\\\$(kubeadm token create --ttl 24h)", "aws ssm put-parameter --name /k8s/development/join-token --value \\\$TOKEN --type SecureString --overwrite --region eu-west-1", "echo \"Successfully rotated join token and updated SSM.\"", "INNER_EOF", "chmod 755 /usr/local/bin/rotate-join-token.sh", "cat << '\''INNER_EOF'\'' > /etc/systemd/system/kubeadm-token-rotator.service", "[Unit]", "Description=Rotate kubeadm join token and update SSM", "After=network-online.target", "", "[Service]", "Type=oneshot", "ExecStart=/usr/local/bin/rotate-join-token.sh", "INNER_EOF", "cat << '\''INNER_EOF'\'' > /etc/systemd/system/kubeadm-token-rotator.timer", "[Unit]", "Description=Run kubeadm token rotator every 12 hours", "", "[Timer]", "OnBootSec=1h", "OnUnitActiveSec=12h", "RandomizedDelaySec=5m", "", "[Install]", "WantedBy=timers.target", "INNER_EOF", "systemctl daemon-reload", "systemctl enable --now kubeadm-token-rotator.timer"]' \
+  --profile dev-account \
+  --region eu-west-1 \
+  --query "Command.CommandId" \
+  --output text

@@ -10,7 +10,13 @@
  * Resources:
  * - AgentCore Gateway (L2 construct — CloudFormation-managed lifecycle)
  * - Default Cognito authoriser for M2M (machine-to-machine) JWT auth
- * - 2 Lambda tool functions (diagnose-alarm, ebs-detach)
+ * - 6 Lambda tool functions registered as MCP targets:
+ *   1. diagnose-alarm
+ *   2. ebs-detach
+ *   3. check-node-health
+ *   4. analyse-cluster-health
+ *   5. get-node-diagnostic-json
+ *   6. remediate-node-bootstrap
  * - SSM parameters for cross-stack discovery
  * - CloudWatch log group for Gateway invocations
  *
@@ -20,7 +26,7 @@
  * - MCP protocol configuration (MCP 2025-03-26, SEMANTIC search)
  */
 
-import * as path from 'path';
+import * as path from 'node:path';
 
 import {
     Gateway,
@@ -38,6 +44,8 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
+import { ApplicationInferenceProfile } from '../../constructs/observability/application-inference-profile';
+
 
 /**
  * Props for SelfHealingGatewayStack
@@ -53,6 +61,10 @@ export interface SelfHealingGatewayStackProps extends cdk.StackProps {
     readonly throttlingRateLimit: number;
     /** Gateway throttle — burst capacity */
     readonly throttlingBurstLimit: number;
+    /** System inference profile ARN for Sonnet 4.6 (used as CopyFrom source) */
+    readonly sonnetProfileSourceArn: string;
+    /** Runtime environment name (for profile tags) */
+    readonly environmentName: string;
 }
 
 /**
@@ -84,6 +96,9 @@ export class SelfHealingGatewayStack extends cdk.Stack {
     /** OAuth2 scope strings for client credentials flow */
     public readonly oauthScopes: string;
 
+    /** Application Inference Profile ARN — Self-Healing Agent Sonnet 4.6 */
+    public readonly agentProfileArn: string;
+
     constructor(scope: Construct, id: string, props: SelfHealingGatewayStackProps) {
         super(scope, id, props);
 
@@ -92,7 +107,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         // =================================================================
         // CloudWatch Log Group — Gateway invocations
         // =================================================================
-        const gatewayLogGroup = new logs.LogGroup(this, 'GatewayLogGroup', {
+        new logs.LogGroup(this, 'GatewayLogGroup', {
             logGroupName: `/aws/agentcore/${namePrefix}-gateway`,
             retention: props.logRetention,
             removalPolicy: props.removalPolicy,
@@ -131,7 +146,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         const diagnoseAlarmFn = new lambdaNode.NodejsFunction(this, 'DiagnoseAlarmFunction', {
             functionName: `${namePrefix}-tool-diagnose-alarm`,
             runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'self-healing', 'tools', 'diagnose-alarm', 'index.ts'),
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'tools', 'diagnose-alarm', 'index.ts'),
             handler: 'handler',
             memorySize: 256,
             timeout: cdk.Duration.seconds(30),
@@ -160,52 +175,6 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             resources: ['*'],
         }));
 
-        // =================================================================
-        // Tool Lambda 2: EBS Volume Detach
-        //
-        // Detaches tagged EBS volumes from terminating instances and
-        // completes ASG lifecycle actions. Existing production Lambda
-        // reused as an MCP tool.
-        // =================================================================
-        const ebsDetachFn = new lambdaNode.NodejsFunction(this, 'EbsDetachFunction', {
-            functionName: `${namePrefix}-tool-ebs-detach`,
-            runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'ebs-detach', 'index.ts'),
-            handler: 'handler',
-            memorySize: 256,
-            timeout: cdk.Duration.minutes(3),
-            logGroup: new logs.LogGroup(this, 'EbsDetachLogGroup', {
-                logGroupName: `/aws/lambda/${namePrefix}-tool-ebs-detach`,
-                retention: props.logRetention,
-                removalPolicy: props.removalPolicy,
-            }),
-            tracing: lambda.Tracing.ACTIVE,
-            description: `MCP tool: EBS volume detach for ${namePrefix}`,
-            bundling: {
-                minify: true,
-                sourceMap: true,
-                externalModules: ['@aws-sdk/*'],
-            },
-        });
-
-        // Grant EC2 + ASG permissions for EBS detachment
-        ebsDetachFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'ManageEbsVolumes',
-            effect: iam.Effect.ALLOW,
-            actions: [
-                'ec2:DescribeVolumes',
-                'ec2:DescribeInstances',
-                'ec2:DetachVolume',
-            ],
-            resources: ['*'],
-        }));
-
-        ebsDetachFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'CompleteLifecycleAction',
-            effect: iam.Effect.ALLOW,
-            actions: ['autoscaling:CompleteLifecycleAction'],
-            resources: ['*'],
-        }));
 
         // =================================================================
         // Tool Lambda 3: Check Node Health
@@ -217,7 +186,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         const checkNodeHealthFn = new lambdaNode.NodejsFunction(this, 'CheckNodeHealthFunction', {
             functionName: `${namePrefix}-tool-check-node-health`,
             runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'self-healing', 'tools', 'check-node-health', 'index.ts'),
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'tools', 'check-node-health', 'index.ts'),
             handler: 'handler',
             memorySize: 256,
             timeout: cdk.Duration.seconds(60),
@@ -264,7 +233,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         const analyseClusterHealthFn = new lambdaNode.NodejsFunction(this, 'AnalyseClusterHealthFunction', {
             functionName: `${namePrefix}-tool-analyse-cluster-health`,
             runtime: lambda.Runtime.NODEJS_22_X,
-            entry: path.join(__dirname, '..', '..', '..', 'lambda', 'self-healing', 'tools', 'analyse-cluster-health', 'index.ts'),
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'tools', 'analyse-cluster-health', 'index.ts'),
             handler: 'handler',
             memorySize: 256,
             timeout: cdk.Duration.seconds(90),
@@ -299,6 +268,102 @@ export class SelfHealingGatewayStack extends cdk.Stack {
                 'ssm:GetCommandInvocation',
             ],
             resources: ['*'],
+        }));
+
+        // =================================================================
+        // Tool Lambda 5: Get Node Diagnostic JSON
+        //
+        // Fetches the machine-readable `run_summary.json` from a K8s node
+        // via SSM SendCommand. Contains bootstrap status, failure
+        // classification, and per-step timing from the Python StepRunner.
+        // =================================================================
+        const getNodeDiagnosticFn = new lambdaNode.NodejsFunction(this, 'GetNodeDiagnosticFunction', {
+            functionName: `${namePrefix}-tool-get-node-diagnostic`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'tools', 'get-node-diagnostic-json', 'index.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.seconds(30),
+            logGroup: new logs.LogGroup(this, 'GetNodeDiagnosticLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-tool-get-node-diagnostic`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            tracing: lambda.Tracing.ACTIVE,
+            description: `MCP tool: fetch bootstrap run_summary.json from node for ${namePrefix}`,
+            bundling: {
+                minify: true,
+                sourceMap: true,
+                externalModules: ['@aws-sdk/*'],
+            },
+        });
+
+        // Grant SSM SendCommand + GetCommandInvocation to read diagnostic file
+        getNodeDiagnosticFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SsmSendCommand',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:SendCommand',
+                'ssm:GetCommandInvocation',
+            ],
+            resources: ['*'],
+        }));
+
+        // =================================================================
+        // Tool Lambda 6: Remediate Node Bootstrap
+        //
+        // Triggers an SSM Automation Document to re-run the bootstrap
+        // sequence on a failed K8s node. Resolves Document names and
+        // IAM roles from SSM Parameter Store at runtime.
+        // =================================================================
+        const remediateNodeBootstrapFn = new lambdaNode.NodejsFunction(this, 'RemediateNodeBootstrapFunction', {
+            functionName: `${namePrefix}-tool-remediate-bootstrap`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'tools', 'remediate-node-bootstrap', 'index.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.seconds(30),
+            logGroup: new logs.LogGroup(this, 'RemediateNodeBootstrapLogGroup', {
+                logGroupName: `/aws/lambda/${namePrefix}-tool-remediate-bootstrap`,
+                retention: props.logRetention,
+                removalPolicy: props.removalPolicy,
+            }),
+            tracing: lambda.Tracing.ACTIVE,
+            description: `MCP tool: trigger SSM Automation to remediate failed node bootstrap for ${namePrefix}`,
+            environment: {
+                SSM_PREFIX: '/k8s/development',
+            },
+            bundling: {
+                minify: true,
+                sourceMap: true,
+                externalModules: ['@aws-sdk/*'],
+            },
+        });
+
+        // Grant SSM Automation execution + parameter resolution
+        remediateNodeBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'StartSsmAutomation',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:StartAutomationExecution',
+                'ssm:GetAutomationExecution',
+            ],
+            resources: ['*'],
+        }));
+
+        remediateNodeBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'ResolveSsmParameters',
+            effect: iam.Effect.ALLOW,
+            actions: ['ssm:GetParameter'],
+            resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/k8s/*`],
+        }));
+
+        // Grant IAM PassRole so SSM Automation can assume the automation role
+        remediateNodeBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'PassAutomationRole',
+            effect: iam.Effect.ALLOW,
+            actions: ['iam:PassRole'],
+            resources: [`arn:aws:iam::${this.account}:role/*ssm-automation*`],
         }));
 
         // =================================================================
@@ -343,37 +408,6 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             }]),
         });
 
-        this.gateway.addLambdaTarget('EbsDetachTarget', {
-            gatewayTargetName: 'ebs-detach',
-            description: 'Detach EBS volumes from a terminating EC2 instance',
-            lambdaFunction: ebsDetachFn,
-            toolSchema: ToolSchema.fromInline([{
-                name: 'ebs_detach',
-                description: 'Detach tagged EBS volumes from a terminating or unhealthy EC2 instance. Completes the ASG lifecycle action after detachment.',
-                inputSchema: {
-                    type: SchemaDefinitionType.OBJECT,
-                    properties: {
-                        EC2InstanceId: {
-                            type: SchemaDefinitionType.STRING,
-                            description: 'The EC2 instance ID to detach volumes from',
-                        },
-                        AutoScalingGroupName: {
-                            type: SchemaDefinitionType.STRING,
-                            description: 'The Auto Scaling group name',
-                        },
-                        LifecycleHookName: {
-                            type: SchemaDefinitionType.STRING,
-                            description: 'The lifecycle hook name',
-                        },
-                        LifecycleActionToken: {
-                            type: SchemaDefinitionType.STRING,
-                            description: 'The lifecycle action token',
-                        },
-                    },
-                    required: ['EC2InstanceId'],
-                },
-            }]),
-        });
 
         this.gateway.addLambdaTarget('CheckNodeHealthTarget', {
             gatewayTargetName: 'check-node-health',
@@ -447,6 +481,74 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             }]),
         });
 
+        this.gateway.addLambdaTarget('GetNodeDiagnosticTarget', {
+            gatewayTargetName: 'get-node-diagnostic-json',
+            description: 'Fetch bootstrap diagnostic run_summary.json from a Kubernetes node',
+            lambdaFunction: getNodeDiagnosticFn,
+            toolSchema: ToolSchema.fromInline([{
+                name: 'get_node_diagnostic_json',
+                description: 'Fetch the machine-readable run_summary.json bootstrap diagnostic file from a Kubernetes node via SSM. Returns the overall bootstrap status, failure classification code, and per-step timing and errors.',
+                inputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        instanceId: {
+                            type: SchemaDefinitionType.STRING,
+                            description: 'EC2 instance ID of the node to diagnose',
+                        },
+                    },
+                    required: ['instanceId'],
+                },
+                outputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        instanceId: { type: SchemaDefinitionType.STRING, description: 'Target instance ID' },
+                        found: { type: SchemaDefinitionType.BOOLEAN, description: 'Whether run_summary.json exists on the node' },
+                        failureCode: { type: SchemaDefinitionType.STRING, description: 'Machine-readable failure classification (e.g. AMI_MISMATCH, KUBEADM_FAIL)' },
+                        failedSteps: {
+                            type: SchemaDefinitionType.ARRAY,
+                            description: 'Names of bootstrap steps that failed',
+                            items: { type: SchemaDefinitionType.STRING },
+                        },
+                        summary: { type: SchemaDefinitionType.OBJECT, description: 'Full parsed run_summary.json content' },
+                    },
+                },
+            }]),
+        });
+
+        this.gateway.addLambdaTarget('RemediateNodeBootstrapTarget', {
+            gatewayTargetName: 'remediate-node-bootstrap',
+            description: 'Trigger SSM Automation to re-bootstrap a failed Kubernetes node',
+            lambdaFunction: remediateNodeBootstrapFn,
+            toolSchema: ToolSchema.fromInline([{
+                name: 'remediate_node_bootstrap',
+                description: 'Trigger an SSM Automation Document to re-run the full bootstrap sequence on a failed Kubernetes node. Resolves the correct SSM Document name (control-plane or worker) and IAM role from Parameter Store. Returns the automation execution ID for tracking.',
+                inputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        instanceId: {
+                            type: SchemaDefinitionType.STRING,
+                            description: 'EC2 instance ID of the node to remediate',
+                        },
+                        role: {
+                            type: SchemaDefinitionType.STRING,
+                            description: 'Node role: "control-plane" or "worker"',
+                        },
+                    },
+                    required: ['instanceId', 'role'],
+                },
+                outputSchema: {
+                    type: SchemaDefinitionType.OBJECT,
+                    properties: {
+                        instanceId: { type: SchemaDefinitionType.STRING, description: 'Target instance ID' },
+                        role: { type: SchemaDefinitionType.STRING, description: 'Node role used for remediation' },
+                        documentName: { type: SchemaDefinitionType.STRING, description: 'SSM Automation Document executed' },
+                        executionId: { type: SchemaDefinitionType.STRING, description: 'SSM Automation execution ID' },
+                        status: { type: SchemaDefinitionType.STRING, description: 'triggered or error' },
+                    },
+                },
+            }]),
+        });
+
         // =================================================================
         // CDK-Nag Suppressions
         // =================================================================
@@ -480,17 +582,6 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             true,
         );
 
-        NagSuppressions.addResourceSuppressions(
-            ebsDetachFn,
-            [{
-                id: 'AwsSolutions-IAM5',
-                reason: 'EC2 DetachVolume and DescribeVolumes require wildcard — volumes and instances are dynamic',
-            }, {
-                id: 'AwsSolutions-L1',
-                reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
-            }],
-            true,
-        );
 
         NagSuppressions.addResourceSuppressions(
             checkNodeHealthFn,
@@ -515,6 +606,51 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             }],
             true,
         );
+
+        NagSuppressions.addResourceSuppressions(
+            getNodeDiagnosticFn,
+            [{
+                id: 'AwsSolutions-IAM5',
+                reason: 'SSM SendCommand requires wildcard — instance IDs are dynamic (resolved at runtime)',
+            }, {
+                id: 'AwsSolutions-L1',
+                reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
+            }],
+            true,
+        );
+
+        NagSuppressions.addResourceSuppressions(
+            remediateNodeBootstrapFn,
+            [{
+                id: 'AwsSolutions-IAM5',
+                reason: 'SSM StartAutomationExecution requires wildcard — document names are resolved dynamically from Parameter Store',
+            }, {
+                id: 'AwsSolutions-L1',
+                reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
+            }],
+            true,
+        );
+
+        // =================================================================
+        // Application Inference Profile — FinOps Cost Attribution
+        //
+        // Creates a tagged profile for the Self-Healing Agent to enable
+        // per-pipeline Bedrock billing in AWS Cost Explorer.
+        // =================================================================
+        const agentProfile = new ApplicationInferenceProfile(this, 'AgentSonnetProfile', {
+            profileName: `${namePrefix}-agent-sonnet`,
+            modelSourceArn: props.sonnetProfileSourceArn,
+            description: 'Self healing agent Sonnet 4.6',
+            tags: [
+                { key: 'project', value: 'self-healing' },
+                { key: 'cost-centre', value: 'platform' },
+                { key: 'component', value: 'compute' },
+                { key: 'environment', value: props.environmentName },
+                { key: 'owner', value: 'nelson-l' },
+                { key: 'managed-by', value: 'cdk' },
+            ],
+        });
+        this.agentProfileArn = agentProfile.profileArn;
 
         // =================================================================
         // SSM Parameter Exports
@@ -552,6 +688,6 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         });
 
         // Suppress log group output for gateway
-        void gatewayLogGroup;
+        // CloudWatch log group is automatically created on first invocation
     }
 }

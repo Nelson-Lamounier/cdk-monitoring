@@ -13,6 +13,7 @@ Steps (in order):
     3. install_cw_agent     — CloudWatch Agent for log streaming
     4. associate_eip        — Associate Elastic IP (app-worker only)
     5. clean_stale_pvs      — Remove stale PVs/PVCs from dead nodes (mon-worker only)
+    6. verify_membership    — Verify cluster registration and correct labels
 
 Idempotent: each step uses marker files or existence checks to skip
 if already completed. Safe to re-run on instance replacement.
@@ -29,6 +30,7 @@ Usage:
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -51,6 +53,7 @@ from common import (
     ssm_get,
     step_install_cloudwatch_agent,
     step_validate_ami,
+    validate_kubeadm_token,
 )
 from common import (
     SSM_PREFIX as DEFAULT_SSM_PREFIX,
@@ -66,6 +69,8 @@ NODE_LABEL = os.environ.get("NODE_LABEL", "role=worker")
 JOIN_MAX_RETRIES = int(os.environ.get("JOIN_MAX_RETRIES", "10"))
 JOIN_RETRY_INTERVAL = int(os.environ.get("JOIN_RETRY_INTERVAL", "30"))
 CP_MAX_WAIT = 300  # seconds to wait for control plane endpoint
+API_REACHABLE_TIMEOUT = 300  # seconds to wait for TCP connectivity
+API_REACHABLE_POLL_INTERVAL = 10  # seconds between TCP probes
 
 KUBELET_CONF = "/etc/kubernetes/kubelet.conf"
 
@@ -185,6 +190,88 @@ def _resolve_control_plane_endpoint() -> str:
     )
 
 
+def _parse_host_port(endpoint: str) -> tuple[str, str]:
+    """Split an endpoint string into (host, port).
+
+    Args:
+        endpoint: Endpoint in ``host:port`` format.
+
+    Returns:
+        Tuple of (host, port). Defaults port to ``6443`` if omitted.
+    """
+    if ":" in endpoint:
+        host, port = endpoint.rsplit(":", 1)
+        return host, port
+    return endpoint, "6443"
+
+
+def _tcp_probe(host: str, port: str) -> bool:
+    """Test TCP connectivity to a host:port using Python's socket module.
+
+    Uses ``socket.create_connection()`` with a 5-second timeout to attempt
+    a zero-I/O TCP connection. This is a lightweight probe that does not
+    perform TLS and has zero external binary dependencies.
+
+    Args:
+        host: Target hostname or IP address.
+        port: Target port number (string — converted internally).
+
+    Returns:
+        ``True`` if the TCP connection succeeded, ``False`` otherwise.
+    """
+    try:
+        conn = socket.create_connection((host, int(port)), timeout=5)
+        conn.close()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _wait_for_api_server_reachable(endpoint: str) -> None:
+    """Block until the API server accepts TCP connections.
+
+    Polls the API server endpoint with Python socket TCP probes every
+    ``API_REACHABLE_POLL_INTERVAL`` seconds until a connection succeeds
+    or ``API_REACHABLE_TIMEOUT`` is exceeded.
+
+    This gate prevents burning expensive ``kubeadm join`` retry budget
+    against an unreachable API server (e.g. during CP initialisation or
+    Route 53 propagation).
+
+    Args:
+        endpoint: API server endpoint in ``host:port`` format.
+
+    Raises:
+        RuntimeError: If the API server is not reachable within the timeout.
+    """
+    host, port = _parse_host_port(endpoint)
+    log_info(
+        f"Waiting for API server TCP connectivity: {host}:{port} "
+        f"(timeout={API_REACHABLE_TIMEOUT}s)"
+    )
+
+    waited = 0
+    while waited < API_REACHABLE_TIMEOUT:
+        if _tcp_probe(host, port):
+            log_info(
+                f"✓ API server is reachable at {host}:{port} (waited {waited}s)"
+            )
+            return
+
+        log_info(
+            f"API server not yet reachable ({waited}s / {API_REACHABLE_TIMEOUT}s) "
+            f"— retrying in {API_REACHABLE_POLL_INTERVAL}s"
+        )
+        time.sleep(API_REACHABLE_POLL_INTERVAL)
+        waited += API_REACHABLE_POLL_INTERVAL
+
+    raise RuntimeError(
+        f"API server at {host}:{port} not reachable after {API_REACHABLE_TIMEOUT}s. "
+        f"Check that the control plane is running, the DNS record has propagated, "
+        f"and security groups allow TCP {port} from this worker node."
+    )
+
+
 def _join_cluster(endpoint: str) -> None:
     """Join the cluster with retry logic."""
     log_info(f"Joining kubeadm cluster as worker node (label={NODE_LABEL})")
@@ -218,13 +305,18 @@ def _join_cluster(endpoint: str) -> None:
     for attempt in range(1, JOIN_MAX_RETRIES + 1):
         log_info(f"=== kubeadm join attempt {attempt}/{JOIN_MAX_RETRIES} ===")
 
-        join_token = ssm_get(token_ssm, decrypt=True)
-        if not join_token:
+        raw_token = ssm_get(token_ssm, decrypt=True)
+        if not raw_token:
             log_warn(f"Join token not available (attempt {attempt}/{JOIN_MAX_RETRIES})")
             if attempt < JOIN_MAX_RETRIES:
                 time.sleep(JOIN_RETRY_INTERVAL)
                 continue
             raise RuntimeError(f"Join token never became available after {JOIN_MAX_RETRIES} attempts")
+
+        # Validate and sanitise the token — guards against backslash
+        # injection from SSM SecureString shell encoding
+        join_token = validate_kubeadm_token(raw_token, source="SSM")
+        log_info(f"Join token validated (length={len(join_token)})")
 
         ca_hash = ssm_get(ca_hash_ssm)
         if not ca_hash:
@@ -233,6 +325,15 @@ def _join_cluster(endpoint: str) -> None:
                 time.sleep(JOIN_RETRY_INTERVAL)
                 continue
             raise RuntimeError(f"CA hash never became available after {JOIN_MAX_RETRIES} attempts")
+
+        # Pre-retry TCP diagnostic — log whether the API server is
+        # reachable before each attempt so CloudWatch captures the cause
+        host, port = _parse_host_port(endpoint)
+        reachable = _tcp_probe(host, port)
+        log_info(
+            f"Pre-join TCP probe: {host}:{port} → "
+            f"{'reachable' if reachable else 'UNREACHABLE'}"
+        )
 
         log_info("Running kubeadm join...")
         try:
@@ -307,6 +408,7 @@ def step_join_cluster() -> None:
             return
 
         endpoint = _resolve_control_plane_endpoint()
+        _wait_for_api_server_reachable(endpoint)
         _join_cluster(endpoint)
         _wait_for_kubelet()
 
@@ -341,7 +443,9 @@ def step_join_cluster() -> None:
 # =============================================================================
 
 EIP_SSM_PATH = f"{SSM_PREFIX}/elastic-ip-allocation-id"
-APP_WORKER_LABEL = "role=application"
+# The CDK config sets NODE_LABEL='workload=frontend,environment=<env>'.
+# Use a prefix check since the label string is compound (comma-separated).
+APP_WORKER_LABEL_PREFIX = "workload=frontend"
 
 
 def step_associate_eip() -> None:
@@ -350,11 +454,11 @@ def step_associate_eip() -> None:
         if step.skipped:
             return
 
-        # Gate: only app-worker nodes get the EIP
-        if NODE_LABEL != APP_WORKER_LABEL:
+        # Gate: only app-worker (frontend) nodes get the EIP
+        if not NODE_LABEL.startswith(APP_WORKER_LABEL_PREFIX):
             log_info(
                 f"Skipping EIP association — NODE_LABEL={NODE_LABEL} "
-                f"(only {APP_WORKER_LABEL} receives the EIP)"
+                f"(only {APP_WORKER_LABEL_PREFIX}* receives the EIP)"
             )
             step.details["skipped_reason"] = f"not an app-worker (label={NODE_LABEL})"
             return
@@ -623,6 +727,7 @@ def main() -> None:
         step_install_cloudwatch_agent,
         step_associate_eip,
         step_clean_stale_pvs,
+        # step_verify_cluster_membership — only in wk/ refactored package
     ]
 
     log_info(f"Worker node bootstrap starting ({len(steps)} steps)")
