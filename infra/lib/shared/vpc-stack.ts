@@ -54,6 +54,10 @@ export interface SharedVpcStackProps extends cdk.StackProps {
     readonly ecrRepositoryName?: string;
     /** Enable ECR repository creation @default true */
     readonly createEcrRepository?: boolean;
+    /** Admin ECR repository name @default 'start-admin' */
+    readonly adminEcrRepositoryName?: string;
+    /** Enable admin ECR repository creation @default true */
+    readonly createAdminEcrRepository?: boolean;
 }
 
 
@@ -80,8 +84,10 @@ export class SharedVpcStack extends cdk.Stack {
     public readonly s3Endpoint?: ec2.GatewayVpcEndpoint;
     /** DynamoDB Gateway Endpoint */
     public readonly dynamoDbEndpoint?: ec2.GatewayVpcEndpoint;
-    /** ECR Repository for container images */
+    /** ECR Repository for container images (nextjs-frontend) */
     public readonly ecrRepository?: ecr.Repository;
+    /** ECR Repository for admin container images (start-admin) */
+    public readonly adminEcrRepository?: ecr.Repository;
 
     constructor(scope: Construct, id: string, props: SharedVpcStackProps) {
         super(scope, id, props);
@@ -183,6 +189,73 @@ export class SharedVpcStack extends cdk.Stack {
             new cdk.CfnOutput(this, 'DockerLoginCommand', {
                 value: `aws ecr get-login-password --region ${this.region} | docker login --username AWS --password-stdin ${this.account}.dkr.ecr.${this.region}.amazonaws.com`,
                 description: 'Docker login command for ECR',
+            });
+        }
+
+        // =====================================================================
+        // ECR Repository (Admin) — Separate container registry for start-admin
+        // Uses the same lifecycle rules and encryption as the frontend repo.
+        // SSM params stored under /shared/ecr-admin/{env}/ for CI discovery.
+        // =====================================================================
+        if (props.createAdminEcrRepository !== false) {
+            const adminRepoName = props.adminEcrRepositoryName ?? 'start-admin';
+            const isProduction = props.targetEnvironment === Environment.PRODUCTION;
+
+            this.adminEcrRepository = new ecr.Repository(this, 'AdminEcrRepository', {
+                repositoryName: adminRepoName,
+                imageScanOnPush: true,
+                imageTagMutability: ecr.TagMutability.MUTABLE,
+                encryption: ecr.RepositoryEncryption.AES_256,
+                removalPolicy: isProduction ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+                lifecycleRules: [
+                    {
+                        rulePriority: 1,
+                        description: 'Remove untagged images after 30 days',
+                        tagStatus: ecr.TagStatus.UNTAGGED,
+                        maxImageAge: cdk.Duration.days(30),
+                    },
+                    {
+                        rulePriority: 2,
+                        description: 'Keep only 50 most recent tagged images',
+                        tagStatus: ecr.TagStatus.ANY,
+                        maxImageCount: 50,
+                    },
+                ],
+            });
+
+            // SSM Parameters for admin ECR discovery
+            const adminEcrSsmPrefix = `/shared/ecr-admin/${props.targetEnvironment}`;
+
+            new ssm.StringParameter(this, 'SsmAdminEcrRepositoryUri', {
+                parameterName: `${adminEcrSsmPrefix}/repository-uri`,
+                stringValue: this.adminEcrRepository.repositoryUri,
+                description: `Admin ECR repository URI for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmAdminEcrRepositoryArn', {
+                parameterName: `${adminEcrSsmPrefix}/repository-arn`,
+                stringValue: this.adminEcrRepository.repositoryArn,
+                description: `Admin ECR repository ARN for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmAdminEcrRepositoryName', {
+                parameterName: `${adminEcrSsmPrefix}/repository-name`,
+                stringValue: this.adminEcrRepository.repositoryName,
+                description: `Admin ECR repository name for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            // Admin ECR Outputs
+            new cdk.CfnOutput(this, 'AdminEcrRepositoryUri', {
+                value: this.adminEcrRepository.repositoryUri,
+                description: 'Admin ECR Repository URI for docker push/pull (start-admin)',
+            });
+
+            new cdk.CfnOutput(this, 'AdminEcrRepositoryArn', {
+                value: this.adminEcrRepository.repositoryArn,
+                description: 'Admin ECR Repository ARN (start-admin)',
             });
         }
 
