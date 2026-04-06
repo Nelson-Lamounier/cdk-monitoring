@@ -101,22 +101,26 @@ function buildQaMessage(
 
     // Include Research Agent's technical facts for cross-referencing
     if (technicalFacts.length > 0) {
-        parts.push(``);
-        parts.push(`## Technical Facts from Research Agent`);
-        parts.push(`Cross-reference the article content against these verified facts:`);
+        parts.push(
+            ``,
+            `## Technical Facts from Research Agent`,
+            `Cross-reference the article content against these verified facts:`
+        );
         for (const fact of technicalFacts) {
             parts.push(`- ${fact}`);
         }
     }
 
-    parts.push(``);
-    parts.push(`## Full Article Content`);
-    parts.push(``);
-    parts.push(`--- BEGIN ARTICLE ---`);
-    parts.push(writer.content);
-    parts.push(`--- END ARTICLE ---`);
-    parts.push(``);
-    parts.push(`Perform your quality review and return the JSON result object.`);
+    parts.push(
+        ``,
+        `## Full Article Content`,
+        ``,
+        `--- BEGIN ARTICLE ---`,
+        writer.content,
+        `--- END ARTICLE ---`,
+        ``,
+        `Perform your quality review and return the JSON result object.`
+    );
 
     return parts.join('\n');
 }
