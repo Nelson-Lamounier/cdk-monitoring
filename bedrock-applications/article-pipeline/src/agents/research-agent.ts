@@ -367,23 +367,29 @@ function buildResearchMessage(
     ];
 
     if (kbPassages.length > 0) {
-        parts.push(`## Knowledge Base Context`);
-        parts.push(`The following ${kbPassages.length} passages were retrieved from the project's infrastructure documentation:`);
-        parts.push(``);
+        parts.push(
+            `## Knowledge Base Context`,
+            `The following ${kbPassages.length} passages were retrieved from the project's infrastructure documentation:`,
+            ``
+        );
 
         for (const [i, passage] of kbPassages.entries()) {
-            parts.push(`### Passage ${i + 1} (score: ${passage.score.toFixed(3)}, source: ${passage.sourceUri})`);
-            parts.push(passage.text);
-            parts.push(``);
+            parts.push(
+                `### Passage ${i + 1} (score: ${passage.score.toFixed(3)}, source: ${passage.sourceUri})`,
+                passage.text,
+                ``
+            );
         }
     }
 
-    parts.push(`## Draft Content`);
-    parts.push(`--- BEGIN DRAFT ---`);
-    parts.push(draftContent);
-    parts.push(`--- END DRAFT ---`);
-    parts.push(``);
-    parts.push(`Analyse this draft and return the JSON research brief.`);
+    parts.push(
+        `## Draft Content`,
+        `--- BEGIN DRAFT ---`,
+        draftContent,
+        `--- END DRAFT ---`,
+        ``,
+        `Analyse this draft and return the JSON research brief.`
+    );
 
     return parts.join('\n');
 }
