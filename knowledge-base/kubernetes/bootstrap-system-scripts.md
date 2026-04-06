@@ -12,9 +12,12 @@ tags:
   - shell
   - ssm
   - deploy-helpers
+  - certificate
+  - troubleshooting
 related_docs:
   - kubernetes/bootstrap-pipeline.md
   - kubernetes/adrs/argocd-over-flux.md
+  - kubernetes/runbooks/instance-terminated.md
   - operations/ci-cd-implementation.md
 last_updated: "2026-04-06"
 author: Nelson Lamounier
@@ -554,7 +557,54 @@ Output is captured to `logs/deploy-<app>-<timestamp>.log`.
 
 ---
 
-*Updated from source file analysis — 2026-03-25.*
+*Updated from source file analysis — 2026-04-06.*
+
+## Local Control Plane Troubleshooter
+
+A comprehensive TypeScript diagnostic script is available at `scripts/local/control-plane-troubleshoot.ts` for investigating and recovering from control plane bootstrap failures after ASG replacement. It runs locally via `npx tsx` and executes remote diagnostics on the EC2 instance via SSM RunCommand.
+
+### Diagnostic Phases
+
+| Phase | Coverage |
+|-------|----------|
+| **1. Infrastructure** | SSM parameters, EC2 instance state, EBS volumes, ASG health |
+| **2. Automation** | SSM Automation execution history, step-level failure analysis |
+| **3. DR & Certs** | Certificate SANs vs current IP, PKI restore state, bootstrap run_summary.json, kubeadm-config podSubnet |
+| **4. Kubernetes** | API /healthz, node registration, Calico/Tigera, kubelet TLS errors, static pods, Helm releases |
+| **5. Repair** | Optional `--fix`: cert regeneration, podSubnet patch, operator restart, taint removal |
+
+### Usage
+
+```bash
+# Diagnose only
+npx tsx scripts/local/control-plane-troubleshoot.ts --profile dev-account
+
+# Diagnose and auto-fix
+npx tsx scripts/local/control-plane-troubleshoot.ts --profile dev-account --fix
+
+# Skip K8s checks (instance unreachable)
+npx tsx scripts/local/control-plane-troubleshoot.ts --profile dev-account --skip-k8s
+```
+
+All output is file-logged to `scripts/local/diagnostics/.troubleshoot-logs/` for post-mortem analysis.
+
+## Troubleshooting
+
+### API Server Certificate SAN Mismatch After DR Restore
+
+**What happened:** After ASG replacement, kubelet failed to register with `x509: certificate is valid for <old-IP>, not <new-IP>`. The node remained in `NotReady` state.
+
+**Why:** `_reconstruct_control_plane()` restored `/etc/kubernetes/pki/apiserver.crt` from S3 backup without validating that the SANs matched the new instance's private IP.
+
+**Fix:** Added SAN comparison logic (`openssl x509 -noout -text` + IP extraction) in `_reconstruct_control_plane()`. If the current IP is missing, `_renew_apiserver_cert()` is called to regenerate the certificate.
+
+### Missing podSubnet Causes Calico Degraded State
+
+**What happened:** After DR restore, tigera-operator entered `Degraded` status: `the provided networking.podSubnet field is empty`.
+
+**Why:** `kubeadm init phase upload-config kubeadm` was called without `--pod-network-cidr`, so the `kubeadm-config` ConfigMap lacked the `podSubnet` field.
+
+**Fix:** Added `--pod-network-cidr={POD_CIDR}` flag to the upload-config command in `_reconstruct_control_plane()`.
 
 ## Transferable Skills Demonstrated
 
@@ -566,8 +616,8 @@ Output is captured to `logs/deploy-<app>-<timestamp>.log`.
 
 ## Summary
 
-This document provides an implementation walkthrough of the day-1 bootstrap system scripts in `k8s-bootstrap/system/`: ArgoCD vendored manifest bootstrap, TLS certificate persistence via SSM SecureString, automated hourly etcd snapshots to S3, the boot/ modular step architecture (10 CP + 3 worker modules), and the deploy_helpers framework for application-level K8s secret deployment.
+This document provides an implementation walkthrough of the day-1 bootstrap system scripts in `k8s-bootstrap/system/`: ArgoCD vendored manifest bootstrap, TLS certificate persistence via SSM SecureString, automated hourly etcd snapshots to S3, the boot/ modular step architecture (10 CP + 3 worker modules), the deploy_helpers framework for application-level K8s secret deployment, and the local TypeScript control plane troubleshooter for diagnosing/repairing ASG replacement failures.
 
 ## Keywords
 
-bootstrap, argocd, tls, etcd, disaster-recovery, python, shell, ssm, deploy-helpers, persist-tls-cert, systemd, pytest
+bootstrap, argocd, tls, etcd, disaster-recovery, python, shell, ssm, deploy-helpers, persist-tls-cert, systemd, pytest, certificate, x509, san, calico, podsubnet, troubleshoot, control-plane-troubleshoot

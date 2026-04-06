@@ -10,18 +10,23 @@ tags:
   - step-functions
   - ssm-automation
   - eip-failover
+  - tls
+  - certificate
+  - calico
+  - kubeadm
 related_docs:
   - infrastructure/adrs/step-functions-over-lambda-orchestration.md
   - kubernetes/bootstrap-pipeline.md
+  - kubernetes/bootstrap-system-scripts.md
   - kubernetes/adrs/self-managed-k8s-vs-eks.md
-last_updated: "2026-03-22"
+last_updated: "2026-04-06"
 author: Nelson Lamounier
 status: accepted
 ---
 
 # Runbook: EC2 Instance Terminated Unexpectedly
 
-**Last Updated:** 2026-03-22
+**Last Updated:** 2026-04-06
 **Operator:** Solo — infrastructure owner
 
 ## Trigger
@@ -63,6 +68,20 @@ After bootstrap, the SSM State Manager association (`infra/lib/constructs/ssm/no
 - **Kernel modules:** `overlay`, `br_netfilter`
 - **Sysctl settings:** `net.bridge.bridge-nf-call-iptables`, `net.bridge.bridge-nf-call-ip6tables`, `net.ipv4.ip_forward`
 - **Services:** `containerd`, `kubelet`
+
+### 5. Local Diagnostic / Recovery Script
+
+If the automatic recovery fails, use the TypeScript control plane troubleshooter to diagnose and optionally repair the instance from your local machine:
+
+```bash
+# Diagnose only
+npx tsx scripts/local/control-plane-troubleshoot.ts --profile dev-account
+
+# Diagnose and auto-fix (cert regen, podSubnet patch, operator restart)
+npx tsx scripts/local/control-plane-troubleshoot.ts --profile dev-account --fix
+```
+
+The script runs 5 diagnostic phases (infrastructure → automation → DR/certs → Kubernetes → repair) via SSM and produces a colour-coded report with recommendations. All output is file-logged to `scripts/local/diagnostics/.troubleshoot-logs/`.
 
 ## Manual Verification
 
@@ -129,6 +148,22 @@ After automatic recovery completes (typically 8–12 minutes):
 
 **Fix:** The logic was refactored to check for the existence of `kube-apiserver.yaml`. If missing (indicating a fresh root FS from an ASG replacement), it triggers a zero-cert-regeneration reconstruction flow `_reconstruct_control_plane()`. This flow executes targeted `kubeadm init phase` subcommands (kubeconfig, control-plane, etcd, kubelet-start) to reconstruct the control plane using the mathematically valid PKI recovered from S3, without hitting certificate limits. It also includes an automated RBAC repair for the `kubeadm:cluster-admins` cluster role binding if access is lost after reconstruction.
 
+### API Server Certificate SAN Mismatch After ASG Replacement
+
+**What happened:** After ASG replacement, kubelet logs showed `tls: failed to verify certificate: x509: certificate is valid for 10.96.0.1, 10.0.0.104, not 10.0.0.215`. The API server was running, but no nodes could register. All pods were stuck in `Pending`.
+
+**Why:** The DR restore flow (`_reconstruct_control_plane()`) restored `/etc/kubernetes/pki/apiserver.crt` from the S3 backup. This certificate contained the **previous** instance's private IP in its Subject Alternative Names (SANs). The new instance had a different private IP (assigned by the VPC DHCP), so kubelet's TLS verification against the raw IP failed. The reconstruction code did not compare the cert SANs against the current instance's IP.
+
+**Fix:** Added a SAN validation step in `_reconstruct_control_plane()` (line ~496 of `control_plane.py`). After restoring PKI from backup, the code now reads the certificate SANs using `openssl x509 -noout -text`, extracts IP addresses, and compares them against the current instance's private IP from IMDS. If the IP is missing from the SANs, it calls `_renew_apiserver_cert()` to regenerate the certificate with the correct IPs. A safety-net check was also added to `_handle_second_run()` for edge cases where the API server may be running with an invalid certificate.
+
+### Missing podSubnet in kubeadm-config Causes Calico Degraded State
+
+**What happened:** After ASG replacement, Calico pods remained in `0/1 Ready` state and the tigera-operator entered a `Degraded` status with the error: `the provided networking.podSubnet field is empty`.
+
+**Why:** The `_reconstruct_control_plane()` function called `kubeadm init phase upload-config kubeadm` without the `--pod-network-cidr` flag. This meant the `kubeadm-config` ConfigMap in `kube-system` was recreated without the `networking.podSubnet` field. The Tigera operator reads this field to determine the IP pool for pod networking. Without it, the operator cannot configure Calico's IPAM, leaving the CNI uninitialised and the node in `NotReady` state.
+
+**Fix:** Added `--pod-network-cidr={POD_CIDR}` (default `192.168.0.0/16`) to the `kubeadm init phase upload-config kubeadm` command in `_reconstruct_control_plane()` (line ~336 of `control_plane.py`). This ensures the ConfigMap always includes the `podSubnet` field, allowing the Tigera operator to initialise Calico correctly.
+
 ## Transferable Skills Demonstrated
 
 - **Auto-healing infrastructure** — designing self-recovery workflows with Step Functions and SSM
@@ -142,4 +177,4 @@ This runbook documents the automatic self-healing response when a Kubernetes EC2
 
 ## Keywords
 
-ec2, asg, bootstrap, self-healing, step-functions, ssm-automation, eip-failover, kubeadm, recovery, eventbridge
+ec2, asg, bootstrap, self-healing, step-functions, ssm-automation, eip-failover, kubeadm, recovery, eventbridge, tls, certificate, x509, san, calico, tigera, podsubnet, control-plane-troubleshoot

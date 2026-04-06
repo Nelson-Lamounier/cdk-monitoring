@@ -291,5 +291,9 @@ mappings:
       - "infra/lib/stacks/self-healing/**"
       - "infra/lib/stacks/kubernetes/ssm-automation-stack.ts"
       - "infra/lib/stacks/kubernetes/golden-ami-stack.ts"
+      - "kubernetes-app/k8s-bootstrap/boot/steps/control_plane.py"
+      - "scripts/local/control-plane-troubleshoot.ts"
+      - "scripts/fix-control-plane-cert.sh"
     kb_docs:
       - "kubernetes/runbooks/instance-terminated.md"
+      - "kubernetes/bootstrap-system-scripts.md"

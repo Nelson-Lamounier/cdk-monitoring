@@ -3,6 +3,6 @@
     "doc_type": "runbook",
     "domain": "kubernetes",
     "title": "EC2 Instance Terminated Unexpectedly",
-    "tags": "ec2, asg, bootstrap, self-healing, step-functions, ssm-automation, eip-failover"
+    "tags": "ec2, asg, bootstrap, self-healing, step-functions, ssm-automation, eip-failover, tls, certificate, calico, kubeadm, x509, san, podsubnet"
   }
 }
