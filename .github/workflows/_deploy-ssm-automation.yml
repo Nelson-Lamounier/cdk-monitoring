@@ -16,8 +16,9 @@
 #       AND SSM Automation (documents + IAM role)
 #
 #   Pipeline 2: _deploy-ssm-automation.yml (this file)
-#     - Phase 1: Writes admin IPs to SSM Parameter Store
-#     - Phase 2: Syncs bootstrap + deploy scripts to S3
+#     - Phase 1:  Writes admin IPs to SSM Parameter Store
+#     - Phase 1b: Seeds CloudFront origin secret (idempotent)
+#     - Phase 2:  Syncs bootstrap + deploy scripts to S3
 #     - Phase 3: Verifies S3 artefacts landed (file counts per prefix)
 #     - Phase 4: Triggers SSM Automation (control-plane → workers)
 #     - Phase 5: Verifies SSM Automation execution targeting + health
@@ -168,6 +169,60 @@ jobs:
           else
             echo "[SKIP] ALLOW_IPV6 not set — skipping"
           fi
+
+      # -----------------------------------------------------------------------
+      # Phase 1b — Seed CloudFront Origin Secret
+      #
+      # Ensures /k8s/{env}/cloudfront-origin-secret exists in eu-west-1 SSM
+      # before the EdgeStack AwsCustomResource reads it.  The edge stack
+      # deploys in us-east-1 and calls SSM cross-region; if the parameter is
+      # absent the Lambda receives ParameterNotFound which CloudFormation
+      # surfaces as the opaque "UnknownError" on ReadCloudfrontOriginSecret.
+      #
+      # This step is idempotent:
+      #   - If the parameter already exists → no-op (secret preserved).
+      #   - If missing → generates openssl rand -hex 32 and creates it.
+      #
+      # ── Secret Rotation (zero-downtime) ──────────────────────────────
+      # To rotate without dropping traffic:
+      #   1. Update SSM (--overwrite) with new value, re-run this pipeline.
+      #      deploy.py Step 5 reads the new value and patches the ArgoCD
+      #      Application's cloudfront.originSecret helm parameter.
+      #   2. While CloudFront propagates (~15 min), temporarily set
+      #      cloudfront.originSecret to "OLD_HEX|NEW_HEX" so Traefik's
+      #      HeadersRegexp accepts both values.
+      #   3. After propagation, re-run deploy.py to set NEW_HEX only.
+      # -----------------------------------------------------------------------
+      - name: "Phase 1b — Seed CloudFront Origin Secret"
+        run: |
+          SSM_PARAM="/k8s/${{ inputs.cdk-environment }}/cloudfront-origin-secret"
+          REGION="${{ env.AWS_REGION }}"
+
+          EXISTING=$(aws ssm get-parameter \
+            --name "$SSM_PARAM" \
+            --with-decryption \
+            --region "$REGION" \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ]; then
+            echo "[OK] CloudFront origin secret already exists — skipping"
+            exit 0
+          fi
+
+          echo "[INFO] Parameter not found — generating new 32-byte hex secret"
+          SECRET=$(openssl rand -hex 32)
+          echo "::add-mask::$SECRET"
+
+          aws ssm put-parameter \
+            --name "$SSM_PARAM" \
+            --value "$SECRET" \
+            --type SecureString \
+            --region "$REGION"
+
+          echo "[OK] CloudFront origin secret seeded at $SSM_PARAM"
+          echo "     Re-run deploy-edge (deploy-kubernetes pipeline) so"
+          echo "     CloudFront picks up the new header value."
 
       # -----------------------------------------------------------------------
       # Phase 2 — Sync Bootstrap & Deploy Scripts to S3
