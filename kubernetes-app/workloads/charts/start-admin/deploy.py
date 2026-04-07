@@ -307,6 +307,39 @@ def main() -> None:
     # Step 4: Create Kubernetes secrets
     create_admin_k8s_secrets(v1, cfg)
 
+    # Step 5: Inject CloudFront Origin Secret into Helm rendering parameters
+    try:
+        from kubernetes import client
+        cf_secret_path = f"/k8s/{cfg.environment_name}/cloudfront-origin-secret"
+        log_info("Fetching CloudFront origin secret", ssm_path=cf_secret_path)
+        origin_secret = ssm_client.get_parameter(Name=cf_secret_path, WithDecryption=True)["Parameter"]["Value"]
+        
+        custom_api = client.CustomObjectsApi(v1.api_client)
+        patch = {
+            "spec": {
+                "source": {
+                    "helm": {
+                        "parameters": [
+                            {"name": "cloudfront.originSecret", "value": origin_secret, "forceString": True}
+                        ]
+                    }
+                }
+            }
+        }
+        custom_api.patch_namespaced_custom_object(
+            group="argoproj.io",
+            version="v1alpha1",
+            namespace="argocd",
+            plural="applications",
+            name="start-admin",
+            body=patch
+        )
+        log_info("Successfully patched Start-Admin ArgoCD Application with origin secret.")
+    except client_error_cls:
+        log_warn("CloudFront origin secret not found in SSM, skipping injection.")
+    except Exception as e:
+        log_warn("Failed to patch ArgoCD Application with CloudFront Origin Secret", error=str(e))
+
     log_info("Start-Admin secrets deployed successfully")
 
 

@@ -91,6 +91,12 @@ secrets:
   name: start-admin-secrets
 
 # ---------------------------------------------------------------------------
+# CloudFront Security
+# ---------------------------------------------------------------------------
+cloudfront:
+  originSecret: "" # Populated by deploy.py
+
+# ---------------------------------------------------------------------------
 # Resource Quota (namespace-level limits)
 # ---------------------------------------------------------------------------
 # Sized for blue/green: 2x replicas running simultaneously + headroom.

@@ -162,8 +162,7 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
         except client_error_cls:
             log_warn("Bedrock fallback also failed", env_var="DYNAMODB_TABLE_NAME")
 
-    # Override: Assets bucket now points to Bedrock data bucket
-    # TODO: Remove once legacy bucket is decommissioned.
+    # Assets bucket now points to Bedrock data bucket
     bedrock_assets_path = f"/bedrock-{cfg.short_env}/assets-bucket-name"
     try:
         resp = ssm_client.get_parameter(Name=bedrock_assets_path, WithDecryption=True)
@@ -320,6 +319,39 @@ def main() -> None:
 
     # Step 4: Create Kubernetes secrets
     create_nextjs_k8s_secrets(v1, cfg)
+
+    # Step 5: Inject CloudFront Origin Secret into Helm rendering parameters
+    try:
+        from kubernetes import client
+        cf_secret_path = f"/k8s/{cfg.environment_name}/cloudfront-origin-secret"
+        log_info("Fetching CloudFront origin secret", ssm_path=cf_secret_path)
+        origin_secret = ssm_client.get_parameter(Name=cf_secret_path, WithDecryption=True)["Parameter"]["Value"]
+        
+        custom_api = client.CustomObjectsApi(v1.api_client)
+        patch = {
+            "spec": {
+                "source": {
+                    "helm": {
+                        "parameters": [
+                            {"name": "cloudfront.originSecret", "value": origin_secret, "forceString": True}
+                        ]
+                    }
+                }
+            }
+        }
+        custom_api.patch_namespaced_custom_object(
+            group="argoproj.io",
+            version="v1alpha1",
+            namespace="argocd",
+            plural="applications",
+            name="nextjs",
+            body=patch
+        )
+        log_info("Successfully patched ArgoCD nextjs Application with origin secret.")
+    except client_error_cls:
+        log_warn("CloudFront origin secret not found in SSM, skipping injection.")
+    except Exception as e:
+        log_warn("Failed to patch ArgoCD Application with CloudFront Origin Secret", error=str(e))
 
     log_info("Next.js secrets deployed successfully")
 

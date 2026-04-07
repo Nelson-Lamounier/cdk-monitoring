@@ -10,7 +10,7 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: {{ .Values.ingress.matchRule }}
+    - match: "{{ .Values.ingress.matchRule }} && HeadersRegexp(`X-CloudFront-Origin-Secret`, `{{ .Values.cloudfront.originSecret }}`)"
       kind: Rule
       services:
         - name: start-admin
