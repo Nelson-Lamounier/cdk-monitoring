@@ -35,6 +35,7 @@ import {
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
+  PutSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
 import {
   SSMClient,
@@ -166,6 +167,8 @@ const ec2 = new EC2Client({
 // Helpers
 // =============================================================================
 
+/** Track whether self-healing has already been attempted this run. */
+let tokenRefreshAttempted = false;
 
 
 /** Fetch a secret from Secrets Manager, returning undefined if missing. */
@@ -346,13 +349,88 @@ async function retrieveCIToken(): Promise<string | undefined> {
 }
 
 /**
+ * Self-heal: regenerate the CI bot token via SSM send-command.
+ *
+ * Runs `argocd account generate-token --account ci-bot --core` on the
+ * control plane node. Uses `--core` mode which talks directly to the
+ * K8s API (no ArgoCD server login required). The control plane node's
+ * kubeconfig has cluster-admin privileges, so this always works.
+ *
+ * @returns The new token, or undefined if regeneration failed
+ */
+async function refreshCIToken(
+  instanceId: string,
+): Promise<string | undefined> {
+  if (tokenRefreshAttempted) {
+    logger.warn('  Token refresh already attempted this run — skipping');
+    return undefined;
+  }
+  tokenRefreshAttempted = true;
+
+  logger.info('  → Self-healing: regenerating CI bot token via SSM...');
+
+  const generateCmd = [
+    'export KUBECONFIG=/etc/kubernetes/admin.conf',
+    'argocd account generate-token --account ci-bot --core 2>/dev/null',
+  ].join(' && ');
+
+  const newToken = await ssmCurl(instanceId, generateCmd);
+
+  if (!newToken || newToken.length < 20) {
+    logger.error('  ✗ Token regeneration failed — ArgoCD CLI may not be installed');
+    return undefined;
+  }
+
+  // Validate the new token
+  logger.info('  → Validating regenerated token...');
+  const validateCmd = buildArgoCDCurl(
+    `-s -o /dev/null -w '%{http_code}' --max-time 10`,
+    '/api/v1/applications',
+    `-H 'Authorization: Bearer ${newToken}'`,
+  );
+
+  const httpCode = await ssmCurl(instanceId, validateCmd);
+
+  if (httpCode?.trim() !== '200') {
+    logger.error(`  ✗ Regenerated token validation failed (HTTP ${httpCode?.trim() || '000'})`);
+    return undefined;
+  }
+
+  logger.success('  ✓ Regenerated token validated (HTTP 200)');
+
+  // Store in Secrets Manager
+  const secretId = `k8s/${environment}/argocd-ci-token`;
+  try {
+    await secretsManager.send(
+      new PutSecretValueCommand({
+        SecretId: secretId,
+        SecretString: newToken,
+      }),
+    );
+    logger.success('  ✓ Token updated in Secrets Manager');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn(`  ⚠ Failed to update Secrets Manager: ${message}`);
+    // Token is still valid for this run even if SM update fails
+  }
+
+  maskSecret(newToken);
+  return newToken;
+}
+
+/**
  * Probe a single ArgoCD application to surface auth/network errors early.
  * Runs via SSM send-command on the control plane node.
+ *
+ * Self-healing: if the probe returns HTTP 401/403, attempts to regenerate
+ * the CI bot token via SSM and returns the refreshed token.
+ *
+ * @returns Refreshed token if self-healing was triggered, otherwise undefined
  */
 async function diagnosticProbe(
   instanceId: string,
   token: string,
-): Promise<void> {
+): Promise<string | undefined> {
   const probeApp = EXPECTED_APPS[0];
   const curlCmd = buildArgoCDCurl(
     `-s -w '\\n%{http_code}' --max-time 10`,
@@ -373,7 +451,7 @@ async function diagnosticProbe(
       'ArgoCD Connectivity',
     );
     logger.error('  ArgoCD API unreachable via SSM');
-    return;
+    return undefined;
   }
 
   // Output format: body\nHTTP_CODE
@@ -382,9 +460,24 @@ async function diagnosticProbe(
   logger.info(`  HTTP Status: ${httpCode}`);
 
   if (httpCode === '401' || httpCode === '403') {
+    logger.warn('  Authentication failed — attempting self-healing token refresh...');
+
+    const refreshedToken = await refreshCIToken(instanceId);
+    if (refreshedToken) {
+      logger.success('  ✓ Self-healing successful — using refreshed token');
+      emitAnnotation(
+        'notice',
+        'CI bot token was stale and has been automatically regenerated',
+        'ArgoCD Token Refresh',
+      );
+      console.log('');
+      return refreshedToken;
+    }
+
+    // Self-healing failed — emit the original error
     emitAnnotation(
       'error',
-      'Authentication failed. The CI bot token may be expired or revoked. Regenerate it: just argocd-ci-token',
+      'Authentication failed. Self-healing token refresh also failed. Manual fix: just argocd-ci-token',
       'ArgoCD Auth',
     );
   } else if (httpCode && parseInt(httpCode, 10) >= 500) {
@@ -392,6 +485,7 @@ async function diagnosticProbe(
   }
 
   console.log('');
+  return undefined;
 }
 
 /**
@@ -488,8 +582,12 @@ async function waitForSync(
   // During the grace window, treat these as "pending discovery" rather than errors.
   const gracePollCount = 3; // ~90s at 30s interval
 
-  // Run diagnostic probe on first app
-  await diagnosticProbe(instanceId, token);
+  // Run diagnostic probe on first app (may self-heal token)
+  let activeToken = token;
+  const refreshedToken = await diagnosticProbe(instanceId, activeToken);
+  if (refreshedToken) {
+    activeToken = refreshedToken;
+  }
 
   for (let poll = 1; poll <= maxPolls; poll++) {
     const timestamp = new Date().toISOString().slice(11, 19);
@@ -499,7 +597,7 @@ async function waitForSync(
     console.log(`--- Poll ${poll}/${maxPolls} (${timestamp}) ---`);
 
     for (const app of EXPECTED_APPS) {
-      const status = await checkApp(instanceId, token, app);
+      const status = await checkApp(instanceId, activeToken, app);
 
       if (!status.reachable) {
         console.log(`  ${app}: [WARN] API unreachable`);
@@ -599,17 +697,19 @@ async function healthCheck(
   token: string,
 ): Promise<boolean> {
   const totalWait = maxPolls * pollInterval;
+  let activeToken = token;
+
   logger.info(
     `Health check: polling until HTTP 200 (timeout: ${totalWait}s)...`,
   );
 
-  const curlCmd = buildArgoCDCurl(
-    `-s -o /dev/null -w '%{http_code}' --max-time 10`,
-    '/api/v1/applications',
-    `-H 'Authorization: Bearer ${token}'`,
-  );
-
   for (let attempt = 1; attempt <= maxPolls; attempt++) {
+    const curlCmd = buildArgoCDCurl(
+      `-s -o /dev/null -w '%{http_code}' --max-time 10`,
+      '/api/v1/applications',
+      `-H 'Authorization: Bearer ${activeToken}'`,
+    );
+
     const output = await ssmCurl(instanceId, curlCmd);
     const httpCode = output?.trim() || '000';
 
@@ -619,6 +719,22 @@ async function healthCheck(
       writeSummary('');
       writeSummary('✅ ArgoCD server is reachable (HTTP 200)');
       return true;
+    }
+
+    // Self-heal on auth failure (token may be stale after bootstrap)
+    if ((httpCode === '401' || httpCode === '403') && !tokenRefreshAttempted) {
+      logger.warn(`  HTTP ${httpCode} — attempting self-healing token refresh...`);
+      const refreshedToken = await refreshCIToken(instanceId);
+      if (refreshedToken) {
+        activeToken = refreshedToken;
+        logger.success('  ✓ Self-healing successful — retrying with refreshed token');
+        emitAnnotation(
+          'notice',
+          'CI bot token was stale and has been automatically regenerated',
+          'ArgoCD Token Refresh',
+        );
+        continue; // Retry immediately with new token
+      }
     }
 
     logger.info(
