@@ -312,6 +312,7 @@ def main() -> None:
         from kubernetes import client
         from datetime import datetime, timezone
         import re
+        from urllib.parse import urlparse
         
         cf_secret_path = f"/k8s/{cfg.environment_name}/cloudfront-origin-secret"
         log_info("Fetching CloudFront origin secret history", ssm_path=cf_secret_path)
@@ -344,15 +345,36 @@ def main() -> None:
             )
         else:
             log_info("Using single origin secret.")
-        
+
+        # Derive public hostname from NEXTAUTH_URL for Host() defence-in-depth.
+        # Start-admin shares the same domain as the nextjs app, so we read
+        # NEXTAUTH_URL from the shared /nextjs/{env} SSM prefix.
+        ingress_host = ""
+        nextauth_ssm = f"{cfg.frontend_ssm_prefix}/auth/nextauth-url"
+        try:
+            resp = ssm_client.get_parameter(Name=nextauth_ssm, WithDecryption=True)
+            nextauth_url = resp["Parameter"]["Value"]
+            parsed = urlparse(nextauth_url)
+            ingress_host = parsed.hostname or ""
+            log_info("Derived ingress host from NEXTAUTH_URL", host=ingress_host)
+        except client_error_cls:
+            log_warn("NEXTAUTH_URL not available — Host() rule will be skipped")
+
+        # Build helm parameter overrides
+        helm_params = [
+            {"name": "cloudfront.originSecret", "value": origin_secret, "forceString": True},
+        ]
+        if ingress_host:
+            helm_params.append(
+                {"name": "ingress.host", "value": ingress_host, "forceString": True}
+            )
+
         custom_api = client.CustomObjectsApi(v1.api_client)
         patch = {
             "spec": {
                 "source": {
                     "helm": {
-                        "parameters": [
-                            {"name": "cloudfront.originSecret", "value": origin_secret, "forceString": True}
-                        ]
+                        "parameters": helm_params
                     }
                 }
             }
@@ -365,7 +387,7 @@ def main() -> None:
             name="start-admin",
             body=patch
         )
-        log_info("Successfully patched Start-Admin ArgoCD Application with origin secret.")
+        log_info("Successfully patched Start-Admin ArgoCD Application with origin secret.", host=ingress_host)
     except client_error_cls:
         log_warn("CloudFront origin secret not found in SSM, skipping injection.")
     except Exception as e:

@@ -72,6 +72,10 @@ probes:
 # ---------------------------------------------------------------------------
 ingress:
   enabled: true
+  # Public domain — injected by deploy.py via ArgoCD helm parameter override.
+  # When set, the IngressRoute adds Host() to the match rule for defence-in-depth.
+  # CloudFront forwards the original Host header via the origin request policy.
+  host: ""  # Populated by deploy.py — do not set manually
   # PathPrefix(/admin) takes priority over the site's PathPrefix(/)
   # via Traefik's longest-prefix-match resolution — no priority annotation needed.
   matchRule: "PathPrefix(`/admin`)"
@@ -101,8 +105,13 @@ secrets:
 # During secret rotation, deploy.py temporarily sets this to "OLD|NEW"
 # so Traefik accepts both values while CloudFront propagates (~15 min).
 # After propagation completes, it is set back to "NEW" only.
+#
+# IMPORTANT: The default is a regex that never matches a real 64-char hex secret.
+# This ensures the route blocks ALL direct-to-origin traffic until deploy.py
+# injects the actual secret. An empty string "" would cause Traefik v3 to
+# reject the route entirely (empty regex is invalid).
 cloudfront:
-  originSecret: "" # Populated by deploy.py — do not set manually
+  originSecret: "^PLACEHOLDER_NEVER_MATCHES$"  # Overridden by deploy.py at runtime
 
 # ---------------------------------------------------------------------------
 # Resource Quota (namespace-level limits)
