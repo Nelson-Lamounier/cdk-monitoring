@@ -100,8 +100,16 @@ secrets:
 # ---------------------------------------------------------------------------
 # CloudFront Security
 # ---------------------------------------------------------------------------
+# originSecret is injected at deploy time by deploy.py (Step 5), which reads
+# /k8s/{env}/cloudfront-origin-secret from SSM and patches the ArgoCD
+# Application via custom_api.patch_namespaced_custom_object.
+#
+# The IngressRoute uses HeadersRegexp, which accepts a Go regex pattern.
+# During secret rotation, deploy.py temporarily sets this to "OLD|NEW"
+# so Traefik accepts both values while CloudFront propagates (~15 min).
+# After propagation completes, it is set back to "NEW" only.
 cloudfront:
-  originSecret: "" # Populated by deploy.py
+  originSecret: "" # Populated by deploy.py — do not set manually
 
 # ---------------------------------------------------------------------------
 # Resource Quota (namespace-level limits)

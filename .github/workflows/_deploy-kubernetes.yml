@@ -794,13 +794,95 @@ jobs:
 
 
   # ===========================================================================
+  # Seed CloudFront Origin Secret — Day-0 prerequisite for deploy-edge
+  #
+  # The EdgeStack AwsCustomResource reads /k8s/{env}/cloudfront-origin-secret
+  # from eu-west-1 SSM via a cross-region Lambda.  If the parameter does not
+  # exist, the Lambda throws ParameterNotFound, which CloudFormation surfaces
+  # as the opaque "UnknownError" failure on the ReadCloudfrontOriginSecret
+  # custom resource.
+  #
+  # This job runs BEFORE deploy-edge and is idempotent:
+  #   - If the parameter already exists it is left unchanged (no rotation).
+  #   - If it is missing it is created with a fresh 32-byte hex secret.
+  #
+  # ── Rotation ──────────────────────────────────────────────────────
+  # To rotate the secret without downtime:
+  #   1. Generate: NEW=$(openssl rand -hex 32)
+  #   2. Update SSM (--overwrite) with NEW value
+  #   3. Run deploy-kubernetes  ← CloudFront begins sending NEW header
+  #   4. While CloudFront propagates (~15 min), Traefik accepts OLD|NEW
+  #      (deploy.py Step 5 injects the regex "OLD_HEX|NEW_HEX" into
+  #       the ArgoCD Application's cloudfront.originSecret helm param)
+  #   5. After propagation: set cloudfront.originSecret to NEW only
+  # ===========================================================================
+  seed-cloudfront-secret:
+    name: "Seed CloudFront Origin Secret"
+    needs: [setup]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: .github/actions/configure-aws
+          sparse-checkout-cone-mode: false
+
+      - name: "Create secret if missing (idempotent)"
+        env:
+          SSM_PARAM: "/k8s/${{ inputs.cdk-environment }}/cloudfront-origin-secret"
+          REGION: ${{ env.AWS_REGION }}
+        run: |
+          echo "Checking SSM parameter: $SSM_PARAM"
+
+          EXISTING=$(aws ssm get-parameter \
+            --name "$SSM_PARAM" \
+            --with-decryption \
+            --region "$REGION" \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ]; then
+            echo "[OK] CloudFront origin secret already exists — no action needed"
+            exit 0
+          fi
+
+          echo "[INFO] Parameter not found — generating new 32-byte hex secret"
+          SECRET=$(openssl rand -hex 32)
+          echo "::add-mask::$SECRET"
+
+          aws ssm put-parameter \
+            --name "$SSM_PARAM" \
+            --value "$SECRET" \
+            --type SecureString \
+            --region "$REGION"
+
+          echo "[OK] CloudFront origin secret created at $SSM_PARAM"
+          echo "     Run deploy-ssm-automation after deploy-edge so Traefik"
+          echo "     picks up the secret via the ArgoCD Application patch."
+
+  # ===========================================================================
   # Deploy Edge Stack (5/6) — CloudFront + ACM + WAF (us-east-1)
   # Origin: Elastic IP → Traefik
   # ===========================================================================
   deploy-edge:
     name: Deploy Edge
-    needs: [setup, deploy-appiam, deploy-data]
-    if: always() && needs.deploy-appiam.result == 'success' && needs.deploy-data.result == 'success'
+    needs: [setup, deploy-appiam, deploy-data, seed-cloudfront-secret]
+    if: >-
+      always()
+      && needs.deploy-appiam.result == 'success'
+      && needs.deploy-data.result == 'success'
+      && needs.seed-cloudfront-secret.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.edge-stack }}

@@ -380,12 +380,32 @@ export class KubernetesEdgeStack extends cdk.Stack {
         );
 
         // Read Origin Secret
+        //
+        // PREREQUISITE: /k8s/{env}/cloudfront-origin-secret must exist in
+        // eu-west-1 SSM as a SecureString BEFORE this stack deploys.
+        //
+        // The CI pipeline's `seed-cloudfront-secret` job ensures this by
+        // creating the parameter with a fresh `openssl rand -hex 32` value
+        // if it doesn't already exist.  If the parameter is missing, the
+        // AwsCustomResource Lambda receives ParameterNotFound from the AWS
+        // SDK, which CloudFormation surfaces as an opaque "UnknownError"
+        // on the ReadCloudfrontOriginSecret custom resource.
+        //
+        // ── Secret Rotation (zero-downtime) ───────────────────────────
+        // 1. Generate:  NEW=$(openssl rand -hex 32)
+        // 2. Update SSM with NEW (--overwrite), run deploy-edge
+        //    → CloudFront begins forwarding the new header value
+        // 3. While CloudFront propagates (≤15 min), patch Traefik to
+        //    accept both values via deploy.py which sets the ArgoCD
+        //    Application's cloudfront.originSecret helm parameter to
+        //    the regex "OLD_HEX|NEW_HEX"  (HeadersRegexp accepts regex)
+        // 4. After propagation: re-run deploy.py with NEW_HEX only
         const originSecret = this.readSsmParameter(
             'ReadCloudfrontOriginSecret',
             k8sPaths.cloudfrontOriginSecret,
             ssmRegion,
             ssmReaderPolicy,
-            true, // withDecryption
+            true, // withDecryption — SecureString requires KMS decrypt
         );
 
         // S3 origin for static assets (OAC)
@@ -798,9 +818,11 @@ export class KubernetesEdgeStack extends cdk.Stack {
     /**
      * Reads an SSM parameter from a remote region via AwsCustomResource.
      *
-     * Note: We use PhysicalResourceId.fromResponse('Parameter.ARN') to provide
-     * a stable physical ID that won't change on every `cdk synth`, which was
-     * causing UnknownError failures during custom resource updates.
+     * IMPORTANT: The onUpdate handler uses a timestamp-based physicalResourceId
+     * so that every `cdk deploy` triggers a fresh SSM read. Without this,
+     * CloudFormation caches the value from the first deploy — if the underlying
+     * SSM parameter changes (e.g., EIP re-allocation), CloudFront would continue
+     * using the stale origin until the custom resource is manually deleted.
      */
     private readSsmParameter(
         id: string,
