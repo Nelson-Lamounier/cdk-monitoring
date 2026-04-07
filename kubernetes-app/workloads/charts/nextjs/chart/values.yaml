@@ -104,7 +104,7 @@ secrets:
 # /k8s/{env}/cloudfront-origin-secret from SSM and patches the ArgoCD
 # Application via custom_api.patch_namespaced_custom_object.
 #
-# The IngressRoute uses HeadersRegexp, which accepts a Go regex pattern.
+# The IngressRoute uses HeaderRegexp (Traefik v3), which accepts a Go regex pattern.
 # During secret rotation, deploy.py temporarily sets this to "OLD|NEW"
 # so Traefik accepts both values while CloudFront propagates (~15 min).
 # After propagation completes, it is set back to "NEW" only.
