@@ -934,9 +934,9 @@ describe('KubernetesBaseStack — Post-Deploy Verification', () => {
     // Depends on: nlbSgIngress, nlbSgEgress populated in top-level beforeAll
     // =========================================================================
     describe('NLB SG — Rule Validation', () => {
-        it('should have inbound TCP 80 from 0.0.0.0/0', () => {
+        it('should have inbound TCP 80 from CloudFront prefix list', () => {
             const httpRule = requireTcpIngressRule(nlbSgIngress, 80);
-            expectCidrSource(httpRule, ANY_IPV4);
+            expectPrefixListSource(httpRule);
         });
 
         it('should have inbound TCP 443 from 0.0.0.0/0', () => {
