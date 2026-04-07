@@ -93,14 +93,14 @@ secrets:
 # ---------------------------------------------------------------------------
 # Resource Quota (namespace-level limits)
 # ---------------------------------------------------------------------------
-# Sized for solo-developer: 1 replica, no blue/green overhead.
-# Formula: per-pod limit × 1.5 safety margin
+# Sized for blue/green: 2x replicas running simultaneously + headroom.
+# Formula: (replicas × 2 × per-pod limit) × 1.5 safety margin
 resourceQuota:
   hard:
-    requests.cpu: "300m"
-    requests.memory: 384Mi
-    limits.cpu: "750m"
-    limits.memory: 768Mi
+    requests.cpu: "600m"
+    requests.memory: 768Mi
+    limits.cpu: "1500m"
+    limits.memory: 1536Mi
     persistentvolumeclaims: "1"
 
 # ---------------------------------------------------------------------------
@@ -110,3 +110,22 @@ networkPolicy:
   enabled: true
   nodesCidr: "10.0.0.0/16"
   podCidr: "192.168.0.0/16"
+
+# ---------------------------------------------------------------------------
+# Argo Rollouts — Blue/Green Strategy Configuration
+# ---------------------------------------------------------------------------
+# Both active and preview ReplicaSets run simultaneously.
+# Pre-promotion analysis validates the preview against Prometheus
+# metrics before traffic switches.
+rollout:
+  blueGreen:
+    autoPromotionEnabled: false   # Require manual promotion (or ArgoCD sync)
+    autoPromotionSeconds: 120     # Auto-promote after 120s if auto is enabled
+    scaleDownDelaySeconds: 30     # Wait 30s before scaling down old RS
+  analysis:
+    interval: 60s
+    count: 3
+    failureLimit: 1
+    consecutiveErrorLimit: 5
+    errorRateThreshold: 0.05
+    latencyThresholdMs: 2000

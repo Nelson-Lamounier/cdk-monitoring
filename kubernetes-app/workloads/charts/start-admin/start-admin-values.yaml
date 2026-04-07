@@ -17,8 +17,8 @@ resources:
 
 resourceQuota:
   hard:
-    requests.cpu: "200m"
-    requests.memory: 256Mi
-    limits.cpu: "500m"
-    limits.memory: 512Mi
+    requests.cpu: "400m"
+    requests.memory: 512Mi
+    limits.cpu: "750m"
+    limits.memory: 768Mi
     persistentvolumeclaims: "1"

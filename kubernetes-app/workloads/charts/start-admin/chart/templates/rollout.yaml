@@ -1,14 +1,19 @@
 # ---------------------------------------------------------------
-# Standard Deployment — TanStack Start admin dashboard
+# Blue/Green Rollout — Argo Rollouts progressive delivery
 #
-# Unlike the site (which uses Argo Rollouts for blue/green),
-# the admin dashboard uses a standard Deployment. Rationale:
-#   - Solo-developer, single-user admin tool
-#   - No need for zero-downtime deployments
-#   - No HPA, PDB, or pre-promotion analysis needed
+# Two full ReplicaSets run side by side:
+#   activeService  → receives production traffic (start-admin)
+#   previewService → receives zero traffic until promoted (start-admin-preview)
+#
+# Pre-promotion analysis queries Prometheus for error rate and
+# P95 latency. If metrics breach thresholds, the rollout pauses
+# and does NOT promote automatically.
+#
+# After manual promotion, the preview becomes active and the old
+# ReplicaSet scales down after scaleDownDelaySeconds.
 # ---------------------------------------------------------------
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: start-admin
   namespace: {{ .Values.namespace }}
@@ -20,6 +25,21 @@ spec:
   selector:
     matchLabels:
       {{- include "start-admin.selectorLabels" . | nindent 6 }}
+  strategy:
+    blueGreen:
+      activeService: start-admin
+      previewService: start-admin-preview
+      autoPromotionEnabled: {{ .Values.rollout.blueGreen.autoPromotionEnabled }}
+      {{- if .Values.rollout.blueGreen.autoPromotionSeconds }}
+      autoPromotionSeconds: {{ .Values.rollout.blueGreen.autoPromotionSeconds }}
+      {{- end }}
+      scaleDownDelaySeconds: {{ .Values.rollout.blueGreen.scaleDownDelaySeconds | default 30 }}
+      prePromotionAnalysis:
+        templates:
+          - templateName: start-admin-bluegreen-analysis
+        args:
+          - name: service-name
+            value: "start-admin"
   template:
     metadata:
       labels:
