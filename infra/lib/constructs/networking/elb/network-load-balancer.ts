@@ -349,6 +349,66 @@ export class NetworkLoadBalancerConstruct extends Construct {
         }
     }
 
+    /**
+     * Configure NLB SG with CloudFront prefix list restriction.
+     *
+     * Defence-in-depth: restricts HTTP inbound to CloudFront origin-facing
+     * IPs only (via AWS managed prefix list). HTTPS remains open for admin
+     * access (fine-grained filtering enforced by the Ingress SG on targets).
+     *
+     * **Inbound**:
+     * - Port 80: CloudFront managed prefix list only (blocks direct HTTP access)
+     * - Port 443: `0.0.0.0/0` + `::/0` (admin HTTPS — Traefik handles TLS)
+     *
+     * **Outbound**:
+     * - Both ports forwarded to VPC CIDR (health checks + target forwarding)
+     *
+     * @param cloudFrontPrefixListId - AWS managed prefix list ID
+     *   (`com.amazonaws.global.cloudfront.origin-facing`)
+     * @param httpPort - HTTP listener port (typically 80)
+     * @param httpsPort - HTTPS listener port (typically 443)
+     *
+     * @example
+     * ```typescript
+     * nlb.configureCloudFrontSecurityGroup(cfPrefixListId, 80, 443);
+     * ```
+     */
+    public configureCloudFrontSecurityGroup(
+        cloudFrontPrefixListId: string,
+        httpPort: number,
+        httpsPort: number,
+    ): void {
+        const vpcCidr = this.vpc.vpcCidrBlock;
+
+        // Inbound: CloudFront only → NLB HTTP port
+        this.securityGroup.addIngressRule(
+            ec2.Peer.prefixList(cloudFrontPrefixListId),
+            ec2.Port.tcp(httpPort),
+            'HTTP from CloudFront origin-facing IPs only',
+        );
+
+        // Inbound: internet → NLB HTTPS port (admin access)
+        this.securityGroup.addIngressRule(
+            ec2.Peer.anyIpv4(),
+            ec2.Port.tcp(httpsPort),
+            'HTTPS from internet (admin access via Traefik)',
+        );
+        this.securityGroup.addIngressRule(
+            ec2.Peer.anyIpv6(),
+            ec2.Port.tcp(httpsPort),
+            'HTTPS from internet IPv6 (admin access via Traefik)',
+        );
+
+        // Outbound: NLB → targets (health checks + forwarding)
+        for (const port of [httpPort, httpsPort]) {
+            this.securityGroup.addEgressRule(
+                ec2.Peer.ipv4(vpcCidr),
+                ec2.Port.tcp(port),
+                `TCP/${port} to targets (VPC CIDR)`,
+            );
+        }
+    }
+
     // =========================================================================
     // HELPER METHODS
     // =========================================================================

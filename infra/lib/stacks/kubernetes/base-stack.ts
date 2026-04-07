@@ -137,6 +137,8 @@ export class KubernetesBaseStack extends cdk.Stack {
     /** KMS key for CloudWatch log group encryption */
     public readonly logGroupKmsKey: kms.Key;
 
+    /** SSM Parameter Store for cluster resources */
+    public readonly ssmParams: SsmParameterStoreConstruct;
 
 
     /** S3 bucket for k8s scripts and manifests */
@@ -274,7 +276,7 @@ export class KubernetesBaseStack extends cdk.Stack {
              * @see https://docs.aws.amazon.com/ec2/latest/APIReference/API_IpPermission.html
              */
             const sanitiseDesc = (raw: string): string =>
-                raw.replace(/[^a-zA-Z0-9. _\-:/()#,@[\]+=&;{}!$*]/g, '-').slice(0, 255);
+                raw.replaceAll(/[^a-zA-Z0-9. _\-:/()#,@[\]+=&;{}!$*]/g, '-').slice(0, 255);
 
             for (const ip of adminIps) {
                 const isIpv6 = ip.includes(':');
@@ -368,10 +370,15 @@ export class KubernetesBaseStack extends cdk.Stack {
         this.nlbConstruct.addTcpListener('HttpListener', TRAEFIK_HTTP_PORT, this.nlbHttpTargetGroup);
         this.nlbConstruct.addTcpListener('HttpsListener', TRAEFIK_HTTPS_PORT, this.nlbHttpsTargetGroup);
 
-        // NLB Security Group — CDK auto-creates a default SG that blocks all
-        // traffic. Open inbound (0.0.0.0/0) and outbound (VPC CIDR) for the
-        // listener ports. Fine-grained IP filtering is handled by the Ingress SG.
-        this.nlbConstruct.configureSecurityGroup([TRAEFIK_HTTP_PORT, TRAEFIK_HTTPS_PORT]);
+        // NLB Security Group — Defence-in-depth: port 80 restricted to
+        // CloudFront origin-facing IPs (managed prefix list). Port 443 open
+        // for admin HTTPS (fine-grained filtering handled by Ingress SG).
+        // This prevents direct HTTP access to the NLB bypassing CloudFront/WAF.
+        this.nlbConstruct.configureCloudFrontSecurityGroup(
+            cfPrefixListId,
+            TRAEFIK_HTTP_PORT,
+            TRAEFIK_HTTPS_PORT,
+        );
 
         // =====================================================================
         // NLB Access Logs
@@ -479,7 +486,7 @@ export class KubernetesBaseStack extends cdk.Stack {
         // =====================================================================
         const ssmPaths = k8sSsmPaths(targetEnvironment);
 
-        new SsmParameterStoreConstruct(this, 'SsmParams', {
+        this.ssmParams = new SsmParameterStoreConstruct(this, 'SsmParams', {
             parameters: {
                 [ssmPaths.vpcId]: this.vpc.vpcId,
                 [ssmPaths.elasticIp]: this.elasticIp.ref,

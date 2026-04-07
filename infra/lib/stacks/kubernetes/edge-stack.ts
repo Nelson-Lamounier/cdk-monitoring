@@ -65,7 +65,7 @@ import {
     CLOUDFRONT_PATH_PATTERNS,
     CLOUDFRONT_ERROR_RESPONSES,
 } from '../../config/nextjs';
-import { nextjsSsmPaths } from '../../config/ssm-paths';
+import { k8sSsmPaths, nextjsSsmPaths } from '../../config/ssm-paths';
 import { LambdaFunctionConstruct } from '../../constructs/compute';
 import { CloudFrontConstruct } from '../../constructs/networking/cloudfront';
 import { AcmCertificateDnsValidationConstruct } from '../../constructs/security/acm-certificate';
@@ -337,14 +337,21 @@ export class KubernetesEdgeStack extends cdk.Stack {
         // =================================================================
         const ssmRegion = props.eipSsmRegion ?? 'eu-west-1';
 
+        const k8sPaths = k8sSsmPaths(envName);
+
         const ssmParameterArns = [
             `arn:aws:ssm:${ssmRegion}:${this.account}:parameter${props.eipSsmPath}`,
             `arn:aws:ssm:${props.assetsBucketSsmRegion ?? ssmRegion}:${this.account}:parameter${props.assetsBucketSsmPath}`,
+            `arn:aws:ssm:${ssmRegion}:${this.account}:parameter${k8sPaths.cloudfrontOriginSecret}`,
         ];
         const ssmReaderPolicy = cr.AwsCustomResourcePolicy.fromStatements([
             new iam.PolicyStatement({
                 actions: ['ssm:GetParameter'],
                 resources: ssmParameterArns,
+            }),
+            new iam.PolicyStatement({
+                actions: ['kms:Decrypt'],
+                resources: ['*'], // We only need this if using a CMK, but good practice for SecureStrings
             }),
         ]);
 
@@ -370,6 +377,15 @@ export class KubernetesEdgeStack extends cdk.Stack {
                 region: bucketRegion,
                 bucketRegionalDomainName: `${bucketName}.s3.${bucketRegion}.amazonaws.com`,
             }
+        );
+
+        // Read Origin Secret
+        const originSecret = this.readSsmParameter(
+            'ReadCloudfrontOriginSecret',
+            k8sPaths.cloudfrontOriginSecret,
+            ssmRegion,
+            ssmReaderPolicy,
+            true, // withDecryption
         );
 
         // S3 origin for static assets (OAC)
@@ -412,7 +428,7 @@ export class KubernetesEdgeStack extends cdk.Stack {
             connectionTimeout: cfConfig.albOriginTimeouts.connectionTimeout,
             readTimeout: cfConfig.albOriginTimeouts.readTimeout,
             keepaliveTimeout: cfConfig.albOriginTimeouts.keepaliveTimeout,
-            customHeaders: { 'X-CloudFront-Origin': envName },
+            customHeaders: { 'X-CloudFront-Origin-Secret': originSecret },
         });
 
         // Cache Policies
@@ -793,19 +809,20 @@ export class KubernetesEdgeStack extends cdk.Stack {
         parameterPath: string,
         region: string,
         policy: cr.AwsCustomResourcePolicy,
+        withDecryption: boolean = false,
     ): string {
         const reader = new cr.AwsCustomResource(this, id, {
             onCreate: {
                 service: 'SSM',
                 action: 'getParameter',
-                parameters: { Name: parameterPath },
+                parameters: { Name: parameterPath, WithDecryption: withDecryption },
                 region,
                 physicalResourceId: cr.PhysicalResourceId.of(`read-${parameterPath}`),
             },
             onUpdate: {
                 service: 'SSM',
                 action: 'getParameter',
-                parameters: { Name: parameterPath },
+                parameters: { Name: parameterPath, WithDecryption: withDecryption },
                 region,
                 physicalResourceId: cr.PhysicalResourceId.of(
                     `read-${parameterPath}-${Date.now()}`

@@ -402,6 +402,12 @@ export interface K8sSsmPaths {
     /** Kubernetes node EC2 instance ID */
     readonly instanceId: string;
 
+    // --- Security / Edge Validation ---
+    /** CloudFront Origin Secret (for authenticating edge traffic) */
+    readonly cloudfrontOriginSecret: string;
+    /** Prometheus basic auth secret (htpasswd hash) */
+    readonly prometheusBasicAuth: string;
+
     /** Wildcard path for IAM: /k8s/{environment}/* */
     readonly wildcard: string;
 }
@@ -443,6 +449,10 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
 
         // Compute (published by ControlPlane stack)
         instanceId: `${prefix}/instance-id`,
+
+        // Security / Edge Validation
+        cloudfrontOriginSecret: `${prefix}/cloudfront-origin-secret`,
+        prometheusBasicAuth: `${prefix}/prometheus-basic-auth`,
 
         // IAM
         wildcard: `${prefix}/*`,
