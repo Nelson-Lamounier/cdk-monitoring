@@ -10,7 +10,7 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: "{{ .Values.ingress.matchRule }} && HeaderRegexp(`X-CloudFront-Origin-Secret`, `{{ .Values.cloudfront.originSecret }}`)"
+    - match: "{{ if .Values.ingress.host }}Host(`{{ .Values.ingress.host }}`) && {{ end }}{{ .Values.ingress.matchRule }} && HeaderRegexp(`X-CloudFront-Origin-Secret`, `{{ .Values.cloudfront.originSecret }}`)"
       kind: Rule
       services:
         - name: nextjs
