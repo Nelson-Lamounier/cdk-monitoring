@@ -466,23 +466,30 @@ describe('KubernetesBaseStack', () => {
             });
         });
 
-        it.each([80, 443])(
-            'should have inline inbound TCP %i from 0.0.0.0/0 (IPv4)',
-            (port) => {
-                template.hasResourceProperties('AWS::EC2::SecurityGroup', {
-                    GroupDescription: Match.stringLikeRegexp('Security group for NLB'),
-                    SecurityGroupIngress: Match.arrayWith([
-                        Match.objectLike({
-                            IpProtocol: 'tcp',
-                            FromPort: port,
-                            ToPort: port,
-                            CidrIp: ANY_IPV4,
-                            Description: Match.stringLikeRegexp(`TCP/${port} inbound`),
-                        }),
-                    ]),
-                });
-            },
-        );
+        it('should have inbound TCP 80 from CloudFront Prefix List', () => {
+            template.hasResourceProperties('AWS::EC2::SecurityGroupIngress', {
+                IpProtocol: 'tcp',
+                FromPort: 80,
+                ToPort: 80,
+                Description: Match.stringLikeRegexp('HTTP from CloudFront origin-facing IPs only'),
+                SourcePrefixListId: Match.anyValue(), // Validates it's bound to a prefix list ID
+            });
+        });
+
+        it('should have inline inbound TCP 443 from 0.0.0.0/0 (IPv4)', () => {
+            template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+                GroupDescription: Match.stringLikeRegexp('Security group for NLB'),
+                SecurityGroupIngress: Match.arrayWith([
+                    Match.objectLike({
+                        IpProtocol: 'tcp',
+                        FromPort: 443,
+                        ToPort: 443,
+                        CidrIp: ANY_IPV4,
+                        Description: Match.stringLikeRegexp(`HTTPS from internet \\(admin access via Traefik\\)`),
+                    }),
+                ]),
+            });
+        });
 
         it.each([80, 443])(
             'should have inline outbound TCP %i to VPC CIDR',
