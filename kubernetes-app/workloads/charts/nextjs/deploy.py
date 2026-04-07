@@ -323,9 +323,40 @@ def main() -> None:
     # Step 5: Inject CloudFront Origin Secret into Helm rendering parameters
     try:
         from kubernetes import client
+        from datetime import datetime, timezone
+        import re
+
         cf_secret_path = f"/k8s/{cfg.environment_name}/cloudfront-origin-secret"
-        log_info("Fetching CloudFront origin secret", ssm_path=cf_secret_path)
-        origin_secret = ssm_client.get_parameter(Name=cf_secret_path, WithDecryption=True)["Parameter"]["Value"]
+        log_info("Fetching CloudFront origin secret history", ssm_path=cf_secret_path)
+        
+        paginator = ssm_client.get_paginator("get_parameter_history")
+        history = []
+        for page in paginator.paginate(Name=cf_secret_path, WithDecryption=True):
+            history.extend(page.get("Parameters", []))
+            
+        if not history:
+            raise ValueError(f"No history found for {cf_secret_path}")
+            
+        # History is ordered oldest to newest
+        latest = history[-1]
+        origin_secret = latest["Value"]
+        
+        latest_time = latest["LastModifiedDate"]
+        now = datetime.now(timezone.utc)
+        
+        # If there are at least 2 versions and the latest rotation was < 20 min ago
+        if len(history) >= 2 and (now - latest_time).total_seconds() < 20 * 60:
+            previous_secret = history[-2]["Value"]
+            # Use regex OR to allow both values temporarily
+            old_escaped = re.escape(previous_secret)
+            new_escaped = re.escape(origin_secret)
+            origin_secret = f"{old_escaped}|{new_escaped}"
+            log_info(
+                "Secret rotated recently. Using dual-secret regex for zero-downtime.",
+                minutes_since_rotation=round((now - latest_time).total_seconds() / 60, 1)
+            )
+        else:
+            log_info("Using single origin secret.")
         
         custom_api = client.CustomObjectsApi(v1.api_client)
         patch = {
