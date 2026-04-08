@@ -356,12 +356,17 @@ async function retrieveCIToken(): Promise<string | undefined> {
 }
 
 /**
- * Self-heal: regenerate the CI bot token via SSM send-command.
+ * Self-heal: regenerate the CI bot token via the ArgoCD REST API.
  *
- * Runs `argocd account generate-token --account ci-bot --core` on the
- * control plane node. Uses `--core` mode which talks directly to the
- * K8s API (no ArgoCD server login required). The control plane node's
- * kubeconfig has cluster-admin privileges, so this always works.
+ * Uses curl + python3 directly on the control plane node (via SSM):
+ *   1. Resolve admin password: SSM Parameter Store → argocd-initial-admin-secret
+ *   2. POST /argocd/api/v1/session  → obtain a short-lived admin session token
+ *   3. POST /argocd/api/v1/account/ci-bot/token → generate a new CI bot API key
+ *   4. Validate the new token, then store in Secrets Manager
+ *
+ * This replaces the previous `kubectl exec argocd account generate-token`
+ * approach which is broken: that command does not accept --username/--password
+ * flags and requires a prior `argocd login`, so it silently returned empty.
  *
  * @returns The new token, or undefined if regeneration failed
  */
@@ -374,24 +379,26 @@ async function refreshCIToken(
   }
   tokenRefreshAttempted = true;
 
-  logger.info('  → Self-healing: regenerating CI bot token via kubectl exec...');
+  logger.info('  → Self-healing: regenerating CI bot token via ArgoCD REST API...');
 
-  // Fetch admin password from SSM — always available, no circular dependency
-  const adminPassword = await getSecret(`k8s/${environment}/argocd-admin-password`);
-  if (!adminPassword) {
-    // Fall back to SSM Parameter Store (your actual storage location)
-    logger.warn('  Admin password not in Secrets Manager — trying SSM Parameter Store...');
-  }
-
+  // Resolve admin password via SSM → argocd-initial-admin-secret fallback.
+  // Mirrors the two-source fallback in bootstrap's _resolve_admin_password.
   const fetchAdminPassCmd = [
     'export KUBECONFIG=/etc/kubernetes/admin.conf',
-    `ADMIN_PASS=$(aws ssm get-parameter --name "/k8s/${environment}/argocd-admin-password" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null)`,
-    'if [ -z "$ADMIN_PASS" ]; then echo "ERROR: no admin password"; exit 1; fi',
-    // Get the argocd-server pod name
-    'POD=$(kubectl get pod -n argocd -l app.kubernetes.io/name=argocd-server -o jsonpath=\'{.items[0].metadata.name}\' 2>/dev/null)',
-    'if [ -z "$POD" ]; then echo "ERROR: no argocd-server pod"; exit 1; fi',
-    // exec into the pod — CLI is always there in the container image
-   'NEW_TOKEN=$(kubectl exec -n argocd "$POD" -- argocd account generate-token --account ci-bot --server localhost:8080 --plaintext --username admin --password "$ADMIN_PASS" 2>/dev/null)',
+    // Source 1: SSM Parameter Store (set by Step 10b during bootstrap)
+    `ADMIN_PASS=$(aws ssm get-parameter --name "/k8s/${environment}/argocd-admin-password" --with-decryption --query Parameter.Value --output text 2>/dev/null)`,
+    // Source 2: argocd-initial-admin-secret (Day-0 — before Step 10b runs)
+    'if [ -z "$ADMIN_PASS" ]; then ADMIN_PASS=$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath=\'{.data.password}\' 2>/dev/null | base64 -d 2>/dev/null); fi',
+    'if [ -z "$ADMIN_PASS" ]; then echo "ERROR: no admin password from SSM or initial-admin-secret"; exit 1; fi',
+    // Resolve ArgoCD ClusterIP (same strategy as buildArgoCDCurl)
+    'ARGOCD_IP=$(kubectl get svc argocd-server -n argocd -o jsonpath=\'{.spec.clusterIP}\' 2>/dev/null)',
+    'if [ -z "$ARGOCD_IP" ]; then echo "ERROR: ArgoCD ClusterIP not found"; exit 1; fi',
+    // Step 1: Login → obtain a short-lived admin session token
+    'ARGOCD_SESSION=$(curl -sf --max-time 15 -X POST "http://${ARGOCD_IP}/argocd/api/v1/session" -H "Content-Type: application/json" -d "{\\"username\\":\\"admin\\",\\"password\\":\\"${ADMIN_PASS}\\"}" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get(\'token\',\'\'))" 2>/dev/null)',
+    'if [ -z "$ARGOCD_SESSION" ]; then echo "ERROR: ArgoCD admin login failed"; exit 1; fi',
+    // Step 2: Generate a non-expiring CI bot API token
+    'NEW_TOKEN=$(curl -sf --max-time 15 -X POST "http://${ARGOCD_IP}/argocd/api/v1/account/ci-bot/token" -H "Authorization: Bearer ${ARGOCD_SESSION}" -H "Content-Type: application/json" --data-raw \'{"expiresIn":0,"id":""}\' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get(\'token\',\'\'))" 2>/dev/null)',
+    'if [ -z "$NEW_TOKEN" ]; then echo "ERROR: CI bot token generation failed"; exit 1; fi',
     'echo "$NEW_TOKEN"',
   ].join(' && ');
 
