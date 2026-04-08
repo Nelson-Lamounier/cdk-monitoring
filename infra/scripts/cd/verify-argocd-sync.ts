@@ -111,13 +111,20 @@ const maxPolls = parseInt(args['max-polls'] as string, 10) || 12;
 
 const ARGOCD_ROOT_PATH = '/argocd';
 
-/** Build a shell command that resolves the ArgoCD ClusterIP then curls it. */
+/** Build a shell command that resolves the ArgoCD ClusterIP then curls it.
+ *
+ * ArgoCD is configured with server.insecure=true — it serves plain HTTP on
+ * port 8080. The argocd-server Service maps port 80 → targetPort 8080.
+ * We therefore use http://:80 (the default for http://) not https://:443.
+ * Using https:// against a non-TLS backend causes an immediate TLS handshake
+ * failure which curl reports as HTTP status 000.
+ */
 function buildArgoCDCurl(curlFlags: string, apiPath: string, extraHeaders: string = ''): string {
   return [
     'export KUBECONFIG=/etc/kubernetes/admin.conf',
     'ARGOCD_IP=$(kubectl get svc argocd-server -n argocd -o jsonpath=\'{.spec.clusterIP}\' 2>/dev/null)',
     'if [ -z "$ARGOCD_IP" ]; then echo "UNREACHABLE"; exit 0; fi',
-   `curl -k ${curlFlags} ${extraHeaders} "https://\${ARGOCD_IP}${ARGOCD_ROOT_PATH}${apiPath}" 2>/dev/null`,
+   `curl ${curlFlags} ${extraHeaders} "http://\${ARGOCD_IP}${ARGOCD_ROOT_PATH}${apiPath}" 2>/dev/null`,
   ].join(' && ');
 }
 

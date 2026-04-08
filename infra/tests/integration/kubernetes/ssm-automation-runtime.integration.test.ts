@@ -100,6 +100,29 @@ const EXECUTION_FAILURE_STATUSES = new Set([
     'CompletedWithFailure',
 ]);
 
+/**
+ * All terminal SSM Automation execution statuses.
+ *
+ * An execution in one of these states has stopped; all other statuses
+ * (InProgress, Waiting, Cancelling…) are transient and require polling.
+ */
+const EXECUTION_TERMINAL_STATUSES = new Set([
+    EXECUTION_STATUS_SUCCESS,
+    ...EXECUTION_FAILURE_STATUSES,
+]);
+
+/**
+ * Maximum wall-clock time (ms) to wait for an automation to reach a
+ * terminal status before reporting the in-progress status as-is.
+ *
+ * Set to 24 minutes — comfortably under the verify-bootstrap workflow
+ * job cap of 30 minutes, leaving headroom for the beforeAll to finish.
+ */
+const AUTOMATION_POLL_TIMEOUT_MS = 24 * 60 * 1_000;
+
+/** Poll interval (ms) between GetAutomationExecution API calls */
+const AUTOMATION_POLL_INTERVAL_MS = 15_000;
+
 // AWS SDK clients
 const ec2 = new EC2Client({ region: REGION });
 const ssm = new SSMClient({ region: REGION });
@@ -278,6 +301,52 @@ async function getAutomationExecution(
 }
 
 /**
+ * Poll an SSM Automation execution until it reaches a terminal status.
+ *
+ * SSM Automation runs asynchronously — by the time the CI verify job
+ * calls GetAutomationExecution the document may still be InProgress.
+ * This helper retries at {@link AUTOMATION_POLL_INTERVAL_MS} intervals
+ * until the execution is terminal or {@link AUTOMATION_POLL_TIMEOUT_MS}
+ * elapses, at which point it returns the most-recent snapshot.
+ *
+ * @param execution - Initial execution snapshot (may be in any status)
+ * @returns Refreshed execution snapshot in a terminal status (or the
+ *          most-recent snapshot if the timeout was reached)
+ */
+async function waitForTerminalStatus(
+    execution: AutomationExecution,
+): Promise<AutomationExecution> {
+    const execId = execution.AutomationExecutionId;
+    if (!execId) return execution;
+
+    let current = execution;
+    const deadline = Date.now() + AUTOMATION_POLL_TIMEOUT_MS;
+
+    while (!EXECUTION_TERMINAL_STATUSES.has(current.AutomationExecutionStatus ?? '')) {
+        if (Date.now() >= deadline) {
+            console.warn(
+                `[TIMEOUT] Execution ${execId} still '${current.AutomationExecutionStatus}' ` +
+                `after ${AUTOMATION_POLL_TIMEOUT_MS / 60_000}m — reporting current status as-is`,
+            );
+            break;
+        }
+
+        console.log(
+            `[WAITING] ${execId} status: '${current.AutomationExecutionStatus}' — ` +
+            `polling again in ${AUTOMATION_POLL_INTERVAL_MS / 1_000}s`,
+        );
+        await new Promise<void>((resolve) => setTimeout(resolve, AUTOMATION_POLL_INTERVAL_MS));
+
+        const refreshed = await ssm.send(
+            new GetAutomationExecutionCommand({ AutomationExecutionId: execId }),
+        );
+        current = refreshed.AutomationExecution ?? current;
+    }
+
+    return current;
+}
+
+/**
  * Resolve the k8s:bootstrap-role tag for a given instance ID.
  *
  * Works for both running and recently-terminated instances because
@@ -399,11 +468,20 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
                 target.execParam,
             );
 
-            // 5. Extract the target instance ID from the execution
+            // 5. If the execution is still in progress, poll until it reaches
+            //    a terminal status. This prevents the test from failing due to
+            //    a race condition between the CI pipeline and SSM Automation.
+            if (data.automationExecution) {
+                data.automationExecution = await waitForTerminalStatus(
+                    data.automationExecution,
+                );
+            }
+
+            // 6. Extract the target instance ID from the execution
             data.automationTargetInstanceId =
                 data.automationExecution?.Parameters?.['InstanceId']?.[0];
 
-            // 6. Resolve the bootstrap-role tag of the targeted instance
+            // 7. Resolve the bootstrap-role tag of the targeted instance
             //    (works even if the instance was terminated by ASG)
             if (data.automationTargetInstanceId) {
                 data.automationTargetRole = await getInstanceBootstrapRole(
@@ -413,7 +491,7 @@ describe('SSM Automation Runtime — Instance Targeting & Health', () => {
 
             roleDataMap.set(target.label, data);
         }
-    }, 60_000);
+    }, 25 * 60 * 1_000); // 25 minutes: 6 roles × up to 24m polling + API overhead
 
     // =====================================================================
     // Instance Targeting — SSM Automation ran on the correct instance
