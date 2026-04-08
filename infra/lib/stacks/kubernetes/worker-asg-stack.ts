@@ -717,12 +717,12 @@ echo "export KUBEADM_JOIN_TOKEN=\\"\${KUBEADM_JOIN_TOKEN}\\"" >> /etc/profile.d/
 BOOTSTRAP_DIR="/opt/k8s-bootstrap"
 mkdir -p "\${BOOTSTRAP_DIR}"
 
-echo "Downloading bootstrap scripts from s3://\${S3_BUCKET}/scripts/ ..."
-aws s3 sync "s3://\${S3_BUCKET}/scripts/" "\${BOOTSTRAP_DIR}/" \\
+echo "Downloading bootstrap scripts from s3://\${S3_BUCKET}/k8s-bootstrap/ ..."
+aws s3 sync "s3://\${S3_BUCKET}/k8s-bootstrap/" "\${BOOTSTRAP_DIR}/" \\
   --region "\${AWS_REGION}"
 
-if [ ! -f "\${BOOTSTRAP_DIR}/bootstrap.py" ]; then
-  echo "ERROR: bootstrap.py not found in s3://\${S3_BUCKET}/scripts/" >&2
+if [ ! -f "\${BOOTSTRAP_DIR}/boot/steps/worker.py" ]; then
+  echo "ERROR: worker.py not found in s3://\${S3_BUCKET}/k8s-bootstrap/" >&2
   /opt/aws/bin/cfn-signal --success false \\
     --stack "\${STACK_NAME}" \\
     --resource "\${ASG_LOGICAL_ID}" \\
@@ -730,10 +730,10 @@ if [ ! -f "\${BOOTSTRAP_DIR}/bootstrap.py" ]; then
   exit 1
 fi
 
-chmod +x "\${BOOTSTRAP_DIR}/bootstrap.py"
+chmod +x "\${BOOTSTRAP_DIR}/boot/steps/worker.py"
 echo "Running bootstrap orchestrator — pool: ${props.poolType}, instance: \${INSTANCE_ID}"
 
-if python3 "\${BOOTSTRAP_DIR}/bootstrap.py"; then
+if python3 "\${BOOTSTRAP_DIR}/boot/steps/worker.py"; then
   echo "Bootstrap complete — \${INSTANCE_ID} (${props.poolType}-pool) joined cluster"
   /opt/aws/bin/cfn-signal --success true \\
     --stack "\${STACK_NAME}" \\
@@ -786,8 +786,9 @@ fi
             }));
 
             // SSM parameter so bootstrap_argocd.py can discover the topic ARN
+            // Suffix with "-pool" to distinguish from legacy MonitoringWorker stack
             new ssm.StringParameter(this, 'MonitoringAlertsTopicArnParam', {
-                parameterName: `${ssmPrefix}/monitoring/alerts-topic-arn`,
+                parameterName: `${ssmPrefix}/monitoring/alerts-topic-arn-pool`,
                 stringValue: alertsTopic.topicArn,
                 description: 'SNS topic ARN for Grafana monitoring alerts — used by ArgoCD bootstrap',
             });

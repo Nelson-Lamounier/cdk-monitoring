@@ -278,10 +278,10 @@ describe('Worker ASG — monitoring-pool (INTEGRATION)', () => {
     });
 
     describe('SNS Alerts Topic SSM Parameter', () => {
-        it('should publish the alerts topic ARN to SSM', async () => {
+        it('should create an SSM parameter for the alerts topic ARN', async () => {
             await runIfDeployed(isDeployed, 'monitoring-pool', async () => {
-                const topicArn = await getSsmParam(`${PREFIX}/monitoring/alerts-topic-arn`);
-                expect(topicArn).toMatch(/^arn:aws:sns:/);
+                const topicArn = await getSsmParam(`${PREFIX}/monitoring/alerts-topic-arn-pool`);
+                expect(topicArn).toMatch(/^arn:aws:sns:[a-z0-9-]+:\d{12}:.*-monitoring-alerts$/);
             });
         });
     });
