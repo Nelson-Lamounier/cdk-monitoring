@@ -658,7 +658,7 @@ export LOG_GROUP_NAME="${logGroupName}"
 ENVEOF
 
 # ── IMDSv2 instance metadata ──────────────────────────────────────────────────
-# IMDS_TOKEN (not TOKEN) avoids shadowing the kubeadm join token variable below
+# IMDS_TOKEN (not TOKEN) avoids shadowing the cluster join token variable below
 IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \\
   -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: \${IMDS_TOKEN}" \\
@@ -672,11 +672,11 @@ aws ssm put-parameter \\
   --overwrite \\
   --region "\${AWS_REGION}" 2>/dev/null || true
 
-# ── Fetch kubeadm join token from SSM at launch time ─────────────────────────
+# ── Fetch cluster join token from SSM at launch time ─────────────────────────
 # The token VALUE is never baked into this launch template. It is fetched live
 # here so any ASG-launched node — regardless of when it starts — can self-join
 # without depending on a CI pipeline trigger for every scale event.
-echo "Fetching kubeadm join token from SSM: \${SSM_PREFIX}/join-token"
+echo "Fetching cluster join token from SSM: \${SSM_PREFIX}/join-token"
 
 KUBEADM_JOIN_TOKEN=$(aws ssm get-parameter \\
   --name "\${SSM_PREFIX}/join-token" \\

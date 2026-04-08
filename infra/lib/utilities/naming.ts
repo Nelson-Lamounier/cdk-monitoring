@@ -40,6 +40,8 @@ export const STACK_REGISTRY = {
         appWorker: 'AppWorker',
         monitoringWorker: 'MonitoringWorker',
         argocdWorker: 'ArgocdWorker',
+        generalPool: 'GeneralPool',
+        monitoringPool: 'MonitoringPool',
         appIam: 'AppIam',
         api: 'Api',
         edge: 'Edge',
