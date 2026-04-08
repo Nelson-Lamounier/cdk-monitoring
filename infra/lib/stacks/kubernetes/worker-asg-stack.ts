@@ -635,7 +635,7 @@ export class KubernetesWorkerAsgStack extends cdk.Stack {
 
         new UserDataBuilder(userData, { skipPreamble: true })
             .addCustomScript(`
-# ── Runtime values (SSM parameter PATHS baked at synth; token VALUE fetched live) ──
+# ── Runtime values (CDK tokens resolved at synth time) ───────────────────────
 export STACK_NAME="${this.stackName}"
 export ASG_LOGICAL_ID="${asgLogicalId}"
 export AWS_REGION="${this.region}"
@@ -645,7 +645,7 @@ export CLUSTER_NAME="${props.clusterName}"
 export S3_BUCKET="${scriptsBucketName}"
 export LOG_GROUP_NAME="${logGroupName}"
 
-# Persist for interactive SSH / SSM session manager access
+# Persist env vars for SSM Automation to source later
 cat > /etc/profile.d/k8s-env.sh << 'ENVEOF'
 export STACK_NAME="${this.stackName}"
 export ASG_LOGICAL_ID="${asgLogicalId}"
@@ -657,14 +657,13 @@ export S3_BUCKET="${scriptsBucketName}"
 export LOG_GROUP_NAME="${logGroupName}"
 ENVEOF
 
-# ── IMDSv2 instance metadata ──────────────────────────────────────────────────
-# IMDS_TOKEN (not TOKEN) avoids shadowing the cluster join token variable below
-IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \\
+# ── Resolve instance ID via IMDSv2 ──────────────────────────────────
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \\
   -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
-INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: \${IMDS_TOKEN}" \\
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: \${TOKEN}" \\
   http://169.254.169.254/latest/meta-data/instance-id)
 
-# Publish instance ID for observability / CI targeting (non-fatal)
+# Publish instance ID so the pipeline can target SSM Automation
 aws ssm put-parameter \\
   --name "\${SSM_PREFIX}/bootstrap/${bootstrapRole}-instance-id" \\
   --value "\${INSTANCE_ID}" \\
@@ -672,81 +671,14 @@ aws ssm put-parameter \\
   --overwrite \\
   --region "\${AWS_REGION}" 2>/dev/null || true
 
-# ── Fetch cluster join token from SSM at launch time ─────────────────────────
-# The token VALUE is never baked into this launch template. It is fetched live
-# here so any ASG-launched node — regardless of when it starts — can self-join
-# without depending on a CI pipeline trigger for every scale event.
-echo "Fetching cluster join token from SSM: \${SSM_PREFIX}/join-token"
+echo "Infrastructure ready — instance \${INSTANCE_ID}"
+echo "SSM Automation will be triggered by the CI pipeline"
 
-KUBEADM_JOIN_TOKEN=$(aws ssm get-parameter \\
-  --name "\${SSM_PREFIX}/join-token" \\
-  --with-decryption \\
-  --query "Parameter.Value" \\
-  --output text \\
-  --region "\${AWS_REGION}" 2>/dev/null || true)
-
-if [ -z "\${KUBEADM_JOIN_TOKEN}" ]; then
-  echo "ERROR: join token not found in SSM at \${SSM_PREFIX}/join-token" >&2
-  echo "  Ensure the control plane has bootstrapped before worker ASG scales." >&2
-  /opt/aws/bin/cfn-signal --success false \\
-    --stack "\${STACK_NAME}" \\
-    --resource "\${ASG_LOGICAL_ID}" \\
-    --region "\${AWS_REGION}" 2>/dev/null || true
-  exit 1
-fi
-
-# Validate format (abcdef.0123456789abcdef) — guards against SSM corruption
-if ! echo "\${KUBEADM_JOIN_TOKEN}" | grep -qE '^[a-z0-9]{6}\\.[a-z0-9]{16}$'; then
-  echo "ERROR: SSM join-token has invalid format" >&2
-  /opt/aws/bin/cfn-signal --success false \\
-    --stack "\${STACK_NAME}" \\
-    --resource "\${ASG_LOGICAL_ID}" \\
-    --region "\${AWS_REGION}" 2>/dev/null || true
-  exit 1
-fi
-
-echo "Join token verified from SSM (length=\${#KUBEADM_JOIN_TOKEN})"
-export KUBEADM_JOIN_TOKEN
-
-# Append to persisted env file — SSM Automation sessions inherit the value
-echo "export KUBEADM_JOIN_TOKEN=\\"\${KUBEADM_JOIN_TOKEN}\\"" >> /etc/profile.d/k8s-env.sh
-
-# ── Download and run Python bootstrap orchestrator ────────────────────────────
-# Workers are self-bootstrapping: scripts pulled from S3, run directly.
-# No CI pipeline trigger needed — every ASG scale event is fully autonomous.
-BOOTSTRAP_DIR="/opt/k8s-bootstrap"
-mkdir -p "\${BOOTSTRAP_DIR}"
-
-echo "Downloading bootstrap scripts from s3://\${S3_BUCKET}/k8s-bootstrap/ ..."
-aws s3 sync "s3://\${S3_BUCKET}/k8s-bootstrap/" "\${BOOTSTRAP_DIR}/" \\
-  --region "\${AWS_REGION}"
-
-if [ ! -f "\${BOOTSTRAP_DIR}/boot/steps/worker.py" ]; then
-  echo "ERROR: worker.py not found in s3://\${S3_BUCKET}/k8s-bootstrap/" >&2
-  /opt/aws/bin/cfn-signal --success false \\
-    --stack "\${STACK_NAME}" \\
-    --resource "\${ASG_LOGICAL_ID}" \\
-    --region "\${AWS_REGION}" 2>/dev/null || true
-  exit 1
-fi
-
-chmod +x "\${BOOTSTRAP_DIR}/boot/steps/worker.py"
-echo "Running bootstrap orchestrator — pool: ${props.poolType}, instance: \${INSTANCE_ID}"
-
-if python3 "\${BOOTSTRAP_DIR}/boot/steps/worker.py"; then
-  echo "Bootstrap complete — \${INSTANCE_ID} (${props.poolType}-pool) joined cluster"
-  /opt/aws/bin/cfn-signal --success true \\
-    --stack "\${STACK_NAME}" \\
-    --resource "\${ASG_LOGICAL_ID}" \\
-    --region "\${AWS_REGION}" 2>/dev/null || true
-else
-  echo "Bootstrap FAILED — \${INSTANCE_ID} (${props.poolType}-pool)" >&2
-  /opt/aws/bin/cfn-signal --success false \\
-    --stack "\${STACK_NAME}" \\
-    --resource "\${ASG_LOGICAL_ID}" \\
-    --region "\${AWS_REGION}" 2>/dev/null || true
-  exit 1
-fi
+# ── Signal CloudFormation: infrastructure ready ──────────────────────
+/opt/aws/bin/cfn-signal --success true \\
+  --stack "\${STACK_NAME}" \\
+  --resource "\${ASG_LOGICAL_ID}" \\
+  --region "\${AWS_REGION}" 2>/dev/null || true
 `);
 
         // =====================================================================
