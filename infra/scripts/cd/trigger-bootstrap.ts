@@ -5,7 +5,12 @@
  * Triggers SSM Automation on Kubernetes nodes in a defined order:
  *   1. Start control-plane bootstrap
  *   2. Wait for control-plane to complete (workers need join credentials)
- *   3. Start app-worker + mon-worker + argocd-worker bootstrap (if instances exist)
+ *   3. Start all worker nodes (legacy + new ASG pools) in parallel
+ *
+ * MIGRATION NOTE: During the K8s-native worker migration, both legacy worker
+ * targets (app-worker, mon-worker, argocd-worker) and the new ASG pool targets
+ * (general-pool, monitoring-pool) are active. Remove legacy targets once the
+ * old stacks are decommissioned.
  *
  * For each node role, the script:
  *   - Resolves the instance ID from SSM Parameter Store
@@ -121,6 +126,11 @@ function buildTargets(prefix: string): TriggerTarget[] {
             outputKey: 'cp_execution_id',
             targetTagValue: 'control-plane',
         },
+
+        // ─── Legacy worker targets ───────────────────────────────────────────
+        // These targets remain active during the zero-downtime migration.
+        // Remove once the AppWorker, MonitoringWorker, and ArgocdWorker stacks
+        // have been fully drained and destroyed.
         {
             role: 'app-worker',
             docParam: `${prefix}/bootstrap/worker-doc-name`,
@@ -141,6 +151,26 @@ function buildTargets(prefix: string): TriggerTarget[] {
             execParam: `${prefix}/bootstrap/argocd-worker-execution-id`,
             outputKey: 'argocd_worker_execution_id',
             targetTagValue: 'argocd-worker',
+        },
+
+        // ─── New ASG pool targets (K8s-native worker migration) ───────────────
+        // general-pool:    t3.small Spot, hosts Next.js / start-admin / ArgoCD.
+        //                  No taint — node-pool=general label applied by bootstrap.
+        // monitoring-pool: t3.medium Spot, hosts observability stack.
+        //                  Tainted dedicated=monitoring:NoSchedule by bootstrap.
+        {
+            role: 'general-pool',
+            docParam: `${prefix}/bootstrap/worker-doc-name`,
+            execParam: `${prefix}/bootstrap/general-pool-execution-id`,
+            outputKey: 'general_pool_execution_id',
+            targetTagValue: 'general-pool',
+        },
+        {
+            role: 'monitoring-pool',
+            docParam: `${prefix}/bootstrap/worker-doc-name`,
+            execParam: `${prefix}/bootstrap/monitoring-pool-execution-id`,
+            outputKey: 'monitoring_pool_execution_id',
+            targetTagValue: 'monitoring-pool',
         },
     ];
 }

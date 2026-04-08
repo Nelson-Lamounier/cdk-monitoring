@@ -208,6 +208,9 @@ export interface MonitoringWorkerConfig {
  * Runs on a Spot instance for cost optimisation.
  * ArgoCD UI is still accessible via ops.nelsonlamounier.com/argocd
  * through Traefik ingress on other nodes (Kubernetes service routing).
+ *
+ * @deprecated Will be removed after the K8s-native worker migration.
+ *             ArgoCD is consolidated into the general pool.
  */
 export interface ArgocdWorkerConfig {
     /** EC2 instance type for the ArgoCD worker */
@@ -224,6 +227,42 @@ export interface ArgocdWorkerConfig {
     readonly signalsTimeoutMinutes: number;
     /** EBS root volume size in GB */
     readonly rootVolumeSizeGb: number;
+}
+
+/**
+ * Generic ASG worker pool configuration (K8s-native worker architecture).
+ *
+ * Used for both the `general` and `monitoring` pools.
+ * Replaces the named MonitoringWorkerConfig and ArgocdWorkerConfig once migration
+ * is complete.
+ */
+export interface KubernetesWorkerPoolConfig {
+    /** EC2 instance type — defaults to t3.small (general) or t3.medium (monitoring) */
+    readonly instanceType: ec2.InstanceType;
+    /** Minimum ASG capacity @default 1 */
+    readonly minCapacity: number;
+    /** Maximum ASG capacity @default 4 (general) | 2 (monitoring) */
+    readonly maxCapacity: number;
+    /** Whether to use EC2 Spot instances @default true */
+    readonly useSpotInstances: boolean;
+    /** EBS root volume size in GB @default 30 */
+    readonly rootVolumeSizeGb: number;
+    /** Whether to enable detailed CloudWatch monitoring @default false */
+    readonly detailedMonitoring: boolean;
+    /** Whether to use CloudFormation signals @default true */
+    readonly useSignals: boolean;
+    /** CloudFormation signals timeout in minutes @default 40 */
+    readonly signalsTimeoutMinutes: number;
+}
+
+/**
+ * Configuration for both generic ASG worker pools.
+ */
+export interface KubernetesWorkerPoolsConfig {
+    /** General-purpose pool: Next.js, start-admin, ArgoCD, system components */
+    readonly general: KubernetesWorkerPoolConfig;
+    /** Monitoring pool: Prometheus, Grafana, Loki, Tempo, Alloy */
+    readonly monitoring: KubernetesWorkerPoolConfig;
 }
 
 // =============================================================================
@@ -313,8 +352,18 @@ export interface K8sConfigs {
     readonly image: K8sImageConfig;
     readonly ssm: K8sSsmConfig;
     readonly edge: K8sEdgeConfig;
+    /**
+     * @deprecated Legacy single-node worker config — kept during migration window.
+     *             Will be removed once MonitoringWorker stack is decommissioned.
+     */
     readonly monitoringWorker: MonitoringWorkerConfig;
+    /**
+     * @deprecated Legacy single-node worker config — kept during migration window.
+     *             Will be removed once ArgocdWorker stack is decommissioned.
+     */
     readonly argocdWorker: ArgocdWorkerConfig;
+    /** K8s-native ASG worker pools (general + monitoring). Replaces legacy workers. */
+    readonly workerPools: KubernetesWorkerPoolsConfig;
     readonly logRetention: logs.RetentionDays;
     readonly isProduction: boolean;
     readonly removalPolicy: cdk.RemovalPolicy;
@@ -473,6 +522,28 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
             signalsTimeoutMinutes: 40,
             rootVolumeSizeGb: 30,
         },
+        workerPools: {
+            general: {
+                instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+                minCapacity: 1,
+                maxCapacity: 4,
+                useSpotInstances: true,
+                rootVolumeSizeGb: 30,
+                detailedMonitoring: false,
+                useSignals: true,
+                signalsTimeoutMinutes: 40,
+            },
+            monitoring: {
+                instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
+                minCapacity: 1,
+                maxCapacity: 2,
+                useSpotInstances: true,
+                rootVolumeSizeGb: 30,
+                detailedMonitoring: false,
+                useSignals: true,
+                signalsTimeoutMinutes: 40,
+            },
+        },
         logRetention: logs.RetentionDays.ONE_WEEK,
         isProduction: false,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -554,6 +625,28 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
             signalsTimeoutMinutes: 40,
             rootVolumeSizeGb: 30,
         },
+        workerPools: {
+            general: {
+                instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+                minCapacity: 1,
+                maxCapacity: 4,
+                useSpotInstances: true,
+                rootVolumeSizeGb: 30,
+                detailedMonitoring: true,
+                useSignals: true,
+                signalsTimeoutMinutes: 40,
+            },
+            monitoring: {
+                instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
+                minCapacity: 1,
+                maxCapacity: 2,
+                useSpotInstances: true,
+                rootVolumeSizeGb: 30,
+                detailedMonitoring: true,
+                useSignals: true,
+                signalsTimeoutMinutes: 40,
+            },
+        },
         logRetention: logs.RetentionDays.ONE_MONTH,
         isProduction: false,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -634,6 +727,28 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
             useSignals: true,
             signalsTimeoutMinutes: 40,
             rootVolumeSizeGb: 30,
+        },
+        workerPools: {
+            general: {
+                instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+                minCapacity: 1,
+                maxCapacity: 4,
+                useSpotInstances: true,
+                rootVolumeSizeGb: 30,
+                detailedMonitoring: true,
+                useSignals: true,
+                signalsTimeoutMinutes: 40,
+            },
+            monitoring: {
+                instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
+                minCapacity: 1,
+                maxCapacity: 2,
+                useSpotInstances: true,
+                rootVolumeSizeGb: 30,
+                detailedMonitoring: true,
+                useSignals: true,
+                signalsTimeoutMinutes: 40,
+            },
         },
         logRetention: logs.RetentionDays.THREE_MONTHS,
         isProduction: true,

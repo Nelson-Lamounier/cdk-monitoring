@@ -23,3 +23,7 @@ export { NextJsApiStack } from './api-stack';
 export type { NextJsApiStackProps } from './api-stack';
 export { KubernetesObservabilityStack } from './observability-stack';
 export type { KubernetesObservabilityStackProps } from './observability-stack';
+
+// New generic parameterised worker pool (replaces AppWorker, MonitoringWorker, ArgocdWorker)
+export { KubernetesWorkerAsgStack } from './worker-asg-stack';
+export type { KubernetesWorkerAsgStackProps, WorkerPoolType } from './worker-asg-stack';

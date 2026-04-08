@@ -110,10 +110,15 @@ registerProject({
 });
 
 // =============================================================================
-// K8S PROJECT (kubeadm Kubernetes Cluster — 12-Stack Architecture)
-// Synth outputs all 12 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→Compute→Workers→AppIam→Edge→Observability.
+// K8S PROJECT (kubeadm Kubernetes Cluster — 14-Stack Architecture)
+// Synth outputs all 14 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→
+// Compute→Workers(legacy+pool)→AppIam→Edge→Observability.
 // API stack is deployed separately from core infrastructure.
 // Bootstrap/app manifests synced by independent S3 sync pipelines.
+//
+// ASG Pool Stacks (additive — run alongside legacy workers during migration):
+//   - generalPool:    general-purpose ASG (Next.js, ArgoCD, system components)
+//   - monitoringPool: observability ASG (Prometheus, Grafana, Loki, Tempo)
 // =============================================================================
 
 const k8sStacks: StackConfig[] = [
@@ -181,6 +186,28 @@ const k8sStacks: StackConfig[] = [
       getStackId(Project.KUBERNETES, 'argocdWorker', env),
     description:
       'ArgoCD worker node: kubeadm join + role=argocd label/taint (Spot)',
+    dependsOn: ['controlPlane'],
+  },
+  // ---------------------------------------------------------------------------
+  // ASG Pool Stacks — Kubernetes-Native, Parameterised (additive during migration)
+  // These run in parallel with the legacy worker stacks until workloads are shifted.
+  // ---------------------------------------------------------------------------
+  {
+    id: 'generalPool',
+    name: 'General Pool ASG Stack',
+    getStackName: (env) =>
+      getStackId(Project.KUBERNETES, 'generalPool', env),
+    description:
+      'General-purpose ASG pool (Next.js, ArgoCD, system components) — no taint',
+    dependsOn: ['controlPlane'],
+  },
+  {
+    id: 'monitoringPool',
+    name: 'Monitoring Pool ASG Stack',
+    getStackName: (env) =>
+      getStackId(Project.KUBERNETES, 'monitoringPool', env),
+    description:
+      'Monitoring ASG pool (Prometheus, Grafana, Loki, Tempo) — dedicated=monitoring:NoSchedule taint',
     dependsOn: ['controlPlane'],
   },
   {

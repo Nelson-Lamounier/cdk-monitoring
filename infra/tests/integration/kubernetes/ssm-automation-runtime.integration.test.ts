@@ -140,6 +140,17 @@ interface RoleData {
 // Test Targets — All 4 Bootstrap Roles
 // =============================================================================
 
+// =============================================================================
+// Test Targets — Bootstrap Roles (legacy + new ASG pools)
+//
+// Legacy roles (app-worker, mon-worker, argocd-worker) are retained during the
+// migration window. Once those stacks are decommissioned, these entries should
+// be removed.
+//
+// New ASG pool roles (general-pool, monitoring-pool) use `general-pool-instance-id`
+// and `monitoring-pool-instance-id` SSM parameters published by worker-asg-stack.ts.
+// =============================================================================
+
 const BOOTSTRAP_ROLES: BootstrapRole[] = [
     {
         label: 'Control Plane',
@@ -147,23 +158,37 @@ const BOOTSTRAP_ROLES: BootstrapRole[] = [
         docNameParam: `${PREFIX}/bootstrap/control-plane-doc-name`,
         execParam: `${PREFIX}/bootstrap/execution-id`,
     },
+    // ── Legacy pet-model nodes (to be removed after decommission) ─────────
     {
-        label: 'App Worker',
+        label: 'App Worker (legacy)',
         role: 'app-worker',
         docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
         execParam: `${PREFIX}/bootstrap/worker-execution-id`,
     },
     {
-        label: 'Mon Worker',
+        label: 'Mon Worker (legacy)',
         role: 'mon-worker',
         docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
         execParam: `${PREFIX}/bootstrap/mon-worker-execution-id`,
     },
     {
-        label: 'ArgoCD Worker',
+        label: 'ArgoCD Worker (legacy)',
         role: 'argocd-worker',
         docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
         execParam: `${PREFIX}/bootstrap/argocd-worker-execution-id`,
+    },
+    // ── New cattle-model ASG pools ─────────────────────────────────────────
+    {
+        label: 'General Pool',
+        role: 'general-pool',
+        docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
+        execParam: `${PREFIX}/bootstrap/general-pool-execution-id`,
+    },
+    {
+        label: 'Monitoring Pool',
+        role: 'monitoring-pool',
+        docNameParam: `${PREFIX}/bootstrap/worker-doc-name`,
+        execParam: `${PREFIX}/bootstrap/monitoring-pool-execution-id`,
     },
 ];
 

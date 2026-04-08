@@ -3,8 +3,14 @@
  * KubernetesProjectFactory Unit Tests
  *
  * Tests for the factory that creates shared kubeadm Kubernetes infrastructure.
- * Creates 10 stacks: Data, Base, GoldenAmi, SsmAutomation, ControlPlane,
- * Worker, MonitoringWorker, AppIam, API, and Edge.
+ * During the migration from named worker stacks to ASG pools the factory creates
+ * 12 stacks in this order:
+ *   Data, Base, GoldenAmi, SsmAutomation, ControlPlane,
+ *   Worker (legacy AppWorker), MonitoringWorker (legacy), AppIam, API, Edge,
+ *   GeneralPool (new ASG), MonitoringPool (new ASG).
+ *
+ * Once legacy stacks are decommissioned the count will drop to 10 and the
+ * `worker` / `monitoringWorker` entries will be removed from stackMap.
  *
  * IMPORTANT: Edge config env vars MUST be set before the config module is
  * imported (it evaluates fromEnv() at module load time). The env vars are
@@ -67,14 +73,17 @@ describe('KubernetesProjectFactory', () => {
             app = new cdk.App();
         });
 
-        it('should create 10 stacks: Data, Base, GoldenAmi, SsmAutomation, ControlPlane, Worker, MonWorker, AppIam, API, and Edge', () => {
+        it('should create 12 stacks during migration: legacy + new ASG pools', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
             const { stacks, stackMap } = factory.createAllStacks(app, context);
 
-            // Shared kubeadm project has 10 stacks
-            expect(stacks).toHaveLength(10);
+            // During migration window: 10 original + 2 new ASG pools = 12 stacks.
+            // Once legacy stacks are decommissioned, update this to 10.
+            expect(stacks).toHaveLength(12);
+
+            // Legacy stacks (kept for zero-downtime migration)
             expect(stackMap).toHaveProperty('data');
             expect(stackMap).toHaveProperty('base');
             expect(stackMap).toHaveProperty('goldenAmi');
@@ -85,9 +94,13 @@ describe('KubernetesProjectFactory', () => {
             expect(stackMap).toHaveProperty('appIam');
             expect(stackMap).toHaveProperty('api');
             expect(stackMap).toHaveProperty('edge');
+
+            // New cattle-model ASG pools
+            expect(stackMap).toHaveProperty('generalPool');
+            expect(stackMap).toHaveProperty('monitoringPool');
         });
 
-        it('should order stacks as Data → Base → GoldenAmi → SsmAutomation → ControlPlane → Worker → MonWorker → AppIam → Api → Edge', () => {
+        it('should order stacks: Data → Base → GoldenAmi → SsmAutomation → ControlPlane → Worker → MonitoringWorker → AppIam → Api → Edge → GeneralPool → MonitoringPool', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
@@ -104,6 +117,9 @@ describe('KubernetesProjectFactory', () => {
             expect(stackNames[7]).toContain('AppIam');
             expect(stackNames[8]).toContain('Api');
             expect(stackNames[9]).toContain('Edge');
+            // New pools follow after legacy stacks
+            expect(stackNames[10]).toContain('GeneralPool');
+            expect(stackNames[11]).toContain('MonitoringPool');
         });
 
         it('should name stacks correctly with environment suffix', () => {

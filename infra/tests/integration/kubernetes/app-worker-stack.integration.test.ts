@@ -1,6 +1,13 @@
 /**
  * @format
+ * @deprecated
  * Kubernetes App Worker Stack — Post-Deployment Integration Test
+ *
+ * ⚠️  MIGRATION STATUS: This test targets the legacy `KubernetesAppWorkerStack`
+ * (pet-model). Workloads have migrated to the `general-pool` ASG.
+ * This file will be deleted once the AppWorkerStack CloudFormation stack is
+ * decommissioned. All new integration coverage lives in:
+ * {@link worker-asg-stack.integration.test.ts}
  *
  * Runs AFTER the KubernetesAppWorkerStack is deployed via CI (_deploy-kubernetes.yml).
  * Calls real AWS APIs to verify that the app worker instance is running with the

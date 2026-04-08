@@ -55,6 +55,7 @@ import {
     KubernetesAppWorkerStack,
     KubernetesArgocdWorkerStack,
     KubernetesObservabilityStack,
+    KubernetesWorkerAsgStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId, flatName } from '../../utilities/naming';
@@ -396,6 +397,94 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         argocdWorkerStack.addDependency(controlPlaneStack);
         stacks.push(argocdWorkerStack);
         stackMap.argocdWorker = argocdWorkerStack;
+
+        // =================================================================
+        // Stack 3e: GENERAL POOL ASG (Kubernetes-Native Worker — general)
+        //
+        // Replaces AppWorker + ArgocdWorker with a single CA-managed pool.
+        // Hosts: Next.js, start-admin, ArgoCD, system components.
+        // No taint — accepts all pods without toleration.
+        //
+        // On-Demand ONLY: ArgoCD is on this pool and owns BlueGreen promotion
+        // logic. A Spot interruption that evicts ArgoCD loses the very tool
+        // that would orchestrate the graceful handoff. On-Demand cost delta is
+        // negligible for a single t3.small vs. the operational risk.
+        //
+        // desiredCapacity intentionally absent: start at min=1 and let the
+        // Cluster Autoscaler prove two nodes are needed before provisioning.
+        // Setting it would reset capacity on every `cdk deploy`.
+        //
+        // MIGRATION: Deployed alongside legacy stacks. Shift workloads by
+        // updating Helm nodeSelector from `workload: frontend` → `node-pool: general`.
+        // Once all workloads are migrated, remove AppWorker + ArgocdWorker.
+        // =================================================================
+        const generalPoolStack = new KubernetesWorkerAsgStack(
+            scope,
+            stackId(this.namespace, 'GeneralPool', environment),
+            {
+                vpcId: sharedVpcId,
+                env,
+                description: `Kubernetes general-purpose worker pool (Next.js, ArgoCD, system) - ${environment}`,
+                targetEnvironment: environment,
+                poolType: 'general',
+                controlPlaneSsmPrefix: ssmPrefix,
+                clusterName: namePrefix,
+                instanceType: undefined,      // defaults to t3.small
+                minCapacity: 1,
+                maxCapacity: 4,
+                // On-Demand: ArgoCD cannot tolerate Spot interruption.
+                // It is the orchestrator for all BlueGreen promotions — evicting it
+                // removes the tool needed for graceful workload handoff.
+                useSpotInstances: false,
+                rootVolumeSizeGb: 30,
+                useSignals: true,
+                signalsTimeoutMinutes: 40,
+                namePrefix,
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
+            },
+        );
+        generalPoolStack.addDependency(controlPlaneStack);
+        stacks.push(generalPoolStack);
+        stackMap.generalPool = generalPoolStack;
+
+        // =================================================================
+        // Stack 3f: MONITORING POOL ASG (Kubernetes-Native Worker — monitoring)
+        //
+        // Replaces MonitoringWorker with a CA-managed pool.
+        // Hosts: Prometheus, Grafana, Loki, Tempo, Alloy, Steampipe.
+        // Tainted `dedicated=monitoring:NoSchedule` by the bootstrap script.
+        //
+        // MIGRATION: Deployed alongside the legacy MonitoringWorker stack.
+        // Once monitoring workloads are shifted (Helm nodeSelector update),
+        // drain and destroy the MonitoringWorker stack.
+        // =================================================================
+        const monitoringPoolStack = new KubernetesWorkerAsgStack(
+            scope,
+            stackId(this.namespace, 'MonitoringPool', environment),
+            {
+                vpcId: sharedVpcId,
+                env,
+                description: `Kubernetes monitoring worker pool (Prometheus, Grafana, Loki, Tempo) - ${environment}`,
+                targetEnvironment: environment,
+                poolType: 'monitoring',
+                controlPlaneSsmPrefix: ssmPrefix,
+                clusterName: namePrefix,
+                instanceType: undefined, // defaults to t3.medium
+                minCapacity: 1,
+                maxCapacity: 2,
+                useSpotInstances: true,
+                rootVolumeSizeGb: 30,
+                useSignals: true,
+                signalsTimeoutMinutes: 40,
+                namePrefix,
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
+                // NOTE: notificationEmail moved here once MonitoringWorker is decommissioned
+                // notificationEmail: emailConfig.notificationEmail,
+            },
+        );
+        monitoringPoolStack.addDependency(controlPlaneStack);
+        stacks.push(monitoringPoolStack);
+        stackMap.monitoringPool = monitoringPoolStack;
 
         // =================================================================
         // Stack 4: APP IAM STACK (Application-Tier Grants)
