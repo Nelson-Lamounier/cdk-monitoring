@@ -162,6 +162,56 @@ jobs:
           provenance: false
           outputs: type=docker,dest=/tmp/site-image.tar
 
+      - name: Extract Static Assets (for S3 Sync)
+        # frontend-portfolio uses a monorepo workspace layout. The runner stage
+        # Dockerfile copies static assets into the workspace-namespaced path:
+        #   COPY --from=builder /app/apps/${APP_NAME}/.next/static \
+        #                       ./apps/${APP_NAME}/.next/static
+        # So inside the container the real path is /app/apps/site/.next/static,
+        # NOT the flat /app/.next/static that a single-app Next.js build would use.
+        env:
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          docker load -i /tmp/site-image.tar
+          TEMP=$(docker create "site:${IMAGE_TAG}")
+
+          mkdir -p /tmp/next-static
+
+          # Priority 1 — monorepo workspace path (what the Dockerfile produces)
+          if docker cp "${TEMP}:/app/apps/site/.next/static" "/tmp/next-static/" 2>/dev/null; then
+            echo "[PASS] Extracted from /app/apps/site/.next/static (monorepo layout)"
+
+          # Priority 2 — standalone bundle without explicit static COPY
+          elif docker cp "${TEMP}:/app/apps/site/.next/standalone/.next/static" "/tmp/next-static/" 2>/dev/null; then
+            echo "[PASS] Extracted from /app/apps/site/.next/standalone/.next/static"
+
+          else
+            echo "::error::Could not find .next/static at any known path in the container."
+            echo ""
+            echo "--- All .next paths visible in the image (docker export | tar t) ---"
+            # docker export works on a stopped/created container; no need to start it.
+            # Filtering to .next paths keeps output tight even on large images.
+            docker export "${TEMP}" | tar t 2>/dev/null \
+              | grep -E "\.next" | head -60 \
+              || echo "(export failed — check Docker daemon state)"
+            echo ""
+            echo "--- Expected Dockerfile runner stage ---"
+            echo "  COPY --from=builder /app/apps/site/.next/static ./apps/site/.next/static"
+            docker rm "${TEMP}" > /dev/null 2>&1 || true
+            exit 1
+          fi
+
+          docker rm "${TEMP}" > /dev/null 2>&1 || true
+
+          ASSET_COUNT=$(find /tmp/next-static -type f | wc -l | tr -d ' ')
+          echo "[PASS] $ASSET_COUNT static assets ready for S3 sync"
+
+      - name: Cache Static Assets
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/next-static
+          key: site-static-${{ env.ENVIRONMENT }}-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Cache Site Image
         uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
@@ -171,10 +221,13 @@ jobs:
       - name: Build Summary
         run: |
           IMAGE_SIZE=$(du -sh /tmp/site-image.tar | cut -f1)
+          ASSET_COUNT=$(find /tmp/next-static -type f | wc -l | tr -d ' ')
           echo "## [Site] Docker Build" >> $GITHUB_STEP_SUMMARY
           echo "- **Tag**: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Size**: $IMAGE_SIZE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Static assets**: $ASSET_COUNT files" >> $GITHUB_STEP_SUMMARY
           echo "- **Source**: frontend-portfolio@${{ needs.resolve-targets.outputs.frontend-ref }}" >> $GITHUB_STEP_SUMMARY
+
 
   # ---------------------------------------------------------------------------
   # Job: Push site image to ECR
@@ -269,10 +322,11 @@ jobs:
     uses: ./.github/workflows/_sync-assets.yml
     with:
       environment: development
-      # build-site saves to /tmp/site-image.tar with key prefix "site-image-".
-      # These override _sync-assets.yml's default "docker-image-" convention.
-      image-cache-path: /tmp/site-image.tar
-      image-cache-key-prefix: site-image
+      # The build-site job extracts .next/static from the image and caches it
+      # separately as a lightweight artifact. The sync job restores from this
+      # static cache directly — bypassing the full image tar entirely.
+      static-cache-path: /tmp/next-static
+      static-cache-key-prefix: site-static
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 

@@ -21,6 +21,31 @@ on:
         description: "Target environment (development, staging, production)"
         required: true
         type: string
+      # --------------------------------------------------------------------------
+      # Static-cache fast path (preferred)
+      # --------------------------------------------------------------------------
+      # When set, the workflow restores a pre-extracted .next/static directory
+      # from GHA cache instead of loading the full Docker image. The build job
+      # is responsible for caching the static assets under this key prefix.
+      static-cache-path:
+        description: |
+          Local path where the static assets cache will be restored.
+          E.g. /tmp/next-static  (should match what the build job saved).
+        required: false
+        type: string
+        default: ""
+      static-cache-key-prefix:
+        description: |
+          Cache key prefix for the pre-extracted static assets.
+          Full key: "{prefix}-{environment}-{run_id}-{run_attempt}".
+          When provided, the Docker image cache inputs are ignored.
+        required: false
+        type: string
+        default: ""
+      # --------------------------------------------------------------------------
+      # Docker image path (legacy / fallback)
+      # --------------------------------------------------------------------------
+      # Used only when static-cache-key-prefix is empty.
       image-cache-path:
         description: |
           Path to the Docker image tar file saved by the upstream build job.
@@ -31,7 +56,7 @@ on:
         default: "/tmp/docker-image.tar"
       image-cache-key-prefix:
         description: |
-          Prefix for the cache key (the full key is "{prefix}-{environment}-{run_id}-{run_attempt}").
+          Prefix for the image cache key ("{prefix}-{environment}-{run_id}-{run_attempt}").
           Must match the `key` prefix used in the upstream cache/save step.
           Defaults to the legacy _build-push-image.yml convention.
         required: false
@@ -75,60 +100,118 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       # ------------------------------------------------------------------
-      # 3. Restore Docker image from cache and extract static assets
+      # 3a. FAST PATH — restore pre-extracted static assets from cache
+      #     (preferred; set by callers that do the extraction at build time)
       # ------------------------------------------------------------------
-      - name: Restore Docker Image from Cache
+      - name: Restore Static Assets from Cache (fast path)
+        if: inputs.static-cache-key-prefix != ''
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ${{ inputs.static-cache-path }}
+          key: ${{ inputs.static-cache-key-prefix }}-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+
+      - name: Place Static Assets in Workspace (fast path)
+        if: inputs.static-cache-key-prefix != ''
+        env:
+          STATIC_CACHE_PATH: ${{ inputs.static-cache-path }}
+        run: |
+          # sync-static-to-s3.ts reads from .next/static relative to cdk-monitoring root
+          mkdir -p .next
+          if [ -d "${STATIC_CACHE_PATH}/static" ]; then
+            # Restored as /tmp/next-static/static/ (docker cp adds trailing dir)
+            cp -r "${STATIC_CACHE_PATH}/static" .next/
+          else
+            cp -r "${STATIC_CACHE_PATH}" .next/static
+          fi
+          ASSET_COUNT=$(find .next/static -type f | wc -l | tr -d ' ')
+          echo "[PASS] Placed $ASSET_COUNT static assets at .next/static"
+
+      # ------------------------------------------------------------------
+      # 3b. LEGACY PATH — restore Docker image and extract static assets
+      #     (fallback for callers that don't pre-cache static files)
+      # ------------------------------------------------------------------
+      - name: Restore Docker Image from Cache (legacy path)
+        if: inputs.static-cache-key-prefix == ''
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           # image-cache-path and image-cache-key-prefix are configurable so that
-          # callers using a different build-job naming convention (e.g. site-image-)
-          # can pass the correct values without renaming their upstream cache/save step.
+          # callers using a different naming convention (e.g. site-image-) can pass
+          # the correct values without renaming their upstream cache/save step.
           path: ${{ inputs.image-cache-path }}
           key: ${{ inputs.image-cache-key-prefix }}-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
           fail-on-cache-miss: true
 
-      - name: Extract Static Assets from Docker Image
+      - name: Extract Static Assets from Docker Image (legacy path)
+        if: inputs.static-cache-key-prefix == ''
+        env:
+          IMAGE_CACHE_PATH: ${{ inputs.image-cache-path }}
         run: |
           echo "Loading Docker image..."
-          LOADED=$(docker load -i "${{ inputs.image-cache-path }}" | grep "Loaded image:" | awk '{print $3}')
+          LOADED=$(docker load -i "${IMAGE_CACHE_PATH}" | grep "Loaded image:" | awk '{print $3}')
           echo "Loaded image: $LOADED"
 
           echo "Extracting static assets..."
           TEMP_CONTAINER=$(docker create "$LOADED")
 
           mkdir -p .next public
-          
-          if ! docker cp "$TEMP_CONTAINER:/app/.next/static" ".next/"; then
-            echo "[FAIL] Failed to extract static assets"
-            docker rm "$TEMP_CONTAINER" > /dev/null 2>&1 || true
+
+          # frontend-portfolio uses a monorepo workspace layout.
+          # Priority 1 — /app/apps/site/.next/static (what the Dockerfile produces)
+          if docker cp "${TEMP_CONTAINER}:/app/apps/site/.next/static" ".next/" 2>/dev/null; then
+            echo "[PASS] Extracted from /app/apps/site/.next/static (monorepo layout)"
+
+          # Priority 2 — standalone bundle without explicit static COPY
+          elif docker cp "${TEMP_CONTAINER}:/app/apps/site/.next/standalone/.next/static" ".next/" 2>/dev/null; then
+            echo "[PASS] Extracted from /app/apps/site/.next/standalone/.next/static"
+
+          else
+            echo "::error::Could not find .next/static at any known path in the container."
+            echo ""
+            echo "--- All .next paths visible in the image (docker export | tar t) ---"
+            docker export "${TEMP_CONTAINER}" | tar t 2>/dev/null \
+              | grep -E "\.next" | head -60 \
+              || echo "(export failed — check Docker daemon state)"
+            echo ""
+            echo "--- Expected Dockerfile runner stage ---"
+            echo "  COPY --from=builder /app/apps/site/.next/static ./apps/site/.next/static"
+            docker rm "${TEMP_CONTAINER}" > /dev/null 2>&1 || true
             exit 1
           fi
 
-          if ! docker cp "$TEMP_CONTAINER:/app/public/." "./public/"; then
+          if ! docker cp "${TEMP_CONTAINER}:/app/public/." "./public/"; then
             echo "[WARNING] Failed to extract public assets, continuing anyway"
           fi
 
-          docker rm "$TEMP_CONTAINER" > /dev/null
+          docker rm "${TEMP_CONTAINER}" > /dev/null
 
           ASSET_COUNT=$(find .next/static -type f | wc -l | tr -d ' ')
           echo "[PASS] Extracted $ASSET_COUNT static assets"
+
 
       # ------------------------------------------------------------------
       # 4. Sync to S3 & invalidate CloudFront
       # ------------------------------------------------------------------
       - name: Sync to S3 & Invalidate CloudFront
+        env:
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         run: |
           npx tsx frontend-ops/sync-static-to-s3.ts \
-            --env "${{ inputs.environment }}" \
-            --region "${{ env.AWS_REGION }}"
+            --env "${DEPLOY_ENVIRONMENT}" \
+            --region "${AWS_REGION}"
 
       # ------------------------------------------------------------------
       # 5. Summary
       # ------------------------------------------------------------------
       - name: Sync Summary
+        env:
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
         run: |
+          ASSET_COUNT=$(find .next/static -type f 2>/dev/null | wc -l | tr -d ' ')
           echo "## Static Assets Synced" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${DEPLOY_ENVIRONMENT}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Assets synced**: $ASSET_COUNT files" >> $GITHUB_STEP_SUMMARY
           echo "- **Assets synced to S3**" >> $GITHUB_STEP_SUMMARY
           echo "- **CloudFront invalidation created**" >> $GITHUB_STEP_SUMMARY
+
