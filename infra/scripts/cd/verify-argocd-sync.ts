@@ -117,7 +117,7 @@ function buildArgoCDCurl(curlFlags: string, apiPath: string, extraHeaders: strin
     'export KUBECONFIG=/etc/kubernetes/admin.conf',
     'ARGOCD_IP=$(kubectl get svc argocd-server -n argocd -o jsonpath=\'{.spec.clusterIP}\' 2>/dev/null)',
     'if [ -z "$ARGOCD_IP" ]; then echo "UNREACHABLE"; exit 0; fi',
-    `curl ${curlFlags} ${extraHeaders} "http://\${ARGOCD_IP}${ARGOCD_ROOT_PATH}${apiPath}" 2>/dev/null`,
+   `curl -k ${curlFlags} ${extraHeaders} "https://\${ARGOCD_IP}${ARGOCD_ROOT_PATH}${apiPath}" 2>/dev/null`,
   ].join(' && ');
 }
 
@@ -367,22 +367,35 @@ async function refreshCIToken(
   }
   tokenRefreshAttempted = true;
 
-  logger.info('  → Self-healing: regenerating CI bot token via SSM...');
+  logger.info('  → Self-healing: regenerating CI bot token via kubectl exec...');
 
-  const generateCmd = [
+  // Fetch admin password from SSM — always available, no circular dependency
+  const adminPassword = await getSecret(`k8s/${environment}/argocd-admin-password`);
+  if (!adminPassword) {
+    // Fall back to SSM Parameter Store (your actual storage location)
+    logger.warn('  Admin password not in Secrets Manager — trying SSM Parameter Store...');
+  }
+
+  const fetchAdminPassCmd = [
     'export KUBECONFIG=/etc/kubernetes/admin.conf',
-    'argocd account generate-token --account ci-bot --core 2>/dev/null',
+    `ADMIN_PASS=$(aws ssm get-parameter --name "/k8s/${environment}/argocd-admin-password" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null)`,
+    'if [ -z "$ADMIN_PASS" ]; then echo "ERROR: no admin password"; exit 1; fi',
+    // Get the argocd-server pod name
+    'POD=$(kubectl get pod -n argocd -l app.kubernetes.io/name=argocd-server -o jsonpath=\'{.items[0].metadata.name}\' 2>/dev/null)',
+    'if [ -z "$POD" ]; then echo "ERROR: no argocd-server pod"; exit 1; fi',
+    // exec into the pod — CLI is always there in the container image
+   'NEW_TOKEN=$(kubectl exec -n argocd "$POD" -- argocd account generate-token --account ci-bot --server localhost:8080 --plaintext --username admin --password "$ADMIN_PASS" 2>/dev/null)',
+    'echo "$NEW_TOKEN"',
   ].join(' && ');
 
-  const newToken = await ssmCurl(instanceId, generateCmd);
+  const newToken = await ssmCurl(instanceId, fetchAdminPassCmd);
 
-  if (!newToken || newToken.length < 20) {
-    logger.error('  ✗ Token regeneration failed — ArgoCD CLI may not be installed');
+  if (!newToken || newToken.startsWith('ERROR') || newToken.length < 20) {
+    logger.error(`  ✗ Token regeneration failed: ${newToken || 'empty response'}`);
     return undefined;
   }
 
   // Validate the new token
-  logger.info('  → Validating regenerated token...');
   const validateCmd = buildArgoCDCurl(
     `-s -o /dev/null -w '%{http_code}' --max-time 10`,
     '/api/v1/applications',
@@ -390,7 +403,6 @@ async function refreshCIToken(
   );
 
   const httpCode = await ssmCurl(instanceId, validateCmd);
-
   if (httpCode?.trim() !== '200') {
     logger.error(`  ✗ Regenerated token validation failed (HTTP ${httpCode?.trim() || '000'})`);
     return undefined;
@@ -402,16 +414,12 @@ async function refreshCIToken(
   const secretId = `k8s/${environment}/argocd-ci-token`;
   try {
     await secretsManager.send(
-      new PutSecretValueCommand({
-        SecretId: secretId,
-        SecretString: newToken,
-      }),
+      new PutSecretValueCommand({ SecretId: secretId, SecretString: newToken }),
     );
     logger.success('  ✓ Token updated in Secrets Manager');
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.warn(`  ⚠ Failed to update Secrets Manager: ${message}`);
-    // Token is still valid for this run even if SM update fails
   }
 
   maskSecret(newToken);

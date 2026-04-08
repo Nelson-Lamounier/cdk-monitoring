@@ -383,6 +383,65 @@ echo "SSM Automation will be triggered by the CI pipeline"
             ],
         }));
 
+        // Grant SSM parameter read access — bootstrap scripts read cluster config,
+        // credentials, and runtime state from SSM at node boot. Scoped to the
+        // environment-specific prefix (e.g. /k8s/development/*).
+        // Note: DescribeParameters uses a wildcard resource (IAM limitation —
+        // the API does not support resource-level restrictions).
+
+        // Intentionally redundant with the grant in grantMonitoringPermissions().
+        // Bootstrap Step 10 (token regeneration) needs GetParameter before
+        // grantMonitoringPermissions() is ever called, and this grant must
+        // remain here if that method becomes conditional.
+
+        this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SsmParameterRead',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:GetParameter',
+                'ssm:GetParameters',
+                'ssm:GetParametersByPath',
+            ],
+            resources: [
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
+            ],
+        }));
+
+        // DescribeParameters must target '*' — the SSM API does not support
+        // resource-level restrictions for this action.
+        this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SsmDescribeParameters',
+            effect: iam.Effect.ALLOW,
+            actions: ['ssm:DescribeParameters'],
+            resources: ['*'],
+        }));
+
+        // Grant kms:Decrypt for SSM SecureString parameters.
+        //
+        // `aws ssm get-parameter --with-decryption` requires kms:Decrypt on the
+        // KMS key used to encrypt the SecureString — even when ssm:GetParameter
+        // is already allowed. Without this, AWS returns AccessDeniedException.
+        //
+        // This covers:
+        //   - /k8s/{env}/argocd-admin-password  (Steps 10 + 10b in bootstrap_argocd.py)
+        //   - /k8s/{env}/argocd/server-secret-key (Step 10d: signing key backup/restore)
+        //   - Any other SecureString stored under the ssmPrefix hierarchy
+        //
+        // Scoped to `kms:ViaService: ssm.{region}.amazonaws.com` so the grant
+        // covers SSM decryption only — not arbitrary KMS usage on the same key.
+        // This is the same pattern used by all worker stacks (see app-worker-stack.ts).
+        this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SsmSecureStringDecrypt',
+            effect: iam.Effect.ALLOW,
+            actions: ['kms:Decrypt'],
+            resources: ['*'],
+            conditions: {
+                StringEquals: {
+                    'kms:ViaService': `ssm.${this.region}.amazonaws.com`,
+                },
+            },
+        }));
+
         // Grant iam:PassRole for the SSM Automation execution role
         this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
             sid: 'PassSsmAutomationRole',
