@@ -829,7 +829,7 @@ jobs:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
           WORKER_POOL: general
-        run: just ci-integration-test kubernetes/worker-asg-stack $CDK_ENV --pool general --verbose
+        run: just ci-integration-test kubernetes/worker-asg-stack $CDK_ENV --testNamePattern="general-pool" --verbose
 
   # ===========================================================================
   # Deploy Monitoring Pool ASG Stack (3f) — Observability ASG Pool
@@ -891,7 +891,7 @@ jobs:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
           WORKER_POOL: monitoring
-        run: just ci-integration-test kubernetes/worker-asg-stack $CDK_ENV --pool monitoring --verbose
+        run: just ci-integration-test kubernetes/worker-asg-stack $CDK_ENV --testNamePattern="monitoring-pool" --verbose
 
   # ===========================================================================
   # Deploy AppIam Stack (4/8) — Application-tier IAM grants
