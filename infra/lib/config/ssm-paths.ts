@@ -235,6 +235,53 @@ export function sharedEcrPaths(environment: Environment): SharedEcrSsmPaths {
 }
 
 // =============================================================================
+// SHARED ADMIN ECR SSM PATHS  (/shared/ecr-admin/{environment})
+// =============================================================================
+
+/**
+ * SSM parameter paths for the admin (start-admin) ECR repository.
+ *
+ * CDK source: vpc-stack.ts → adminEcrSsmPrefix = `/shared/ecr-admin/{env}`
+ *
+ * @example
+ * ```typescript
+ * const adminEcr = sharedAdminEcrPaths('development');
+ * adminEcr.repositoryUri  // → '/shared/ecr-admin/development/repository-uri'
+ * ```
+ */
+export interface SharedAdminEcrSsmPaths {
+    /** The prefix itself: /shared/ecr-admin/{environment} */
+    readonly prefix: string;
+    /** Admin ECR repository URI (used by CI to push/tag images) */
+    readonly repositoryUri: string;
+    /** Admin ECR repository ARN (used by IAM grants) */
+    readonly repositoryArn: string;
+    /** Admin ECR repository name */
+    readonly repositoryName: string;
+}
+
+/** Admin ECR SSM prefix: /shared/ecr-admin/{environment} */
+export function sharedAdminEcrPrefix(environment: Environment): string {
+    return `/shared/ecr-admin/${environment}`;
+}
+
+/**
+ * Get shared admin ECR SSM parameter paths for a given environment.
+ *
+ * @param environment - Target deployment environment
+ */
+export function sharedAdminEcrPaths(environment: Environment): SharedAdminEcrSsmPaths {
+    const prefix = sharedAdminEcrPrefix(environment);
+
+    return {
+        prefix,
+        repositoryUri: `${prefix}/repository-uri`,
+        repositoryArn: `${prefix}/repository-arn`,
+        repositoryName: `${prefix}/repository-name`,
+    };
+}
+
+// =============================================================================
 // SHARED VPC SSM PATHS (for future migration of vpc-stack.ts)
 // =============================================================================
 

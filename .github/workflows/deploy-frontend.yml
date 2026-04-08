@@ -269,6 +269,10 @@ jobs:
     uses: ./.github/workflows/_sync-assets.yml
     with:
       environment: development
+      # build-site saves to /tmp/site-image.tar with key prefix "site-image-".
+      # These override _sync-assets.yml's default "docker-image-" convention.
+      image-cache-path: /tmp/site-image.tar
+      image-cache-key-prefix: site-image
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
@@ -430,14 +434,15 @@ jobs:
       - name: Resolve ECR URL (start-admin)
         id: resolve-ecr
         run: |
-          # start-admin has its own ECR repository, separate from site
+          # start-admin has its own ECR repository under /shared/ecr-admin/{env}/
+          # (CDK vpc-stack.ts: adminEcrSsmPrefix = /shared/ecr-admin/{env})
           ECR_URL=$(aws ssm get-parameter \
-            --name "/shared/ecr/${{ env.ENVIRONMENT }}/admin-repository-uri" \
+            --name "/shared/ecr-admin/${{ env.ENVIRONMENT }}/repository-uri" \
             --query 'Parameter.Value' \
             --output text)
 
           if [ -z "$ECR_URL" ] || [ "$ECR_URL" = "None" ]; then
-            echo "::error::Admin ECR URL not found at /shared/ecr/${{ env.ENVIRONMENT }}/admin-repository-uri"
+            echo "::error::Admin ECR URL not found at /shared/ecr-admin/${{ env.ENVIRONMENT }}/repository-uri"
             exit 1
           fi
 
@@ -499,7 +504,7 @@ jobs:
         id: resolve
         run: |
           ECR_URL=$(aws ssm get-parameter \
-            --name "/shared/ecr/${{ env.ENVIRONMENT }}/admin-repository-uri" \
+            --name "/shared/ecr-admin/${{ env.ENVIRONMENT }}/repository-uri" \
             --query 'Parameter.Value' \
             --output text)
 

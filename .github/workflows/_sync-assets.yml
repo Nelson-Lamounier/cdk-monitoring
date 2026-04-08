@@ -21,6 +21,22 @@ on:
         description: "Target environment (development, staging, production)"
         required: true
         type: string
+      image-cache-path:
+        description: |
+          Path to the Docker image tar file saved by the upstream build job.
+          Must match the `path` used in the upstream cache/save step.
+          Defaults to the legacy _build-push-image.yml convention.
+        required: false
+        type: string
+        default: "/tmp/docker-image.tar"
+      image-cache-key-prefix:
+        description: |
+          Prefix for the cache key (the full key is "{prefix}-{environment}-{run_id}-{run_attempt}").
+          Must match the `key` prefix used in the upstream cache/save step.
+          Defaults to the legacy _build-push-image.yml convention.
+        required: false
+        type: string
+        default: "docker-image"
     secrets:
       AWS_OIDC_ROLE:
         required: true
@@ -64,14 +80,17 @@ jobs:
       - name: Restore Docker Image from Cache
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
-          path: /tmp/docker-image.tar
-          key: docker-image-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # image-cache-path and image-cache-key-prefix are configurable so that
+          # callers using a different build-job naming convention (e.g. site-image-)
+          # can pass the correct values without renaming their upstream cache/save step.
+          path: ${{ inputs.image-cache-path }}
+          key: ${{ inputs.image-cache-key-prefix }}-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
           fail-on-cache-miss: true
 
       - name: Extract Static Assets from Docker Image
         run: |
           echo "Loading Docker image..."
-          LOADED=$(docker load -i /tmp/docker-image.tar | grep "Loaded image:" | awk '{print $3}')
+          LOADED=$(docker load -i "${{ inputs.image-cache-path }}" | grep "Loaded image:" | awk '{print $3}')
           echo "Loaded image: $LOADED"
 
           echo "Extracting static assets..."
