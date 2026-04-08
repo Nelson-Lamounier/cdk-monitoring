@@ -6,11 +6,15 @@
  * that job dependencies are correctly configured to prevent race conditions
  * between S3 sync and Kubernetes deployment.
  *
+ * The workflow uses a dual-app (site + admin) model where each app has its
+ * own build → push → deploy chain. The site path also includes an S3 asset
+ * sync that must complete after the image is pushed.
+ *
  * These are structural YAML validation tests — they do NOT execute the workflow.
  */
 
-import { readFileSync } from 'fs'
-import { join } from 'path'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { load } from 'js-yaml'
 
 // ============================================================================
@@ -20,33 +24,46 @@ import { load } from 'js-yaml'
 const WORKFLOW_PATH = join(__dirname, '..', '..', '.github', 'workflows', 'deploy-frontend.yml')
 
 /** Jobs that must exist in the workflow */
-const REQUIRED_JOBS = ['build-and-push', 'sync-assets', 'deploy-to-cluster', 'summary'] as const
+const REQUIRED_JOBS = [
+    'build-site',
+    'push-site',
+    'sync-assets',
+    'deploy-site',
+    'build-admin',
+    'push-admin',
+    'deploy-admin',
+    'summary',
+] as const
 
-/** Build-and-push is the root dependency for all other jobs */
-const ROOT_JOB = 'build-and-push'
-
-/** sync-assets must complete before deploy-to-cluster starts */
+/** Site pipeline: build → push → (sync-assets | deploy-site in parallel) */
+const SITE_BUILD_JOB = 'build-site'
+const SITE_PUSH_JOB = 'push-site'
 const SYNC_JOB = 'sync-assets'
-const DEPLOY_JOB = 'deploy-to-cluster'
+const SITE_DEPLOY_JOB = 'deploy-site'
+
+/** Admin pipeline: build → push → deploy */
+const ADMIN_BUILD_JOB = 'build-admin'
+const ADMIN_PUSH_JOB = 'push-admin'
+const ADMIN_DEPLOY_JOB = 'deploy-admin'
 
 // ============================================================================
 // Types
 // ============================================================================
 
 interface WorkflowJob {
-  name: string
-  needs?: string[] | string
-  uses?: string
-  'runs-on'?: string
-  environment?: string
-  if?: string
-  steps?: unknown[]
+    name: string
+    needs?: string[] | string
+    uses?: string
+    'runs-on'?: string
+    environment?: string
+    if?: string
+    steps?: unknown[]
 }
 
 interface Workflow {
-  name: string
-  on: Record<string, unknown>
-  jobs: Record<string, WorkflowJob>
+    name: string
+    on: Record<string, unknown>
+    jobs: Record<string, WorkflowJob>
 }
 
 // ============================================================================
@@ -61,8 +78,8 @@ interface Workflow {
  * @returns A normalised string array of job dependencies
  */
 function normaliseNeeds(needs: string[] | string | undefined): string[] {
-  if (!needs) return []
-  return Array.isArray(needs) ? needs : [needs]
+    if (!needs) return []
+    return Array.isArray(needs) ? needs : [needs]
 }
 
 // ============================================================================
@@ -70,76 +87,96 @@ function normaliseNeeds(needs: string[] | string | undefined): string[] {
 // ============================================================================
 
 describe('deploy-frontend.yml — Workflow Structure', () => {
-  let workflow: Workflow
+    let workflow: Workflow
 
-  beforeAll(() => {
-    const raw = readFileSync(WORKFLOW_PATH, 'utf-8')
-    workflow = load(raw) as Workflow
-  })
-
-  // ==========================================================================
-  // Job Existence
-  // ==========================================================================
-  describe('Required jobs', () => {
-    it.each(REQUIRED_JOBS.map((job) => ({ job })))(
-      'should contain the "$job" job',
-      ({ job }) => {
-        expect(workflow.jobs).toHaveProperty(job)
-      },
-    )
-  })
-
-  // ==========================================================================
-  // Job Dependencies — Race Condition Prevention
-  // ==========================================================================
-  describe('Job dependency ordering', () => {
-    it('deploy-to-cluster should depend on sync-assets (no race condition)', () => {
-      const deployNeeds = normaliseNeeds(workflow.jobs[DEPLOY_JOB].needs)
-      expect(deployNeeds).toContain(SYNC_JOB)
+    beforeAll(() => {
+        const raw = readFileSync(WORKFLOW_PATH, 'utf-8')
+        workflow = load(raw) as Workflow
     })
 
-    it('deploy-to-cluster should also depend on build-and-push', () => {
-      const deployNeeds = normaliseNeeds(workflow.jobs[DEPLOY_JOB].needs)
-      expect(deployNeeds).toContain(ROOT_JOB)
+    // ==========================================================================
+    // Job Existence
+    // ==========================================================================
+    describe('Required jobs', () => {
+        it.each(REQUIRED_JOBS.map((job) => ({ job })))(
+            'should contain the "$job" job',
+            ({ job }) => {
+                expect(workflow.jobs).toHaveProperty(job)
+            },
+        )
     })
 
-    it('sync-assets should depend on build-and-push', () => {
-      const syncNeeds = normaliseNeeds(workflow.jobs[SYNC_JOB].needs)
-      expect(syncNeeds).toContain(ROOT_JOB)
+    // ==========================================================================
+    // Site Pipeline — Race Condition Prevention
+    // ==========================================================================
+    describe('Site pipeline dependency ordering', () => {
+        it('push-site should depend on build-site', () => {
+            const needs = normaliseNeeds(workflow.jobs[SITE_PUSH_JOB].needs)
+            expect(needs).toContain(SITE_BUILD_JOB)
+        })
+
+        it('sync-assets should depend on push-site (image built before assets sync)', () => {
+            const needs = normaliseNeeds(workflow.jobs[SYNC_JOB].needs)
+            expect(needs).toContain(SITE_PUSH_JOB)
+        })
+
+        it('deploy-site should depend on push-site', () => {
+            const needs = normaliseNeeds(workflow.jobs[SITE_DEPLOY_JOB].needs)
+            expect(needs).toContain(SITE_PUSH_JOB)
+        })
     })
 
-    it('summary should depend on sync-assets, deploy-to-cluster, and build-and-push', () => {
-      const summaryNeeds = normaliseNeeds(workflow.jobs.summary.needs)
-      expect(summaryNeeds).toContain(ROOT_JOB)
-      expect(summaryNeeds).toContain(SYNC_JOB)
-      expect(summaryNeeds).toContain(DEPLOY_JOB)
-    })
-  })
+    // ==========================================================================
+    // Admin Pipeline
+    // ==========================================================================
+    describe('Admin pipeline dependency ordering', () => {
+        it('push-admin should depend on build-admin', () => {
+            const needs = normaliseNeeds(workflow.jobs[ADMIN_PUSH_JOB].needs)
+            expect(needs).toContain(ADMIN_BUILD_JOB)
+        })
 
-  // ==========================================================================
-  // Sync-Assets Job Configuration
-  // ==========================================================================
-  describe('sync-assets job', () => {
-    it('should use the _sync-assets.yml reusable workflow', () => {
-      const syncJob = workflow.jobs[SYNC_JOB]
-      expect(syncJob.uses).toContain('_sync-assets.yml')
-    })
-  })
-
-  // ==========================================================================
-  // Workflow Metadata
-  // ==========================================================================
-  describe('Workflow metadata', () => {
-    it('should have a descriptive name', () => {
-      expect(workflow.name).toBeTruthy()
+        it('deploy-admin should depend on push-admin', () => {
+            const needs = normaliseNeeds(workflow.jobs[ADMIN_DEPLOY_JOB].needs)
+            expect(needs).toContain(ADMIN_PUSH_JOB)
+        })
     })
 
-    it('should support workflow_dispatch for manual triggers', () => {
-      expect(workflow.on).toHaveProperty('workflow_dispatch')
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+    describe('Summary job', () => {
+        it('summary should depend on all pipeline terminal jobs', () => {
+            const summaryNeeds = normaliseNeeds(workflow.jobs.summary.needs)
+            expect(summaryNeeds).toContain(SYNC_JOB)
+            expect(summaryNeeds).toContain(SITE_DEPLOY_JOB)
+            expect(summaryNeeds).toContain(ADMIN_DEPLOY_JOB)
+        })
     })
 
-    it('should support repository_dispatch for cross-repo triggers', () => {
-      expect(workflow.on).toHaveProperty('repository_dispatch')
+    // ==========================================================================
+    // Sync-Assets Job Configuration
+    // ==========================================================================
+    describe('sync-assets job', () => {
+        it('should use the _sync-assets.yml reusable workflow', () => {
+            const syncJob = workflow.jobs[SYNC_JOB]
+            expect(syncJob.uses).toContain('_sync-assets.yml')
+        })
     })
-  })
+
+    // ==========================================================================
+    // Workflow Metadata
+    // ==========================================================================
+    describe('Workflow metadata', () => {
+        it('should have a descriptive name', () => {
+            expect(workflow.name).toBeTruthy()
+        })
+
+        it('should support workflow_dispatch for manual triggers', () => {
+            expect(workflow.on).toHaveProperty('workflow_dispatch')
+        })
+
+        it('should support repository_dispatch for cross-repo triggers', () => {
+            expect(workflow.on).toHaveProperty('repository_dispatch')
+        })
+    })
 })
