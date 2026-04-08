@@ -41,7 +41,7 @@ containerSecurityContext:
 # Node Placement
 # ---------------------------------------------------------------------------
 nodeSelector:
-  workload: frontend
+  node-pool: general
 
 # ---------------------------------------------------------------------------
 # Service
