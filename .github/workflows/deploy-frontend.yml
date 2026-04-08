@@ -1,9 +1,9 @@
 # =============================================================================
-# Orchestrator: Deploy Next.js Frontend (Development)
+# Orchestrator: Deploy Frontend Monorepo (Development)
 # =============================================================================
 #
-# Unified pipeline that builds, pushes, syncs, and migrates the Next.js
-# frontend application for the development environment.
+# Unified CD pipeline for the Next.js (site) + TanStack Start (start-admin)
+# monorepo hosted in the private frontend-portfolio repository.
 #
 # This pipeline lives in cdk-monitoring (infrastructure orchestrator) and
 # checks out the private frontend-portfolio repo for building.
@@ -11,12 +11,16 @@
 # Trigger methods:
 #   1. Manual: workflow_dispatch from GitHub UI
 #   2. Cross-repo: repository_dispatch from frontend-portfolio CI
-#   3. Schedule: after Kubernetes infra deployment (called by _deploy-kubernetes.yml)
+#   3. Called by _deploy-kubernetes.yml post infrastructure deployment
 #
-# Flow:
-#   build-image → push-to-ecr → sync-static-assets
-#                              → deploy-nextjs-secrets (via SSM)
-#               → migrate-articles (independent)
+# Parallel deployment paths:
+#   ┌── build-site  → push-site  → sync-assets ─────────────────┐
+#   │                            → deploy-site                   ├── summary
+#   └── build-admin → push-admin → deploy-admin ────────────────┘
+#                  (independent, no dependency between site & admin)
+#
+# Static asset sync (S3 / CloudFront) applies to `site` only.
+# `start-admin` (TanStack Start) does not produce S3-hosted static assets.
 # =============================================================================
 
 name: "Deploy Frontend (Dev)"
@@ -35,6 +39,15 @@ on:
         required: false
         default: false
         type: boolean
+      apps:
+        description: "Which apps to deploy (both | site | admin)"
+        required: false
+        default: "both"
+        type: choice
+        options:
+          - both
+          - site
+          - admin
 
   # Cross-repo trigger from frontend-portfolio CI
   repository_dispatch:
@@ -46,46 +59,226 @@ permissions:
 
 env:
   ENVIRONMENT: development
-  AWS_REGION: 'eu-west-1'
+  AWS_REGION: "eu-west-1"
+  # Composite tag prevents ECR overwrites on pipeline retries
+  IMAGE_TAG: "${{ github.sha }}-r${{ github.run_attempt }}"
+
+# =============================================================================
+# Concurrency: only one deployment per environment at a time.
+# Cancel any in-progress run on the same ref (e.g. rapid pushes).
+# =============================================================================
+concurrency:
+  group: deploy-frontend-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ===========================================================================
-  # Job 1: Build and Push Docker Image
+  # Resolve which apps to deploy
   # ===========================================================================
-  build-and-push:
-    name: Build & Push Image
-    uses: ./.github/workflows/_build-push-image.yml
-    with:
-      environment: development
-      image-tag: ${{ github.sha }}-r${{ github.run_attempt }}
-      ssm-ecr-param: /shared/ecr/development/repository-uri
-      frontend-repo: Nelson-Lamounier/frontend-portfolio
-      frontend-ref: ${{ github.event.inputs.frontend-ref || github.event.client_payload.ref || 'main' }}
-      push-to-dockerhub: false
-    secrets:
-      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
-      CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
+  resolve-targets:
+    name: Resolve Deploy Targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      deploy-site: ${{ steps.targets.outputs.deploy-site }}
+      deploy-admin: ${{ steps.targets.outputs.deploy-admin }}
+      frontend-ref: ${{ steps.targets.outputs.frontend-ref }}
+
+    steps:
+      - name: Compute targets
+        id: targets
+        run: |
+          # Determine which apps to build based on trigger
+          APPS="${{ github.event.inputs.apps || 'both' }}"
+
+          # repository_dispatch always deploys both unless payload specifies
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            PAYLOAD_APPS="${{ github.event.client_payload.apps }}"
+            APPS="${PAYLOAD_APPS:-both}"
+          fi
+
+          case "$APPS" in
+            site)
+              echo "deploy-site=true" >> $GITHUB_OUTPUT
+              echo "deploy-admin=false" >> $GITHUB_OUTPUT
+              ;;
+            admin)
+              echo "deploy-site=false" >> $GITHUB_OUTPUT
+              echo "deploy-admin=true" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "deploy-site=true" >> $GITHUB_OUTPUT
+              echo "deploy-admin=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+          # Resolve frontend ref
+          REF="${{ github.event.inputs.frontend-ref || github.event.client_payload.ref || 'main' }}"
+          echo "frontend-ref=$REF" >> $GITHUB_OUTPUT
+
+          echo "Deploy targets: apps=$APPS, ref=$REF"
 
   # ===========================================================================
-  # Job 2: Sync Static Assets to S3 + CloudFront
-  # Runs after build (needs the Docker image artifact)
+  # ── SITE (Next.js) ──────────────────────────────────────────────────────────
   # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # Job: Build site Docker image (no AWS credentials needed)
+  # ---------------------------------------------------------------------------
+  build-site:
+    name: "[Site] Build Docker Image"
+    needs: [resolve-targets]
+    if: needs.resolve-targets.outputs.deploy-site == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: ${{ vars.ENVIRONMENT || 'development' }}
+
+    steps:
+      - name: Checkout Frontend Repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: Nelson-Lamounier/frontend-portfolio
+          ref: ${{ needs.resolve-targets.outputs.frontend-ref }}
+          token: ${{ secrets.CROSS_REPO_PAT }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image (site)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: false
+          tags: site:${{ env.IMAGE_TAG }}
+          build-args: |
+            APP_NAME=site
+            NODE_ENV=production
+            NEXT_TELEMETRY_DISABLED=1
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
+          cache-from: type=gha,scope=site
+          cache-to: type=gha,mode=max,scope=site
+          provenance: false
+          outputs: type=docker,dest=/tmp/site-image.tar
+
+      - name: Cache Site Image
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/site-image.tar
+          key: site-image-${{ env.ENVIRONMENT }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Build Summary
+        run: |
+          IMAGE_SIZE=$(du -sh /tmp/site-image.tar | cut -f1)
+          echo "## [Site] Docker Build" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size**: $IMAGE_SIZE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source**: frontend-portfolio@${{ needs.resolve-targets.outputs.frontend-ref }}" >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # Job: Push site image to ECR
+  # ---------------------------------------------------------------------------
+  push-site:
+    name: "[Site] Push to ECR"
+    needs: [resolve-targets, build-site]
+    if: needs.resolve-targets.outputs.deploy-site == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ vars.ENVIRONMENT || 'development' }}
+    outputs:
+      image-uri: ${{ steps.set-output.outputs.image-uri }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Restore Site Image from Cache
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/site-image.tar
+          key: site-image-${{ env.ENVIRONMENT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+
+      - name: Load Docker Image
+        run: |
+          docker load -i /tmp/site-image.tar
+          echo "[PASS] Site image loaded"
+
+      - name: Resolve ECR URL (site)
+        id: resolve-ecr
+        run: |
+          ECR_URL=$(aws ssm get-parameter \
+            --name "/shared/ecr/${{ env.ENVIRONMENT }}/repository-uri" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          if [ -z "$ECR_URL" ] || [ "$ECR_URL" = "None" ]; then
+            echo "::error::Site ECR URL not found at /shared/ecr/${{ env.ENVIRONMENT }}/repository-uri"
+            exit 1
+          fi
+
+          echo "::add-mask::$ECR_URL"
+          echo "ecr-url=$ECR_URL" >> $GITHUB_OUTPUT
+
+      - name: Push Site Image to ECR
+        run: |
+          npx tsx frontend-ops/push-to-ecr.ts \
+            --env "${{ env.ENVIRONMENT }}" \
+            --tag "${{ env.IMAGE_TAG }}" \
+            --ecr-url "${{ steps.resolve-ecr.outputs.ecr-url }}" \
+            --image-name "site:${{ env.IMAGE_TAG }}" \
+            --skip-build \
+            --skip-sync \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Set Image URI Output
+        id: set-output
+        run: |
+          IMAGE_URI="${{ steps.resolve-ecr.outputs.ecr-url }}:${{ env.IMAGE_TAG }}"
+          echo "::add-mask::$IMAGE_URI"
+          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+          echo "[PASS] Site image URI output set"
+
+      - name: Push Summary
+        run: |
+          echo "## [Site] ECR Push" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ env.IMAGE_TAG }} ✅" >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # Job: Sync site static assets to S3 + invalidate CloudFront
+  # (Runs in parallel with deploy-site — both need push-site)
+  # ---------------------------------------------------------------------------
   sync-assets:
-    name: Sync Static Assets
-    needs: [build-and-push]
+    name: "[Site] Sync Static Assets"
+    needs: [resolve-targets, push-site]
+    if: needs.resolve-targets.outputs.deploy-site == 'true'
     uses: ./.github/workflows/_sync-assets.yml
     with:
       environment: development
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
-  # ===========================================================================
-  # Job 3: Deploy to Kubernetes via SSM Send-Command
-  # Runs after build (needs the ECR image URI)
-  # ===========================================================================
-  deploy-to-cluster:
-    name: Deploy to Kubernetes
-    needs: [build-and-push, sync-assets]
+  # ---------------------------------------------------------------------------
+  # Job: Update SSM so ArgoCD Image Updater picks up the new site image
+  # ---------------------------------------------------------------------------
+  deploy-site:
+    name: "[Site] Update SSM → ArgoCD"
+    needs: [resolve-targets, push-site]
+    if: needs.resolve-targets.outputs.deploy-site == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: development
@@ -105,54 +298,248 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Resolve Image URI
-        id: resolve-image
+        id: resolve
         run: |
-          # Construct image URI from SSM + composite tag (sha-rN)
-          # Composite tag prevents ECR overwrites on pipeline retries
           ECR_URL=$(aws ssm get-parameter \
             --name "/shared/ecr/${{ env.ENVIRONMENT }}/repository-uri" \
             --query 'Parameter.Value' \
             --output text)
 
-          if [ -z "$ECR_URL" ] || [ "$ECR_URL" = "None" ]; then
-            echo "::error::ECR repository URL not found in SSM: /shared/ecr/${{ env.ENVIRONMENT }}/repository-uri"
-            exit 1
-          fi
-
-          IMAGE_TAG="${{ github.sha }}-r${{ github.run_attempt }}"
-          IMAGE_URI="${ECR_URL}:${IMAGE_TAG}"
+          IMAGE_URI="${ECR_URL}:${{ env.IMAGE_TAG }}"
           echo "::add-mask::$ECR_URL"
           echo "::add-mask::$IMAGE_URI"
           echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
-          echo "[PASS] Resolved image URI from SSM (tag: ${IMAGE_TAG})"
 
-      - name: Update SSM for ArgoCD
+      - name: Write Image URI to SSM
         run: |
-          IMAGE_URI="${{ steps.resolve-image.outputs.image-uri }}"
-          echo "Deploying image to Kubernetes..."
-
-          # Update the SSM parameter with the new image URI so ArgoCD
-          # picks it up on next sync
           aws ssm put-parameter \
             --name "/nextjs/${{ env.ENVIRONMENT }}/image-uri" \
-            --value "$IMAGE_URI" \
+            --value "${{ steps.resolve.outputs.image-uri }}" \
             --type String \
             --overwrite
 
-          echo "[PASS] Image URI updated in SSM"
+          echo "[PASS] Site image URI written to SSM — ArgoCD Image Updater will promote"
+
+      - name: Deploy Summary
+        run: |
+          echo "## [Site] Kubernetes Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- **SSM Parameter**: \`/nextjs/${{ env.ENVIRONMENT }}/image-uri\` ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Kubernetes Deployment" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image**: Updated in SSM ✅" >> $GITHUB_STEP_SUMMARY
-          echo "- **SSM Parameter Updated**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "ArgoCD Image Updater will detect the new tag and trigger BlueGreen promotion." >> $GITHUB_STEP_SUMMARY
+          echo "ArgoCD Image Updater will detect the new tag and trigger a BlueGreen promotion." >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
-  # Job 4: Migrate Articles (independent — can run in parallel with deploy)
+  # ── START-ADMIN (TanStack Start) ─────────────────────────────────────────────
   # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # Job: Build start-admin Docker image
+  # Uses apps/start-admin/Dockerfile, serves on port 5001 under /admin/
+  # ---------------------------------------------------------------------------
+  build-admin:
+    name: "[Admin] Build Docker Image"
+    needs: [resolve-targets]
+    if: needs.resolve-targets.outputs.deploy-admin == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: ${{ vars.ENVIRONMENT || 'development' }}
+
+    steps:
+      - name: Checkout Frontend Repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: Nelson-Lamounier/frontend-portfolio
+          ref: ${{ needs.resolve-targets.outputs.frontend-ref }}
+          token: ${{ secrets.CROSS_REPO_PAT }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image (start-admin)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # start-admin uses its own dedicated Dockerfile (TanStack Start runtime)
+          file: apps/start-admin/Dockerfile
+          push: false
+          load: false
+          tags: start-admin:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=start-admin
+          cache-to: type=gha,mode=max,scope=start-admin
+          provenance: false
+          outputs: type=docker,dest=/tmp/admin-image.tar
+
+      - name: Cache Admin Image
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/admin-image.tar
+          key: admin-image-${{ env.ENVIRONMENT }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Build Summary
+        run: |
+          IMAGE_SIZE=$(du -sh /tmp/admin-image.tar | cut -f1)
+          echo "## [Admin] Docker Build" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size**: $IMAGE_SIZE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dockerfile**: apps/start-admin/Dockerfile" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source**: frontend-portfolio@${{ needs.resolve-targets.outputs.frontend-ref }}" >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # Job: Push start-admin image to ECR
+  # Uses a dedicated ECR repository for admin — separate from site
+  # ---------------------------------------------------------------------------
+  push-admin:
+    name: "[Admin] Push to ECR"
+    needs: [resolve-targets, build-admin]
+    if: needs.resolve-targets.outputs.deploy-admin == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ vars.ENVIRONMENT || 'development' }}
+    outputs:
+      image-uri: ${{ steps.set-output.outputs.image-uri }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Restore Admin Image from Cache
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/admin-image.tar
+          key: admin-image-${{ env.ENVIRONMENT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+
+      - name: Load Docker Image
+        run: |
+          docker load -i /tmp/admin-image.tar
+          echo "[PASS] Admin image loaded"
+
+      - name: Resolve ECR URL (start-admin)
+        id: resolve-ecr
+        run: |
+          # start-admin has its own ECR repository, separate from site
+          ECR_URL=$(aws ssm get-parameter \
+            --name "/shared/ecr/${{ env.ENVIRONMENT }}/admin-repository-uri" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          if [ -z "$ECR_URL" ] || [ "$ECR_URL" = "None" ]; then
+            echo "::error::Admin ECR URL not found at /shared/ecr/${{ env.ENVIRONMENT }}/admin-repository-uri"
+            exit 1
+          fi
+
+          echo "::add-mask::$ECR_URL"
+          echo "ecr-url=$ECR_URL" >> $GITHUB_OUTPUT
+
+      - name: Push Admin Image to ECR
+        run: |
+          # Tag local image with ECR URI, authenticate, and push
+          ECR_URL="${{ steps.resolve-ecr.outputs.ecr-url }}"
+          TAG="${{ env.IMAGE_TAG }}"
+
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin "$ECR_URL"
+
+          docker tag "start-admin:${TAG}" "${ECR_URL}:${TAG}"
+          docker push "${ECR_URL}:${TAG}"
+
+          echo "[PASS] Admin image pushed: ${ECR_URL}:${TAG}"
+
+      - name: Set Image URI Output
+        id: set-output
+        run: |
+          IMAGE_URI="${{ steps.resolve-ecr.outputs.ecr-url }}:${{ env.IMAGE_TAG }}"
+          echo "::add-mask::$IMAGE_URI"
+          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+      - name: Push Summary
+        run: |
+          echo "## [Admin] ECR Push" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ env.IMAGE_TAG }} ✅" >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # Job: Update SSM so ArgoCD picks up the new start-admin image
+  # ---------------------------------------------------------------------------
+  deploy-admin:
+    name: "[Admin] Update SSM → ArgoCD"
+    needs: [resolve-targets, push-admin]
+    if: needs.resolve-targets.outputs.deploy-admin == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: development
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve Image URI
+        id: resolve
+        run: |
+          ECR_URL=$(aws ssm get-parameter \
+            --name "/shared/ecr/${{ env.ENVIRONMENT }}/admin-repository-uri" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          IMAGE_URI="${ECR_URL}:${{ env.IMAGE_TAG }}"
+          echo "::add-mask::$ECR_URL"
+          echo "::add-mask::$IMAGE_URI"
+          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+      - name: Write Image URI to SSM
+        run: |
+          # SSM parameter consumed by ArgoCD Image Updater for start-admin Helm chart
+          aws ssm put-parameter \
+            --name "/start-admin/${{ env.ENVIRONMENT }}/image-uri" \
+            --value "${{ steps.resolve.outputs.image-uri }}" \
+            --type String \
+            --overwrite
+
+          echo "[PASS] Admin image URI written to SSM — ArgoCD will promote"
+
+      - name: Deploy Summary
+        run: |
+          echo "## [Admin] Kubernetes Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- **SSM Parameter**: \`/start-admin/${{ env.ENVIRONMENT }}/image-uri\` ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "ArgoCD Image Updater will detect the new tag and redeploy start-admin." >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # ── INDEPENDENT JOBS ─────────────────────────────────────────────────────────
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # Job: Migrate articles — independent, runs in parallel with both deploy paths
+  # ---------------------------------------------------------------------------
   migrate-articles:
     name: Migrate Articles
-    if: ${{ !inputs.skip-migration && github.event_name != 'repository_dispatch' || github.event.client_payload.migrate == true }}
+    needs: [resolve-targets]
+    if: |
+      !inputs.skip-migration &&
+      (github.event_name != 'repository_dispatch' || github.event.client_payload.migrate == true)
     uses: ./.github/workflows/_migrate-articles.yml
     with:
       environment: development
@@ -161,31 +548,65 @@ jobs:
       CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
 
   # ===========================================================================
-  # Job 5: Summary
+  # Summary — waits for all parallel paths
   # ===========================================================================
   summary:
     name: Deployment Summary
-    needs: [build-and-push, sync-assets, deploy-to-cluster]
+    needs:
+      - resolve-targets
+      - build-site
+      - push-site
+      - sync-assets
+      - deploy-site
+      - build-admin
+      - push-admin
+      - deploy-admin
     if: always()
     runs-on: ubuntu-latest
 
     steps:
       - name: Generate Summary
         run: |
-          echo "## Next.js Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Frontend Monorepo Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Build & Push | ${{ needs.build-and-push.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Sync Assets | ${{ needs.sync-assets.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Deploy to K8s | ${{ needs.deploy-to-cluster.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| App | Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          # Site rows (only shown if deploy-site was requested)
+          if [[ "${{ needs.resolve-targets.outputs.deploy-site }}" == "true" ]]; then
+            echo "| Site (Next.js)  | Build Image     | ${{ needs.build-site.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Site (Next.js)  | Push to ECR     | ${{ needs.push-site.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Site (Next.js)  | Sync Assets     | ${{ needs.sync-assets.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Site (Next.js)  | Deploy to K8s   | ${{ needs.deploy-site.result }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Admin rows (only shown if deploy-admin was requested)
+          if [[ "${{ needs.resolve-targets.outputs.deploy-admin }}" == "true" ]]; then
+            echo "| Admin (TanStack) | Build Image    | ${{ needs.build-admin.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Admin (TanStack) | Push to ECR    | ${{ needs.push-admin.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Admin (TanStack) | Deploy to K8s  | ${{ needs.deploy-admin.result }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "${{ needs.build-and-push.result }}" = "failure" ] || \
-             [ "${{ needs.sync-assets.result }}" = "failure" ] || \
-             [ "${{ needs.deploy-to-cluster.result }}" = "failure" ]; then
-            echo "**Result: FAILED** — check individual job logs above" >> $GITHUB_STEP_SUMMARY
+          # Determine overall result — only fail on actual failures (skip skipped/cancelled)
+          FAILED=false
+          for RESULT in \
+            "${{ needs.build-site.result }}" \
+            "${{ needs.push-site.result }}" \
+            "${{ needs.deploy-site.result }}" \
+            "${{ needs.build-admin.result }}" \
+            "${{ needs.push-admin.result }}" \
+            "${{ needs.deploy-admin.result }}"; do
+            if [[ "$RESULT" == "failure" ]]; then
+              FAILED=true
+              break
+            fi
+          done
+
+          if [[ "$FAILED" == "true" ]]; then
+            echo "**Result: ❌ FAILED** — check individual job logs above" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
 
-          echo "**Result: SUCCESS**" >> $GITHUB_STEP_SUMMARY
+          echo "**Result: ✅ SUCCESS**" >> $GITHUB_STEP_SUMMARY

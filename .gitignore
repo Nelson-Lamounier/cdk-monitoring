@@ -88,3 +88,4 @@ docker-compose.mcp.yml
 # ── MCP Server Build Artefacts ───────────────────────────────────────────────
 mcp-servers/*/dist/
 mcp-servers/*/build/
+CI-FrontEnd.yml

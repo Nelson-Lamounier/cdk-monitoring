@@ -133,7 +133,7 @@ jobs:
       commit-sha: ${{ github.sha }}
       commit-short-sha: ${{ steps.pipeline-setup.outputs.short-sha }}
       node-version: ${{ steps.setup-tools.outputs.node-version }}
-      # Stack names from synthesize-ci.ts (12-stack architecture)
+      # Stack names from synthesize-ci.ts (14-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
       goldenami-stack: ${{ steps.synth.outputs.goldenAmi }}
@@ -142,6 +142,9 @@ jobs:
       worker-stack: ${{ steps.synth.outputs.appWorker }}
       monitoring-worker-stack: ${{ steps.synth.outputs.monitoringWorker }}
       argocd-worker-stack: ${{ steps.synth.outputs.argocdWorker }}
+      # ASG pool stacks — additive during migration
+      general-pool-stack: ${{ steps.synth.outputs.generalPool }}
+      monitoring-pool-stack: ${{ steps.synth.outputs.monitoringPool }}
       appiam-stack: ${{ steps.synth.outputs.appIam }}
       api-stack: ${{ steps.synth.outputs.api }}
       edge-stack: ${{ steps.synth.outputs.edge }}
@@ -768,19 +771,161 @@ jobs:
         run: just ci-integration-test kubernetes/argocd-worker-stack $CDK_ENV --verbose
 
   # ===========================================================================
+  # Deploy General Pool ASG Stack (3e) — General-Purpose ASG Pool
+  #
+  # Parameterised KubernetesWorkerAsgStack for the general pool (no taint).
+  # Hosts Next.js, start-admin, ArgoCD, and system components.
+  # Deployed in parallel with legacy worker stacks (additive during migration).
+  # ===========================================================================
+  deploy-general-pool:
+    name: Deploy General Pool ASG
+    needs: [setup, deploy-controlplane, verify-controlplane-stack]
+    if: always() && needs.deploy-controlplane.result == 'success' && needs.verify-controlplane-stack.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.general-pool-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Verify General Pool ASG Stack — Validate Launch Template, ASG, IAM, SSM tags
+  # ===========================================================================
+  verify-general-pool-stack:
+    name: Verify General Pool ASG
+    needs: [setup, deploy-general-pool]
+    if: always() && needs.deploy-general-pool.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run General Pool Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          WORKER_POOL: general
+        run: just ci-integration-test kubernetes/worker-asg-stack $CDK_ENV --pool general --verbose
+
+  # ===========================================================================
+  # Deploy Monitoring Pool ASG Stack (3f) — Observability ASG Pool
+  #
+  # Parameterised KubernetesWorkerAsgStack for the monitoring pool.
+  # Tainted `dedicated=monitoring:NoSchedule` by the bootstrap script.
+  # Hosts Prometheus, Grafana, Loki, Tempo, and Alloy.
+  # Deployed in parallel with legacy worker stacks (additive during migration).
+  # ===========================================================================
+  deploy-monitoring-pool:
+    name: Deploy Monitoring Pool ASG
+    needs: [setup, deploy-controlplane, verify-controlplane-stack]
+    if: always() && needs.deploy-controlplane.result == 'success' && needs.verify-controlplane-stack.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.monitoring-pool-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
+  # Verify Monitoring Pool ASG Stack — Validate Launch Template, ASG, IAM, SNS, SSM tags
+  # ===========================================================================
+  verify-monitoring-pool-stack:
+    name: Verify Monitoring Pool ASG
+    needs: [setup, deploy-monitoring-pool]
+    if: always() && needs.deploy-monitoring-pool.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run Monitoring Pool Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          WORKER_POOL: monitoring
+        run: just ci-integration-test kubernetes/worker-asg-stack $CDK_ENV --pool monitoring --verbose
+
+  # ===========================================================================
   # Deploy AppIam Stack (4/8) — Application-tier IAM grants
+  #
+  # Hard-gated on ALL five worker verify jobs (3 legacy + 2 ASG pools).
+  # The pool verify jobs are required (not continue-on-error) during the
+  # migration window: if a pool stack fails, IAM grants must not proceed.
   # ===========================================================================
   deploy-appiam:
     name: Deploy App IAM
-    needs: [setup, deploy-app-worker, deploy-monitoring-worker, deploy-argocd-worker, verify-app-worker-stack, verify-monitoring-worker-stack, verify-argocd-worker-stack]
+    needs:
+      - setup
+      - deploy-app-worker
+      - deploy-monitoring-worker
+      - deploy-argocd-worker
+      - deploy-general-pool
+      - deploy-monitoring-pool
+      - verify-app-worker-stack
+      - verify-monitoring-worker-stack
+      - verify-argocd-worker-stack
+      - verify-general-pool-stack
+      - verify-monitoring-pool-stack
     if: >-
       always()
       && needs.deploy-app-worker.result == 'success'
       && needs.deploy-monitoring-worker.result == 'success'
       && needs.deploy-argocd-worker.result == 'success'
+      && needs.deploy-general-pool.result == 'success'
+      && needs.deploy-monitoring-pool.result == 'success'
       && needs.verify-app-worker-stack.result == 'success'
       && needs.verify-monitoring-worker-stack.result == 'success'
       && needs.verify-argocd-worker-stack.result == 'success'
+      && needs.verify-general-pool-stack.result == 'success'
+      && needs.verify-monitoring-pool-stack.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.appiam-stack }}
@@ -909,6 +1054,8 @@ jobs:
       - deploy-app-worker
       - deploy-monitoring-worker
       - deploy-argocd-worker
+      - deploy-general-pool
+      - deploy-monitoring-pool
     if: >-
       always()
       && (
@@ -916,6 +1063,8 @@ jobs:
         || needs.deploy-app-worker.result == 'success'
         || needs.deploy-monitoring-worker.result == 'success'
         || needs.deploy-argocd-worker.result == 'success'
+        || needs.deploy-general-pool.result == 'success'
+        || needs.deploy-monitoring-pool.result == 'success'
       )
     runs-on: ubuntu-latest
     container:
@@ -968,6 +1117,8 @@ jobs:
         deploy-app-worker,
         deploy-monitoring-worker,
         deploy-argocd-worker,
+        deploy-general-pool,
+        deploy-monitoring-pool,
         deploy-api,
         deploy-edge,
         verify-edge-stack,
@@ -985,6 +1136,8 @@ jobs:
         || needs.deploy-app-worker.result == 'failure'
         || needs.deploy-monitoring-worker.result == 'failure'
         || needs.deploy-argocd-worker.result == 'failure'
+        || needs.deploy-general-pool.result == 'failure'
+        || needs.deploy-monitoring-pool.result == 'failure'
         || needs.deploy-api.result == 'failure'
         || needs.deploy-edge.result == 'failure'
         || needs.verify-edge-stack.result == 'failure'
@@ -1049,6 +1202,8 @@ jobs:
       - deploy-app-worker
       - deploy-monitoring-worker
       - deploy-argocd-worker
+      - deploy-general-pool
+      - deploy-monitoring-pool
       - deploy-api
       - deploy-edge
       - verify-edge-stack
@@ -1119,6 +1274,8 @@ jobs:
           DEPLOY_WORKER_RESULT: ${{ needs.deploy-app-worker.result || 'skipped' }}
           DEPLOY_MON_WORKER_RESULT: ${{ needs.deploy-monitoring-worker.result || 'skipped' }}
           DEPLOY_ARGOCD_WORKER_RESULT: ${{ needs.deploy-argocd-worker.result || 'skipped' }}
+          DEPLOY_GENERAL_POOL_RESULT: ${{ needs.deploy-general-pool.result || 'skipped' }}
+          DEPLOY_MON_POOL_RESULT: ${{ needs.deploy-monitoring-pool.result || 'skipped' }}
           DEPLOY_API_RESULT: ${{ needs.deploy-api.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           VERIFY_EDGE_RESULT: ${{ needs.verify-edge-stack.result || 'skipped' }}
