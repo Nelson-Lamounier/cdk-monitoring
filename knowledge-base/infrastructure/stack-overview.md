@@ -7,7 +7,7 @@ tags:
   - typescript
   - cloudformation
   - stack-architecture
-  - 20-stacks
+  - 22-stacks
   - aws
   - kubernetes
   - bedrock
@@ -22,7 +22,7 @@ related_docs:
   - infrastructure/infrastructure-topology.md
   - infrastructure/stacks/kubernetes-base-stack.md
   - operations/ci-cd-implementation.md
-last_updated: "2026-03-31"
+last_updated: "2026-04-08"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -35,12 +35,12 @@ status: accepted
 
 ## Multi-Project Architecture
 
-The infrastructure is organised as two independent factory-driven projects, totalling 20 CDK stacks:
+The infrastructure is organised as two independent factory-driven projects, totalling 22 CDK stacks:
 
-- **Kubernetes Project** — 12 stacks (VPC, compute, edge, observability)
+- **Kubernetes Project** — 14 stacks (VPC, compute, edge, observability)
 - **Bedrock Project** — 8 stacks (AI/ML pipelines, knowledge base, API)
 
-The Kubernetes platform is deployed as 12 independent CloudFormation stacks, orchestrated by a factory pattern in `infra/lib/projects/kubernetes/factory.ts`. Stacks are decoupled through SSM parameters — no cross-stack CloudFormation exports.
+The Kubernetes platform is deployed as 14 independent CloudFormation stacks, orchestrated by a factory pattern in `infra/lib/projects/kubernetes/factory.ts`. Stacks are decoupled through SSM parameters — no cross-stack CloudFormation exports.
 
 ### Stack Dependency Graph
 
@@ -50,9 +50,11 @@ The Kubernetes platform is deployed as 12 independent CloudFormation stacks, orc
   2b. Kubernetes-GoldenAmi  → EC2 Image Builder pipeline (bakes Golden AMI with kubeadm, containerd, Calico)
   2c. Kubernetes-SsmAutomation → SSM Automation documents ×6, Step Functions orchestrator, EventBridge triggers
 3. Kubernetes-ControlPlane  → Control plane EC2 (t3.medium), ASG min=1/max=1, EIP failover Lambda
-  3b. Kubernetes-AppWorker       → Application node EC2 (t3.small), ASG, kubeadm join
-  3c. Kubernetes-MonitoringWorker → Monitoring node EC2 (t3.medium Spot), ASG, kubeadm join
-  3d. Kubernetes-ArgocdWorker    → ArgoCD node EC2 (t3.small Spot), ASG, kubeadm join
+  3b. Kubernetes-AppWorker       → Application node EC2 (t3.small), ASG, kubeadm join (legacy)
+  3c. Kubernetes-MonitoringWorker → Monitoring node EC2 (t3.medium Spot), ASG, kubeadm join (legacy)
+  3d. Kubernetes-ArgocdWorker    → ArgoCD node EC2 (t3.small Spot), ASG, kubeadm join (legacy)
+  3e. Kubernetes-GeneralPool → Parameterised ASG pool (t3.small Spot, min=1/max=4, CA-enabled, node-pool=general)
+  3f. Kubernetes-MonitoringPool → Parameterised ASG pool (t3.medium Spot, min=1/max=2, CA-enabled, tainted)
 4. Kubernetes-AppIam        → Application-tier IAM grants (DynamoDB, S3, Secrets)
 5. Kubernetes-API           → API Gateway + Lambda (email subscriptions)
 6. Kubernetes-Edge          → ACM + WAF + CloudFront (us-east-1), Route 53 alias
@@ -82,13 +84,14 @@ The Bedrock AI/ML stacks are deployed as a separate project via `infra/lib/proje
 8. Bedrock-StrategistPipeline → Step Functions (3-agent job strategist), 4 Lambdas
 ```
 
-### Why 12 Stacks?
+### Why 14 Stacks?
 
 Splitting into granular stacks isolates blast radius:
 - Changing an AMI only redeploys GoldenAmi + Compute stacks
 - Changing SG rules only redeploys Base stack
 - Changing WAF rules only redeploys Edge stack (in us-east-1)
 - SSM Automation docs can be updated independently from EC2 instances
+- New pool stacks (GeneralPool, MonitoringPool) are additive — legacy workers remain until workloads are migrated via `nodeSelector`
 
 ### Cross-Stack Communication via SSM
 
@@ -105,7 +108,7 @@ Example SSM parameters:
 
 ### Factory Pattern
 
-The Kubernetes factory (`infra/lib/projects/kubernetes/factory.ts`) implements `IProjectFactory` and creates all 12 stacks with correct dependency ordering. Usage:
+The Kubernetes factory (`infra/lib/projects/kubernetes/factory.ts`) implements `IProjectFactory` and creates all 14 stacks with correct dependency ordering. The two new pool stacks (`generalPool`, `monitoringPool`) are registered via `KubernetesWorkerAsgStack` and use `WorkerPoolType` to branch instance type, capacity, taint, and IAM policy set. Usage:
 
 ```typescript
 // infra/bin/app.ts selects factory based on -c project=k8s
@@ -126,6 +129,8 @@ All cluster parameters are defined in `infra/lib/config/kubernetes/configuration
 | App worker instance | t3.small | t3.small |
 | Monitoring worker | t3.medium (Spot) | t3.small (Spot) |
 | ArgoCD worker | t3.small (Spot) | t3.small (Spot) |
+| **General pool** (new) | t3.small Spot, min=1/max=4 | t3.small Spot |
+| **Monitoring pool** (new) | t3.medium Spot, min=1/max=2 | t3.medium Spot |
 | EBS volume | 30 GB | 50 GB |
 | Log retention | 1 week | 3 months |
 | Removal policy | DESTROY | RETAIN |
@@ -285,7 +290,8 @@ infra/tests/
 │   │   │   ├── observability-stack.test.ts
 │   │   │   ├── ssm-automation-stack.test.ts
 │   │   │   ├── argocd-worker-stack.test.ts
-│   │   │   └── monitoring-worker-stack.test.ts
+│   │   │   ├── monitoring-worker-stack.test.ts
+│   │   │   └── worker-asg-stack.test.ts    # NEW — general + monitoring pool unit tests
 │   │   ├── bedrock/
 │   │   │   ├── agent-stack.test.ts
 │   │   │   ├── ai-content-stack.test.ts
@@ -344,6 +350,7 @@ Integration tests call **live AWS APIs** (EC2, ELBv2, S3, SSM, KMS, Route 53) to
 | `app-worker-stack.integration.test.ts` | AppWorkerStack | Worker ASG, Spot config, kubeadm join |
 | `argocd-worker-stack.integration.test.ts` | ArgocdWorkerStack | ArgoCD node ASG, Spot config |
 | `monitoring-worker-stack.integration.test.ts` | MonitoringWorkerStack | Monitoring node ASG, EBS attachment |
+| `worker-asg-stack.integration.test.ts` | **KubernetesWorkerAsgStack** | Pool-aware: `--pool general` / `--pool monitoring`; ASG tags, IAM policies, CA tags, SNS (monitoring only) |
 | `golden-ami-stack.integration.test.ts` | GoldenAmiStack | Image Builder pipeline, components, AMI output |
 | `edge-stack.integration.test.ts` | EdgeStack | CloudFront, WAF, ACM, cookie forwarding |
 | `data-stack.integration.test.ts` | DataStack | DynamoDB tables, S3 asset bucket |
@@ -442,10 +449,11 @@ The testing implementation follows established industry standards:
 ## Source Files
 
 ### Stack Definitions
-- `infra/lib/projects/kubernetes/factory.ts` — 12-stack factory
+- `infra/lib/projects/kubernetes/factory.ts` — 14-stack factory (now includes `generalPool` + `monitoringPool`)
 - `infra/lib/config/kubernetes/configurations.ts` — all configs (SG rules, instance types, versions)
 - `infra/lib/stacks/kubernetes/base-stack.ts` — long-lived infrastructure
 - `infra/lib/stacks/kubernetes/control-plane-stack.ts` — compute layer
+- `infra/lib/stacks/kubernetes/worker-asg-stack.ts` — **NEW** parameterised ASG pool (`WorkerPoolType` = `general` | `monitoring`)
 - `infra/lib/stacks/kubernetes/edge-stack.ts` — CloudFront + WAF
 - `infra/lib/stacks/kubernetes/ssm-automation-stack.ts` — bootstrap orchestration
 - `infra/lib/stacks/kubernetes/golden-ami-stack.ts` — AMI baking pipeline
@@ -460,7 +468,7 @@ The testing implementation follows established industry standards:
 
 ## Transferable Skills Demonstrated
 
-- **Multi-stack CDK architecture** — organising 20 stacks across 2 factory-driven projects with SSM-based cross-stack discovery
+- **Multi-stack CDK architecture** — organising 22 stacks across 2 factory-driven projects with SSM-based cross-stack discovery
 - **TypeScript CDK testing** — dual-layer unit + integration test strategy using `aws-cdk-lib/assertions` with 108 template assertions on the reference stack
 - **Test pyramid in infrastructure** — fast synth-time unit tests (no credentials) + slower post-deploy integration tests (live AWS APIs), gated in CI/CD
 - **Data-driven test design** — config-derived assertions via `it.each()` aligned with the same configuration source as production stacks
@@ -471,8 +479,8 @@ The testing implementation follows established industry standards:
 
 ## Summary
 
-This document provides the high-level architectural overview of the entire cdk-monitoring infrastructure, mapping all 20 CDK stacks across 2 projects (Kubernetes + Bedrock), the dual-layer CDK testing strategy (46 unit test suites + 13 integration test suites), and the KubernetesBaseStack reference implementation demonstrating 108 unit tests and ~80 integration assertions. It serves as the entry point for understanding both the system architecture and the testing methodology.
+This document provides the high-level architectural overview of the entire cdk-monitoring infrastructure, mapping all 22 CDK stacks across 2 projects (Kubernetes + Bedrock). The Kubernetes project grew from 12 to 14 stacks in April 2026, adding two parameterised ASG pool stacks (`KubernetesWorkerAsgStack` — `general` and `monitoring` pools) with pool-specific IAM policies, Cluster Autoscaler tags, and a self-bootstrapping User Data orchestrator. The dual-layer CDK testing strategy (unit + integration), the KubernetesBaseStack reference implementation, and the pool-aware integration test suite are also documented.
 
 ## Keywords
 
-cdk, typescript, cloudformation, stack-architecture, aws, kubernetes, bedrock, self-healing, edge, networking, security, observability, jest, unit-testing, integration-testing, template-assertions, test-pyramid
+cdk, typescript, cloudformation, stack-architecture, aws, kubernetes, bedrock, self-healing, edge, networking, security, observability, jest, unit-testing, integration-testing, template-assertions, test-pyramid, worker-asg, asg-pool, cluster-autoscaler, spot-instances
