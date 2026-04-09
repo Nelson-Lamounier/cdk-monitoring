@@ -397,7 +397,10 @@ def main() -> None:
                 "labels": {"app": "start-admin", "managed-by": "deploy.py"},
             },
             "spec": {
-                "entryPoints": ["web"],
+                # CloudFront sends origin requests on HTTPS/443 — websecure is
+                # Traefik's name for the port-443 entrypoint. tls:{} enables
+                # Traefik's built-in TLS termination for this route.
+                "entryPoints": ["websecure"],
                 "routes": [
                     {
                         "match": match_rule,
@@ -405,6 +408,7 @@ def main() -> None:
                         "services": [{"name": "start-admin", "port": 5001}],
                     }
                 ],
+                "tls": {},
             },
         }
 
@@ -464,7 +468,7 @@ def main() -> None:
                 "labels": {"app": "start-admin", "managed-by": "deploy.py"},
             },
             "spec": {
-                "entryPoints": ["web"],
+                "entryPoints": ["websecure"],
                 "routes": [
                     {
                         "match": preview_match_rule,
@@ -473,6 +477,7 @@ def main() -> None:
                         "services": [{"name": "start-admin-preview", "port": 5001}],
                     }
                 ],
+                "tls": {},
             },
         }
         try:

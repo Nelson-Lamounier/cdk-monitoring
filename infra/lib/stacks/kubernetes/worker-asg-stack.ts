@@ -377,13 +377,21 @@ export class KubernetesWorkerAsgStack extends cdk.Stack {
             ],
         }));
 
-        // SSM PutParameter: publish instance-id and execution-id for CI pipeline
+        // SSM PutParameter:
+        //   1. bootstrap/*              — instance-id + execution-id for CI pipeline
+        //      (written by user-data and trigger-bootstrap.ts)
+        //   2. nodes/{poolType}/*       — instance-id → hostname mapping written by
+        //      register_instance.py (Step 3b) after a successful kubeadm join.
+        //      Without this, pool discovery via `aws ssm get-parameters-by-path
+        //      --path {ssmPrefix}/nodes/{pool}` will never see this node.
+        //      Scoped to this pool's own sub-path to minimise blast radius.
         launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
             sid: 'SsmPublishBootstrapParams',
             effect: iam.Effect.ALLOW,
             actions: ['ssm:PutParameter'],
             resources: [
                 `arn:aws:ssm:${this.region}:${this.account}:parameter${ssmPrefix}/bootstrap/*`,
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${ssmPrefix}/nodes/${props.poolType}/*`,
             ],
         }));
 

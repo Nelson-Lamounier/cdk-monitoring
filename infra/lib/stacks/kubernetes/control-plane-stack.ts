@@ -373,13 +373,20 @@ echo "SSM Automation will be triggered by the CI pipeline"
             ],
         }));
 
-        // Grant SSM PutParameter for publishing execution ID
+        // Grant SSM PutParameter for:
+        //   1. bootstrap/*   — execution ID published during user-data stub
+        //   2. admin-kubeconfig-b64 — base64-encoded admin.conf published by
+        //      _publish_kubeconfig_to_ssm() so worker nodes can fetch full
+        //      RBAC access for label self-healing in verify_membership.py.
+        //      Without this, workers permanently fall back to kubelet.conf
+        //      (read-only Node authoriser) and cannot self-correct label drift.
         this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
-            sid: 'SsmPublishExecutionId',
+            sid: 'SsmPublishBootstrapAndKubeconfig',
             effect: iam.Effect.ALLOW,
             actions: ['ssm:PutParameter'],
             resources: [
                 `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/bootstrap/*`,
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/admin-kubeconfig-b64`,
             ],
         }));
 

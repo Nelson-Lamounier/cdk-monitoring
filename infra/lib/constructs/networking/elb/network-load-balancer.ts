@@ -352,13 +352,17 @@ export class NetworkLoadBalancerConstruct extends Construct {
     /**
      * Configure NLB SG with CloudFront prefix list restriction.
      *
-     * Defence-in-depth: restricts HTTP inbound to CloudFront origin-facing
-     * IPs only (via AWS managed prefix list). HTTPS remains open for admin
-     * access (fine-grained filtering enforced by the Ingress SG on targets).
+     * Defence-in-depth: restricts ALL inbound traffic (both port 80 and port 443)
+     * to CloudFront origin-facing IPs only (AWS managed prefix list). This prevents
+     * internet scanners and bots from hitting Traefik directly, whether on HTTP or HTTPS.
+     *
+     * CloudFront sends origin requests on HTTPS/443 (websecure entrypoint in Traefik).
+     * Restricting port 443 to the prefix list means only CloudFront edge nodes
+     * can reach the NLB — all other internet traffic is dropped at the SG boundary.
      *
      * **Inbound**:
-     * - Port 80: CloudFront managed prefix list only (blocks direct HTTP access)
-     * - Port 443: `0.0.0.0/0` + `::/0` (admin HTTPS — Traefik handles TLS)
+     * - Port 80: CloudFront managed prefix list only
+     * - Port 443: CloudFront managed prefix list only
      *
      * **Outbound**:
      * - Both ports forwarded to VPC CIDR (health checks + target forwarding)
@@ -380,23 +384,21 @@ export class NetworkLoadBalancerConstruct extends Construct {
     ): void {
         const vpcCidr = this.vpc.vpcCidrBlock;
 
-        // Inbound: CloudFront only → NLB HTTP port
+        // Inbound: CloudFront only → NLB HTTP port (port 80)
+        // Blocks direct HTTP access from scanners and bots bypassing CloudFront.
         this.securityGroup.addIngressRule(
             ec2.Peer.prefixList(cloudFrontPrefixListId),
             ec2.Port.tcp(httpPort),
             'HTTP from CloudFront origin-facing IPs only',
         );
 
-        // Inbound: internet → NLB HTTPS port (admin access)
+        // Inbound: CloudFront only → NLB HTTPS port (port 443)
+        // CloudFront now uses HTTPS as the origin protocol — restrict 443 to the
+        // same prefix list so bots cannot hit Traefik directly on HTTPS either.
         this.securityGroup.addIngressRule(
-            ec2.Peer.anyIpv4(),
+            ec2.Peer.prefixList(cloudFrontPrefixListId),
             ec2.Port.tcp(httpsPort),
-            'HTTPS from internet (admin access via Traefik)',
-        );
-        this.securityGroup.addIngressRule(
-            ec2.Peer.anyIpv6(),
-            ec2.Port.tcp(httpsPort),
-            'HTTPS from internet IPv6 (admin access via Traefik)',
+            'HTTPS from CloudFront origin-facing IPs only',
         );
 
         // Outbound: NLB → targets (health checks + forwarding)

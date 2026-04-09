@@ -405,7 +405,10 @@ def main() -> None:
                 "labels": {"app": "nextjs", "managed-by": "deploy.py"},
             },
             "spec": {
-                "entryPoints": ["web"],
+                # CloudFront sends origin requests on HTTPS/443 — websecure is
+                # Traefik's name for the port-443 entrypoint. tls:{} enables
+                # Traefik's built-in TLS termination for this route.
+                "entryPoints": ["websecure"],
                 "routes": [
                     {
                         "match": match_rule,
@@ -413,6 +416,7 @@ def main() -> None:
                         "services": [{"name": "nextjs", "port": 3000}],
                     }
                 ],
+                "tls": {},
             },
         }
 
@@ -473,7 +477,7 @@ def main() -> None:
                 "labels": {"app": "nextjs", "managed-by": "deploy.py"},
             },
             "spec": {
-                "entryPoints": ["web"],
+                "entryPoints": ["websecure"],
                 "routes": [
                     {
                         "match": preview_match_rule,
@@ -482,6 +486,7 @@ def main() -> None:
                         "services": [{"name": "nextjs-preview", "port": 3000}],
                     }
                 ],
+                "tls": {},
             },
         }
         try:

@@ -370,10 +370,11 @@ export class KubernetesBaseStack extends cdk.Stack {
         this.nlbConstruct.addTcpListener('HttpListener', TRAEFIK_HTTP_PORT, this.nlbHttpTargetGroup);
         this.nlbConstruct.addTcpListener('HttpsListener', TRAEFIK_HTTPS_PORT, this.nlbHttpsTargetGroup);
 
-        // NLB Security Group — Defence-in-depth: port 80 restricted to
-        // CloudFront origin-facing IPs (managed prefix list). Port 443 open
-        // for admin HTTPS (fine-grained filtering handled by Ingress SG).
-        // This prevents direct HTTP access to the NLB bypassing CloudFront/WAF.
+        // NLB Security Group — Defence-in-depth: both port 80 and port 443
+        // restricted to CloudFront origin-facing IPs (managed prefix list).
+        // CloudFront sends origin requests on HTTPS/443 (websecure entrypoint).
+        // This blocks internet scanners and bots from reaching Traefik directly
+        // on either port, whether or not they know the CloudFront origin secret.
         this.nlbConstruct.configureCloudFrontSecurityGroup(
             cfPrefixListId,
             TRAEFIK_HTTP_PORT,
