@@ -9,10 +9,12 @@
 # ─── Job Flow ──────────────────────────────────────────────────────
 #   deploy-secrets → verify
 #
-#   1. deploy-secrets  - Deploy Next.js + monitoring K8s Secrets via
-#                        the consolidated k8s-deploy-secrets SSM
-#                        Automation document (2-step sequence)
-#   2. verify          - ArgoCD health + K8s smoke tests
+#   1. deploy-secrets  - Deploy all app secrets (nextjs + monitoring +
+#                        start-admin) via a SINGLE SSM Automation
+#                        execution of the consolidated k8s-deploy-secrets
+#                        document (3-step sequence on the control plane).
+#   2. verify          - ArgoCD health + IngressRoute origin-secret check
+#                        + K8s smoke tests
 #
 # ─── Usage ─────────────────────────────────────────────────────────
 #   Called by:
@@ -20,8 +22,13 @@
 #     - deploy-post-bootstrap.yml   (standalone for secret-only updates)
 #
 # ─── SSM Document Consolidation ───────────────────────────────────
-#   Both Next.js and monitoring secrets are deployed via a single
-#   SSM Automation document (k8s-deploy-secrets) with 2 steps.
+#   All three app secrets are deployed via a SINGLE ci-deploy-nextjs-secrets
+#   invocation.  The k8s-deploy-secrets document executes all three deploy.py
+#   scripts sequentially on the control-plane node:
+#     Step 1: nextjs/deploy.py     — K8s Secret + ArgoCD cloudfront.originSecret
+#     Step 2: monitoring/deploy.py — K8s Secrets + Helm chart + Grafana reset
+#     Step 3: start-admin/deploy.py — K8s Secret (Cognito / DynamoDB / Bedrock)
+#
 #   The document name is resolved from SSM parameter:
 #     /k8s/<env>/deploy/secrets-doc-name
 #
@@ -57,20 +64,23 @@ env:
 
 jobs:
   # ===========================================================================
-  # Deploy Secrets — Next.js + Monitoring via consolidated SSM Document
+  # Deploy Secrets — All applications via the consolidated SSM Document
   #
-  # Triggers the k8s-deploy-secrets SSM Automation document twice:
-  #   Step 1: Next.js secrets (SSM → K8s Secret in nextjs namespace)
-  #   Step 2: Monitoring secrets (grafana-admin-password, github-token
-  #           → K8s Secrets + Helm chart + Grafana password reset)
+  # The k8s-deploy-secrets SSM Automation document runs ALL THREE deploy.py
+  # scripts sequentially on the control-plane node:
+  #   Step 1: nextjs/deploy.py     — nextjs-secrets K8s Secret + ArgoCD patch
+  #   Step 2: monitoring/deploy.py — grafana + github K8s Secrets + Helm chart
+  #   Step 3: start-admin/deploy.py — start-admin-secrets K8s Secret
   #
-  # Both scripts resolve the document name from the same SSM parameter:
-  #   /k8s/<env>/deploy/secrets-doc-name
+  # A single ci-deploy-nextjs-secrets invocation triggers the full 3-step
+  # document.  Triggering the document three times (one per app) is redundant
+  # and was masking failures by generating 3x green ticks for the same execution.
   #
+  # Document name resolved from SSM: /k8s/<env>/deploy/secrets-doc-name
   # Visible in: AWS Console → Systems Manager → Automation → Executions
   # ===========================================================================
   deploy-secrets:
-    name: Deploy Secrets (Next.js + Monitoring)
+    name: Deploy Secrets (All Apps — Consolidated)
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
@@ -94,46 +104,23 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
 
       # -----------------------------------------------------------------------
-      # Step 1 — Deploy Next.js Secrets
+      # Deploy All Secrets — single SSM Automation execution
       #
-      # Triggers k8s-deploy-secrets SSM Automation document to execute
-      # deploy.py on the control plane. Resolves SSM parameters for
-      # Next.js app config and creates/updates the nextjs-secrets
-      # K8s Secret in the nextjs namespace.
+      # Triggers the k8s-deploy-secrets document ONCE.  The document executes
+      # all three deploy.py scripts in sequence on the control-plane:
+      #   1. nextjs/deploy.py     — K8s Secret + ArgoCD cloudfront.originSecret patch
+      #   2. monitoring/deploy.py — K8s Secrets + Helm chart + Grafana password reset
+      #   3. start-admin/deploy.py — K8s Secret for Cognito / DynamoDB / Bedrock
+      #
+      # deploy.py Step 5 now exits 1 on any ArgoCD patch failure, which causes
+      # the SSM step to fail and surfaces the error here immediately.
       # -----------------------------------------------------------------------
-      - name: "Step 1 — Deploy Next.js Secrets"
+      - name: "Deploy All Secrets (nextjs + monitoring + start-admin)"
         run: |
           just ci-deploy-nextjs-secrets \
             --environment ${{ inputs.environment }} \
             --region ${{ vars.AWS_REGION || 'eu-west-1' }}
 
-      # -----------------------------------------------------------------------
-      # Step 2 — Deploy Monitoring Secrets
-      #
-      # Same SSM Automation document, different parameters. Resolves
-      # grafana-admin-password and github-token from SSM, creates/updates
-      # K8s Secrets, deploys Helm chart, and resets Grafana password.
-      # -----------------------------------------------------------------------
-      - name: "Step 2 — Deploy Monitoring Secrets"
-        run: >-
-          just ci-deploy-monitoring-secrets
-          --environment ${{ inputs.environment }}
-          --region ${{ vars.AWS_REGION || 'eu-west-1' }}
-
-      # -----------------------------------------------------------------------
-      # Step 3 — Deploy Start-Admin Secrets
-      #
-      # Triggers the same consolidated SSM Automation document with
-      # AppName=start-admin. Runs deploy.py on the control-plane to
-      # create/update the start-admin-secrets K8s Secret in the
-      # start-admin namespace. Resolves Cognito, DynamoDB, Bedrock,
-      # and Lambda ARN parameters from SSM.
-      # -----------------------------------------------------------------------
-      - name: "Step 3 — Deploy Start-Admin Secrets"
-        run: |
-          just ci-deploy-admin-secrets \
-            --environment ${{ inputs.environment }} \
-            --region ${{ vars.AWS_REGION || 'eu-west-1' }}
 
   # ===========================================================================
   # Verify & Smoke Tests
@@ -221,6 +208,78 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --max-polls 6 \
             --poll-interval 20
+
+      # -----------------------------------------------------------------------
+      # Verify CloudFront Origin Secret Was Injected
+      #
+      # Runs a kubectl check on the control-plane node via SSM send-command
+      # to confirm the Traefik IngressRoute no longer contains the placeholder
+      # regex '^PLACEHOLDER_NEVER_MATCHES$'.  A lingering placeholder means
+      # deploy.py Step 5 did not persist the secret and CloudFront requests
+      # will receive 404s from Traefik.
+      #
+      # Skipped on Day-0 (no ArgoCD token) because the IngressRoute may not
+      # exist yet on a fresh cluster.
+      # -----------------------------------------------------------------------
+      - name: "Verify CloudFront Origin Secret Injected"
+        id: verify-origin-secret
+        if: steps.argocd-token.outputs.token != '' && steps.argocd-token.outcome == 'success'
+        continue-on-error: false
+        run: |
+          REGION="${{ env.AWS_REGION }}"
+          SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}"
+
+          # Resolve control-plane instance ID (live EC2 tag lookup)
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:k8s:bootstrap-role,Values=control-plane" \
+              "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --region "$REGION" --output text 2>/dev/null || echo "")
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::warning::Could not resolve control-plane instance — skipping IngressRoute verification"
+            exit 0
+          fi
+          echo "::add-mask::$INSTANCE_ID"
+
+          # Execute kubectl on the control-plane node to read the IngressRoute match rule.
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["sudo kubectl -n nextjs-app get ingressroute nextjs -o jsonpath={.spec.routes[0].match} 2>&1 || echo INGRESSROUTE_NOT_FOUND"]' \
+            --region "$REGION" \
+            --query "Command.CommandId" --output text 2>/dev/null || echo "")
+
+          if [ -z "$CMD_ID" ]; then
+            echo "::warning::Could not send SSM command — skipping IngressRoute verification"
+            exit 0
+          fi
+
+          echo "Waiting for SSM command $CMD_ID to complete..."
+          sleep 12
+
+          MATCH=$(aws ssm get-command-invocation \
+            --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --region "$REGION" \
+            --query "StandardOutputContent" --output text 2>/dev/null || echo "")
+
+          echo "IngressRoute match rule: $MATCH"
+
+          if echo "$MATCH" | grep -q "PLACEHOLDER_NEVER_MATCHES"; then
+            echo "::error::IngressRoute still contains the placeholder originSecret."
+            echo "::error::deploy.py Step 5 did not persist the CloudFront secret in ArgoCD."
+            echo "::error::Check the SSM Automation execution logs for 'FATAL' or 'Verification FAILED'."
+            exit 1
+          fi
+
+          if echo "$MATCH" | grep -q "INGRESSROUTE_NOT_FOUND"; then
+            echo "::warning::IngressRoute 'nextjs' not found in nextjs-app namespace — ArgoCD may not have synced yet"
+            exit 0
+          fi
+
+          echo "[OK] IngressRoute has a real origin secret — CloudFront routing is active."
 
       - name: Run K8s Smoke Tests
         id: smoke

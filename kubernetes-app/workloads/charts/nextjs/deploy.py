@@ -321,46 +321,53 @@ def main() -> None:
     create_nextjs_k8s_secrets(v1, cfg)
 
     # Step 5: Inject CloudFront Origin Secret into Helm rendering parameters
+    #
+    # IMPORTANT: Failures here are treated as FATAL (sys.exit(1)) because a
+    # silent failure leaves the Traefik IngressRoute with the placeholder regex
+    # '^PLACEHOLDER_NEVER_MATCHES$', which causes CloudFront to receive 404 for
+    # every request.  The only legitimate skip is when the SSM parameter does
+    # not exist yet (Day-0 before a CloudFront distribution is deployed).
     try:
-        from kubernetes import client
+        from kubernetes import client  # noqa: PLC0415 — deferred import (optional dep)
         from datetime import datetime, timezone
         import re
         from urllib.parse import urlparse
+        from deploy_helpers.logging import log_error
 
         cf_secret_path = f"/k8s/{cfg.environment_name}/cloudfront-origin-secret"
         log_info("Fetching CloudFront origin secret history", ssm_path=cf_secret_path)
-        
+
         paginator = ssm_client.get_paginator("get_parameter_history")
         history = []
         for page in paginator.paginate(Name=cf_secret_path, WithDecryption=True):
             history.extend(page.get("Parameters", []))
-            
+
         if not history:
             raise ValueError(f"No history found for {cf_secret_path}")
-            
-        # History is ordered oldest to newest
+
+        # History is ordered oldest to newest.
         latest = history[-1]
         origin_secret = latest["Value"]
-        
+
         latest_time = latest["LastModifiedDate"]
         now = datetime.now(timezone.utc)
-        
-        # If there are at least 2 versions and the latest rotation was < 20 min ago
+
+        # If there are at least 2 versions and the latest rotation was < 20 min ago,
+        # use a regex OR pattern to allow both secrets temporarily (zero-downtime rotation).
         if len(history) >= 2 and (now - latest_time).total_seconds() < 20 * 60:
             previous_secret = history[-2]["Value"]
-            # Use regex OR to allow both values temporarily
             old_escaped = re.escape(previous_secret)
             new_escaped = re.escape(origin_secret)
             origin_secret = f"{old_escaped}|{new_escaped}"
             log_info(
                 "Secret rotated recently. Using dual-secret regex for zero-downtime.",
-                minutes_since_rotation=round((now - latest_time).total_seconds() / 60, 1)
+                minutes_since_rotation=round((now - latest_time).total_seconds() / 60, 1),
             )
         else:
             log_info("Using single origin secret.")
 
         # Derive public hostname from NEXTAUTH_URL for Host() defence-in-depth.
-        # NEXTAUTH_URL is already resolved in Step 3 (e.g., "https://nelsonlamounier.com").
+        # NEXTAUTH_URL is already resolved in Step 3 (e.g. "https://nelsonlamounier.com").
         ingress_host = ""
         nextauth_url = cfg.secrets.get("NEXTAUTH_URL", "")
         if nextauth_url:
@@ -370,7 +377,7 @@ def main() -> None:
         else:
             log_warn("NEXTAUTH_URL not available — Host() rule will be skipped")
 
-        # Build helm parameter overrides
+        # Build Helm parameter overrides for ArgoCD Application.
         helm_params = [
             {"name": "cloudfront.originSecret", "value": origin_secret, "forceString": True},
         ]
@@ -395,13 +402,63 @@ def main() -> None:
             namespace="argocd",
             plural="applications",
             name="nextjs",
-            body=patch
+            body=patch,
         )
-        log_info("Successfully patched ArgoCD nextjs Application with origin secret.", host=ingress_host)
-    except client_error_cls:
-        log_warn("CloudFront origin secret not found in SSM, skipping injection.")
-    except Exception as e:
-        log_warn("Failed to patch ArgoCD Application with CloudFront Origin Secret", error=str(e))
+        log_info("Patched ArgoCD nextjs Application with origin secret.", host=ingress_host)
+
+        # ── Verification read-back ──────────────────────────────────────────────
+        # Re-read the ArgoCD Application to confirm the patch was persisted.
+        # This catches RBAC partial-write scenarios where the API returns 200
+        # but the value was not actually stored.
+        app = custom_api.get_namespaced_custom_object(
+            group="argoproj.io",
+            version="v1alpha1",
+            namespace="argocd",
+            plural="applications",
+            name="nextjs",
+        )
+        written_params = (
+            app.get("spec", {})
+               .get("source", {})
+               .get("helm", {})
+               .get("parameters", [])
+        )
+        written_secret = next(
+            (p.get("value", "") for p in written_params if p.get("name") == "cloudfront.originSecret"),
+            None,
+        )
+        _PLACEHOLDER = "^PLACEHOLDER_NEVER_MATCHES$"
+        if written_secret is None or written_secret == _PLACEHOLDER:
+            log_error(
+                "Verification FAILED: originSecret was not persisted in ArgoCD Application.",
+                written=str(written_secret),
+            )
+            sys.exit(1)
+
+        log_info(
+            "Verification PASSED: originSecret is active in ArgoCD Application.",
+            host=ingress_host,
+        )
+
+    except client_error_cls as e:
+        # SSM ClientError means the CloudFront origin secret parameter does not exist
+        # yet — legitimate skip on Day-0 before a CloudFront distribution is deployed.
+        log_warn(
+            "CloudFront origin secret not found in SSM — skipping injection.",
+            error=str(e),
+        )
+    except SystemExit:
+        # Re-raise sys.exit() calls from the verification block above.
+        raise
+    except Exception as e:  # noqa: BLE001
+        # Any other exception (ImportError, API error, network timeout) is FATAL.
+        # Swallowing this error was the root cause of silent CloudFront 404s.
+        from deploy_helpers.logging import log_error  # noqa: PLC0415
+        log_error(
+            "FATAL: Failed to patch ArgoCD Application with CloudFront Origin Secret.",
+            error=str(e),
+        )
+        sys.exit(1)
 
     log_info("Next.js secrets deployed successfully")
 
