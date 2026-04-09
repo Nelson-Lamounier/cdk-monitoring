@@ -25,7 +25,7 @@
 #   All three app secrets are deployed via a SINGLE ci-deploy-nextjs-secrets
 #   invocation.  The k8s-deploy-secrets document executes all three deploy.py
 #   scripts sequentially on the control-plane node:
-#     Step 1: nextjs/deploy.py     — K8s Secret + ArgoCD cloudfront.originSecret
+#     Step 1: nextjs/deploy.py     — K8s Secret + direct IngressRoute originSecret patch
 #     Step 2: monitoring/deploy.py — K8s Secrets + Helm chart + Grafana reset
 #     Step 3: start-admin/deploy.py — K8s Secret (Cognito / DynamoDB / Bedrock)
 #
@@ -68,7 +68,7 @@ jobs:
   #
   # The k8s-deploy-secrets SSM Automation document runs ALL THREE deploy.py
   # scripts sequentially on the control-plane node:
-  #   Step 1: nextjs/deploy.py     — nextjs-secrets K8s Secret + ArgoCD patch
+  #   Step 1: nextjs/deploy.py     — nextjs-secrets K8s Secret + IngressRoute originSecret patch
   #   Step 2: monitoring/deploy.py — grafana + github K8s Secrets + Helm chart
   #   Step 3: start-admin/deploy.py — start-admin-secrets K8s Secret
   #
@@ -112,7 +112,7 @@ jobs:
       #   2. monitoring/deploy.py — K8s Secrets + Helm chart + Grafana password reset
       #   3. start-admin/deploy.py — K8s Secret for Cognito / DynamoDB / Bedrock
       #
-      # deploy.py Step 5 now exits 1 on any ArgoCD patch failure, which causes
+      # deploy.py Step 5 exits 1 on any IngressRoute patch failure, which causes
       # the SSM step to fail and surfaces the error here immediately.
       # -----------------------------------------------------------------------
       - name: "Deploy All Secrets (nextjs + monitoring + start-admin)"
@@ -269,8 +269,8 @@ jobs:
 
           if echo "$MATCH" | grep -q "PLACEHOLDER_NEVER_MATCHES"; then
             echo "::error::IngressRoute still contains the placeholder originSecret."
-            echo "::error::deploy.py Step 5 did not persist the CloudFront secret in ArgoCD."
-            echo "::error::Check the SSM Automation execution logs for 'FATAL' or 'Verification FAILED'."
+            echo "::error::deploy.py Step 5 failed to patch the IngressRoute directly."
+            echo "::error::Check the SSM Automation logs for 'FATAL' or 'Verification FAILED'."
             exit 1
           fi
 

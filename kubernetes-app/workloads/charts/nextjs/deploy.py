@@ -320,15 +320,25 @@ def main() -> None:
     # Step 4: Create Kubernetes secrets
     create_nextjs_k8s_secrets(v1, cfg)
 
-    # Step 5: Inject CloudFront Origin Secret into Helm rendering parameters
+    # Step 5: Create / Update the Traefik IngressRoute with the real CloudFront secret
     #
-    # IMPORTANT: Failures here are treated as FATAL (sys.exit(1)) because a
-    # silent failure leaves the Traefik IngressRoute with the placeholder regex
-    # '^PLACEHOLDER_NEVER_MATCHES$', which causes CloudFront to receive 404 for
-    # every request.  The only legitimate skip is when the SSM parameter does
-    # not exist yet (Day-0 before a CloudFront distribution is deployed).
+    # ── OWNERSHIP MODEL ──────────────────────────────────────────────────────────
+    # deploy.py is the SOLE owner of the 'nextjs' IngressRoute.
+    # The Helm chart sets ingress.enabled=false so ArgoCD never renders or
+    # manages this resource — eliminating the race condition where ArgoCD
+    # sync re-rendered the IngressRoute with the ^PLACEHOLDER_NEVER_MATCHES$
+    # default on every git push or 3-minute auto-sync cycle.
+    #
+    # On first deploy (Day-0) deploy.py CREATES the IngressRoute.
+    # On all subsequent deploys it UPDATES the match rule in-place.
+    # ArgoCD is not contacted anywhere in this step.
+    #
+    # FAILURE POLICY: any error is FATAL (sys.exit(1)).
+    # The only legitimate skip is when the SSM parameter does not exist yet
+    # (true Day-0 before a CloudFront distribution has been provisioned).
     try:
         from kubernetes import client  # noqa: PLC0415 — deferred import (optional dep)
+        from kubernetes.client.rest import ApiException
         from datetime import datetime, timezone
         import re
         from urllib.parse import urlparse
@@ -377,74 +387,108 @@ def main() -> None:
         else:
             log_warn("NEXTAUTH_URL not available — Host() rule will be skipped")
 
-        # Build Helm parameter overrides for ArgoCD Application.
-        helm_params = [
-            {"name": "cloudfront.originSecret", "value": origin_secret, "forceString": True},
-        ]
-        if ingress_host:
-            helm_params.append(
-                {"name": "ingress.host", "value": ingress_host, "forceString": True}
-            )
-
         custom_api = client.CustomObjectsApi(v1.api_client)
-        patch = {
-            "spec": {
-                "source": {
-                    "helm": {
-                        "parameters": helm_params
-                    }
-                }
-            }
-        }
-        custom_api.patch_namespaced_custom_object(
-            group="argoproj.io",
-            version="v1alpha1",
-            namespace="argocd",
-            plural="applications",
-            name="nextjs",
-            body=patch,
-        )
-        log_info("Patched ArgoCD nextjs Application with origin secret.", host=ingress_host)
 
-        # ── Verification read-back ──────────────────────────────────────────────
-        # Re-read the ArgoCD Application to confirm the patch was persisted.
-        # This catches RBAC partial-write scenarios where the API returns 200
-        # but the value was not actually stored.
-        app = custom_api.get_namespaced_custom_object(
-            group="argoproj.io",
+        # ── 5a: Build the IngressRoute manifest ──────────────────────────────────
+        # Compose: optional Host() + PathPrefix + HeaderRegexp(real secret).
+        host_clause = f"Host(`{ingress_host}`) && " if ingress_host else ""
+        match_rule = (
+            f"{host_clause}PathPrefix(`/`) && "
+            f"HeaderRegexp(`X-CloudFront-Origin-Secret`, `{origin_secret}`)"
+        )
+        ingressroute_manifest = {
+            "apiVersion": "traefik.io/v1alpha1",
+            "kind": "IngressRoute",
+            "metadata": {
+                "name": "nextjs",
+                "namespace": "nextjs-app",
+                "labels": {"app": "nextjs", "managed-by": "deploy.py"},
+            },
+            "spec": {
+                "entryPoints": ["web"],
+                "routes": [
+                    {
+                        "match": match_rule,
+                        "kind": "Rule",
+                        "services": [{"name": "nextjs", "port": 3000}],
+                    }
+                ],
+            },
+        }
+
+        # ── 5b: Create-or-update (apply) the IngressRoute ──────────────────────
+        # GET first: 200 → PATCH in-place.  404 → CREATE (Day-0 first deploy).
+        try:
+            custom_api.get_namespaced_custom_object(
+                group="traefik.io",
+                version="v1alpha1",
+                namespace="nextjs-app",
+                plural="ingressroutes",
+                name="nextjs",
+            )
+            custom_api.patch_namespaced_custom_object(
+                group="traefik.io",
+                version="v1alpha1",
+                namespace="nextjs-app",
+                plural="ingressroutes",
+                name="nextjs",
+                body={"spec": ingressroute_manifest["spec"]},
+            )
+            log_info(
+                "Updated IngressRoute 'nextjs' with current origin secret.",
+                host=ingress_host,
+                match_preview=match_rule[:120],
+            )
+        except ApiException as api_err:
+            if api_err.status == 404:
+                custom_api.create_namespaced_custom_object(
+                    group="traefik.io",
+                    version="v1alpha1",
+                    namespace="nextjs-app",
+                    plural="ingressroutes",
+                    body=ingressroute_manifest,
+                )
+                log_info(
+                    "Created IngressRoute 'nextjs' (Day-0 first deploy).",
+                    host=ingress_host,
+                    match_preview=match_rule[:120],
+                )
+            else:
+                raise
+
+
+        # ── 5c: Verification read-back ─────────────────────────────────────────
+        # Re-read the live IngressRoute to confirm the apply persisted.
+        verify_ir = custom_api.get_namespaced_custom_object(
+            group="traefik.io",
             version="v1alpha1",
-            namespace="argocd",
-            plural="applications",
+            namespace="nextjs-app",
+            plural="ingressroutes",
             name="nextjs",
         )
-        written_params = (
-            app.get("spec", {})
-               .get("source", {})
-               .get("helm", {})
-               .get("parameters", [])
-        )
-        written_secret = next(
-            (p.get("value", "") for p in written_params if p.get("name") == "cloudfront.originSecret"),
-            None,
+        verify_match = (
+            verify_ir.get("spec", {})
+                      .get("routes", [{}])[0]
+                      .get("match", "")
         )
         _PLACEHOLDER = "^PLACEHOLDER_NEVER_MATCHES$"
-        if written_secret is None or written_secret == _PLACEHOLDER:
+        if _PLACEHOLDER in verify_match or not verify_match:
             log_error(
-                "Verification FAILED: originSecret was not persisted in ArgoCD Application.",
-                written=str(written_secret),
+                "Verification FAILED: IngressRoute match rule is invalid after apply.",
+                match=verify_match,
             )
             sys.exit(1)
 
         log_info(
-            "Verification PASSED: originSecret is active in ArgoCD Application.",
-            host=ingress_host,
+            "Verification PASSED: IngressRoute is active with real origin secret.",
+            match_preview=verify_match[:120],
         )
 
     except client_error_cls as e:
         # SSM ClientError means the CloudFront origin secret parameter does not exist
         # yet — legitimate skip on Day-0 before a CloudFront distribution is deployed.
         log_warn(
-            "CloudFront origin secret not found in SSM — skipping injection.",
+            "CloudFront origin secret not found in SSM — skipping IngressRoute apply.",
             error=str(e),
         )
     except SystemExit:
@@ -455,7 +499,7 @@ def main() -> None:
         # Swallowing this error was the root cause of silent CloudFront 404s.
         from deploy_helpers.logging import log_error  # noqa: PLC0415
         log_error(
-            "FATAL: Failed to patch ArgoCD Application with CloudFront Origin Secret.",
+            "FATAL: Failed to apply IngressRoute with CloudFront Origin Secret.",
             error=str(e),
         )
         sys.exit(1)
