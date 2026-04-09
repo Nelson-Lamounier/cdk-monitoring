@@ -307,48 +307,65 @@ def main() -> None:
     # Step 4: Create Kubernetes secrets
     create_admin_k8s_secrets(v1, cfg)
 
-    # Step 5: Inject CloudFront Origin Secret into Helm rendering parameters
+    # Step 5: Create / Update the Traefik IngressRoute with the real CloudFront secret
+    #
+    # ── OWNERSHIP MODEL ──────────────────────────────────────────────────────────
+    # deploy.py is the SOLE owner of the 'start-admin' IngressRoute.
+    # The Helm chart sets ingress.enabled=false so ArgoCD never renders or
+    # manages this resource — eliminating the race condition where ArgoCD
+    # sync re-rendered the IngressRoute with the ^PLACEHOLDER_NEVER_MATCHES$
+    # default on every git push or 3-minute auto-sync cycle.
+    #
+    # On first deploy (Day-0) deploy.py CREATES the IngressRoute.
+    # On all subsequent deploys it UPDATES the match rule in-place.
+    # ArgoCD is not contacted anywhere in this step.
+    #
+    # FAILURE POLICY: any error is FATAL (sys.exit(1)).
+    # The only legitimate skip is when the SSM parameter does not exist yet
+    # (true Day-0 before a CloudFront distribution has been provisioned).
     try:
-        from kubernetes import client
+        from kubernetes import client  # noqa: PLC0415 — deferred import (optional dep)
+        from kubernetes.client.rest import ApiException
         from datetime import datetime, timezone
         import re
         from urllib.parse import urlparse
-        
+        from deploy_helpers.logging import log_error
+
         cf_secret_path = f"/k8s/{cfg.environment_name}/cloudfront-origin-secret"
         log_info("Fetching CloudFront origin secret history", ssm_path=cf_secret_path)
-        
+
         paginator = ssm_client.get_paginator("get_parameter_history")
         history = []
         for page in paginator.paginate(Name=cf_secret_path, WithDecryption=True):
             history.extend(page.get("Parameters", []))
-            
+
         if not history:
             raise ValueError(f"No history found for {cf_secret_path}")
-            
-        # History is ordered oldest to newest
+
+        # History is ordered oldest to newest.
         latest = history[-1]
         origin_secret = latest["Value"]
-        
+
         latest_time = latest["LastModifiedDate"]
         now = datetime.now(timezone.utc)
-        
-        # If there are at least 2 versions and the latest rotation was < 20 min ago
+
+        # If there are at least 2 versions and the latest rotation was < 20 min ago,
+        # use a regex OR pattern to allow both secrets temporarily (zero-downtime rotation).
         if len(history) >= 2 and (now - latest_time).total_seconds() < 20 * 60:
             previous_secret = history[-2]["Value"]
-            # Use regex OR to allow both values temporarily
             old_escaped = re.escape(previous_secret)
             new_escaped = re.escape(origin_secret)
             origin_secret = f"{old_escaped}|{new_escaped}"
             log_info(
                 "Secret rotated recently. Using dual-secret regex for zero-downtime.",
-                minutes_since_rotation=round((now - latest_time).total_seconds() / 60, 1)
+                minutes_since_rotation=round((now - latest_time).total_seconds() / 60, 1),
             )
         else:
             log_info("Using single origin secret.")
 
         # Derive public hostname from NEXTAUTH_URL for Host() defence-in-depth.
         # Start-admin shares the same domain as the nextjs app, so we read
-        # NEXTAUTH_URL from the shared /nextjs/{env} SSM prefix.
+        # NEXTAUTH_URL from the shared /nextjs/{env}/auth/nextauth-url SSM prefix.
         ingress_host = ""
         nextauth_ssm = f"{cfg.frontend_ssm_prefix}/auth/nextauth-url"
         try:
@@ -360,38 +377,180 @@ def main() -> None:
         except client_error_cls:
             log_warn("NEXTAUTH_URL not available — Host() rule will be skipped")
 
-        # Build helm parameter overrides
-        helm_params = [
-            {"name": "cloudfront.originSecret", "value": origin_secret, "forceString": True},
-        ]
-        if ingress_host:
-            helm_params.append(
-                {"name": "ingress.host", "value": ingress_host, "forceString": True}
-            )
-
         custom_api = client.CustomObjectsApi(v1.api_client)
-        patch = {
-            "spec": {
-                "source": {
-                    "helm": {
-                        "parameters": helm_params
-                    }
-                }
-            }
-        }
-        custom_api.patch_namespaced_custom_object(
-            group="argoproj.io",
-            version="v1alpha1",
-            namespace="argocd",
-            plural="applications",
-            name="start-admin",
-            body=patch
+
+        # ── 5a: Build the IngressRoute manifest ──────────────────────────────────
+        # Compose: optional Host() + PathPrefix(/admin) + HeaderRegexp(real secret).
+        # PathPrefix(/admin) takes priority over nextjs PathPrefix(/) via Traefik's
+        # longest-prefix-match resolution — no priority annotation needed.
+        host_clause = f"Host(`{ingress_host}`) && " if ingress_host else ""
+        match_rule = (
+            f"{host_clause}PathPrefix(`/admin`) && "
+            f"HeaderRegexp(`X-CloudFront-Origin-Secret`, `{origin_secret}`)"
         )
-        log_info("Successfully patched Start-Admin ArgoCD Application with origin secret.", host=ingress_host)
-    except client_error_cls:
-        log_warn("CloudFront origin secret not found in SSM, skipping injection.")
-    except Exception as e:
-        log_warn("Failed to patch ArgoCD Application with CloudFront Origin Secret", error=str(e))
+        ingressroute_manifest = {
+            "apiVersion": "traefik.io/v1alpha1",
+            "kind": "IngressRoute",
+            "metadata": {
+                "name": "start-admin",
+                "namespace": "start-admin",
+                "labels": {"app": "start-admin", "managed-by": "deploy.py"},
+            },
+            "spec": {
+                "entryPoints": ["web"],
+                "routes": [
+                    {
+                        "match": match_rule,
+                        "kind": "Rule",
+                        "services": [{"name": "start-admin", "port": 5001}],
+                    }
+                ],
+            },
+        }
+
+        # ── 5b: Create-or-update (apply) the IngressRoute ──────────────────────
+        # GET first: 200 → PATCH in-place.  404 → CREATE (Day-0 first deploy).
+        try:
+            custom_api.get_namespaced_custom_object(
+                group="traefik.io",
+                version="v1alpha1",
+                namespace="start-admin",
+                plural="ingressroutes",
+                name="start-admin",
+            )
+            custom_api.patch_namespaced_custom_object(
+                group="traefik.io",
+                version="v1alpha1",
+                namespace="start-admin",
+                plural="ingressroutes",
+                name="start-admin",
+                body={"spec": ingressroute_manifest["spec"]},
+            )
+            log_info(
+                "Updated IngressRoute 'start-admin' with current origin secret.",
+                host=ingress_host,
+                match_preview=match_rule[:120],
+            )
+        except ApiException as api_err:
+            if api_err.status == 404:
+                custom_api.create_namespaced_custom_object(
+                    group="traefik.io",
+                    version="v1alpha1",
+                    namespace="start-admin",
+                    plural="ingressroutes",
+                    body=ingressroute_manifest,
+                )
+                log_info(
+                    "Created IngressRoute 'start-admin' (Day-0 first deploy).",
+                    host=ingress_host,
+                    match_preview=match_rule[:120],
+                )
+            else:
+                raise
+
+        # ── 5b-preview: Create-or-update the Blue/Green preview IngressRoute ───
+        # The preview IngressRoute (start-admin-preview) does NOT require the
+        # CloudFront secret: it matches on X-Preview: true header at priority 100,
+        # routing to the preview ReplicaSet for Blue/Green testing.
+        preview_match_rule = (
+            f"{host_clause}PathPrefix(`/admin`) && Header(`X-Preview`, `true`)"
+        )
+        preview_manifest = {
+            "apiVersion": "traefik.io/v1alpha1",
+            "kind": "IngressRoute",
+            "metadata": {
+                "name": "start-admin-preview",
+                "namespace": "start-admin",
+                "labels": {"app": "start-admin", "managed-by": "deploy.py"},
+            },
+            "spec": {
+                "entryPoints": ["web"],
+                "routes": [
+                    {
+                        "match": preview_match_rule,
+                        "kind": "Rule",
+                        "priority": 100,
+                        "services": [{"name": "start-admin-preview", "port": 5001}],
+                    }
+                ],
+            },
+        }
+        try:
+            custom_api.get_namespaced_custom_object(
+                group="traefik.io",
+                version="v1alpha1",
+                namespace="start-admin",
+                plural="ingressroutes",
+                name="start-admin-preview",
+            )
+            custom_api.patch_namespaced_custom_object(
+                group="traefik.io",
+                version="v1alpha1",
+                namespace="start-admin",
+                plural="ingressroutes",
+                name="start-admin-preview",
+                body={"spec": preview_manifest["spec"]},
+            )
+            log_info("Updated IngressRoute 'start-admin-preview'.", host=ingress_host)
+        except ApiException as preview_err:
+            if preview_err.status == 404:
+                custom_api.create_namespaced_custom_object(
+                    group="traefik.io",
+                    version="v1alpha1",
+                    namespace="start-admin",
+                    plural="ingressroutes",
+                    body=preview_manifest,
+                )
+                log_info("Created IngressRoute 'start-admin-preview' (Day-0).", host=ingress_host)
+            else:
+                raise
+
+        # ── 5c: Verification read-back ─────────────────────────────────────────
+        # Re-read the live IngressRoute to confirm the apply persisted.
+        verify_ir = custom_api.get_namespaced_custom_object(
+            group="traefik.io",
+            version="v1alpha1",
+            namespace="start-admin",
+            plural="ingressroutes",
+            name="start-admin",
+        )
+        verify_match = (
+            verify_ir.get("spec", {})
+                      .get("routes", [{}])[0]
+                      .get("match", "")
+        )
+        _PLACEHOLDER = "^PLACEHOLDER_NEVER_MATCHES$"
+        if _PLACEHOLDER in verify_match or not verify_match:
+            log_error(
+                "Verification FAILED: IngressRoute match rule is invalid after apply.",
+                match=verify_match,
+            )
+            sys.exit(1)
+
+        log_info(
+            "Verification PASSED: IngressRoute is active with real origin secret.",
+            match_preview=verify_match[:120],
+        )
+
+    except client_error_cls as e:
+        # SSM ClientError means the CloudFront origin secret parameter does not exist
+        # yet — legitimate skip on Day-0 before a CloudFront distribution is deployed.
+        log_warn(
+            "CloudFront origin secret not found in SSM — skipping IngressRoute apply.",
+            error=str(e),
+        )
+    except SystemExit:
+        # Re-raise sys.exit() calls from the verification block above.
+        raise
+    except Exception as e:  # noqa: BLE001
+        # Any other exception (ImportError, API error, network timeout) is FATAL.
+        # Swallowing this error was the root cause of silent CloudFront 404s.
+        from deploy_helpers.logging import log_error  # noqa: PLC0415
+        log_error(
+            "FATAL: Failed to apply IngressRoute with CloudFront Origin Secret.",
+            error=str(e),
+        )
+        sys.exit(1)
 
     log_info("Start-Admin secrets deployed successfully")
 

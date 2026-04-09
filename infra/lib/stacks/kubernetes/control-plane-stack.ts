@@ -401,6 +401,10 @@ echo "SSM Automation will be triggered by the CI pipeline"
                 'ssm:GetParameter',
                 'ssm:GetParameters',
                 'ssm:GetParametersByPath',
+                // Required by deploy.py for zero-downtime CloudFront secret rotation:
+                // get_paginator("get_parameter_history") is called to build the dual-
+                // secret regex (OLD|NEW) during the ~20-min CloudFront propagation window.
+                'ssm:GetParameterHistory',
             ],
             resources: [
                 `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,

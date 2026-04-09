@@ -70,15 +70,27 @@ probes:
 # ---------------------------------------------------------------------------
 # Ingress (Traefik IngressRoute CRD)
 # ---------------------------------------------------------------------------
+# IMPORTANT: ingress.enabled is intentionally false.
+#
+# The IngressRoute's match rule contains the CloudFront origin secret
+# (HeaderRegexp), which is a runtime value read from SSM. Helm — and
+# therefore ArgoCD — cannot manage a resource whose definition changes at
+# deploy time without committing secrets to git.
+#
+# deploy.py (Step 5) is the SOLE owner of the 'start-admin' IngressRoute:
+#   - It creates the IngressRoute on first deploy.
+#   - It reads the live IngressRoute, rebuilds the match rule with the
+#     real secret from SSM, and applies the patch on every deploy.
+#   - ArgoCD never touches this object.
+#
+# Do NOT set ingress.enabled: true — that transfers ownership back to
+# ArgoCD, which will overwrite the runtime-injected match rule with
+# the placeholder on every sync, breaking CloudFront routing.
 ingress:
-  enabled: true
-  # Public domain — injected by deploy.py via ArgoCD helm parameter override.
-  # When set, the IngressRoute adds Host() to the match rule for defence-in-depth.
-  # CloudFront forwards the original Host header via the origin request policy.
-  host: ""  # Populated by deploy.py — do not set manually
-  # PathPrefix(/admin) takes priority over the site's PathPrefix(/)
-  # via Traefik's longest-prefix-match resolution — no priority annotation needed.
+  enabled: false
+  host: ""  # Used by deploy.py to build Host() match clause from NEXTAUTH_URL
   matchRule: "PathPrefix(`/admin`)"
+  entryPoint: web
 
 # ---------------------------------------------------------------------------
 # Secrets (injected via deploy.py → Kubernetes Secret)
@@ -97,21 +109,18 @@ secrets:
 # ---------------------------------------------------------------------------
 # CloudFront Security
 # ---------------------------------------------------------------------------
-# originSecret is injected at deploy time by deploy.py (Step 5), which reads
-# /k8s/{env}/cloudfront-origin-secret from SSM and patches the ArgoCD
-# Application via custom_api.patch_namespaced_custom_object.
+# originSecret is read from SSM /k8s/{env}/cloudfront-origin-secret by
+# deploy.py (Step 5) at deploy time.  deploy.py builds and applies the
+# Traefik IngressRoute directly as a Kubernetes object — not via Helm.
 #
-# The IngressRoute uses HeaderRegexp (Traefik v3), which accepts a Go regex pattern.
-# During secret rotation, deploy.py temporarily sets this to "OLD|NEW"
-# so Traefik accepts both values while CloudFront propagates (~15 min).
-# After propagation completes, it is set back to "NEW" only.
+# The IngressRoute match rule uses HeaderRegexp (Traefik v3 / Go regex).
+# During secret rotation, deploy.py temporarily uses "OLD|NEW" so Traefik
+# accepts both values while CloudFront propagates (~15 min).
 #
-# IMPORTANT: The default is a regex that never matches a real 64-char hex secret.
-# This ensures the route blocks ALL direct-to-origin traffic until deploy.py
-# injects the actual secret. An empty string "" would cause Traefik v3 to
-# reject the route entirely (empty regex is invalid).
+# This value is NOT rendered into the IngressRoute by Helm.  The field
+# below exists only so the chart can be linted without errors.
 cloudfront:
-  originSecret: "^PLACEHOLDER_NEVER_MATCHES$"  # Overridden by deploy.py at runtime
+  originSecret: "^PLACEHOLDER_NEVER_MATCHES$"  # Never rendered — IngressRoute is managed by deploy.py
 
 # ---------------------------------------------------------------------------
 # Resource Quota (namespace-level limits)
