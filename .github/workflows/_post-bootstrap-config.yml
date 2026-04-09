@@ -120,6 +120,21 @@ jobs:
           --environment ${{ inputs.environment }}
           --region ${{ vars.AWS_REGION || 'eu-west-1' }}
 
+      # -----------------------------------------------------------------------
+      # Step 3 — Deploy Start-Admin Secrets
+      #
+      # Triggers the same consolidated SSM Automation document with
+      # AppName=start-admin. Runs deploy.py on the control-plane to
+      # create/update the start-admin-secrets K8s Secret in the
+      # start-admin namespace. Resolves Cognito, DynamoDB, Bedrock,
+      # and Lambda ARN parameters from SSM.
+      # -----------------------------------------------------------------------
+      - name: "Step 3 — Deploy Start-Admin Secrets"
+        run: |
+          just ci-deploy-admin-secrets \
+            --environment ${{ inputs.environment }} \
+            --region ${{ vars.AWS_REGION || 'eu-west-1' }}
+
   # ===========================================================================
   # Verify & Smoke Tests
   #

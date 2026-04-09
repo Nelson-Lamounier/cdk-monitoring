@@ -379,6 +379,14 @@ ci-deploy-monitoring-secrets *ARGS:
 ci-deploy-nextjs-secrets *ARGS:
     npx tsx infra/scripts/cd/deploy-nextjs-secrets.ts {{ARGS}}
 
+# CI deploy-admin-secrets: deploy start-admin secrets via SSM Automation
+# Runs deploy.py on the control-plane to create/update the start-admin-secrets
+# K8s Secret in the start-admin namespace. Uses the same consolidated
+# k8s-deploy-secrets SSM Automation document as nextjs and monitoring.
+[group('ci')]
+ci-deploy-admin-secrets *ARGS:
+    npx tsx infra/scripts/cd/deploy-admin-secrets.ts {{ARGS}}
+
 # CI finalize: collect outputs, write summary, save artifacts
 [group('ci')]
 ci-finalize-deployment *ARGS:
