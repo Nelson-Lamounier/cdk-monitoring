@@ -50,6 +50,12 @@ const args = parseArgs(
             hasValue: true,
             default: process.env.AWS_REGION ?? 'eu-west-1',
         },
+        {
+            name: 'profile',
+            description: 'AWS named profile (local use only; omit in CI where OIDC credentials are ambient)',
+            hasValue: true,
+            default: process.env.AWS_PROFILE ?? '',
+        },
     ],
     'Sync bootstrap and deploy scripts to S3',
 );
@@ -62,7 +68,13 @@ if (!args.environment) {
 }
 
 const environment = args.environment as string;
-const awsConfig = buildAwsConfig(args);
+const awsConfig = buildAwsConfig({ ...args, env: args.environment });
+
+// AWS_PROFILE to inject into the `aws s3 sync` subprocess.
+// When --profile is provided or the SDK falls back to dev-account, the CLI
+// subprocess must see the same profile so it can resolve credentials.
+const subprocessProfile: string | undefined =
+    (args.profile as string) || (!process.env.AWS_ACCESS_KEY_ID ? 'dev-account' : undefined);
 
 // =============================================================================
 // Resolve workspace root (two levels up from this script)
@@ -180,8 +192,17 @@ async function syncTarget(
 
     logger.info(`Syncing ${fileCount} files from ${target.sourceDir} to ${s3Destination}`);
 
+    // Inject AWS_PROFILE into the subprocess so the `aws` CLI binary resolves
+    // the same credentials as the SDK (which uses resolveAuth / fromIni).
+    // In CI, AWS_ACCESS_KEY_ID is set via OIDC so subprocessProfile is undefined
+    // and process.env carries the credentials automatically.
+    const subprocessEnv: NodeJS.ProcessEnv | undefined = subprocessProfile
+        ? { AWS_PROFILE: subprocessProfile }
+        : undefined;
+
     const result = await runCommand('aws', syncArgs, {
         captureOutput: false, // stream the output
+        env: subprocessEnv,
     });
 
     if (result.exitCode !== 0) {

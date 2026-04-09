@@ -49,6 +49,15 @@ export interface ExecuteOptions {
   captureOutput?: boolean;
   /** Working directory for the child process (default: `process.cwd()`). */
   cwd?: string;
+  /**
+   * Additional environment variables to inject into the subprocess.
+   * Merged with `process.env`; values here take precedence.
+   * Use this to pass `AWS_PROFILE`, `KUBECONFIG`, etc. without
+   * mutating the parent process environment.
+   *
+   * @example { AWS_PROFILE: 'dev-account' }
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 // =============================================================================
@@ -96,6 +105,10 @@ export async function executeChildProcess(
   const spawnOpts: SpawnOptions = {
     cwd,
     stdio: options.captureOutput ? 'pipe' : 'inherit',
+    // Merge caller-supplied env vars with the inherited process environment.
+    // Caller values take precedence so AWS_PROFILE, KUBECONFIG, etc.
+    // can be injected without mutating the parent process.env.
+    env: options.env ? { ...process.env, ...options.env } : process.env,
     ...(useShell && { shell: true }),
   };
 
