@@ -350,19 +350,25 @@ export class NetworkLoadBalancerConstruct extends Construct {
     }
 
     /**
-     * Configure NLB SG with CloudFront prefix list restriction.
+     * Configure NLB SG with CloudFront prefix list restriction for HTTP and open
+     * internet for HTTPS.
      *
-     * Defence-in-depth: restricts ALL inbound traffic (both port 80 and port 443)
-     * to CloudFront origin-facing IPs only (AWS managed prefix list). This prevents
-     * internet scanners and bots from hitting Traefik directly, whether on HTTP or HTTPS.
+     * **Security design**:
+     * - Port 80 (HTTP): Restricted to the CloudFront managed prefix list only.
+     *   Prevents scanners and bots from hitting Traefik's HTTP entrypoint directly.
+     * - Port 443 (HTTPS): Open to `0.0.0.0/0` and `::/0` (all internet).
+     *   Fine-grained access control is enforced by the Ingress SG on the K8s nodes
+     *   (admin IP allowlist). The NLB is Layer 4 TCP passthrough and does not inspect.
      *
-     * CloudFront sends origin requests on HTTPS/443 (websecure entrypoint in Traefik).
-     * Restricting port 443 to the prefix list means only CloudFront edge nodes
-     * can reach the NLB — all other internet traffic is dropped at the SG boundary.
+     * **Why not restrict port 443 to the prefix list?**
+     * The CloudFront origin-facing prefix list has ~55 MaxEntries — each reference
+     * consumes that many effective rule slots against the 60-rule per-SG limit.
+     * Using the prefix list for both ports 80 and 443 would consume 55 + 55 = 110
+     * effective rules, exceeding the limit and causing CF deployment failures.
      *
      * **Inbound**:
-     * - Port 80: CloudFront managed prefix list only
-     * - Port 443: CloudFront managed prefix list only
+     * - Port 80: CloudFront managed prefix list only (blocks direct scanner access)
+     * - Port 443: `0.0.0.0/0` + `::/0` (Ingress SG enforces admin IP filtering)
      *
      * **Outbound**:
      * - Both ports forwarded to VPC CIDR (health checks + target forwarding)
@@ -392,13 +398,20 @@ export class NetworkLoadBalancerConstruct extends Construct {
             'HTTP from CloudFront origin-facing IPs only',
         );
 
-        // Inbound: CloudFront only → NLB HTTPS port (port 443)
-        // CloudFront now uses HTTPS as the origin protocol — restrict 443 to the
-        // same prefix list so bots cannot hit Traefik directly on HTTPS either.
+        // Inbound: internet → NLB HTTPS port (port 443)
+        // Port 443 is open at the NLB layer (Layer 4 TCP passthrough).
+        // Restricting to the CF prefix list would exceed the 60-rule SG limit
+        // (the CF prefix list has ~55 MaxEntries, counted per SG rule reference).
+        // Fine-grained filtering is enforced at the Ingress SG on K8s nodes.
         this.securityGroup.addIngressRule(
-            ec2.Peer.prefixList(cloudFrontPrefixListId),
+            ec2.Peer.anyIpv4(),
             ec2.Port.tcp(httpsPort),
-            'HTTPS from CloudFront origin-facing IPs only',
+            'HTTPS from internet (admin access via Traefik)',
+        );
+        this.securityGroup.addIngressRule(
+            ec2.Peer.anyIpv6(),
+            ec2.Port.tcp(httpsPort),
+            'HTTPS from internet IPv6 (admin access via Traefik)',
         );
 
         // Outbound: NLB → targets (health checks + forwarding)

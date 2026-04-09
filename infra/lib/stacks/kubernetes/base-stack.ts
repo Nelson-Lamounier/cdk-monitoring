@@ -370,11 +370,13 @@ export class KubernetesBaseStack extends cdk.Stack {
         this.nlbConstruct.addTcpListener('HttpListener', TRAEFIK_HTTP_PORT, this.nlbHttpTargetGroup);
         this.nlbConstruct.addTcpListener('HttpsListener', TRAEFIK_HTTPS_PORT, this.nlbHttpsTargetGroup);
 
-        // NLB Security Group — Defence-in-depth: both port 80 and port 443
-        // restricted to CloudFront origin-facing IPs (managed prefix list).
-        // CloudFront sends origin requests on HTTPS/443 (websecure entrypoint).
-        // This blocks internet scanners and bots from reaching Traefik directly
-        // on either port, whether or not they know the CloudFront origin secret.
+        // NLB Security Group — Defence-in-depth:
+        //   Port 80:  Restricted to CloudFront origin-facing IPs (managed prefix list).
+        //             Prevents direct HTTP access from scanners/bots bypassing CF/WAF.
+        //   Port 443: Open to internet (Layer 4 TCP passthrough — Traefik terminates TLS).
+        //             Fine-grained filtering enforced by the Ingress SG (admin IP allowlist).
+        //             Cannot use the CF prefix list for port 443: the list has ~55 MaxEntries,
+        //             consuming 55 + 55 = 110 effective SG rule slots (limit is 60).
         this.nlbConstruct.configureCloudFrontSecurityGroup(
             cfPrefixListId,
             TRAEFIK_HTTP_PORT,
@@ -425,16 +427,28 @@ export class KubernetesBaseStack extends cdk.Stack {
         });
         this.apiDnsName = K8S_API_DNS_NAME;
 
-        // Placeholder A record — updated by the control plane at boot.
-        // Using a VPC-internal IP (10.0.0.1) so it never accidentally routes
-        // anywhere before the control plane updates it.
-        new route53.ARecord(this, 'K8sApiRecord', {
-            zone: this.hostedZone,
-            recordName: K8S_API_DNS_NAME,
-            target: route53.RecordTarget.fromIpAddresses('10.0.0.1'),
-            ttl: cdk.Duration.seconds(30),
-            comment: 'Kubernetes API server - updated by control plane user-data',
+        // Placeholder A record — seeded at Day-0 by CDK, then updated by the
+        // control plane at boot via `aws route53 change-resource-record-sets`.
+        //
+        // IMPORTANT: The control plane is the authoritative owner of this record.
+        // CDK only seeds it so Route53 has a valid entry before the first boot.
+        // The IP here must match the current live value to avoid CF drift conflicts
+        // (CF deletes the old value before creating the new one; if values differ,
+        // the delete fails with "values provided do not match").
+        //
+        // Current control-plane private IP: 10.0.0.33 (updated after initial boot).
+        // Update this value if the control plane instance is replaced.
+        const cfnApiRecord = new route53.CfnRecordSet(this, 'K8sApiRecord', {
+            hostedZoneId: this.hostedZone.hostedZoneId,
+            name: `${K8S_API_DNS_NAME}.`,
+            type: 'A',
+            ttl: '30',
+            resourceRecords: ['10.0.0.33'],
+            comment: 'Kubernetes API server - owned by control plane, seeded by CDK',
         });
+        // Suppress CDK's default DeletionPolicy of Delete on this record —
+        // the control plane manages the actual value; CDK must not delete it.
+        cfnApiRecord.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
 
         // =====================================================================
         // S3 Access Logs Bucket (AwsSolutions-S1)
