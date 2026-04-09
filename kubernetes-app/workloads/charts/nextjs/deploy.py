@@ -455,7 +455,64 @@ def main() -> None:
                 )
             else:
                 raise
-
+        # ── 5b-preview: Create-or-update the Blue/Green preview IngressRoute ──────
+        # The preview IngressRoute (nextjs-preview) also gates on ingress.enabled in
+        # the Helm chart — since we set ingress.enabled=false, deploy.py owns this too.
+        # The preview route does NOT require the CloudFront secret: it matches on
+        # X-Preview: true header at priority 100, routing to the preview ReplicaSet.
+        # This enables Blue/Green testing without affecting production traffic.
+        preview_match_rule = (
+            f"{host_clause}PathPrefix(`/`) && Header(`X-Preview`, `true`)"
+        )
+        preview_manifest = {
+            "apiVersion": "traefik.io/v1alpha1",
+            "kind": "IngressRoute",
+            "metadata": {
+                "name": "nextjs-preview",
+                "namespace": "nextjs-app",
+                "labels": {"app": "nextjs", "managed-by": "deploy.py"},
+            },
+            "spec": {
+                "entryPoints": ["web"],
+                "routes": [
+                    {
+                        "match": preview_match_rule,
+                        "kind": "Rule",
+                        "priority": 100,
+                        "services": [{"name": "nextjs-preview", "port": 3000}],
+                    }
+                ],
+            },
+        }
+        try:
+            custom_api.get_namespaced_custom_object(
+                group="traefik.io",
+                version="v1alpha1",
+                namespace="nextjs-app",
+                plural="ingressroutes",
+                name="nextjs-preview",
+            )
+            custom_api.patch_namespaced_custom_object(
+                group="traefik.io",
+                version="v1alpha1",
+                namespace="nextjs-app",
+                plural="ingressroutes",
+                name="nextjs-preview",
+                body={"spec": preview_manifest["spec"]},
+            )
+            log_info("Updated IngressRoute 'nextjs-preview'.", host=ingress_host)
+        except ApiException as preview_err:
+            if preview_err.status == 404:
+                custom_api.create_namespaced_custom_object(
+                    group="traefik.io",
+                    version="v1alpha1",
+                    namespace="nextjs-app",
+                    plural="ingressroutes",
+                    body=preview_manifest,
+                )
+                log_info("Created IngressRoute 'nextjs-preview' (Day-0).", host=ingress_host)
+            else:
+                raise
 
         # ── 5c: Verification read-back ─────────────────────────────────────────
         # Re-read the live IngressRoute to confirm the apply persisted.
