@@ -126,6 +126,12 @@ const DEPLOY_SECRETS_STEPS: AutomationStep[] = [
         timeoutSeconds: 600,
         description: 'Resolve SSM parameters and create monitoring K8s Secrets',
     },
+    {
+        name: 'deployStartAdminSecrets',
+        scriptPath: 'app-deploy/start-admin/deploy.py',
+        timeoutSeconds: 300,
+        description: 'Resolve SSM parameters and create/update start-admin-secrets K8s Secret',
+    },
 ];
 
 // =============================================================================
@@ -147,7 +153,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
     /** Unified worker SSM Automation document name (all worker roles) */
     public readonly workerDocName: string;
 
-    /** Consolidated deploy secrets SSM Automation document name (nextjs + monitoring) */
+    /** Consolidated deploy secrets SSM Automation document name (nextjs + monitoring + start-admin) */
     public readonly deploySecretsDocName: string;
 
     /** Automation execution role ARN */
@@ -329,7 +335,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
 
         const deployDoc = new SsmAutomationDocument(this, 'DeploySecretsAutomation', {
             documentName: `${prefix}-deploy-secrets`,
-            description: 'Deploy K8s secrets (nextjs + monitoring) — syncs from S3, resolves SSM parameters, creates Secrets',
+            description: 'Deploy K8s secrets (nextjs + monitoring + start-admin) — syncs from S3, resolves SSM parameters, creates Secrets',
             documentCategory: 'deploy',
             steps: DEPLOY_SECRETS_STEPS,
             ...docBaseProps,
@@ -360,7 +366,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         const deployDocParam = new ssm.StringParameter(this, 'DeploySecretsDocNameParam', {
             parameterName: `${props.ssmPrefix}/deploy/secrets-doc-name`,
             stringValue: deployDoc.documentName,
-            description: 'SSM Automation document name for consolidated secrets deployment (nextjs + monitoring)',
+            description: 'SSM Automation document name for consolidated secrets deployment (nextjs + monitoring + start-admin)',
         });
         cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/secrets-doc-name`, deployDocParam);
 

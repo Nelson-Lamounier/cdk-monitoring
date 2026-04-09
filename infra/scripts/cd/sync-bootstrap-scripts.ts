@@ -7,8 +7,9 @@
  *
  * Sync targets:
  *   1. k8s-bootstrap/     → s3://{bucket}/k8s-bootstrap/
- *   2. workloads/charts/nextjs/  → s3://{bucket}/app-deploy/nextjs/   (excl. chart/, nextjs-values.yaml)
- *   3. platform/charts/monitoring/ → s3://{bucket}/app-deploy/monitoring/ (excl. chart/)
+ *   2. workloads/charts/nextjs/      → s3://{bucket}/app-deploy/nextjs/      (excl. chart/, nextjs-values.yaml)
+ *   3. platform/charts/monitoring/   → s3://{bucket}/app-deploy/monitoring/  (excl. chart/)
+ *   4. workloads/charts/start-admin/ → s3://{bucket}/app-deploy/start-admin/ (excl. chart/, start-admin-values.yaml)
  *
  * Usage:
  *   npx tsx sync-bootstrap-scripts.ts \
@@ -104,6 +105,13 @@ const SYNC_TARGETS: SyncTarget[] = [
         sourceDir: 'kubernetes-app/platform/charts/monitoring',
         s3Prefix: 'app-deploy/monitoring/',
         excludes: ['chart/*', '__pycache__/*'],
+        optional: true,
+    },
+    {
+        label: 'Start-Admin Deploy Scripts',
+        sourceDir: 'kubernetes-app/workloads/charts/start-admin',
+        s3Prefix: 'app-deploy/start-admin/',
+        excludes: ['chart/*', 'start-admin-values.yaml', '__pycache__/*'],
         optional: true,
     },
 ];

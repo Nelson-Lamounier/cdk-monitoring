@@ -228,13 +228,16 @@ async function main(): Promise<void> {
     const startResult = await ssm.send(
         new StartAutomationExecutionCommand({
             DocumentName: docName!,
+            // The consolidated document runs ALL three secret steps sequentially:
+            //   1. deployNextjsSecrets    (app-deploy/nextjs/deploy.py)
+            //   2. deployMonitoringSecrets (app-deploy/monitoring/deploy.py)
+            //   3. deployStartAdminSecrets (app-deploy/start-admin/deploy.py)
+            // No AppName routing — all step scripts are baked into the document.
             Parameters: {
                 InstanceId: [instanceId!],
                 SsmPrefix: [ssmPrefix],
                 S3Bucket: [s3Bucket],
                 Region: [awsConfig.region],
-                // Signals deploy.py to run for the start-admin application.
-                AppName: ['start-admin'],
             },
         }),
     );
