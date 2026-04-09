@@ -1,9 +1,16 @@
 # @format
 # Development environment overrides — lower resources, single replica.
+#
+# IMPORTANT: image.tag must NOT be "latest".
+# The CI pipeline (deploy-frontend.yml) always pushes SHA tags of the form:
+#   <git-sha>-r<run-attempt>   e.g. "abc1234f-r1"
+# ArgoCD Image Updater's allow-tags regexp only matches SHA tags.
+# "PENDING" is a sentinel — Image Updater will overwrite this with the real tag
+# on the first successful CI push to ECR.
 
 image:
   repository: 771826808455.dkr.ecr.eu-west-1.amazonaws.com/start-admin
-  tag: "latest"
+  tag: "PENDING"
 
 replicas: 1
 
@@ -22,3 +29,12 @@ resourceQuota:
     limits.cpu: "750m"
     limits.memory: 768Mi
     persistentvolumeclaims: "1"
+
+# ---------------------------------------------------------------------------
+# Argo Rollouts — BlueGreen strategy overrides for development
+# ---------------------------------------------------------------------------
+rollout:
+  blueGreen:
+    autoPromotionEnabled: false
+    autoPromotionSeconds: 120
+    scaleDownDelaySeconds: 30
