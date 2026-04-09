@@ -157,13 +157,58 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should have 2 steps (nextjs + monitoring) in the deploy secrets document', () => {
+        it('should have 3 steps (nextjs + monitoring + start-admin) in the deploy secrets document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
                 Name: 'k8s-dev-deploy-secrets',
                 Content: Match.objectLike({
                     mainSteps: Match.arrayWith([
                         Match.objectLike({ name: 'deployNextjsSecrets' }),
                         Match.objectLike({ name: 'deployMonitoringSecrets' }),
+                        Match.objectLike({ name: 'deployStartAdminSecrets' }),
+                    ]),
+                }),
+            });
+        });
+
+        it('should use correct S3 script path for each deploy step', () => {
+            // This test validates that scriptPath values match what is actually
+            // synced to S3 by sync-bootstrap-scripts.ts. If a new app is added
+            // to DEPLOY_SECRETS_STEPS, its scriptPath MUST follow the
+            // 'app-deploy/<app>/deploy.py' convention and be added to SYNC_TARGETS.
+            template.hasResourceProperties('AWS::SSM::Document', {
+                Name: 'k8s-dev-deploy-secrets',
+                Content: Match.objectLike({
+                    mainSteps: Match.arrayWith([
+                        Match.objectLike({
+                            name: 'deployNextjsSecrets',
+                            inputs: Match.objectLike({
+                                Parameters: Match.objectLike({
+                                    commands: Match.arrayWith([
+                                        Match.stringLikeRegexp('app-deploy/nextjs/deploy\\.py'),
+                                    ]),
+                                }),
+                            }),
+                        }),
+                        Match.objectLike({
+                            name: 'deployMonitoringSecrets',
+                            inputs: Match.objectLike({
+                                Parameters: Match.objectLike({
+                                    commands: Match.arrayWith([
+                                        Match.stringLikeRegexp('app-deploy/monitoring/deploy\\.py'),
+                                    ]),
+                                }),
+                            }),
+                        }),
+                        Match.objectLike({
+                            name: 'deployStartAdminSecrets',
+                            inputs: Match.objectLike({
+                                Parameters: Match.objectLike({
+                                    commands: Match.arrayWith([
+                                        Match.stringLikeRegexp('app-deploy/start-admin/deploy\\.py'),
+                                    ]),
+                                }),
+                            }),
+                        }),
                     ]),
                 }),
             });
