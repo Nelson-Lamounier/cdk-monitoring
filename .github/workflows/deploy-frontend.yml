@@ -60,6 +60,8 @@ permissions:
 env:
   ENVIRONMENT: development
   AWS_REGION: "eu-west-1"
+  # Force Node 24 for actions that haven't released Node 24-native versions yet
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Composite tag prevents ECR overwrites on pipeline retries
   IMAGE_TAG: "${{ github.sha }}-r${{ github.run_attempt }}"
 
@@ -239,8 +241,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: ${{ vars.ENVIRONMENT || 'development' }}
-    outputs:
-      image-uri: ${{ steps.set-output.outputs.image-uri }}
 
     permissions:
       id-token: write
@@ -297,14 +297,6 @@ jobs:
             --skip-build \
             --skip-sync \
             --region "${{ env.AWS_REGION }}"
-
-      - name: Set Image URI Output
-        id: set-output
-        run: |
-          IMAGE_URI="${{ steps.resolve-ecr.outputs.ecr-url }}:${{ env.IMAGE_TAG }}"
-          echo "::add-mask::$IMAGE_URI"
-          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
-          echo "[PASS] Site image URI output set"
 
       - name: Push Summary
         run: |
@@ -474,8 +466,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: ${{ vars.ENVIRONMENT || 'development' }}
-    outputs:
-      image-uri: ${{ steps.set-output.outputs.image-uri }}
 
     permissions:
       id-token: write
@@ -537,13 +527,6 @@ jobs:
           docker push "${ECR_URL}:${TAG}"
 
           echo "[PASS] Admin image pushed: ${ECR_URL}:${TAG}"
-
-      - name: Set Image URI Output
-        id: set-output
-        run: |
-          IMAGE_URI="${{ steps.resolve-ecr.outputs.ecr-url }}:${{ env.IMAGE_TAG }}"
-          echo "::add-mask::$IMAGE_URI"
-          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
 
       - name: Push Summary
         run: |

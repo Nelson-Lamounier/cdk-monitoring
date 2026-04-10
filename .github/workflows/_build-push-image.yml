@@ -65,13 +65,9 @@ on:
         required: false
       DOCKERHUB_TOKEN:
         required: false
-    outputs:
-      image-uri:
-        description: "Full Docker image URI (including tag)"
-        value: ${{ jobs.push.outputs.image-uri }}
-
 env:
   AWS_REGION: 'eu-west-1'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ===========================================================================
@@ -134,8 +130,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
-    outputs:
-      image-uri: ${{ steps.set-output.outputs.image-uri }}
 
     permissions:
       id-token: write
@@ -213,16 +207,6 @@ jobs:
             --region "${{ env.AWS_REGION }}"
 
       # ----------------------------------------------------------------
-      # Set output (isolated step — always runs if push succeeds)
-      # ----------------------------------------------------------------
-      - name: Set Image URI Output
-        id: set-output
-        run: |
-          IMAGE_URI="${{ steps.resolve-ecr.outputs.ecr-url }}:${{ inputs.image-tag }}"
-          echo "::add-mask::$IMAGE_URI"
-          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
-          echo "[PASS] Output set: image-uri (masked)"
-
       # ----------------------------------------------------------------
       # Optional: Docker Hub
       # ----------------------------------------------------------------
