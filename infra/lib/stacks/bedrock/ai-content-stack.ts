@@ -73,7 +73,7 @@ export interface AiContentStackProps extends cdk.StackProps {
  */
 export class AiContentStack extends cdk.Stack {
     /** DynamoDB table for AI-enhanced article metadata */
-    public readonly contentTable: dynamodb.TableV2;
+    public readonly contentTable: dynamodb.Table;
 
     /** The S3 bucket (for grantContentRead) */
     private readonly assetsBucket: s3.IBucket;
@@ -114,7 +114,10 @@ export class AiContentStack extends cdk.Stack {
         // Content blobs live in S3 — table stores only s3Key pointers,
         // AI summaries, reading time, and technical confidence scores.
         // =================================================================
-        this.contentTable = new dynamodb.TableV2(this, 'AiContentTable', {
+        // Migrated from TableV2 → Table to eliminate the `policyResource` /
+        // `encryptedResource` CDK deprecation warnings emitted by TableV2.grant*()
+        // in CDK 2.243.0. Table is the stable equivalent with identical capabilities.
+        this.contentTable = new dynamodb.Table(this, 'AiContentTable', {
             tableName: `${namePrefix}-ai-content`,
             partitionKey: {
                 name: 'pk',
@@ -124,40 +127,46 @@ export class AiContentStack extends cdk.Stack {
                 name: 'sk',
                 type: dynamodb.AttributeType.STRING,
             },
-            billing: dynamodb.Billing.onDemand(),
+            // Equivalent to Billing.onDemand()
+            billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+            // Non-deprecated form of PITR on Table
             pointInTimeRecoverySpecification: {
                 pointInTimeRecoveryEnabled: true,
             },
             removalPolicy: props.removalPolicy,
-            globalSecondaryIndexes: [
-                {
-                    indexName: 'gsi1-status-date',
-                    partitionKey: {
-                        name: 'gsi1pk',
-                        type: dynamodb.AttributeType.STRING,
-                    },
-                    sortKey: {
-                        name: 'gsi1sk',
-                        type: dynamodb.AttributeType.STRING,
-                    },
-                    // ALL projection — frontend listing needs title, tags,
-                    // aiSummary, readingTime etc. without separate GetItem calls
-                },
-                {
-                    indexName: 'gsi2-tag-date',
-                    partitionKey: {
-                        name: 'gsi2pk',
-                        type: dynamodb.AttributeType.STRING,
-                    },
-                    sortKey: {
-                        name: 'gsi2sk',
-                        type: dynamodb.AttributeType.STRING,
-                    },
-                    // ALL projection — tag filtering: gsi2pk=TAG#<tag>,
-                    // gsi2sk=<date>#<slug> for reverse-chronological tag pages
-                },
-            ],
         });
+
+        // GSIs must be added via addGlobalSecondaryIndex() on Table
+        this.contentTable.addGlobalSecondaryIndex({
+            indexName: 'gsi1-status-date',
+            partitionKey: {
+                name: 'gsi1pk',
+                type: dynamodb.AttributeType.STRING,
+            },
+            sortKey: {
+                name: 'gsi1sk',
+                type: dynamodb.AttributeType.STRING,
+            },
+            // ALL projection — frontend listing needs title, tags,
+            // aiSummary, readingTime etc. without separate GetItem calls
+            projectionType: dynamodb.ProjectionType.ALL,
+        });
+
+        this.contentTable.addGlobalSecondaryIndex({
+            indexName: 'gsi2-tag-date',
+            partitionKey: {
+                name: 'gsi2pk',
+                type: dynamodb.AttributeType.STRING,
+            },
+            sortKey: {
+                name: 'gsi2sk',
+                type: dynamodb.AttributeType.STRING,
+            },
+            // ALL projection — tag filtering: gsi2pk=TAG#<tag>,
+            // gsi2sk=<date>#<slug> for reverse-chronological tag pages
+            projectionType: dynamodb.ProjectionType.ALL,
+        });
+
         this.tableName = this.contentTable.tableName;
 
         // =================================================================

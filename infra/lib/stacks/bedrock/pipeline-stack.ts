@@ -135,7 +135,9 @@ export class BedrockPipelineStack extends cdk.Stack {
             props.assetsBucketName,
         );
 
-        const contentTable = dynamodb.TableV2.fromTableName(
+        // Use Table.fromTableName (not TableV2) to avoid the `policyResource` deprecation
+        // warning emitted by TableV2's grant path when importing by name only.
+        const contentTable = dynamodb.Table.fromTableName(
             this,
             'ImportedContentTable',
             props.tableName,

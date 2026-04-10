@@ -61,7 +61,7 @@ export interface StrategistDataStackProps extends cdk.StackProps {
  */
 export class StrategistDataStack extends cdk.Stack {
     /** DynamoDB table for job strategist data */
-    public readonly strategistTable: dynamodb.TableV2;
+    public readonly strategistTable: dynamodb.Table;
 
     /** Table name (for cross-stack consumption) */
     public readonly tableName: string;
@@ -82,7 +82,10 @@ export class StrategistDataStack extends cdk.Stack {
         //   gsi1sk: <date>#<jobId>   (e.g. 2026-03-30#abc123)
         //   Query: all applications by status, newest first (admin listing)
         // =================================================================
-        this.strategistTable = new dynamodb.TableV2(this, 'StrategistTable', {
+        // Migrated from TableV2 → Table to eliminate the `policyResource` /
+        // `encryptedResource` CDK deprecation warnings emitted by TableV2.grant*()
+        // in CDK 2.243.0. Table is the stable equivalent with identical capabilities.
+        this.strategistTable = new dynamodb.Table(this, 'StrategistTable', {
             tableName: `${namePrefix}-job-strategist`,
             partitionKey: {
                 name: 'pk',
@@ -92,27 +95,31 @@ export class StrategistDataStack extends cdk.Stack {
                 name: 'sk',
                 type: dynamodb.AttributeType.STRING,
             },
-            billing: dynamodb.Billing.onDemand(),
+            // Equivalent to Billing.onDemand()
+            billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+            // Non-deprecated form of PITR on Table
             pointInTimeRecoverySpecification: {
                 pointInTimeRecoveryEnabled: true,
             },
             removalPolicy: props.removalPolicy,
-            globalSecondaryIndexes: [
-                {
-                    indexName: 'gsi1-status-date',
-                    partitionKey: {
-                        name: 'gsi1pk',
-                        type: dynamodb.AttributeType.STRING,
-                    },
-                    sortKey: {
-                        name: 'gsi1sk',
-                        type: dynamodb.AttributeType.STRING,
-                    },
-                    // ALL projection — admin listing needs title, company,
-                    // status, analysis summary without separate GetItem calls
-                },
-            ],
         });
+
+        // GSIs must be added via addGlobalSecondaryIndex() on Table
+        this.strategistTable.addGlobalSecondaryIndex({
+            indexName: 'gsi1-status-date',
+            partitionKey: {
+                name: 'gsi1pk',
+                type: dynamodb.AttributeType.STRING,
+            },
+            sortKey: {
+                name: 'gsi1sk',
+                type: dynamodb.AttributeType.STRING,
+            },
+            // ALL projection — admin listing needs title, company,
+            // status, analysis summary without separate GetItem calls
+            projectionType: dynamodb.ProjectionType.ALL,
+        });
+
         this.tableName = this.strategistTable.tableName;
 
         // =================================================================

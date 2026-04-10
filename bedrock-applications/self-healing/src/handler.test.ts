@@ -152,7 +152,7 @@ describe('isDuplicate', () => {
 describe('getDefaultTools', () => {
     it('should return four default tools', () => {
         const tools = getDefaultTools();
-        expect(tools).toHaveLength(4);
+        expect(tools).toHaveLength(6);
     });
 
     it('should include diagnose_alarm tool', () => {
@@ -206,7 +206,7 @@ describe('buildToolConfig', () => {
         const config = buildToolConfig(tools);
 
         expect(config.tools).toBeDefined();
-        expect(config.tools).toHaveLength(4);
+        expect(config.tools).toHaveLength(6);
     });
 
     it('should produce toolSpec entries with correct names', () => {

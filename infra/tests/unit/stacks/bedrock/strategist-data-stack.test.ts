@@ -10,6 +10,11 @@
  * - Stack outputs
  * - Public properties (strategistTable, tableName)
  * - grantStrategistRead helper
+ *
+ * Note: The stack uses `AWS::DynamoDB::Table` (not `AWS::DynamoDB::GlobalTable`)
+ * because the underlying CDK construct is `Table`, not `TableV2`.
+ * `TableV2` was replaced to eliminate CDK 2.243.0 `policyResource`/
+ * `encryptedResource` deprecation warnings emitted by its grant*() path.
  */
 
 import { Match, Template } from 'aws-cdk-lib/assertions';
@@ -75,7 +80,7 @@ describe('StrategistDataStack', () => {
         const { template } = createStrategistDataStack();
 
         it('should create a DynamoDB table with pk/sk keys', () => {
-            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+            template.hasResourceProperties('AWS::DynamoDB::Table', {
                 KeySchema: Match.arrayWith([
                     Match.objectLike({ AttributeName: 'pk', KeyType: 'HASH' }),
                     Match.objectLike({ AttributeName: 'sk', KeyType: 'RANGE' }),
@@ -84,31 +89,29 @@ describe('StrategistDataStack', () => {
         });
 
         it('should use PAY_PER_REQUEST billing mode', () => {
-            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+            template.hasResourceProperties('AWS::DynamoDB::Table', {
                 BillingMode: 'PAY_PER_REQUEST',
             });
         });
 
         it('should set the correct table name', () => {
-            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+            template.hasResourceProperties('AWS::DynamoDB::Table', {
                 TableName: TABLE_NAME,
             });
         });
 
         it('should enable point-in-time recovery', () => {
-            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
-                Replicas: Match.arrayWith([
-                    Match.objectLike({
-                        PointInTimeRecoverySpecification: {
-                            PointInTimeRecoveryEnabled: true,
-                        },
-                    }),
-                ]),
+            // AWS::DynamoDB::Table emits PITR at the top-level PointInTimeRecoverySpecification,
+            // unlike AWS::DynamoDB::GlobalTable which uses Replicas[].PointInTimeRecoverySpecification
+            template.hasResourceProperties('AWS::DynamoDB::Table', {
+                PointInTimeRecoverySpecification: {
+                    PointInTimeRecoveryEnabled: true,
+                },
             });
         });
 
         it('should define pk, sk, gsi1pk, and gsi1sk attributes', () => {
-            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+            template.hasResourceProperties('AWS::DynamoDB::Table', {
                 AttributeDefinitions: Match.arrayWith([
                     Match.objectLike({ AttributeName: 'pk', AttributeType: 'S' }),
                     Match.objectLike({ AttributeName: 'sk', AttributeType: 'S' }),
@@ -126,7 +129,7 @@ describe('StrategistDataStack', () => {
         const { template } = createStrategistDataStack();
 
         it('should create GSI1 (gsi1-status-date) for application listing', () => {
-            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+            template.hasResourceProperties('AWS::DynamoDB::Table', {
                 GlobalSecondaryIndexes: Match.arrayWith([
                     Match.objectLike({
                         IndexName: 'gsi1-status-date',
@@ -140,7 +143,7 @@ describe('StrategistDataStack', () => {
         });
 
         it('should have exactly 1 GSI', () => {
-            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+            template.hasResourceProperties('AWS::DynamoDB::Table', {
                 GlobalSecondaryIndexes: Match.arrayWith([
                     Match.objectLike({ IndexName: 'gsi1-status-date' }),
                 ]),
@@ -255,7 +258,7 @@ describe('StrategistDataStack', () => {
         const { template } = createStrategistDataStack();
 
         it('should create exactly 1 DynamoDB table', () => {
-            template.resourceCountIs('AWS::DynamoDB::GlobalTable', 1);
+            template.resourceCountIs('AWS::DynamoDB::Table', 1);
         });
 
         it('should not create any Lambda functions', () => {
@@ -279,7 +282,7 @@ describe('StrategistDataStack', () => {
             const { template } = createStrategistDataStack({
                 removalPolicy: cdk.RemovalPolicy.RETAIN,
             });
-            template.hasResource('AWS::DynamoDB::GlobalTable', {
+            template.hasResource('AWS::DynamoDB::Table', {
                 DeletionPolicy: 'Retain',
                 UpdateReplacePolicy: 'Retain',
             });
@@ -289,7 +292,7 @@ describe('StrategistDataStack', () => {
             const { template } = createStrategistDataStack({
                 removalPolicy: cdk.RemovalPolicy.DESTROY,
             });
-            template.hasResource('AWS::DynamoDB::GlobalTable', {
+            template.hasResource('AWS::DynamoDB::Table', {
                 DeletionPolicy: 'Delete',
             });
         });

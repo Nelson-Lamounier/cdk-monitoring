@@ -143,7 +143,9 @@ export class StrategistPipelineStack extends cdk.Stack {
             props.assetsBucketName,
         );
 
-        const strategistTable = dynamodb.TableV2.fromTableName(
+        // Use Table.fromTableName (not TableV2) to avoid the `policyResource` deprecation
+        // warning emitted by TableV2's grant path when importing by name only.
+        const strategistTable = dynamodb.Table.fromTableName(
             this,
             'ImportedStrategistTable',
             props.tableName,
