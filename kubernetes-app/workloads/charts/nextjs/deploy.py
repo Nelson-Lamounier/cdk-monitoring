@@ -407,26 +407,48 @@ def main() -> None:
         if not history:
             raise ValueError(f"No history found for {cf_secret_path}")
 
-        # History is ordered oldest to newest.
+        # History is ordered oldest to newest — latest version is last.
         latest = history[-1]
         origin_secret = latest["Value"]
-
+        latest_version = latest.get("Version", "?")
         latest_time = latest["LastModifiedDate"]
         now = datetime.now(timezone.utc)
+
+        # ── Version-alignment log ─────────────────────────────────────────────
+        # This version number MUST match the version that the Edge stack's
+        # AwsCustomResource deployed to CloudFront.  If they diverge (e.g.
+        # because the SSM parameter was overwritten between the Edge deploy and
+        # this deploy.py run), the origin secret embedded in the IngressRoute
+        # will not match the value CloudFront is sending in X-CloudFront-Origin-Secret,
+        # causing 403s.  Check the CloudFormation events for ReadCloudfrontOriginSecret
+        # to confirm which version it resolved.
+        log_info(
+            "Resolved latest CloudFront origin secret version",
+            ssm_path=cf_secret_path,
+            ssm_version=latest_version,
+            last_modified=latest_time.isoformat() if hasattr(latest_time, "isoformat") else str(latest_time),
+            total_versions=len(history),
+        )
 
         # If there are at least 2 versions and the latest rotation was < 20 min ago,
         # use a regex OR pattern to allow both secrets temporarily (zero-downtime rotation).
         if len(history) >= 2 and (now - latest_time).total_seconds() < 20 * 60:
             previous_secret = history[-2]["Value"]
+            previous_version = history[-2].get("Version", "?")
             old_escaped = re.escape(previous_secret)
             new_escaped = re.escape(origin_secret)
             origin_secret = f"{old_escaped}|{new_escaped}"
             log_info(
                 "Secret rotated recently. Using dual-secret regex for zero-downtime.",
+                previous_version=previous_version,
+                latest_version=latest_version,
                 minutes_since_rotation=round((now - latest_time).total_seconds() / 60, 1),
             )
         else:
-            log_info("Using single origin secret.")
+            log_info(
+                "Using single origin secret.",
+                ssm_version=latest_version,
+            )
 
         # Derive public hostname from NEXTAUTH_URL for Host() defence-in-depth.
         # NEXTAUTH_URL is already resolved in Step 3 (e.g. "https://nelsonlamounier.com").

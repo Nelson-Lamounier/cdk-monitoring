@@ -851,11 +851,26 @@ export class KubernetesEdgeStack extends cdk.Stack {
     /**
      * Reads an SSM parameter from a remote region via AwsCustomResource.
      *
-     * IMPORTANT: The onUpdate handler uses a timestamp-based physicalResourceId
-     * so that every `cdk deploy` triggers a fresh SSM read. Without this,
-     * CloudFormation caches the value from the first deploy — if the underlying
-     * SSM parameter changes (e.g., EIP re-allocation), CloudFront would continue
-     * using the stale origin until the custom resource is manually deleted.
+     * ## Physical Resource ID strategy
+     *
+     * - **onCreate**: uses `Parameter.ARN` — stable across versions, guarantees
+     *   idempotent stack creation (CloudFormation only calls onCreate once).
+     * - **onUpdate**: uses a synthesise-time ISO-8601 timestamp (`DEPLOY_TIME`).
+     *   Because the timestamp changes on every `cdk deploy` invocation, CloudFormation
+     *   always sees a different physical ID and therefore always calls the Lambda,
+     *   forcing a fresh `ssm:GetParameter` read on every deploy.
+     *
+     * Without this fix, `Parameter.ARN` never changes between SSM parameter versions
+     * so CloudFormation skips the update entirely — CloudFront ends up reading a
+     * stale value (e.g., a rotated `cloudfront-origin-secret`) until the custom
+     * resource is manually deleted and re-created.
+     *
+     * @param id              - CDK construct id (must be unique in the stack).
+     * @param parameterPath   - SSM parameter path (e.g. `/k8s/development/elastic-ip`).
+     * @param region          - AWS region where the parameter lives (e.g. `eu-west-1`).
+     * @param policy          - IAM policy granting `ssm:GetParameter` on the target ARN.
+     * @param withDecryption  - Set `true` for SecureString parameters. @default false
+     * @returns The resolved parameter value as a CloudFormation token.
      */
     private readSsmParameter(
         id: string,
@@ -864,12 +879,18 @@ export class KubernetesEdgeStack extends cdk.Stack {
         policy: cr.AwsCustomResourcePolicy,
         withDecryption: boolean = false,
     ): string {
+        // Synthesise-time timestamp — changes on every `cdk deploy`, causing
+        // CloudFormation to treat this as a changed physical resource and
+        // invoke the onUpdate handler unconditionally.
+        const deployTimestamp = new Date().toISOString();
+
         const reader = new cr.AwsCustomResource(this, id, {
             onCreate: {
                 service: 'SSM',
                 action: 'getParameter',
                 parameters: { Name: parameterPath, WithDecryption: withDecryption },
                 region,
+                // Stable ID for first-time creation — avoids replacement on Day-0.
                 physicalResourceId: cr.PhysicalResourceId.fromResponse('Parameter.ARN'),
             },
             onUpdate: {
@@ -877,7 +898,11 @@ export class KubernetesEdgeStack extends cdk.Stack {
                 action: 'getParameter',
                 parameters: { Name: parameterPath, WithDecryption: withDecryption },
                 region,
-                physicalResourceId: cr.PhysicalResourceId.fromResponse('Parameter.ARN'),
+                // Timestamp-based ID: always different → CloudFormation always
+                // re-invokes the Lambda → SSM value is always fresh on every deploy.
+                physicalResourceId: cr.PhysicalResourceId.of(
+                    `${parameterPath}@${deployTimestamp}`,
+                ),
             },
             policy,
         });
