@@ -111,6 +111,7 @@ jobs:
       - name: "Wait for Worker SSM Automations"
         env:
           AWS_REGION: ${{ env.AWS_REGION }}
+        shell: bash
         run: |
           SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}"
           MAX_WAIT=900   # 15 min — matches SSM document timeout
