@@ -11,11 +11,6 @@
  *
  * The monolith Lambda, DLQ, S3 event notification, and Bedrock IAM
  * have been deprecated and moved to BedrockPipelineStack.
- *
- * Note: The stack uses `AWS::DynamoDB::Table` (not `AWS::DynamoDB::GlobalTable`)
- * because the underlying CDK construct is `Table`, not `TableV2`.
- * `TableV2` was replaced to eliminate CDK 2.243.0 `policyResource`/
- * `encryptedResource` deprecation warnings emitted by its grant*() path.
  */
 
 import { Match, Template } from 'aws-cdk-lib/assertions';
@@ -80,7 +75,7 @@ describe('AiContentStack', () => {
         const { template } = createContentStack();
 
         it('should create a DynamoDB table with pk/sk keys', () => {
-            template.hasResourceProperties('AWS::DynamoDB::Table', {
+            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
                 KeySchema: Match.arrayWith([
                     Match.objectLike({ AttributeName: 'pk', KeyType: 'HASH' }),
                     Match.objectLike({ AttributeName: 'sk', KeyType: 'RANGE' }),
@@ -89,23 +84,25 @@ describe('AiContentStack', () => {
         });
 
         it('should use PAY_PER_REQUEST billing mode', () => {
-            template.hasResourceProperties('AWS::DynamoDB::Table', {
+            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
                 BillingMode: 'PAY_PER_REQUEST',
             });
         });
 
         it('should enable point-in-time recovery', () => {
-            // AWS::DynamoDB::Table emits PITR at the top-level PointInTimeRecoverySpecification,
-            // unlike AWS::DynamoDB::GlobalTable which uses Replicas[].PointInTimeRecoverySpecification
-            template.hasResourceProperties('AWS::DynamoDB::Table', {
-                PointInTimeRecoverySpecification: {
-                    PointInTimeRecoveryEnabled: true,
-                },
+            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
+                Replicas: Match.arrayWith([
+                    Match.objectLike({
+                        PointInTimeRecoverySpecification: {
+                            PointInTimeRecoveryEnabled: true,
+                        },
+                    }),
+                ]),
             });
         });
 
         it('should set the correct table name', () => {
-            template.hasResourceProperties('AWS::DynamoDB::Table', {
+            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
                 TableName: `${NAME_PREFIX}-ai-content`,
             });
         });
@@ -118,7 +115,7 @@ describe('AiContentStack', () => {
         const { template } = createContentStack();
 
         it('should create GSI1 (gsi1-status-date) for article listing', () => {
-            template.hasResourceProperties('AWS::DynamoDB::Table', {
+            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
                 GlobalSecondaryIndexes: Match.arrayWith([
                     Match.objectLike({
                         IndexName: 'gsi1-status-date',
@@ -132,7 +129,7 @@ describe('AiContentStack', () => {
         });
 
         it('should create GSI2 (gsi2-tag-date) for tag filtering', () => {
-            template.hasResourceProperties('AWS::DynamoDB::Table', {
+            template.hasResourceProperties('AWS::DynamoDB::GlobalTable', {
                 GlobalSecondaryIndexes: Match.arrayWith([
                     Match.objectLike({
                         IndexName: 'gsi2-tag-date',

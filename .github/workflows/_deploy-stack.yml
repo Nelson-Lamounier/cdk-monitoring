@@ -131,9 +131,6 @@ on:
       deployment-status:
         description: "Deployment status (success/failure)"
         value: ${{ jobs.deploy.outputs.status }}
-      stack-outputs:
-        description: "CloudFormation stack outputs (JSON)"
-        value: ${{ jobs.deploy.outputs.outputs }}
 
 env:
   # Node.js version is read from .nvmrc for centralization
@@ -153,7 +150,6 @@ jobs:
     environment: ${{ inputs.github-environment || inputs.environment }}
     outputs:
       status: ${{ steps.deploy.outputs.status }}
-      outputs: ${{ steps.finalize.outputs.stack_outputs }}
 
     steps:
       - name: Checkout
