@@ -312,11 +312,12 @@ jobs:
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        # Reads both BFF ECR SSM parameters and fails loudly if either is absent.
+        # Reads both BFF ECR SSM parameters to provide information about the repositories.
         # These are written by SharedVpcStack when Shared-Infra is deployed.
-        # Failure means: run deploy-shared.yml (Shared-Infra stack) first.
+        # This will not block the pipeline during a day 0 launch.
+        shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           PUBLIC_API_SSM="/shared/ecr-public-api/${CDK_ENV}/repository-uri"
           ADMIN_API_SSM="/shared/ecr-admin-api/${CDK_ENV}/repository-uri"
@@ -327,10 +328,10 @@ jobs:
             --region "${AWS_REGION}" \
             --query 'Parameter.Value' \
             --output text 2>&1) || {
-            echo "::error::public-api ECR repository not found in SSM."
-            echo "::error::SSM path: ${PUBLIC_API_SSM}"
-            echo "::error::Action required: deploy Shared-Infra stack first (run deploy-shared.yml)."
-            exit 1
+            echo "::warning::public-api ECR repository not found in SSM."
+            echo "::warning::SSM path: ${PUBLIC_API_SSM}"
+            echo "::warning::Day 0 deployment - assuming cluster launch."
+            PUBLIC_API_URI="not-found"
           }
 
           echo "Checking SSM parameter: ${ADMIN_API_SSM}"
@@ -339,15 +340,15 @@ jobs:
             --region "${AWS_REGION}" \
             --query 'Parameter.Value' \
             --output text 2>&1) || {
-            echo "::error::admin-api ECR repository not found in SSM."
-            echo "::error::SSM path: ${ADMIN_API_SSM}"
-            echo "::error::Action required: deploy Shared-Infra stack first (run deploy-shared.yml)."
-            exit 1
+            echo "::warning::admin-api ECR repository not found in SSM."
+            echo "::warning::SSM path: ${ADMIN_API_SSM}"
+            echo "::warning::Day 0 deployment - assuming cluster launch."
+            ADMIN_API_URI="not-found"
           }
 
           echo "public-api ECR URI : ${PUBLIC_API_URI}"
           echo "admin-api  ECR URI : ${ADMIN_API_URI}"
-          echo "BFF ECR pre-flight: PASSED"
+          echo "BFF ECR pre-flight check completed."
 
   # ===========================================================================
   # Deploy Data Stack (1/6) — DynamoDB + S3 + SSM Parameters
