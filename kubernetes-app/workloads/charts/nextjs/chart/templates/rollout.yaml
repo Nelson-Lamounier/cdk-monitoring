@@ -71,6 +71,8 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ .Values.secrets.name }}
+            - configMapRef:
+                name: nextjs-config
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

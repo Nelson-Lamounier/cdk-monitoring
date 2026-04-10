@@ -1,0 +1,14 @@
+{
+    "name": "@repo/api",
+    "version": "0.1.0",
+    "private": true,
+    "description": "BFF API services — admin-api (write-heavy, Cognito-protected) and public-api (read-heavy, unauthenticated).",
+    "scripts": {
+        "test": "yarn workspaces foreach --all --include '@repo/admin-api' --include '@repo/public-api' run test",
+        "test:watch": "yarn workspaces foreach --all --include '@repo/admin-api' --include '@repo/public-api' --parallel run test:watch",
+        "test:coverage": "yarn workspaces foreach --all --include '@repo/admin-api' --include '@repo/public-api' run test:coverage",
+        "build": "yarn workspaces foreach --all --include '@repo/admin-api' --include '@repo/public-api' run build",
+        "typecheck": "yarn workspaces foreach --all --include '@repo/admin-api' --include '@repo/public-api' run typecheck",
+        "lint": "yarn workspaces foreach --all --include '@repo/admin-api' --include '@repo/public-api' run lint"
+    }
+}

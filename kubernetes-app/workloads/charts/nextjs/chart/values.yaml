@@ -110,9 +110,43 @@ ingress:
 
 # ---------------------------------------------------------------------------
 # Secrets (injected via deploy.py → Kubernetes Secret)
+#
+# Contains ONLY sensitive auth values — not AWS resource references.
+# Expected keys:
+#   NEXTAUTH_SECRET          — NextAuth.js signing secret
+#   NEXTAUTH_URL             — NextAuth.js public URL
+#   AUTH_COGNITO_USER_POOL_ID — Cognito user pool ID
+#   AUTH_COGNITO_ID          — Cognito app client ID
+#   AUTH_COGNITO_ISSUER      — Cognito issuer URL
+#   AUTH_COGNITO_DOMAIN      — Cognito hosted UI domain
+#   AUTH_COGNITO_SECRET      — dummy value (public client)
+#   BEDROCK_AGENT_API_KEY    — Bedrock Agent API key
+#   REVALIDATION_SECRET      — ISR revalidation token
+#   NEXT_PUBLIC_API_URL      — API Gateway URL (contains account ID)
+#   NEXT_PUBLIC_FARO_ENABLED — Grafana Faro RUM toggle
 # ---------------------------------------------------------------------------
 secrets:
   name: nextjs-secrets
+
+# ---------------------------------------------------------------------------
+# Config (injected via deploy.py → Kubernetes ConfigMap)
+#
+# Non-sensitive infrastructure references — safe for plain ConfigMap storage.
+# AWS credentials are NOT here; they come from the EC2 Instance Profile (IMDS).
+# Expected keys:
+#   DYNAMODB_TABLE_NAME    — Content DynamoDB table
+#   DYNAMODB_GSI1_NAME     — GSI for status+date queries
+#   DYNAMODB_GSI2_NAME     — GSI for tag+date queries
+#   ASSETS_BUCKET_NAME     — S3 assets bucket name
+#   BEDROCK_AGENT_API_URL  — Bedrock Agent base URL
+#   SSM_BEDROCK_PREFIX     — SSM path prefix for Bedrock params
+#   PUBLISH_LAMBDA_ARN     — Article publish pipeline Lambda ARN
+#   STRATEGIST_TABLE_NAME  — Strategist DynamoDB table
+#   STRATEGIST_TRIGGER_ARN — Strategist trigger Lambda ARN
+#   AWS_DEFAULT_REGION     — AWS region for SDK default credential chain
+# ---------------------------------------------------------------------------
+config:
+  name: nextjs-config
 
 # ---------------------------------------------------------------------------
 # CloudFront Security

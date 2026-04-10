@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Create Next.js Kubernetes secrets from SSM parameters.
+"""Create Next.js Kubernetes resources (Secret + ConfigMap) from SSM parameters.
 
 Called by the SSM Automation pipeline on the control plane instance.
-Resolves secrets from SSM Parameter Store and creates/updates the
-nextjs-secrets K8s Secret. Helm chart deployment is handled by ArgoCD.
+Resolves parameters from SSM Parameter Store and creates/updates:
+  - ``nextjs-secrets``  K8s Secret  — sensitive auth values only
+  - ``nextjs-config``   K8s ConfigMap — non-sensitive config (table names, ARNs, region)
+
+Helm chart deployment is handled by ArgoCD. The Traefik IngressRoute
+is created/updated by Step 5 of this script (sole owner).
 
 Usage:
     KUBECONFIG=/etc/kubernetes/admin.conf python3 deploy.py
@@ -36,8 +40,9 @@ _BOOTSTRAP_DIR = os.environ.get(
 if _BOOTSTRAP_DIR not in sys.path:
     sys.path.insert(0, _BOOTSTRAP_DIR)
 
+from deploy_helpers.bff import resolve_bff_urls
 from deploy_helpers.config import DeployConfig
-from deploy_helpers.k8s import ensure_namespace, load_k8s, upsert_secret
+from deploy_helpers.k8s import ensure_namespace, load_k8s, upsert_configmap, upsert_secret
 from deploy_helpers.logging import log_info, log_warn
 from deploy_helpers.s3 import sync_from_s3
 from deploy_helpers.ssm import resolve_secrets
@@ -178,9 +183,9 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
     except client_error_cls:
         log_info("No Bedrock assets-bucket-name override found; using resolved value")
 
-    # Bedrock Agent: resolve API URL, API key, and revalidation secret.
-    # api-url is a plain String; agent-api-key and revalidation-secret
-    # are SecureStrings.
+    # Bedrock Agent: resolve API URL, API key, revalidation secret, and
+    # pipeline ARNs.  All calls go through resolve_secrets() so logging,
+    # env-override, and error-handling follow a single path.
     #
     # Manual secret creation (one-time):
     #   aws ssm put-parameter \
@@ -196,23 +201,29 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
         "strategist-table-name": "STRATEGIST_TABLE_NAME",
         "strategist-trigger-function-arn": "STRATEGIST_TRIGGER_ARN",
     }
-    for param_suffix, env_var in _BEDROCK_AGENT_PARAMS.items():
-        bedrock_path = f"/bedrock-{cfg.short_env}/{param_suffix}"
-        log_info("Resolving Bedrock Agent param", env_var=env_var, ssm_path=bedrock_path)
-        try:
-            resp = ssm_client.get_parameter(Name=bedrock_path, WithDecryption=True)
-            secrets[env_var] = resp["Parameter"]["Value"]
-            log_info("Resolved Bedrock Agent param", env_var=env_var)
-        except client_error_cls:
-            log_warn("Bedrock Agent param not found", env_var=env_var, ssm_path=bedrock_path)
+    bedrock_prefix = f"/bedrock-{cfg.short_env}"
+    bedrock_secrets = resolve_secrets(
+        ssm_client,
+        bedrock_prefix,
+        _BEDROCK_AGENT_PARAMS,
+        client_error_cls=client_error_cls,
+    )
+    secrets.update(bedrock_secrets)
+
+    # BFF service URLs — dedicated helper ensures a single resolution path
+    # and consistent in-cluster fallback for both admin-api and public-api.
+    bff = resolve_bff_urls(ssm_client, cfg.short_env, client_error_cls)
+    secrets["PUBLIC_API_URL"] = bff.public_api_url
 
     # Derived config: SSM prefix for Bedrock parameters.
     # Used by publish-draft API route to locate infrastructure.
-    secrets["SSM_BEDROCK_PREFIX"] = f"/bedrock-{cfg.short_env}"
+    # NOTE: This is non-sensitive — injected via ConfigMap, not Secret.
+    secrets["SSM_BEDROCK_PREFIX"] = bedrock_prefix
 
     # DynamoDB GSI names — constants matching CDK ai-content-stack.ts.
     # Explicitly injected rather than relying on fallback defaults in
     # the frontend code (dynamodb-articles.ts).
+    # NOTE: These are constants — injected via ConfigMap, not Secret.
     secrets["DYNAMODB_GSI1_NAME"] = "gsi1-status-date"
     secrets["DYNAMODB_GSI2_NAME"] = "gsi2-tag-date"
 
@@ -220,42 +231,69 @@ def resolve_nextjs_secrets(cfg: NextjsConfig, ssm_client: object, client_error_c
 
 
 # ---------------------------------------------------------------------------
-# App-specific: K8s secret creation
+# App-specific: K8s resource creation (Secret + ConfigMap)
+#
+# Separation rationale:
+#   _NEXTJS_SECRET_KEYS  — values requiring encryption at rest; stored in an
+#                          Opaque K8s Secret (base64-encoded by the API server).
+#   _NEXTJS_CONFIG_KEYS  — non-sensitive config strings (table names, bucket
+#                          names, ARNs, constants); stored in a plain ConfigMap.
+#
+# The Rollout template uses:
+#   envFrom:
+#     - secretRef:    { name: nextjs-secrets }
+#     - configMapRef: { name: nextjs-config  }
 # ---------------------------------------------------------------------------
 
 _NEXTJS_SECRET_KEYS = [
-    "DYNAMODB_TABLE_NAME",
-    "DYNAMODB_GSI1_NAME",
-    "DYNAMODB_GSI2_NAME",
-    "ASSETS_BUCKET_NAME",
-    "NEXT_PUBLIC_API_URL",
+    # Auth — always sensitive
     "NEXTAUTH_SECRET",
     "NEXTAUTH_URL",
     "AUTH_COGNITO_USER_POOL_ID",
     "AUTH_COGNITO_ID",
     "AUTH_COGNITO_ISSUER",
     "AUTH_COGNITO_DOMAIN",
-    "BEDROCK_AGENT_API_URL",
+    # API credentials — always sensitive
     "BEDROCK_AGENT_API_KEY",
     "REVALIDATION_SECRET",
+    # API Gateway URL for subscriptions (contains account ID in hostname)
+    "NEXT_PUBLIC_API_URL",
+]
+
+_NEXTJS_CONFIG_KEYS = [
+    # Non-sensitive infrastructure references — safe to store in ConfigMap
+    "DYNAMODB_TABLE_NAME",
+    "DYNAMODB_GSI1_NAME",
+    "DYNAMODB_GSI2_NAME",
+    "ASSETS_BUCKET_NAME",
+    "BEDROCK_AGENT_API_URL",
     "SSM_BEDROCK_PREFIX",
     "PUBLISH_LAMBDA_ARN",
-    # Job Strategist pipeline
     "STRATEGIST_TABLE_NAME",
     "STRATEGIST_TRIGGER_ARN",
+    # BFF: public-api base URL — used by /api/resume/active proxy route
+    "PUBLIC_API_URL",
 ]
 
 
-def create_nextjs_k8s_secrets(v1: object, cfg: NextjsConfig) -> None:
-    """Create or update the nextjs-secrets Kubernetes Secret.
+def create_nextjs_k8s_resources(v1: object, cfg: NextjsConfig) -> None:
+    """Create or update the nextjs-secrets K8s Secret and nextjs-config ConfigMap.
+
+    Splits resolved SSM parameters into two K8s objects:
+    - ``nextjs-secrets`` (Opaque Secret)  — auth tokens, API keys, Cognito config.
+    - ``nextjs-config``  (ConfigMap)       — table names, bucket name, ARNs, region.
+
+    Both are consumed by the Rollout via ``envFrom`` (secretRef + configMapRef).
+    The pod environment is identical to before — only the K8s backing object changes.
 
     Args:
         v1: Kubernetes ``CoreV1Api`` instance.
         cfg: Next.js deployment configuration with resolved secrets.
     """
-    log_info("=== Creating Kubernetes secrets ===")
+    log_info("=== Creating Kubernetes resources ===")
     ensure_namespace(v1, cfg.namespace)
 
+    # --- Secret (sensitive auth values only) ---
     secret_data: dict[str, str] = {}
     for key in _NEXTJS_SECRET_KEYS:
         value = cfg.secrets.get(key, "")
@@ -270,14 +308,28 @@ def create_nextjs_k8s_secrets(v1: object, cfg: NextjsConfig) -> None:
     # Enable Grafana Faro RUM
     secret_data["NEXT_PUBLIC_FARO_ENABLED"] = "true"
 
-    # AWS_REGION is always needed for SDK calls — inject from config
-    secret_data["AWS_REGION"] = cfg.aws_region
-
     if secret_data:
         upsert_secret(v1, "nextjs-secrets", cfg.namespace, secret_data)
         log_info("nextjs-secrets created/updated", keys=len(secret_data))
     else:
         log_warn("No secrets resolved — skipping secret creation")
+
+    # --- ConfigMap (non-sensitive config values) ---
+    config_data: dict[str, str] = {}
+    for key in _NEXTJS_CONFIG_KEYS:
+        value = cfg.secrets.get(key, "")
+        if value:
+            config_data[key] = value
+
+    # AWS_DEFAULT_REGION is needed by the AWS SDK default credential chain.
+    # Stored in ConfigMap (not Secret) — region is not a sensitive value.
+    config_data["AWS_DEFAULT_REGION"] = cfg.aws_region
+
+    if config_data:
+        upsert_configmap(v1, "nextjs-config", cfg.namespace, config_data)
+        log_info("nextjs-config created/updated", keys=len(config_data))
+    else:
+        log_warn("No config values resolved — skipping ConfigMap creation")
 
 
 # ---------------------------------------------------------------------------
@@ -317,8 +369,8 @@ def main() -> None:
     ssm_client = boto3_mod.client("ssm", region_name=cfg.aws_region)
     cfg.secrets = resolve_nextjs_secrets(cfg, ssm_client, client_error_cls)
 
-    # Step 4: Create Kubernetes secrets
-    create_nextjs_k8s_secrets(v1, cfg)
+    # Step 4: Create Kubernetes Secret + ConfigMap
+    create_nextjs_k8s_resources(v1, cfg)
 
     # Step 5: Create / Update the Traefik IngressRoute with the real CloudFront secret
     #
