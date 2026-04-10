@@ -4,6 +4,9 @@
   "private": true,
   "description": "Kubernetes application deployment manifests, Helm values, and bootstrap scripts",
   "scripts": {
+    "test": "NODE_OPTIONS='--experimental-vm-modules' jest",
+    "test:python": "python3 -m pytest k8s-bootstrap/tests/ -v --tb=short && python3 -m pytest workloads/charts/public-api/tests/ -v --tb=short",
+    "test:dashboards": "npx tsx --test platform/charts/monitoring/tests/validate-dashboards.test.ts",
     "lint:helm": "echo 'No helm lint configured yet'",
     "verify:cluster": "bash k8s-bootstrap/boot/verify-cluster.sh"
   }
