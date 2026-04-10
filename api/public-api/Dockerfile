@@ -1,55 +1,55 @@
-# ============================================================
-# Stage 1 — Builder
+# ── Stage 1: Build ───────────────────────────────────────────────────────────
 # Installs ALL dependencies, compiles TypeScript, then prunes
-# devDependencies for the production image.
-# ============================================================
+# devDependencies for the runtime image.
 FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Copy workspace root manifests (Yarn workspaces need root package.json).
-# .yarnrc.yml is required so Yarn Berry respects nodeLinker: node-modules.
+# Activate Yarn Berry v4 via Corepack BEFORE copying any files.
+# node:22-alpine ships Yarn 1.x; the root package.json declares
+# "packageManager": "yarn@4.12.0" which requires Corepack.
+RUN corepack enable && corepack prepare yarn@4.12.0 --activate
+
+# Copy workspace root manifests.
+# .yarnrc.yml must be included so Yarn Berry respects nodeLinker: node-modules.
 # .yarn/ is git-ignored and not needed (no PnP cache or offline mirror).
 COPY package.json yarn.lock .yarnrc.yml ./
 
-# Copy only this package's manifest — avoids rebuilding on unrelated changes
+# Copy only this package's manifest — avoids rebuilding on unrelated changes.
 COPY api/public-api/package.json ./api/public-api/
 
-# Activate Yarn Berry v4 via Corepack.
-# node:22-alpine ships Yarn 1.x; the packageManager field in package.json
-# specifies yarn@4.12.0 which requires Corepack to be explicitly enabled.
-RUN corepack enable && corepack prepare yarn@4.12.0 --activate
+# Install all deps including devDependencies (needed for tsc).
+# Yarn Berry v4: omit --production to get devDeps.
+RUN yarn workspaces focus @repo/public-api
 
-# Install all deps (including devDependencies for tsc)
-RUN yarn workspaces focus @repo/public-api --production=false
-
-# Copy source files and compile
+# Copy source files and compile.
 COPY api/public-api/tsconfig.json ./api/public-api/
-COPY api/public-api/src           ./api/public-api/src/
+COPY api/public-api/src            ./api/public-api/src/
 
-WORKDIR /app/api/public-api
-RUN yarn build
+RUN yarn workspace @repo/public-api build
 
-# ============================================================
-# Stage 2 — Production
-# Copies only the compiled output and production node_modules.
-# ============================================================
-FROM node:22-alpine AS production
+# Prune to production-only deps for the runtime layer.
+RUN yarn workspaces focus @repo/public-api --production
 
-# Run as non-root user (uid 1001) matching Kubernetes podSecurityContext
+# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
+FROM node:22-alpine AS runtime
+
+# Run as non-root user (uid 1001) matching Kubernetes podSecurityContext.
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup -u 1001
 
 WORKDIR /app
 
-# Copy compiled output and production dependencies
+# Copy compiled output and production dependencies.
+# node_modules is copied from the workspace root (hoisted by Yarn workspaces).
 COPY --from=builder --chown=appuser:appgroup /app/api/public-api/dist ./dist
 COPY --from=builder --chown=appuser:appgroup /app/node_modules        ./node_modules
+COPY --from=builder --chown=appuser:appgroup /app/api/public-api/package.json ./
 
 USER appuser
 
 EXPOSE 3001
 
-# Healthcheck mirrors the Kubernetes startupProbe
+# Healthcheck mirrors the Kubernetes startupProbe.
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
   CMD wget -qO- http://localhost:3001/healthz || exit 1
 

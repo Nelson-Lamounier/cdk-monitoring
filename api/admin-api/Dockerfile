@@ -3,26 +3,28 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
+# Activate Yarn Berry v4 via Corepack BEFORE copying any files.
+# node:22-alpine ships Yarn 1.x; the root package.json declares
+# "packageManager": "yarn@4.12.0" which requires Corepack.
+# Must run before COPY so the cache layer is reused on manifest-only changes.
+RUN corepack enable && corepack prepare yarn@4.12.0 --activate
+
 # Copy workspace manifests first to leverage Docker layer caching.
-# Note: .yarn/ is git-ignored (only install-state.gz exists locally);
-# nodeLinker: node-modules only requires package.json, yarn.lock, .yarnrc.yml.
+# .yarn/ is git-ignored (only install-state.gz exists locally);
+# nodeLinker: node-modules only requires package.json + yarn.lock + .yarnrc.yml.
 COPY package.json yarn.lock .yarnrc.yml ./
 COPY api/admin-api/package.json  api/admin-api/
 COPY api/admin-api/tsconfig.json api/admin-api/
 
-# Activate Yarn Berry v4 via Corepack.
-# node:22-alpine ships Yarn 1.x; the packageManager field in package.json
-# specifies yarn@4.12.0 which requires Corepack to be explicitly enabled.
-RUN corepack enable && corepack prepare yarn@4.12.0 --activate
+# Install all deps including devDependencies (needed for tsc).
+# Yarn Berry v4 flag: omit --production to get devDeps; --production for prod-only.
+RUN yarn workspaces focus @repo/admin-api
 
-# Install only admin-api dependencies (no workspace hoisting needed at runtime).
-RUN yarn workspaces focus @repo/admin-api --production=false
-
-# Copy source and build.
+# Copy source and compile.
 COPY api/admin-api/src api/admin-api/src/
 RUN yarn workspace @repo/admin-api build
 
-# Prune devDependencies.
+# Prune to production-only deps for the runtime layer.
 RUN yarn workspaces focus @repo/admin-api --production
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
