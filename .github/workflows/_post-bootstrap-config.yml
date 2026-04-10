@@ -91,6 +91,89 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # -----------------------------------------------------------------------
+      # Wait for Worker SSM Automations
+      #
+      # CRITICAL TIMING FIX: trigger-bootstrap.ts fires all worker nodes and
+      # exits immediately WITHOUT waiting for them to complete. This means
+      # post-bootstrap-config starts while workers are still mid-bootstrap
+      # (joining the cluster, applying labels, scheduling pods).
+      #
+      # This step reads each worker execution ID published to SSM by
+      # trigger-bootstrap.ts and polls GetAutomationExecution until all
+      # reach a terminal state (Success | Failed | TimedOut | Cancelled)
+      # before we proceed with secret deployment.
+      #
+      # Timeout: 900s (15 min) — matches the SSM Automation document timeout.
+      # Non-fatal on individual node failures: a single bad worker does not
+      # block secret deployment for healthy nodes.
+      # -----------------------------------------------------------------------
+      - name: "Wait for Worker SSM Automations"
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          SSM_PREFIX="/k8s/${{ inputs.cdk-environment }}"
+          MAX_WAIT=900   # 15 min — matches SSM document timeout
+          POLL=20        # poll every 20 seconds
+
+          # Execution ID parameters published by trigger-bootstrap.ts
+          EXEC_PARAMS=(
+            "${SSM_PREFIX}/bootstrap/worker-execution-id"
+            "${SSM_PREFIX}/bootstrap/mon-worker-execution-id"
+            "${SSM_PREFIX}/bootstrap/argocd-worker-execution-id"
+            "${SSM_PREFIX}/bootstrap/general-pool-execution-id"
+            "${SSM_PREFIX}/bootstrap/monitoring-pool-execution-id"
+          )
+
+          # Collect execution IDs that were actually written (skip absent params)
+          declare -A EXEC_IDS
+          for PARAM in "${EXEC_PARAMS[@]}"; do
+            ID=$(aws ssm get-parameter --name "$PARAM" \
+              --query Parameter.Value --output text 2>/dev/null || echo "")
+            if [ -n "$ID" ] && [ "$ID" != "None" ]; then
+              EXEC_IDS["$PARAM"]="$ID"
+              echo "  Found: $(basename $PARAM) = $ID"
+            fi
+          done
+
+          if [ ${#EXEC_IDS[@]} -eq 0 ]; then
+            echo "[SKIP] No worker execution IDs found in SSM — bootstrap may not have run or is Day-0"
+            exit 0
+          fi
+
+          echo "Waiting for ${#EXEC_IDS[@]} worker automation(s) to reach terminal state..."
+          echo "  Max wait: ${MAX_WAIT}s | Poll interval: ${POLL}s"
+          echo ""
+
+          waited=0
+          while [ $waited -lt $MAX_WAIT ]; do
+            all_done=true
+            for PARAM in "${!EXEC_IDS[@]}"; do
+              ID="${EXEC_IDS[$PARAM]}"
+              STATUS=$(aws ssm get-automation-execution \
+                --automation-execution-id "$ID" \
+                --query AutomationExecution.AutomationExecutionStatus \
+                --output text 2>/dev/null || echo "Unknown")
+              echo "  $(basename $PARAM): $STATUS (${waited}s elapsed)"
+              case $STATUS in
+                Success|Failed|TimedOut|Cancelled|CompletedWithFailure) ;;
+                *) all_done=false ;;
+              esac
+            done
+
+            if $all_done; then
+              echo ""
+              echo "[OK] All worker automations reached a terminal state after ${waited}s"
+              break
+            fi
+
+            sleep $POLL
+            waited=$((waited + POLL))
+          done
+
+          echo ""
+          echo "Worker automation wait complete (${waited}s). Proceeding with secret deployment."
+
       - name: Setup Node.js & Install dependencies
         uses: ./.github/actions/setup-node-yarn
 
@@ -210,7 +293,71 @@ jobs:
             --poll-interval 20
 
       # -----------------------------------------------------------------------
-      # Verify CloudFront Origin Secret Was Injected
+      # Wait for Application Pods Ready
+      #
+      # ArgoCD marking itself Healthy does not guarantee that the workload pods
+      # (nextjs, start-admin) have been scheduled and reached Running.
+      # This step polls the control plane via SSM send-command every 15 s
+      # until at least 2 app pods are Running, or times out after 10 min.
+      #
+      # Runs even when the ArgoCD token is absent (Day-0) because pods may
+      # already be present from a previous run.
+      # -----------------------------------------------------------------------
+      - name: "Wait for App Pods Ready"
+        id: app-pods-ready
+        continue-on-error: true # Warn rather than hard-fail in edge cases
+        run: |
+          REGION="${{ env.AWS_REGION }}"
+          MIN_PODS=2   # nextjs + start-admin (minimum viable traffic)
+          MAX_POLLS=40 # 40 × 15s = 10 min
+          POLL=15
+
+          # Resolve control-plane instance ID via EC2 tags (avoids stale SSM param)
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:k8s:bootstrap-role,Values=control-plane" \
+              "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --region "$REGION" --output text 2>/dev/null || echo "")
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::warning::Could not resolve control-plane instance — skipping pod readiness check"
+            exit 0
+          fi
+          echo "::add-mask::$INSTANCE_ID"
+
+          echo "Polling for app pods Ready on control plane..."
+          echo "  Minimum pods: $MIN_PODS | Max polls: $MAX_POLLS | Interval: ${POLL}s"
+          echo ""
+
+          for i in $(seq 1 $MAX_POLLS); do
+            CMD_ID=$(aws ssm send-command \
+              --instance-ids "$INSTANCE_ID" \
+              --document-name "AWS-RunShellScript" \
+              --parameters 'commands=["kubectl get pods -n nextjs-app -n start-admin --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l"]' \
+              --region "$REGION" \
+              --query "Command.CommandId" --output text 2>/dev/null || echo "")
+
+            [ -z "$CMD_ID" ] && echo "  [$i/$MAX_POLLS] SSM send-command failed — retry" && sleep $POLL && continue
+
+            sleep $POLL
+
+            COUNT=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --region "$REGION" \
+              --query "StandardOutputContent" --output text 2>/dev/null | tr -d '[:space:]')
+
+            echo "  [$i/$MAX_POLLS] Running app pods: ${COUNT:-?}"
+
+            if [ -n "$COUNT" ] && [ "$COUNT" -ge $MIN_PODS ] 2>/dev/null; then
+              echo ""
+              echo "[OK] $COUNT app pods are Running — site should be serving traffic"
+              exit 0
+            fi
+          done
+
+          echo "::warning::App pods did not reach $MIN_PODS Running within $((MAX_POLLS * POLL))s — site may be starting up"
+
       #
       # Runs a kubectl check on the control-plane node via SSM send-command
       # to confirm the Traefik IngressRoute no longer contains the placeholder
@@ -286,6 +433,18 @@ jobs:
         run: |
           SMOKE_CMD="just ci-smoke-kubernetes-infra ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}"
           eval $SMOKE_CMD
+
+      - name: "Site Smoke Test (Live Traffic Check)"
+        id: site-smoke
+        continue-on-error: false
+        run: |
+          just ci-smoke-site \
+            --environment ${{ inputs.environment }} \
+            --region ${{ env.AWS_REGION }} \
+            --max-attempts 12 \
+            --initial-delay 10
+
+
 
       # -----------------------------------------------------------------------
       # Failure Diagnostics — K8s state + boot logs on failure

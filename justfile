@@ -421,10 +421,18 @@ ci-deploy-manifests *ARGS:
 ci-smoke-kubernetes-infra *ARGS:
     npx tsx infra/scripts/validation/smoke-tests-kubernetes.ts {{ARGS}}
 
+# CI site smoke test — verify live CloudFront URL is serving HTTP 2xx
+# Polls the public site URL with exponential backoff after bootstrap.
+# Usage: just ci-smoke-site --environment development --region eu-west-1
+[group('ci')]
+ci-smoke-site *ARGS:
+    npx tsx infra/scripts/cd/smoke-site.ts {{ARGS}}
+
 # CI fetch boot logs from CloudWatch (failure diagnostics)
 [group('ci')]
 ci-fetch-boot-logs *ARGS:
     npx tsx kubernetes-app/k8s-bootstrap/scripts/fetch-boot-logs.ts {{ARGS}}
+
 
 
 
