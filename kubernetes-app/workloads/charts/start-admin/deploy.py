@@ -215,6 +215,26 @@ def resolve_admin_secrets(cfg: StartAdminConfig, ssm_client: object, client_erro
     bff = resolve_bff_urls(ssm_client, cfg.short_env, client_error_cls)
     secrets["ADMIN_API_URL"] = bff.admin_api_url
 
+    # auth.ts reads AUTH_COGNITO_DOMAIN / AUTH_COGNITO_CLIENT_ID (TanStack
+    # Start / better-auth naming convention) rather than the legacy COGNITO_*
+    # names.  Inject aliases so the PKCE OAuth login flow can construct the
+    # Cognito authorise URL without missing-env-var errors.
+    if "COGNITO_DOMAIN" in secrets:
+        secrets["AUTH_COGNITO_DOMAIN"] = secrets["COGNITO_DOMAIN"]
+    if "COGNITO_CLIENT_ID" in secrets:
+        secrets["AUTH_COGNITO_CLIENT_ID"] = secrets["COGNITO_CLIENT_ID"]
+
+    # VITE_APP_URL: base URL for the admin app — used by auth.ts to build the
+    # Cognito redirect_uri (e.g. https://nelsonlamounier.com/admin/auth/callback).
+    # Derived from the standard NEXTAUTH_URL SSM parameter (same domain).
+    nextauth_ssm = f"{cfg.frontend_ssm_prefix}/auth/nextauth-url"
+    try:
+        resp = ssm_client.get_parameter(Name=nextauth_ssm, WithDecryption=True)
+        secrets["VITE_APP_URL"] = resp["Parameter"]["Value"]
+        log_info("Resolved VITE_APP_URL from NEXTAUTH_URL", value=secrets["VITE_APP_URL"])
+    except client_error_cls:
+        log_warn("NEXTAUTH_URL not found in SSM — VITE_APP_URL will be unset")
+
     # Derived config: SSM prefix for Bedrock parameters.
     # Used by the admin UI to locate pipeline infrastructure.
     secrets["SSM_BEDROCK_PREFIX"] = bedrock_prefix
@@ -243,6 +263,11 @@ _ADMIN_SECRET_KEYS = [
     "COGNITO_CLIENT_ID",
     "COGNITO_ISSUER_URL",
     "COGNITO_DOMAIN",
+    # auth.ts aliases: TanStack Start reads AUTH_COGNITO_* and VITE_APP_URL
+    # to construct the Cognito PKCE login URL at runtime.
+    "AUTH_COGNITO_DOMAIN",
+    "AUTH_COGNITO_CLIENT_ID",
+    "VITE_APP_URL",
     "BEDROCK_AGENT_API_KEY",
     "REVALIDATION_SECRET",
 ]

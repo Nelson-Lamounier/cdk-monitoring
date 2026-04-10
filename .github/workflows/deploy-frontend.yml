@@ -631,8 +631,12 @@ jobs:
           push: false
           load: false
           tags: start-admin:${{ env.IMAGE_TAG }}
-          cache-from: type=gha,scope=start-admin
-          cache-to: type=gha,mode=max,scope=start-admin
+          # Cache busted (v2): previous cache had mismatched server/client
+          # bundle layers (server bundle referenced CSS hash Bz5IyOiE but
+          # client assets contained BaHLhT7v — from two different Vite runs).
+          # A new scope forces a clean single-pass Vite build so hashes align.
+          cache-from: type=gha,scope=start-admin-v2
+          cache-to: type=gha,mode=max,scope=start-admin-v2
           provenance: false
           outputs: type=docker,dest=/tmp/admin-image.tar
           # ---------------------------------------------------------------------------
