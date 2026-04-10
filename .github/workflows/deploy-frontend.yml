@@ -502,12 +502,18 @@ jobs:
           REMOTE_SCRIPT
           )
 
+          # jq -Rs encodes the multi-line script as a valid JSON string so the
+          # AWS CLI parameter parser does not choke on literal newlines.
+          PARAMS_FILE=$(mktemp)
+          printf '{"commands":[%s]}' "$(printf '%s' "$SCRIPT" | jq -Rs .)" > "$PARAMS_FILE"
+
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"$SCRIPT\"]" \
+            --parameters "file://$PARAMS_FILE" \
             --region "$REGION" \
             --query "Command.CommandId" --output text)
+          rm -f "$PARAMS_FILE"
 
           echo "SSM Command ID: $CMD_ID"
 
@@ -873,12 +879,18 @@ jobs:
           REMOTE_SCRIPT
           )
 
+          # jq -Rs encodes the multi-line script as a valid JSON string so the
+          # AWS CLI parameter parser does not choke on literal newlines.
+          PARAMS_FILE=$(mktemp)
+          printf '{"commands":[%s]}' "$(printf '%s' "$SCRIPT" | jq -Rs .)" > "$PARAMS_FILE"
+
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"$SCRIPT\"]" \
+            --parameters "file://$PARAMS_FILE" \
             --region "$REGION" \
             --query "Command.CommandId" --output text)
+          rm -f "$PARAMS_FILE"
 
           echo "SSM Command ID: $CMD_ID"
 
