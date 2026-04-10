@@ -462,12 +462,19 @@ jobs:
 
           echo "[INFO] Waiting for $ROLLOUT Rollout to reach Paused state (green RS + analysis passed)..."
           for i in $(seq 1 24); do
+            # $NF (last field) captures the status word, e.g. "Paused", "Healthy", "Degraded".
+            # $2 would capture the icon glyph (✔/◌/✖) and never match any string comparison.
             PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
-              | grep -E "^Status" | awk '{print $2}' || true)
+              | grep -E "^Status" | awk '{print $NF}' || true)
             echo "  [$i/24] Phase: ${PHASE:-unknown}"
             if [[ "$PHASE" == "Paused" ]]; then
               echo "[PASS] Rollout is Paused — promoting now"
               break
+            fi
+            # If already Healthy (e.g. re-run after auto-promote), skip the wait
+            if [[ "$PHASE" == "Healthy" ]]; then
+              echo "[INFO] Rollout is already Healthy — no promotion needed"
+              exit 0
             fi
             if [[ "$PHASE" == "Degraded" || "$PHASE" == "Error" ]]; then
               echo "[FAIL] Rollout reached $PHASE — aborting"
@@ -478,7 +485,7 @@ jobs:
           done
 
           PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
-            | grep -E "^Status" | awk '{print $2}' || true)
+            | grep -E "^Status" | awk '{print $NF}' || true)
           if [[ "$PHASE" != "Paused" ]]; then
             echo "[FAIL] Rollout did not reach Paused within timeout (current: ${PHASE:-unknown})"
             exit 1
@@ -490,7 +497,7 @@ jobs:
           echo "[INFO] Waiting for Healthy state post-promotion..."
           for i in $(seq 1 12); do
             PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
-              | grep -E "^Status" | awk '{print $2}' || true)
+              | grep -E "^Status" | awk '{print $NF}' || true)
             echo "  [$i/12] Phase: ${PHASE:-unknown}"
             if [[ "$PHASE" == "Healthy" ]]; then
               echo "[PASS] Rollout is Healthy — blue/green cycle complete"
@@ -865,12 +872,19 @@ jobs:
 
           echo "[INFO] Waiting for $ROLLOUT Rollout to reach Paused state..."
           for i in $(seq 1 24); do
+            # $NF (last field) captures the status word, e.g. "Paused", "Healthy", "Degraded".
+            # $2 would capture the icon glyph (✔/◌/✖) and never match any string comparison.
             PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
-              | grep -E "^Status" | awk '{print $2}' || true)
+              | grep -E "^Status" | awk '{print $NF}' || true)
             echo "  [$i/24] Phase: ${PHASE:-unknown}"
             if [[ "$PHASE" == "Paused" ]]; then
               echo "[PASS] Rollout is Paused — promoting now"
               break
+            fi
+            # If already Healthy (e.g. re-run after auto-promote), skip the wait
+            if [[ "$PHASE" == "Healthy" ]]; then
+              echo "[INFO] Rollout is already Healthy — no promotion needed"
+              exit 0
             fi
             if [[ "$PHASE" == "Degraded" || "$PHASE" == "Error" ]]; then
               echo "[FAIL] Rollout reached $PHASE — aborting"
@@ -881,7 +895,7 @@ jobs:
           done
 
           PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
-            | grep -E "^Status" | awk '{print $2}' || true)
+            | grep -E "^Status" | awk '{print $NF}' || true)
           if [[ "$PHASE" != "Paused" ]]; then
             echo "[FAIL] Rollout did not reach Paused within timeout (current: ${PHASE:-unknown})"
             exit 1
@@ -893,7 +907,7 @@ jobs:
           echo "[INFO] Waiting for Healthy state post-promotion..."
           for i in $(seq 1 12); do
             PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
-              | grep -E "^Status" | awk '{print $2}' || true)
+              | grep -E "^Status" | awk '{print $NF}' || true)
             echo "  [$i/12] Phase: ${PHASE:-unknown}"
             if [[ "$PHASE" == "Healthy" ]]; then
               echo "[PASS] Rollout is Healthy — blue/green cycle complete"

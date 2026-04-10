@@ -202,8 +202,9 @@ networkPolicy:
 # metrics before traffic switches.
 rollout:
   blueGreen:
-    autoPromotionEnabled: false   # Require manual promotion (or ArgoCD sync)
-    autoPromotionSeconds: 120     # Auto-promote after 120s if auto is enabled
+    autoPromotionEnabled: false   # Require manual promotion (CI promote step)
+    autoPromotionSeconds: 0       # 0 = disabled; any non-zero value auto-promotes after N seconds
+                                  # even when autoPromotionEnabled is false (Argo Rollouts quirk).
     scaleDownDelaySeconds: 30     # Wait 30s before scaling down old RS
   analysis:
     interval: 60s
