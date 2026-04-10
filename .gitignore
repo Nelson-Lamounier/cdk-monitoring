@@ -5,6 +5,7 @@ dist/
 !jest.integration.config.js
 !.eslint-local-rules.mjs
 !eslint.config.mjs
+!infra/tests/jest-worker-setup.js
 *.d.ts
 !lib/**/*.d.ts
 
