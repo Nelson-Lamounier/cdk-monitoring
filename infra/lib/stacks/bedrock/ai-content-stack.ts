@@ -73,7 +73,7 @@ export interface AiContentStackProps extends cdk.StackProps {
  */
 export class AiContentStack extends cdk.Stack {
     /** DynamoDB table for AI-enhanced article metadata */
-    public readonly contentTable: dynamodb.Table;
+    public readonly contentTable: dynamodb.TableV2;
 
     /** The S3 bucket (for grantContentRead) */
     private readonly assetsBucket: s3.IBucket;
@@ -114,10 +114,7 @@ export class AiContentStack extends cdk.Stack {
         // Content blobs live in S3 — table stores only s3Key pointers,
         // AI summaries, reading time, and technical confidence scores.
         // =================================================================
-        // Migrated from TableV2 → Table to eliminate the `policyResource` /
-        // `encryptedResource` CDK deprecation warnings emitted by TableV2.grant*()
-        // in CDK 2.243.0. Table is the stable equivalent with identical capabilities.
-        this.contentTable = new dynamodb.Table(this, 'AiContentTable', {
+        this.contentTable = new dynamodb.TableV2(this, 'AiContentTable', {
             tableName: `${namePrefix}-ai-content`,
             partitionKey: {
                 name: 'pk',
@@ -127,12 +124,8 @@ export class AiContentStack extends cdk.Stack {
                 name: 'sk',
                 type: dynamodb.AttributeType.STRING,
             },
-            // Equivalent to Billing.onDemand()
-            billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-            // Non-deprecated form of PITR on Table
-            pointInTimeRecoverySpecification: {
-                pointInTimeRecoveryEnabled: true,
-            },
+            billing: dynamodb.Billing.onDemand(),
+            pointInTimeRecovery: true,
             removalPolicy: props.removalPolicy,
         });
 

@@ -61,7 +61,7 @@ export interface StrategistDataStackProps extends cdk.StackProps {
  */
 export class StrategistDataStack extends cdk.Stack {
     /** DynamoDB table for job strategist data */
-    public readonly strategistTable: dynamodb.Table;
+    public readonly strategistTable: dynamodb.TableV2;
 
     /** Table name (for cross-stack consumption) */
     public readonly tableName: string;
@@ -82,10 +82,7 @@ export class StrategistDataStack extends cdk.Stack {
         //   gsi1sk: <date>#<jobId>   (e.g. 2026-03-30#abc123)
         //   Query: all applications by status, newest first (admin listing)
         // =================================================================
-        // Migrated from TableV2 → Table to eliminate the `policyResource` /
-        // `encryptedResource` CDK deprecation warnings emitted by TableV2.grant*()
-        // in CDK 2.243.0. Table is the stable equivalent with identical capabilities.
-        this.strategistTable = new dynamodb.Table(this, 'StrategistTable', {
+        this.strategistTable = new dynamodb.TableV2(this, 'StrategistTable', {
             tableName: `${namePrefix}-job-strategist`,
             partitionKey: {
                 name: 'pk',
@@ -95,12 +92,8 @@ export class StrategistDataStack extends cdk.Stack {
                 name: 'sk',
                 type: dynamodb.AttributeType.STRING,
             },
-            // Equivalent to Billing.onDemand()
-            billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-            // Non-deprecated form of PITR on Table
-            pointInTimeRecoverySpecification: {
-                pointInTimeRecoveryEnabled: true,
-            },
+            billing: dynamodb.Billing.onDemand(),
+            pointInTimeRecovery: true,
             removalPolicy: props.removalPolicy,
         });
 
