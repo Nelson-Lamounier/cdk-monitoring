@@ -586,6 +586,32 @@ jobs:
           ref: ${{ needs.resolve-targets.outputs.frontend-ref }}
           token: ${{ secrets.CROSS_REPO_PAT }}
 
+      - name: Checkout cdk-monitoring patches
+        # Fetch only the .github/patches directory from this repo so we can
+        # overlay the patched server.js into the frontend-portfolio checkout.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: Nelson-Lamounier/cdk-monitoring
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/patches
+          sparse-checkout-cone-mode: false
+          path: _cdk-patches
+
+      - name: Patch start-admin server.js (add static asset serving)
+        # The original server.js in frontend-portfolio has no static-file handler.
+        # TanStack Start's SSR fetch handler does not serve dist/client/ assets —
+        # every GET /admin/assets/*.css|js returns 404, breaking all styles and JS.
+        #
+        # The patch in .github/patches/start-admin-server.js adds a fast-path
+        # tryServeStatic() that maps /admin/assets/* → dist/client/assets/* before
+        # delegating to the SSR handler.  We overwrite it here before docker build
+        # so the Dockerfile COPYs the corrected file into the image.
+        run: |
+          cp _cdk-patches/.github/patches/start-admin-server.js apps/start-admin/server.js
+          echo "[PATCH] Replaced apps/start-admin/server.js with static-asset-aware version"
+          echo "--- diff preview ---"
+          head -5 apps/start-admin/server.js
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

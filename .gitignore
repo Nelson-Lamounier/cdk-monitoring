@@ -6,6 +6,8 @@ dist/
 !.eslint-local-rules.mjs
 !eslint.config.mjs
 !infra/tests/jest-worker-setup.js
+# CI patch files committed to .github/patches/ must be tracked despite *.js
+!.github/patches/*.js
 *.d.ts
 !lib/**/*.d.ts
 
