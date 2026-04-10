@@ -479,18 +479,22 @@ def main() -> None:
                 "labels": {"app": "nextjs", "managed-by": "deploy.py"},
             },
             "spec": {
-                # CloudFront sends origin requests on HTTPS/443 — websecure is
-                # Traefik's name for the port-443 entrypoint. tls:{} enables
-                # Traefik's built-in TLS termination for this route.
-                "entryPoints": ["websecure"],
+                # CloudFront → Traefik runs over plain HTTP on the 'web' entrypoint
+                # (port 80). TLS is terminated at CloudFront, not at Traefik.
+                #
+                # Priority hierarchy (higher wins):
+                #   start-admin  200  — PathPrefix(`/admin`)  (specific sub-path)
+                #   nextjs-preview 100  — PathPrefix(`/`) + X-Preview: true
+                #   nextjs        50  — PathPrefix(`/`) catch-all (production)
+                "entryPoints": ["web"],
                 "routes": [
                     {
                         "match": match_rule,
                         "kind": "Rule",
+                        "priority": 50,
                         "services": [{"name": "nextjs", "port": 3000}],
                     }
                 ],
-                "tls": {},
             },
         }
 
@@ -536,9 +540,15 @@ def main() -> None:
         # ── 5b-preview: Create-or-update the Blue/Green preview IngressRoute ──────
         # The preview IngressRoute (nextjs-preview) also gates on ingress.enabled in
         # the Helm chart — since we set ingress.enabled=false, deploy.py owns this too.
-        # The preview route does NOT require the CloudFront secret: it matches on
-        # X-Preview: true header at priority 100, routing to the preview ReplicaSet.
+        #
+        # The preview route does NOT use the CloudFront secret. It matches on
+        # the internal X-Preview: true header (set by operators / Argo Rollouts tooling)
+        # at priority 100, routing to the preview ReplicaSet only.
         # This enables Blue/Green testing without affecting production traffic.
+        #
+        # IMPORTANT: This route must NOT include HeaderRegexp(X-CloudFront-Origin-Secret)
+        # or it would be indistinguishable from the production route and Traefik would
+        # arbitrarily pick one (the higher-priority one — always production).
         preview_match_rule = (
             f"{host_clause}PathPrefix(`/`) && Header(`X-Preview`, `true`)"
         )
@@ -551,7 +561,8 @@ def main() -> None:
                 "labels": {"app": "nextjs", "managed-by": "deploy.py"},
             },
             "spec": {
-                "entryPoints": ["websecure"],
+                # Same 'web' entrypoint as production — CloudFront → Traefik is plain HTTP.
+                "entryPoints": ["web"],
                 "routes": [
                     {
                         "match": preview_match_rule,
@@ -560,7 +571,6 @@ def main() -> None:
                         "services": [{"name": "nextjs-preview", "port": 3000}],
                     }
                 ],
-                "tls": {},
             },
         }
         try:

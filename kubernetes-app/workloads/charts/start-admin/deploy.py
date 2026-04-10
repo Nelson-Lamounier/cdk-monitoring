@@ -391,26 +391,45 @@ def main() -> None:
         if not history:
             raise ValueError(f"No history found for {cf_secret_path}")
 
-        # History is ordered oldest to newest.
+        # History is ordered oldest to newest — latest version is last.
         latest = history[-1]
         origin_secret = latest["Value"]
-
+        latest_version = latest.get("Version", "?")
         latest_time = latest["LastModifiedDate"]
         now = datetime.now(timezone.utc)
+
+        # ── Version-alignment log ─────────────────────────────────────────────
+        # This version number MUST match the version that the Edge stack's
+        # AwsCustomResource deployed to CloudFront.  If they diverge, the
+        # IngressRoute secret will not match the value CloudFront is sending
+        # in X-CloudFront-Origin-Secret, causing all traffic to be rejected.
+        log_info(
+            "Resolved latest CloudFront origin secret version",
+            ssm_path=cf_secret_path,
+            ssm_version=latest_version,
+            last_modified=latest_time.isoformat() if hasattr(latest_time, "isoformat") else str(latest_time),
+            total_versions=len(history),
+        )
 
         # If there are at least 2 versions and the latest rotation was < 20 min ago,
         # use a regex OR pattern to allow both secrets temporarily (zero-downtime rotation).
         if len(history) >= 2 and (now - latest_time).total_seconds() < 20 * 60:
             previous_secret = history[-2]["Value"]
+            previous_version = history[-2].get("Version", "?")
             old_escaped = re.escape(previous_secret)
             new_escaped = re.escape(origin_secret)
             origin_secret = f"{old_escaped}|{new_escaped}"
             log_info(
                 "Secret rotated recently. Using dual-secret regex for zero-downtime.",
+                previous_version=previous_version,
+                latest_version=latest_version,
                 minutes_since_rotation=round((now - latest_time).total_seconds() / 60, 1),
             )
         else:
-            log_info("Using single origin secret.")
+            log_info(
+                "Using single origin secret.",
+                ssm_version=latest_version,
+            )
 
         # Derive public hostname from NEXTAUTH_URL for Host() defence-in-depth.
         # Start-admin shares the same domain as the nextjs app, so we read
@@ -430,8 +449,16 @@ def main() -> None:
 
         # ── 5a: Build the IngressRoute manifest ──────────────────────────────────
         # Compose: optional Host() + PathPrefix(/admin) + HeaderRegexp(real secret).
-        # PathPrefix(/admin) takes priority over nextjs PathPrefix(/) via Traefik's
-        # longest-prefix-match resolution — no priority annotation needed.
+        #
+        # PRIORITY 200 is required:
+        #   The nextjs IngressRoute uses PathPrefix(`/`) with no explicit priority.
+        #   Without a higher priority here, Traefik may route /admin requests to
+        #   the Next.js pod, which has no /admin handler and returns a 500.
+        #
+        # ENTRYPOINT: 'web' (port 80) — not 'websecure'.
+        #   CloudFront terminates TLS and forwards origin requests as plain HTTP
+        #   to Traefik's 'web' entrypoint. Traefik does NOT see HTTPS here;
+        #   TLS between the browser and CloudFront is handled at the CDN layer.
         host_clause = f"Host(`{ingress_host}`) && " if ingress_host else ""
         match_rule = (
             f"{host_clause}PathPrefix(`/admin`) && "
@@ -446,18 +473,19 @@ def main() -> None:
                 "labels": {"app": "start-admin", "managed-by": "deploy.py"},
             },
             "spec": {
-                # CloudFront sends origin requests on HTTPS/443 — websecure is
-                # Traefik's name for the port-443 entrypoint. tls:{} enables
-                # Traefik's built-in TLS termination for this route.
-                "entryPoints": ["websecure"],
+                # CloudFront → Traefik runs over plain HTTP on the 'web' entrypoint
+                # (port 80).  TLS is terminated at CloudFront, not at Traefik.
+                "entryPoints": ["web"],
                 "routes": [
                     {
                         "match": match_rule,
                         "kind": "Rule",
+                        # Must be higher than the nextjs IngressRoute default
+                        # priority so /admin is never routed to the Next.js pod.
+                        "priority": 200,
                         "services": [{"name": "start-admin", "port": 5001}],
                     }
                 ],
-                "tls": {},
             },
         }
 
@@ -502,11 +530,21 @@ def main() -> None:
                 raise
 
         # ── 5b-preview: Create-or-update the Blue/Green preview IngressRoute ───
-        # The preview IngressRoute (start-admin-preview) does NOT require the
-        # CloudFront secret: it matches on X-Preview: true header at priority 100,
-        # routing to the preview ReplicaSet for Blue/Green testing.
+        # The preview IngressRoute (start-admin-preview) routes to the preview
+        # ReplicaSet for Blue/Green testing when X-Preview: true is present.
+        #
+        # SECURITY: Unlike nextjs-preview (public content), this route guards an
+        # admin interface. It MUST require the CloudFront origin secret in addition
+        # to X-Preview: true — otherwise anyone who can forge the X-Preview header
+        # bypasses the origin guard and hits the admin preview service directly.
+        #
+        # Priority 300 (higher than start-admin's 200) ensures that a request
+        # bearing both the secret and X-Preview: true is routed to the preview
+        # pod rather than the production pod.
         preview_match_rule = (
-            f"{host_clause}PathPrefix(`/admin`) && Header(`X-Preview`, `true`)"
+            f"{host_clause}PathPrefix(`/admin`) && "
+            f"HeaderRegexp(`X-CloudFront-Origin-Secret`, `{origin_secret}`) && "
+            f"Header(`X-Preview`, `true`)"
         )
         preview_manifest = {
             "apiVersion": "traefik.io/v1alpha1",
@@ -517,16 +555,16 @@ def main() -> None:
                 "labels": {"app": "start-admin", "managed-by": "deploy.py"},
             },
             "spec": {
-                "entryPoints": ["websecure"],
+                # Same 'web' entrypoint as production — CloudFront → Traefik is plain HTTP.
+                "entryPoints": ["web"],
                 "routes": [
                     {
                         "match": preview_match_rule,
                         "kind": "Rule",
-                        "priority": 100,
+                        "priority": 300,
                         "services": [{"name": "start-admin-preview", "port": 5001}],
                     }
                 ],
-                "tls": {},
             },
         }
         try:
