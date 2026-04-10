@@ -245,6 +245,19 @@ mappings:
     kb_docs:
       - "frontend/frontend-integration.md"
 
+  - name: "BFF API Services"
+    code_paths:
+      - "api/public-api/**"
+      - "api/admin-api/**"
+      - "packages/public-api/**"
+      - "packages/admin-api/**"
+      - "infra/lib/stacks/kubernetes/app-iam-stack.ts"
+      - "kubernetes-app/k8s-bootstrap/deploy_helpers/bff.py"
+    kb_docs:
+      - "frontend/bff-services.md"
+      - "infrastructure/stacks/kubernetes-base-stack.md"
+      - "kubernetes/bootstrap-system-scripts.md"
+
   # ─────────────────────────────────────────────────────────────────────────
   # OPERATIONS — CI/CD, MCP Servers
   # ─────────────────────────────────────────────────────────────────────────

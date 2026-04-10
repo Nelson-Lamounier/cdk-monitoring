@@ -17,7 +17,7 @@ related_docs:
   - infrastructure/stack-overview.md
   - infrastructure/infrastructure-topology.md
   - frontend/frontend-integration.md
-last_updated: "2026-03-30"
+last_updated: "2026-04-10"
 author: Nelson Lamounier
 status: accepted
 ---

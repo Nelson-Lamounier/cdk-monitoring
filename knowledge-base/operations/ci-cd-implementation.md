@@ -14,7 +14,7 @@ related_docs:
   - kubernetes/adrs/argocd-over-flux.md
   - kubernetes/adrs/argo-rollouts-zero-downtime.md
   - kubernetes/bootstrap-pipeline.md
-last_updated: "2026-03-30"
+last_updated: "2026-04-10"
 author: Nelson Lamounier
 status: accepted
 ---

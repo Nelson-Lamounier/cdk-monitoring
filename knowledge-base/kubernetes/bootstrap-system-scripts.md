@@ -19,7 +19,7 @@ related_docs:
   - kubernetes/adrs/argocd-over-flux.md
   - kubernetes/runbooks/instance-terminated.md
   - operations/ci-cd-implementation.md
-last_updated: "2026-04-06"
+last_updated: "2026-04-10"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -374,6 +374,7 @@ This led to ~200 lines of duplicated code, inconsistent error handling, and no s
 ```text
 deploy_helpers/
 ├── __init__.py       # Package docstring and exports
+├── bff.py            # BFF service URL resolution (admin-api + public-api)
 ├── config.py         # DeployConfig base dataclass
 ├── logging.py        # Structured JSON logging (CloudWatch-friendly)
 ├── runner.py         # Subprocess wrapper with timing and exit codes
@@ -415,12 +416,33 @@ Generic resolver mapping SSM parameter names to environment variable names. Key 
 - **Placeholder filtering**: Treats values like `${VAR_NAME}` and `__VAR_NAME__` as unresolved placeholders
 - **Graceful error handling**: Logs `ParameterNotFound` as a warning rather than crashing
 
+#### `bff.py` — BFF Service URL Resolution
+
+Resolves the public base URLs for `admin-api` and `public-api` from SSM Parameter Store. Both parameters are seeded by `KubernetesEdgeStack` (CDK) during infrastructure deployment.
+
+```text
+/bedrock-{short_env}/admin-api-url  → ADMIN_API_URL
+/bedrock-{short_env}/public-api-url → PUBLIC_API_URL
+```
+
+If either parameter is missing (e.g. before the edge stack has run), the function falls back to in-cluster Kubernetes Service DNS:
+- `admin-api`: `http://admin-api.admin-api:3002`
+- `public-api`: `http://public-api.public-api:3001`
+
+Returns a frozen `BffUrls` dataclass. All resolution goes through `resolve_secrets()` for consistent logging and env-override behaviour.
+
+```python
+bff = resolve_bff_urls(ssm_client, short_env="dev", client_error_cls=ClientError)
+secrets["PUBLIC_API_URL"] = bff.public_api_url
+```
+
 #### `k8s.py` — Kubernetes Operations
 
 Lazy-loads the `kubernetes` Python client (importable only on the control plane). Provides:
 - `load_k8s(kubeconfig)` → returns a `CoreV1Api` instance
 - `ensure_namespace(v1, name)` → creates namespace if not found (404 → create, else no-op)
 - `upsert_secret(v1, name, namespace, data)` → creates or replaces an Opaque secret (409 → replace)
+- `upsert_configmap(v1, name, namespace, data)` → creates or replaces a ConfigMap (409 → replace)
 
 All operations are idempotent — safe to re-run without side effects.
 
@@ -478,16 +500,37 @@ via a single `deploy-secrets` job (Step 1: Next.js, Step 2: Monitoring).
 
 ### Next.js Deploy (`workloads/charts/nextjs/deploy.py`)
 
-Resolves 11 SSM parameters and creates the `nextjs-secrets` Kubernetes Secret in the `nextjs-app` namespace.
+Resolves SSM parameters and creates two Kubernetes resources in `nextjs-app`:
+- `nextjs-secrets` — Opaque Secret containing auth tokens, API keys, and Cognito configuration
+- `nextjs-config` — ConfigMap containing non-sensitive infrastructure references (table names, bucket names, ARNs)
 
-**App-specific logic preserved after refactoring:**
+**Secret / ConfigMap split rationale:**
+
+| K8s Object | Contents |
+|------------|----------|
+| `nextjs-secrets` | `NEXTAUTH_SECRET`, `NEXTAUTH_URL`, `AUTH_COGNITO_*`, `BEDROCK_AGENT_API_KEY`, `REVALIDATION_SECRET`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_FARO_ENABLED` |
+| `nextjs-config` | `DYNAMODB_TABLE_NAME`, `DYNAMODB_GSI1_NAME`, `DYNAMODB_GSI2_NAME`, `ASSETS_BUCKET_NAME`, `BEDROCK_AGENT_API_URL`, `SSM_BEDROCK_PREFIX`, `PUBLISH_LAMBDA_ARN`, `STRATEGIST_TABLE_NAME`, `STRATEGIST_TRIGGER_ARN`, `PUBLIC_API_URL`, `AWS_DEFAULT_REGION` |
+
+Both objects are consumed by the Argo Rollout via `envFrom` (secretRef + configMapRef), so the pod environment is unchanged.
+
+**App-specific logic:**
 - `NextjsConfig` subclass with `environment_name`, `short_env`, and `frontend_ssm_prefix` derived properties
-- `FRONTEND_SECRET_MAP` — 11 parameters including auth, S3, DynamoDB, Bedrock, and API gateway URLs
-- DynamoDB/Bedrock fallback: resolves from `frontend_ssm_prefix` first, falls back to the main `ssm_prefix`
+- `FRONTEND_SECRET_MAP` — auth, S3, DynamoDB, and API gateway SSM parameters
+- DynamoDB/Bedrock fallback: resolves from `frontend_ssm_prefix` first, falls back to `/bedrock-{env}/content-table-name`
 - Assets bucket override: replaces generic S3 bucket with Bedrock-specific variant if present
-- Helm values templating: writes resolved environment to `values.yaml` for ArgoCD reconciliation
+- **BFF URL injection**: calls `resolve_bff_urls()` to obtain `PUBLIC_API_URL` from `/bedrock-{env}/public-api-url` (seeded by `KubernetesEdgeStack`); injected into ConfigMap for use by the `/api/resume/active` proxy route
 
-**Refactoring result:** 408 → 280 lines (31% reduction).
+**Step 5 — Traefik IngressRoute management (deploy.py owned):**
+
+The `ingress.enabled: false` flag in `values.yaml` ensures ArgoCD never renders or manages the `nextjs` IngressRoute. `deploy.py` is the **sole owner**:
+
+1. Reads `cloudfront-origin-secret` history from SSM (`/k8s/{env}/cloudfront-origin-secret`)
+2. During secret rotation (< 20 min): builds a dual-secret regex `OLD|NEW` for zero-downtime
+3. Derives `Host()` match rule from `NEXTAUTH_URL` for defence-in-depth
+4. Creates the `nextjs` and `nextjs-preview` IngressRoutes on Day-0, patches them on subsequent deploys
+5. Performs a verification read-back: exits with code 1 if the placeholder `^PLACEHOLDER_NEVER_MATCHES$` is detected after apply
+
+> **Do NOT set `ingress.enabled: true`** — this transfers ownership to ArgoCD, which will overwrite the runtime-injected origin secret on every sync.
 
 ### Monitoring Deploy (`platform/charts/monitoring/deploy.py`)
 
@@ -536,11 +579,12 @@ Output is captured to `logs/deploy-<app>-<timestamp>.log`.
 - `kubernetes-app/k8s-bootstrap/boot/steps/cp/__init__.py` *(Python — CP step orchestrator)*
 - `kubernetes-app/k8s-bootstrap/boot/steps/wk/__init__.py` *(Python — worker step orchestrator)*
 - `kubernetes-app/k8s-bootstrap/deploy_helpers/__init__.py` *(Python — framework package)*
+- `kubernetes-app/k8s-bootstrap/deploy_helpers/bff.py` *(Python — BFF URL resolution from SSM)*
 - `kubernetes-app/k8s-bootstrap/deploy_helpers/config.py` *(Python — DeployConfig dataclass)*
 - `kubernetes-app/k8s-bootstrap/deploy_helpers/logging.py` *(Python — structured JSON logging)*
 - `kubernetes-app/k8s-bootstrap/deploy_helpers/runner.py` *(Python — subprocess wrapper)*
 - `kubernetes-app/k8s-bootstrap/deploy_helpers/ssm.py` *(Python — SSM resolution)*
-- `kubernetes-app/k8s-bootstrap/deploy_helpers/k8s.py` *(Python — K8s namespace/secret helpers)*
+- `kubernetes-app/k8s-bootstrap/deploy_helpers/k8s.py` *(Python — K8s namespace/secret + ConfigMap helpers)*
 - `kubernetes-app/k8s-bootstrap/deploy_helpers/s3.py` *(Python — S3 sync wrapper)*
 - `kubernetes-app/workloads/charts/nextjs/deploy.py` *(Python — Next.js secret deployment)*
 - `kubernetes-app/platform/charts/monitoring/deploy.py` *(Python — monitoring secret deployment)*

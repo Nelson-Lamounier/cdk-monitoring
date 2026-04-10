@@ -1,0 +1,8 @@
+{
+  "metadataAttributes": {
+    "doc_type": "implementation",
+    "domain": "frontend",
+    "title": "BFF API Services (public-api and admin-api)",
+    "tags": "bff, hono, public-api, admin-api, dynamodb, cors, kubernetes, ssm, iam, instance-profile, configmap, resume, articles, tags, argocd, ecr, cloudfront"
+  }
+}

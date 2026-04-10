@@ -19,7 +19,7 @@ related_docs:
   - infrastructure/networking-implementation.md
   - infrastructure/security-implementation.md
   - infrastructure/adrs/cdk-over-terraform.md
-last_updated: "2026-03-31"
+last_updated: "2026-04-10"
 author: Nelson Lamounier
 status: active
 ---
