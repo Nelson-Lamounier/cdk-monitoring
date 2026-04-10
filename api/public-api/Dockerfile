@@ -14,6 +14,9 @@ RUN corepack enable && corepack prepare yarn@4.12.0 --activate
 # .yarnrc.yml must be included so Yarn Berry respects nodeLinker: node-modules.
 # .yarn/ is git-ignored and not needed (no PnP cache or offline mirror).
 COPY package.json yarn.lock .yarnrc.yml ./
+# tsconfig.base.json lives at the repo root; api/*/tsconfig.json extends it
+# via '../../tsconfig.base.json' so it must be present at /app/.
+COPY tsconfig.base.json ./
 
 # Copy only this package's manifest — avoids rebuilding on unrelated changes.
 COPY api/public-api/package.json ./api/public-api/

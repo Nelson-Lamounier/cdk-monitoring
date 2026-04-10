@@ -13,6 +13,9 @@ RUN corepack enable && corepack prepare yarn@4.12.0 --activate
 # .yarn/ is git-ignored (only install-state.gz exists locally);
 # nodeLinker: node-modules only requires package.json + yarn.lock + .yarnrc.yml.
 COPY package.json yarn.lock .yarnrc.yml ./
+# tsconfig.base.json lives at the repo root; api/*/tsconfig.json extends it
+# via '../../tsconfig.base.json' so it must be present at /app/.
+COPY tsconfig.base.json ./
 COPY api/admin-api/package.json  api/admin-api/
 COPY api/admin-api/tsconfig.json api/admin-api/
 
