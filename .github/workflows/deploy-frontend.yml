@@ -378,6 +378,184 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "ArgoCD Image Updater will detect the new tag and trigger a BlueGreen promotion." >> $GITHUB_STEP_SUMMARY
 
+  # ---------------------------------------------------------------------------
+  # Job: Promote the nextjs Rollout via SSM send-command
+  #
+  # WHY SSM, NOT direct kubectl:
+  #   The K8s API server runs on a private EC2 instance inside the VPC.
+  #   GitHub-hosted runners have no network path to it.  The SSM Agent on
+  #   the control-plane node IS reachable via the SSM service endpoint
+  #   (no inbound ports required), so the runner delegates every kubectl
+  #   call to the node over the SSM channel — the same pattern used by
+  #   every other kubectl step in this repo.
+  #
+  # Pattern (mirrors _post-bootstrap-config.yml):
+  #   1. Resolve control-plane instance ID from EC2 tags.
+  #   2. aws ssm send-command → AWS-RunShellScript → runs on the node.
+  #   3. Poll ssm get-command-invocation for result + exit code.
+  # ---------------------------------------------------------------------------
+  promote-site:
+    name: "[Site] Promote Rollout"
+    needs: [resolve-targets, deploy-site]
+    if: needs.resolve-targets.outputs.deploy-site == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: development
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve Control-Plane Instance ID
+        id: resolve-instance
+        run: |
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:k8s:bootstrap-role,Values=control-plane" \
+              "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --region "${{ env.AWS_REGION }}" --output text 2>/dev/null || echo "")
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::error::Could not resolve control-plane instance ID — ensure the EC2 instance has tag k8s:bootstrap-role=control-plane"
+            exit 1
+          fi
+
+          echo "::add-mask::$INSTANCE_ID"
+          echo "instance-id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+      - name: Wait for Rollout Paused + Promote (via SSM)
+        env:
+          INSTANCE_ID: ${{ steps.resolve-instance.outputs.instance-id }}
+        run: |
+          REGION="${{ env.AWS_REGION }}"
+
+          # ---------------------------------------------------------------
+          # The shell script that runs ON the control-plane node.
+          # It polls for Paused, promotes, then waits for Healthy.
+          # All output is captured and surfaced by get-command-invocation.
+          # ---------------------------------------------------------------
+          SCRIPT=$(cat <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          ROLLOUT="nextjs"
+          NAMESPACE="nextjs-app"
+          PLUGIN="/usr/local/bin/kubectl-argo-rollouts"
+
+          # Install the Argo Rollouts plugin if not already present on the node
+          if ! sudo test -f "$PLUGIN"; then
+            echo "[INFO] Installing kubectl-argo-rollouts plugin..."
+            sudo curl -sSLo "$PLUGIN" \
+              https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+            sudo chmod +x "$PLUGIN"
+          fi
+
+          echo "[INFO] Waiting for $ROLLOUT Rollout to reach Paused state (green RS + analysis passed)..."
+          for i in $(seq 1 24); do
+            PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
+              | grep -E "^Status" | awk '{print $2}' || true)
+            echo "  [$i/24] Phase: ${PHASE:-unknown}"
+            if [[ "$PHASE" == "Paused" ]]; then
+              echo "[PASS] Rollout is Paused — promoting now"
+              break
+            fi
+            if [[ "$PHASE" == "Degraded" || "$PHASE" == "Error" ]]; then
+              echo "[FAIL] Rollout reached $PHASE — aborting"
+              sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color || true
+              exit 1
+            fi
+            sleep 15
+          done
+
+          PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
+            | grep -E "^Status" | awk '{print $2}' || true)
+          if [[ "$PHASE" != "Paused" ]]; then
+            echo "[FAIL] Rollout did not reach Paused within timeout (current: ${PHASE:-unknown})"
+            exit 1
+          fi
+
+          sudo kubectl argo rollouts promote "$ROLLOUT" -n "$NAMESPACE"
+          echo "[PASS] $ROLLOUT promoted — green ReplicaSet is now active"
+
+          echo "[INFO] Waiting for Healthy state post-promotion..."
+          for i in $(seq 1 12); do
+            PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
+              | grep -E "^Status" | awk '{print $2}' || true)
+            echo "  [$i/12] Phase: ${PHASE:-unknown}"
+            if [[ "$PHASE" == "Healthy" ]]; then
+              echo "[PASS] Rollout is Healthy — blue/green cycle complete"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "[WARN] Rollout may still be converging, but promotion was issued"
+          REMOTE_SCRIPT
+          )
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"$SCRIPT\"]" \
+            --region "$REGION" \
+            --query "Command.CommandId" --output text)
+
+          echo "SSM Command ID: $CMD_ID"
+
+          # Poll until the command finishes (max ~6 min to match the 24×15s inner loop)
+          for i in $(seq 1 37); do
+            sleep 10
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --region "$REGION" \
+              --query "Status" --output text 2>/dev/null || echo "Pending")
+            echo "  [$i] SSM status: $STATUS"
+            if [[ "$STATUS" == "Success" || "$STATUS" == "Failed" || "$STATUS" == "TimedOut" || "$STATUS" == "Cancelled" ]]; then
+              break
+            fi
+          done
+
+          # Capture output regardless of result
+          OUTPUT=$(aws ssm get-command-invocation \
+            --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --region "$REGION" \
+            --query "StandardOutputContent" --output text 2>/dev/null || echo "(no output)")
+          STDERR=$(aws ssm get-command-invocation \
+            --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --region "$REGION" \
+            --query "StandardErrorContent" --output text 2>/dev/null || echo "")
+
+          echo "--- Remote stdout ---"
+          echo "$OUTPUT"
+          if [ -n "$STDERR" ]; then
+            echo "--- Remote stderr ---"
+            echo "$STDERR"
+          fi
+
+          if [[ "$STATUS" != "Success" ]]; then
+            echo "::error::SSM command finished with status: $STATUS"
+            exit 1
+          fi
+
+      - name: Promote Summary
+        run: |
+          echo "## [Site] Rollout Promotion" >> $GITHUB_STEP_SUMMARY
+          echo "- **Rollout**: \`nextjs\` (namespace: \`nextjs-app\`) ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Promotion executed via SSM on control-plane node. Green RS is now active." >> $GITHUB_STEP_SUMMARY
+
   # ===========================================================================
   # ── START-ADMIN (TanStack Start) ─────────────────────────────────────────────
   # ===========================================================================
@@ -590,6 +768,163 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "ArgoCD Image Updater will detect the new tag and redeploy start-admin." >> $GITHUB_STEP_SUMMARY
 
+  # ---------------------------------------------------------------------------
+  # Job: Wait for green ReplicaSet then promote the start-admin Rollout
+  # ---------------------------------------------------------------------------
+  promote-admin:
+    name: "[Admin] Promote Rollout"
+    needs: [resolve-targets, deploy-admin]
+    if: needs.resolve-targets.outputs.deploy-admin == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: development
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve Control-Plane Instance ID
+        id: resolve-instance
+        run: |
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:k8s:bootstrap-role,Values=control-plane" \
+              "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --region "${{ env.AWS_REGION }}" --output text 2>/dev/null || echo "")
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::error::Could not resolve control-plane instance ID — ensure the EC2 instance has tag k8s:bootstrap-role=control-plane"
+            exit 1
+          fi
+
+          echo "::add-mask::$INSTANCE_ID"
+          echo "instance-id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+      - name: Wait for Rollout Paused + Promote (via SSM)
+        env:
+          INSTANCE_ID: ${{ steps.resolve-instance.outputs.instance-id }}
+        run: |
+          REGION="${{ env.AWS_REGION }}"
+
+          SCRIPT=$(cat <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          ROLLOUT="start-admin"
+          NAMESPACE="start-admin"
+          PLUGIN="/usr/local/bin/kubectl-argo-rollouts"
+
+          if ! sudo test -f "$PLUGIN"; then
+            echo "[INFO] Installing kubectl-argo-rollouts plugin..."
+            sudo curl -sSLo "$PLUGIN" \
+              https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+            sudo chmod +x "$PLUGIN"
+          fi
+
+          echo "[INFO] Waiting for $ROLLOUT Rollout to reach Paused state..."
+          for i in $(seq 1 24); do
+            PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
+              | grep -E "^Status" | awk '{print $2}' || true)
+            echo "  [$i/24] Phase: ${PHASE:-unknown}"
+            if [[ "$PHASE" == "Paused" ]]; then
+              echo "[PASS] Rollout is Paused — promoting now"
+              break
+            fi
+            if [[ "$PHASE" == "Degraded" || "$PHASE" == "Error" ]]; then
+              echo "[FAIL] Rollout reached $PHASE — aborting"
+              sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color || true
+              exit 1
+            fi
+            sleep 15
+          done
+
+          PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
+            | grep -E "^Status" | awk '{print $2}' || true)
+          if [[ "$PHASE" != "Paused" ]]; then
+            echo "[FAIL] Rollout did not reach Paused within timeout (current: ${PHASE:-unknown})"
+            exit 1
+          fi
+
+          sudo kubectl argo rollouts promote "$ROLLOUT" -n "$NAMESPACE"
+          echo "[PASS] $ROLLOUT promoted — green ReplicaSet is now active"
+
+          echo "[INFO] Waiting for Healthy state post-promotion..."
+          for i in $(seq 1 12); do
+            PHASE=$(sudo kubectl argo rollouts get rollout "$ROLLOUT" -n "$NAMESPACE" --no-color 2>/dev/null \
+              | grep -E "^Status" | awk '{print $2}' || true)
+            echo "  [$i/12] Phase: ${PHASE:-unknown}"
+            if [[ "$PHASE" == "Healthy" ]]; then
+              echo "[PASS] Rollout is Healthy — blue/green cycle complete"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "[WARN] Rollout may still be converging, but promotion was issued"
+          REMOTE_SCRIPT
+          )
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"$SCRIPT\"]" \
+            --region "$REGION" \
+            --query "Command.CommandId" --output text)
+
+          echo "SSM Command ID: $CMD_ID"
+
+          for i in $(seq 1 37); do
+            sleep 10
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --region "$REGION" \
+              --query "Status" --output text 2>/dev/null || echo "Pending")
+            echo "  [$i] SSM status: $STATUS"
+            if [[ "$STATUS" == "Success" || "$STATUS" == "Failed" || "$STATUS" == "TimedOut" || "$STATUS" == "Cancelled" ]]; then
+              break
+            fi
+          done
+
+          OUTPUT=$(aws ssm get-command-invocation \
+            --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --region "$REGION" \
+            --query "StandardOutputContent" --output text 2>/dev/null || echo "(no output)")
+          STDERR=$(aws ssm get-command-invocation \
+            --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --region "$REGION" \
+            --query "StandardErrorContent" --output text 2>/dev/null || echo "")
+
+          echo "--- Remote stdout ---"
+          echo "$OUTPUT"
+          if [ -n "$STDERR" ]; then
+            echo "--- Remote stderr ---"
+            echo "$STDERR"
+          fi
+
+          if [[ "$STATUS" != "Success" ]]; then
+            echo "::error::SSM command finished with status: $STATUS"
+            exit 1
+          fi
+
+      - name: Promote Summary
+        run: |
+          echo "## [Admin] Rollout Promotion" >> $GITHUB_STEP_SUMMARY
+          echo "- **Rollout**: \`start-admin\` (namespace: \`start-admin\`) ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Promotion executed via SSM on control-plane node. Green RS is now active." >> $GITHUB_STEP_SUMMARY
+
   # ===========================================================================
   # ── INDEPENDENT JOBS ─────────────────────────────────────────────────────────
   # ===========================================================================
@@ -621,9 +956,11 @@ jobs:
       - push-site
       - sync-assets
       - deploy-site
+      - promote-site
       - build-admin
       - push-admin
       - deploy-admin
+      - promote-admin
     if: always()
     runs-on: ubuntu-latest
 
@@ -637,17 +974,19 @@ jobs:
 
           # Site rows (only shown if deploy-site was requested)
           if [[ "${{ needs.resolve-targets.outputs.deploy-site }}" == "true" ]]; then
-            echo "| Site (Next.js)  | Build Image     | ${{ needs.build-site.result }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Site (Next.js)  | Push to ECR     | ${{ needs.push-site.result }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Site (Next.js)  | Sync Assets     | ${{ needs.sync-assets.result }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Site (Next.js)  | Deploy to K8s   | ${{ needs.deploy-site.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Site (Next.js)  | Build Image       | ${{ needs.build-site.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Site (Next.js)  | Push to ECR       | ${{ needs.push-site.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Site (Next.js)  | Sync Assets       | ${{ needs.sync-assets.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Site (Next.js)  | Deploy to K8s     | ${{ needs.deploy-site.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Site (Next.js)  | Promote Rollout   | ${{ needs.promote-site.result }} |" >> $GITHUB_STEP_SUMMARY
           fi
 
           # Admin rows (only shown if deploy-admin was requested)
           if [[ "${{ needs.resolve-targets.outputs.deploy-admin }}" == "true" ]]; then
-            echo "| Admin (TanStack) | Build Image    | ${{ needs.build-admin.result }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Admin (TanStack) | Push to ECR    | ${{ needs.push-admin.result }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Admin (TanStack) | Deploy to K8s  | ${{ needs.deploy-admin.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Admin (TanStack) | Build Image      | ${{ needs.build-admin.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Admin (TanStack) | Push to ECR      | ${{ needs.push-admin.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Admin (TanStack) | Deploy to K8s    | ${{ needs.deploy-admin.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Admin (TanStack) | Promote Rollout  | ${{ needs.promote-admin.result }} |" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -658,9 +997,11 @@ jobs:
             "${{ needs.build-site.result }}" \
             "${{ needs.push-site.result }}" \
             "${{ needs.deploy-site.result }}" \
+            "${{ needs.promote-site.result }}" \
             "${{ needs.build-admin.result }}" \
             "${{ needs.push-admin.result }}" \
-            "${{ needs.deploy-admin.result }}"; do
+            "${{ needs.deploy-admin.result }}" \
+            "${{ needs.promote-admin.result }}"; do
             if [[ "$RESULT" == "failure" ]]; then
               FAILED=true
               break
