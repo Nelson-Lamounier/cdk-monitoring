@@ -65,7 +65,7 @@ import {
     CLOUDFRONT_PATH_PATTERNS,
     CLOUDFRONT_ERROR_RESPONSES,
 } from '../../config/nextjs';
-import { k8sSsmPaths, nextjsSsmPaths } from '../../config/ssm-paths';
+import { k8sSsmPaths, nextjsSsmPaths, bedrockSsmPaths } from '../../config/ssm-paths';
 import { LambdaFunctionConstruct } from '../../constructs/compute';
 import { CloudFrontConstruct } from '../../constructs/networking/cloudfront';
 import { AcmCertificateDnsValidationConstruct } from '../../constructs/security/acm-certificate';
@@ -755,6 +755,39 @@ export class KubernetesEdgeStack extends cdk.Stack {
             description: 'CloudFront distribution ID for cache invalidation',
             tier: ssm.ParameterTier.STANDARD,
         });
+
+        // BFF Service URL Parameters
+        //
+        // These are written here (Edge Stack, us-east-1) because this is the
+        // canonical place where domain names are resolved. Downstream consumers
+        // (deploy.py for start-admin / site ConfigMaps) read these paths via
+        // the AWS CLI to avoid hardcoding hostnames in environment-specific
+        // scripts.
+        //
+        // Path convention: /bedrock-{shortEnv}/admin-api-url
+        //                  /bedrock-{shortEnv}/public-api-url
+        //
+        // The bedrock prefix is intentional — these BFF services sit alongside
+        // Bedrock AI pipelines in the same "application services" SSM namespace.
+        // If baseDomain is not provided, these parameters are skipped (e.g. CI
+        // synth runs that only validate CloudFormation templates).
+        if (props.baseDomain) {
+            const bffSsmPaths = bedrockSsmPaths(props.targetEnvironment);
+
+            new ssm.StringParameter(this, 'AdminApiUrlParameter', {
+                parameterName: bffSsmPaths.adminApiUrl,
+                stringValue: `https://admin-api.${props.baseDomain}`,
+                description: `admin-api BFF public URL (start-admin ADMIN_API_URL)`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'PublicApiUrlParameter', {
+                parameterName: bffSsmPaths.publicApiUrl,
+                stringValue: `https://api.${props.baseDomain}`,
+                description: `public-api BFF public URL (site PUBLIC_API_URL)`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+        }
 
         // Suppress cdk-nag for AwsCustomResource Lambda (SSM cross-region readers)
         NagSuppressions.addResourceSuppressionsByPath(

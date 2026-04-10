@@ -400,24 +400,26 @@ describe('EcsTaskDefinitionConstruct', () => {
     });
 
     describe('Tags', () => {
-        it('should add Component tag', () => {
+        /**
+         * Tagging is managed exclusively by the TaggingAspect applied at
+         * the App/Stack level in `app.ts`. Individual constructs must NOT
+         * call `cdk.Tags.of()` directly — this is enforced by the
+         * tagging-guard architectural test.
+         *
+         * The 7-tag schema (project, environment, owner, component,
+         * managed-by, version, cost-centre) is tested via the
+         * TaggingAspect unit tests. These construct-level tests verify
+         * structure only; resource tagging is an app-level concern.
+         */
+        it('should not apply construct-level tags (TaggingAspect is the sole tagging source)', () => {
             const { template } = createEcsTaskDefinitionConstruct();
-            template.hasResourceProperties('AWS::ECS::TaskDefinition', {
-                Tags: Match.arrayWith([
-                    Match.objectLike({ Key: 'Component', Value: 'ECS-TaskDefinition' }),
-                ]),
-            });
-        });
 
-        it('should add LaunchType tag', () => {
-            const { template } = createEcsTaskDefinitionConstruct({
-                launchType: EcsLaunchType.EC2,
-            });
-            template.hasResourceProperties('AWS::ECS::TaskDefinition', {
-                Tags: Match.arrayWith([
-                    Match.objectLike({ Key: 'LaunchType', Value: 'EC2' }),
-                ]),
-            });
+            // Without TaggingAspect applied, the resource should have no Tags.
+            // This asserts the architectural rule: no ad-hoc cdk.Tags.of() in constructs.
+            const resources = template.findResources('AWS::ECS::TaskDefinition');
+            const taskDef: any = Object.values(resources)[0];
+            // Tags should be absent when no aspect is applied
+            expect(taskDef.Properties.Tags).toBeUndefined();
         });
     });
 });

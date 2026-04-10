@@ -5,19 +5,22 @@
  * Creates shared Kubernetes infrastructure hosting both monitoring and
  * application workloads on a kubeadm Kubernetes cluster.
  *
- * Stack Architecture (12 stacks):
- *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
- *   2. Kubernetes-Base: VPC, Security Group, KMS, EBS, Elastic IP
- *   2b. Kubernetes-GoldenAmi: EC2 Image Builder pipeline (bakes Golden AMI)
+ * Stack Architecture (9 stacks, plus API + Edge + Observability):
+ *   1.  Kubernetes-Data:          DynamoDB, S3 Assets, SSM parameters
+ *   2.  Kubernetes-Base:          VPC, Security Group, KMS, EBS, Elastic IP
+ *   2b. Kubernetes-GoldenAmi:     EC2 Image Builder pipeline (bakes Golden AMI)
  *   2c. Kubernetes-SsmAutomation: SSM Automation bootstrap documents
- *   3. Kubernetes-ControlPlane: Control plane EC2 (t3.medium), ASG, IAM,
- *   3b. Kubernetes-AppWorker: Application node EC2 (t3.small), ASG, kubeadm join
- *   3c. Kubernetes-MonitoringWorker: Monitoring node EC2 (t3.medium), ASG, kubeadm join
- *   3d. Kubernetes-ArgocdWorker: ArgoCD node EC2 (t3.small Spot), ASG, kubeadm join
- *   4. Kubernetes-AppIam: Application-tier IAM grants (DynamoDB, S3, Secrets)
- *   5. Kubernetes-API: API Gateway + Lambda (email subscriptions)
- *   6. Kubernetes-Edge: ACM + WAF + CloudFront (us-east-1)
- *   7. Kubernetes-Observability: CloudWatch pre-deployment dashboard
+ *   3.  Kubernetes-ControlPlane:  Control plane EC2 (t3.medium), ASG, IAM
+ *   3b. Kubernetes-GeneralPool:   Kubernetes-native worker ASG (Next.js, ArgoCD)
+ *   3c. Kubernetes-MonitoringPool: Kubernetes-native worker ASG (Prometheus, Grafana)
+ *   4.  Kubernetes-AppIam:        Application-tier IAM grants (DynamoDB, S3, Secrets)
+ *   5.  Kubernetes-API:           API Gateway + Lambda (email subscriptions)
+ *   6.  Kubernetes-Edge:          ACM + WAF + CloudFront (us-east-1)
+ *   7.  Kubernetes-Observability: CloudWatch pre-deployment dashboard
+ *
+ * Worker nodes are Kubernetes-native ASG pools. CDK provisions the Launch
+ * Template and Auto Scaling Group; the K8s bootstrap script handles kubeadm
+ * join, node labelling, and taint application automatically.
  *
  * Workload isolation is enforced at the Kubernetes layer via Namespaces,
  * NetworkPolicies, ResourceQuotas, and PriorityClasses.
@@ -35,7 +38,7 @@ import {
     getEnvironmentConfig,
 } from '../../config/environments';
 import { getK8sConfigs } from '../../config/kubernetes';
-import { getNextJsConfigs, getNextJsK8sConfig, nextjsResourceNames } from '../../config/nextjs';
+import { getNextJsConfigs, nextjsResourceNames } from '../../config/nextjs';
 import { Project, getProjectConfig } from '../../config/projects';
 import { nextjsSsmPaths, k8sSsmPaths } from '../../config/ssm-paths';
 import {
@@ -51,9 +54,6 @@ import {
     KubernetesControlPlaneStack,
     KubernetesDataStack,
     KubernetesEdgeStack,
-    KubernetesMonitoringWorkerStack,
-    KubernetesAppWorkerStack,
-    KubernetesArgocdWorkerStack,
     KubernetesObservabilityStack,
     KubernetesWorkerAsgStack,
 } from '../../stacks/kubernetes';
@@ -318,91 +318,10 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stackMap.controlPlane = controlPlaneStack;
 
         // =================================================================
-        // Stack 3b: WORKER STACK (Application Node — t3.small)
+        // Stack 3b: GENERAL POOL ASG (Kubernetes-Native Worker — general)
         //
-        // Dedicated worker node for Next.js workloads.
-        // Joins the kubeadm cluster via SSM-published join token.
-        // Workload isolated via node labels + taints.
-        // =================================================================
-        const workerConfig = getNextJsK8sConfig(environment);
-        const workerStack = new KubernetesAppWorkerStack(
-            scope,
-            stackId(this.namespace, 'AppWorker', environment),
-            {
-                vpcId: sharedVpcId,
-                env,
-                description: `Kubernetes worker node for Next.js application - ${environment}`,
-                targetEnvironment: environment,
-                workerConfig,
-                controlPlaneSsmPrefix: ssmPrefix,
-                namePrefix,
-                // cert-manager DNS-01 — pods may run on this worker node
-                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
-            },
-        );
-        workerStack.addDependency(controlPlaneStack);
-        stacks.push(workerStack);
-        stackMap.worker = workerStack;
-
-        // =================================================================
-        // Stack 3c: MONITORING WORKER STACK (Monitoring Node — t3.small)
-        //
-        // Dedicated worker node for K8s-native monitoring workloads.
-        // Joins the kubeadm cluster via SSM-published join token.
-        // Workload isolated via node labels + taints (role=monitoring).
-        // =================================================================
-        const monitoringWorkerStack = new KubernetesMonitoringWorkerStack(
-            scope,
-            stackId(this.namespace, 'MonitoringWorker', environment),
-            {
-                vpcId: sharedVpcId,
-                env,
-                description: `Kubernetes monitoring worker node - ${environment}`,
-                targetEnvironment: environment,
-                monitoringWorkerConfig: configs.monitoringWorker,
-                controlPlaneSsmPrefix: ssmPrefix,
-                namePrefix,
-                // cert-manager DNS-01 — pods may run on this worker node
-                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
-            },
-        );
-        monitoringWorkerStack.addDependency(controlPlaneStack);
-        stacks.push(monitoringWorkerStack);
-        stackMap.monitoringWorker = monitoringWorkerStack;
-
-        // =================================================================
-        // Stack 3d: ARGOCD WORKER STACK (ArgoCD Node — t3.small Spot)
-        //
-        // Dedicated worker node for ArgoCD GitOps controller.
-        // Uses Spot instances for cost optimisation (~70% savings).
-        // ArgoCD UI accessed via: ops.nelsonlamounier.com/argocd
-        //   → NLB → Traefik (monitoring node) → ArgoCD Service → pod
-        // No NLB registration or ingress SG needed.
-        // =================================================================
-        const argocdWorkerStack = new KubernetesArgocdWorkerStack(
-            scope,
-            stackId(this.namespace, 'ArgocdWorker', environment),
-            {
-                vpcId: sharedVpcId,
-                env,
-                description: `Kubernetes ArgoCD worker node (Spot) - ${environment}`,
-                targetEnvironment: environment,
-                argocdWorkerConfig: configs.argocdWorker,
-                controlPlaneSsmPrefix: ssmPrefix,
-                namePrefix,
-                // cert-manager DNS-01 — pods may run on this worker node
-                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
-            },
-        );
-        argocdWorkerStack.addDependency(controlPlaneStack);
-        stacks.push(argocdWorkerStack);
-        stackMap.argocdWorker = argocdWorkerStack;
-
-        // =================================================================
-        // Stack 3e: GENERAL POOL ASG (Kubernetes-Native Worker — general)
-        //
-        // Replaces AppWorker + ArgocdWorker with a single CA-managed pool.
         // Hosts: Next.js, start-admin, ArgoCD, system components.
+
         // No taint — accepts all pods without toleration.
         //
         // On-Demand ONLY: ArgoCD is on this pool and owns BlueGreen promotion
@@ -413,12 +332,9 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // desiredCapacity intentionally absent: start at min=1 and let the
         // Cluster Autoscaler prove two nodes are needed before provisioning.
         // Setting it would reset capacity on every `cdk deploy`.
-        //
-        // MIGRATION: Deployed alongside legacy stacks. Shift workloads by
-        // updating Helm nodeSelector from `workload: frontend` → `node-pool: general`.
-        // Once all workloads are migrated, remove AppWorker + ArgocdWorker.
         // =================================================================
         const generalPoolStack = new KubernetesWorkerAsgStack(
+
             scope,
             stackId(this.namespace, 'GeneralPool', environment),
             {
@@ -448,15 +364,10 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stackMap.generalPool = generalPoolStack;
 
         // =================================================================
-        // Stack 3f: MONITORING POOL ASG (Kubernetes-Native Worker — monitoring)
+        // Stack 3c: MONITORING POOL ASG (Kubernetes-Native Worker — monitoring)
         //
-        // Replaces MonitoringWorker with a CA-managed pool.
         // Hosts: Prometheus, Grafana, Loki, Tempo, Alloy, Steampipe.
         // Tainted `dedicated=monitoring:NoSchedule` by the bootstrap script.
-        //
-        // MIGRATION: Deployed alongside the legacy MonitoringWorker stack.
-        // Once monitoring workloads are shifted (Helm nodeSelector update),
-        // drain and destroy the MonitoringWorker stack.
         // =================================================================
         const monitoringPoolStack = new KubernetesWorkerAsgStack(
             scope,
@@ -478,8 +389,6 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 signalsTimeoutMinutes: 40,
                 namePrefix,
                 crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
-                // NOTE: notificationEmail moved here once MonitoringWorker is decommissioned
-                // notificationEmail: emailConfig.notificationEmail,
             },
         );
         monitoringPoolStack.addDependency(controlPlaneStack);
@@ -529,6 +438,13 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 // Bedrock pipeline SSM — resolve infrastructure for admin publish
                 bedrockSsmPath: `/${bedrockNamePrefix}/*`,
                 dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
+                // admin-api BFF — Lambda invocation for article publish/trigger/strategist
+                // Called via EC2 instance role (IMDS) — no static credentials in K8s.
+                lambdaInvokeArns: [
+                    `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-pipeline-publish`,
+                    `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-pipeline-trigger`,
+                    `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-strategist-trigger`,
+                ],
             },
         );
         appIamStack.addDependency(controlPlaneStack);

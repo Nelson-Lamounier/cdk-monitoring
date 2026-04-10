@@ -282,6 +282,106 @@ export function sharedAdminEcrPaths(environment: Environment): SharedAdminEcrSsm
 }
 
 // =============================================================================
+// SHARED PUBLIC-API ECR SSM PATHS  (/shared/ecr-public-api/{environment})
+// =============================================================================
+
+/**
+ * SSM parameter paths for the public-api BFF ECR repository.
+ *
+ * CDK source: vpc-stack.ts → publicApiEcrSsmPrefix = `/shared/ecr-public-api/{env}`
+ *
+ * Used by CI (`deploy-api.yml`) to push images and by ArgoCD workloads
+ * that reference the repository URI at deploy time.
+ *
+ * @example
+ * ```typescript
+ * const paths = sharedPublicApiEcrPaths('development');
+ * paths.repositoryUri  // → '/shared/ecr-public-api/development/repository-uri'
+ * ```
+ */
+export interface SharedPublicApiEcrSsmPaths {
+    /** The prefix itself: /shared/ecr-public-api/{environment} */
+    readonly prefix: string;
+    /** public-api ECR repository URI (used by CI to push/tag images) */
+    readonly repositoryUri: string;
+    /** public-api ECR repository ARN (used by IAM grants) */
+    readonly repositoryArn: string;
+    /** public-api ECR repository name */
+    readonly repositoryName: string;
+}
+
+/** Public-API ECR SSM prefix: /shared/ecr-public-api/{environment} */
+export function sharedPublicApiEcrPrefix(environment: Environment): string {
+    return `/shared/ecr-public-api/${environment}`;
+}
+
+/**
+ * Get shared public-api ECR SSM parameter paths for a given environment.
+ *
+ * @param environment - Target deployment environment
+ */
+export function sharedPublicApiEcrPaths(environment: Environment): SharedPublicApiEcrSsmPaths {
+    const prefix = sharedPublicApiEcrPrefix(environment);
+
+    return {
+        prefix,
+        repositoryUri: `${prefix}/repository-uri`,
+        repositoryArn: `${prefix}/repository-arn`,
+        repositoryName: `${prefix}/repository-name`,
+    };
+}
+
+// =============================================================================
+// SHARED ADMIN-API ECR SSM PATHS  (/shared/ecr-admin-api/{environment})
+// =============================================================================
+
+/**
+ * SSM parameter paths for the admin-api BFF ECR repository.
+ *
+ * CDK source: vpc-stack.ts → adminApiEcrSsmPrefix = `/shared/ecr-admin-api/{env}`
+ *
+ * Used by CI (`deploy-api.yml`) to push images and the Traefik IngressRoute
+ * with priority 200 (`/api/admin/*`) to route authenticated admin traffic.
+ *
+ * @example
+ * ```typescript
+ * const paths = sharedAdminApiEcrPaths('development');
+ * paths.repositoryUri  // → '/shared/ecr-admin-api/development/repository-uri'
+ * ```
+ */
+export interface SharedAdminApiEcrSsmPaths {
+    /** The prefix itself: /shared/ecr-admin-api/{environment} */
+    readonly prefix: string;
+    /** admin-api ECR repository URI (used by CI to push/tag images) */
+    readonly repositoryUri: string;
+    /** admin-api ECR repository ARN (used by IAM grants) */
+    readonly repositoryArn: string;
+    /** admin-api ECR repository name */
+    readonly repositoryName: string;
+}
+
+/** Admin-API ECR SSM prefix: /shared/ecr-admin-api/{environment} */
+export function sharedAdminApiEcrPrefix(environment: Environment): string {
+    return `/shared/ecr-admin-api/${environment}`;
+}
+
+/**
+ * Get shared admin-api ECR SSM parameter paths for a given environment.
+ *
+ * @param environment - Target deployment environment
+ */
+export function sharedAdminApiEcrPaths(environment: Environment): SharedAdminApiEcrSsmPaths {
+    const prefix = sharedAdminApiEcrPrefix(environment);
+
+    return {
+        prefix,
+        repositoryUri: `${prefix}/repository-uri`,
+        repositoryArn: `${prefix}/repository-arn`,
+        repositoryName: `${prefix}/repository-name`,
+    };
+}
+
+// =============================================================================
 // SHARED VPC SSM PATHS (for future migration of vpc-stack.ts)
 // =============================================================================
 
@@ -560,6 +660,26 @@ export interface BedrockSsmPaths {
      * ```
      */
     readonly revalidationSecret: string;
+    /**
+     * Public URL of the `admin-api` BFF service.
+     *
+     * Written by {@link KubernetesEdgeStack} from `baseDomain` configuration.
+     * Read by K8s deploy scripts to inject `ADMIN_API_URL` into the
+     * `start-admin` ConfigMap without hardcoding the hostname.
+     *
+     * @example '/bedrock-dev/admin-api-url' → 'https://admin-api.nelsonlamounier.com'
+     */
+    readonly adminApiUrl: string;
+    /**
+     * Public URL of the `public-api` BFF service.
+     *
+     * Written by {@link KubernetesEdgeStack} from `baseDomain` configuration.
+     * Read by K8s deploy scripts to inject `PUBLIC_API_URL` into the
+     * `site` ConfigMap without hardcoding the hostname.
+     *
+     * @example '/bedrock-dev/public-api-url' → 'https://api.nelsonlamounier.com'
+     */
+    readonly publicApiUrl: string;
     /** Wildcard path for IAM: /bedrock-{env}/* */
     readonly wildcard: string;
 }
@@ -581,6 +701,8 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
         contentTableName: `${prefix}/content-table-name`,
         contentTableArn: `${prefix}/content-table-arn`,
         revalidationSecret: `${prefix}/revalidation-secret`,
+        adminApiUrl: `${prefix}/admin-api-url`,
+        publicApiUrl: `${prefix}/public-api-url`,
         wildcard: `${prefix}/*`,
     };
 }

@@ -96,6 +96,18 @@ export interface KubernetesAppIamStackProps extends cdk.StackProps {
 
     /** Secrets Manager path pattern for Next.js auth secrets */
     readonly secretsManagerPathPattern?: string;
+
+    /**
+     * Lambda function ARNs to grant invocation access.
+     *
+     * Grants `lambda:InvokeFunction` for the admin-api BFF to trigger
+     * the Bedrock publish, article, and strategist pipeline functions
+     * via the EC2 instance role — no static Lambda credentials stored
+     * in Kubernetes Secrets.
+     *
+     * @example ['arn:aws:lambda:eu-west-1:123:function:bedrock-dev-publish']
+     */
+    readonly lambdaInvokeArns?: string[];
 }
 
 // =============================================================================
@@ -135,6 +147,7 @@ export class KubernetesAppIamStack extends cdk.Stack {
             ssmParameterPath: props.ssmParameterPath,
             bedrockSsmPath: props.bedrockSsmPath,
             secretsManagerPathPattern: props.secretsManagerPathPattern,
+            lambdaInvokeArns: props.lambdaInvokeArns,
         });
 
         // =====================================================================
@@ -162,6 +175,8 @@ interface ApplicationIamGrantsProps {
     readonly ssmParameterPath?: string;
     readonly bedrockSsmPath?: string;
     readonly secretsManagerPathPattern?: string;
+    /** Lambda ARNs granted invocation access (admin-api BFF pipeline triggers). */
+    readonly lambdaInvokeArns?: string[];
 }
 
 /**
@@ -298,6 +313,20 @@ function grantApplicationPermissions(
             resources: [
                 `arn:aws:secretsmanager:${region}:${account}:secret:${props.secretsManagerPathPattern}`,
             ],
+        }));
+    }
+
+    if (props.lambdaInvokeArns && props.lambdaInvokeArns.length > 0) {
+        role.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'AdminApiBffLambdaInvoke',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                // Synchronous invocation for online requests
+                'lambda:InvokeFunction',
+                // Async (Event) invocation used by article publish pipeline
+                'lambda:InvokeAsync',
+            ],
+            resources: props.lambdaInvokeArns,
         }));
     }
 }

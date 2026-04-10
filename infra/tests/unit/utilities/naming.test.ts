@@ -77,11 +77,11 @@ describe('Naming Utilities', () => {
         });
 
         it('should have expected k8s stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.kubernetes)).toStrictEqual(['data', 'base', 'goldenAmi', 'ssmAutomation', 'controlPlane', 'appWorker', 'monitoringWorker', 'argocdWorker', 'appIam', 'api', 'edge', 'observability']);
+            expect(Object.keys(STACK_REGISTRY.kubernetes)).toStrictEqual(['data', 'base', 'goldenAmi', 'ssmAutomation', 'controlPlane', 'appWorker', 'monitoringWorker', 'argocdWorker', 'generalPool', 'monitoringPool', 'appIam', 'api', 'edge', 'observability']);
         });
 
         it('should have expected bedrock stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.bedrock)).toStrictEqual(['data', 'agent', 'api', 'content']);
+            expect(Object.keys(STACK_REGISTRY.bedrock)).toStrictEqual(['data', 'kb', 'agent', 'api', 'content', 'pipeline', 'strategistData', 'strategistPipeline']);
         });
     });
 

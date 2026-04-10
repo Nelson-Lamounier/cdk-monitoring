@@ -110,13 +110,13 @@ registerProject({
 });
 
 // =============================================================================
-// K8S PROJECT (kubeadm Kubernetes Cluster — 14-Stack Architecture)
-// Synth outputs all 14 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→
-// Compute→Workers(legacy+pool)→AppIam→Edge→Observability.
+// K8S PROJECT (kubeadm Kubernetes Cluster — 11-Stack Architecture)
+// Synth outputs all 11 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→
+// Compute→GeneralPool→MonitoringPool→AppIam→Edge→Observability.
 // API stack is deployed separately from core infrastructure.
 // Bootstrap/app manifests synced by independent S3 sync pipelines.
 //
-// ASG Pool Stacks (additive — run alongside legacy workers during migration):
+// Worker nodes are Kubernetes-native (ASG pools managed by the Cluster Autoscaler):
 //   - generalPool:    general-purpose ASG (Next.js, ArgoCD, system components)
 //   - monitoringPool: observability ASG (Prometheus, Grafana, Loki, Tempo)
 // =============================================================================
@@ -162,36 +162,6 @@ const k8sStacks: StackConfig[] = [
       'kubeadm Kubernetes control plane: EC2 + ASG + SSM documents + S3 scripts bucket',
     dependsOn: ['base', 'ssmAutomation'],
   },
-  {
-    id: 'appWorker',
-    name: 'App Worker Stack',
-    getStackName: (env) => getStackId(Project.KUBERNETES, 'appWorker', env),
-    description:
-      'Application worker node: kubeadm join + role=application label/taint',
-    dependsOn: ['controlPlane'],
-  },
-  {
-    id: 'monitoringWorker',
-    name: 'Monitoring Worker Stack',
-    getStackName: (env) =>
-      getStackId(Project.KUBERNETES, 'monitoringWorker', env),
-    description:
-      'Monitoring worker node: kubeadm join + role=monitoring label/taint',
-    dependsOn: ['controlPlane'],
-  },
-  {
-    id: 'argocdWorker',
-    name: 'ArgoCD Worker Stack',
-    getStackName: (env) =>
-      getStackId(Project.KUBERNETES, 'argocdWorker', env),
-    description:
-      'ArgoCD worker node: kubeadm join + role=argocd label/taint (Spot)',
-    dependsOn: ['controlPlane'],
-  },
-  // ---------------------------------------------------------------------------
-  // ASG Pool Stacks — Kubernetes-Native, Parameterised (additive during migration)
-  // These run in parallel with the legacy worker stacks until workloads are shifted.
-  // ---------------------------------------------------------------------------
   {
     id: 'generalPool',
     name: 'General Pool ASG Stack',

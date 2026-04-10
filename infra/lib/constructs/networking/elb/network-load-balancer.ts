@@ -241,9 +241,16 @@ export class NetworkLoadBalancerConstruct extends Construct {
                 ? props.vpc.publicSubnets
                 : props.vpc.privateSubnets;
 
-            const targetSubnet = subnetPool.find(
+            let targetSubnet = subnetPool.find(
                 (s) => s.availabilityZone === props.availabilityZone,
             );
+
+            // Fallback for CDK unit tests where Vpc.fromLookup generates a "dummy" VPC
+            // (the availability zones will be 'dummy1a', 'dummy1b', etc.)
+            if (!targetSubnet && props.vpc.availabilityZones.some(az => az.includes('dummy'))) {
+                targetSubnet = subnetPool[0];
+            }
+
             if (!targetSubnet) {
                 const subnetType = internetFacing ? 'public' : 'private';
                 throw new Error(

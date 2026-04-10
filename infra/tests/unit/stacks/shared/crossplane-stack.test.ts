@@ -414,30 +414,24 @@ describe('CrossplaneStack', () => {
     // Tags
     // =========================================================================
     describe('Tags', () => {
-        it('should tag resources with managed-by=cdk', () => {
+        /**
+         * Tagging is managed exclusively by the TaggingAspect applied at
+         * the App/Stack level in `app.ts`. Individual stacks and constructs
+         * must NOT call `cdk.Tags.of()` directly — enforced by the
+         * tagging-guard architectural test.
+         *
+         * The `managed-by: cdk` and `purpose` tags that appear on deployed
+         * resources come from the TaggingAspect schema (7 standard tags).
+         * Without the aspect applied (as in unit tests), no tags are present.
+         */
+        it('should not apply construct-level tags (TaggingAspect is the sole tagging source)', () => {
             const { template } = _createCrossplaneStack();
 
-            template.hasResourceProperties('AWS::IAM::User', {
-                Tags: Match.arrayWith([
-                    Match.objectLike({
-                        Key: 'managed-by',
-                        Value: 'cdk',
-                    }),
-                ]),
-            });
-        });
-
-        it('should tag resources with purpose=crossplane-credentials', () => {
-            const { template } = _createCrossplaneStack();
-
-            template.hasResourceProperties('AWS::IAM::User', {
-                Tags: Match.arrayWith([
-                    Match.objectLike({
-                        Key: 'purpose',
-                        Value: 'crossplane-credentials',
-                    }),
-                ]),
-            });
+            // Without TaggingAspect, IAM User has no Tags.
+            // This guards against ad-hoc cdk.Tags.of() in the construct.
+            const users = template.findResources('AWS::IAM::User');
+            const user: any = Object.values(users)[0];
+            expect(user.Properties.Tags).toBeUndefined();
         });
     });
 });
