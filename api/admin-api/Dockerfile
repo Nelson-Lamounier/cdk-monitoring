@@ -4,8 +4,9 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Copy workspace manifests first to leverage Docker layer caching.
+# Note: .yarn/ is git-ignored (only install-state.gz exists locally);
+# nodeLinker: node-modules only requires package.json, yarn.lock, .yarnrc.yml.
 COPY package.json yarn.lock .yarnrc.yml ./
-COPY .yarn .yarn/
 COPY api/admin-api/package.json  api/admin-api/
 COPY api/admin-api/tsconfig.json api/admin-api/
 

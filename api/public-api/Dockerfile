@@ -7,8 +7,10 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Copy workspace root manifests (Yarn workspaces need root package.json)
-COPY package.json yarn.lock ./
+# Copy workspace root manifests (Yarn workspaces need root package.json).
+# .yarnrc.yml is required so Yarn Berry respects nodeLinker: node-modules.
+# .yarn/ is git-ignored and not needed (no PnP cache or offline mirror).
+COPY package.json yarn.lock .yarnrc.yml ./
 
 # Copy only this package's manifest — avoids rebuilding on unrelated changes
 COPY api/public-api/package.json ./api/public-api/
