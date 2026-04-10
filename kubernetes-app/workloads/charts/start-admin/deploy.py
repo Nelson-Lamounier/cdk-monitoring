@@ -219,10 +219,6 @@ def resolve_admin_secrets(cfg: StartAdminConfig, ssm_client: object, client_erro
     # Used by the admin UI to locate pipeline infrastructure.
     secrets["SSM_BEDROCK_PREFIX"] = bedrock_prefix
 
-    # DynamoDB GSI names — constants matching CDK ai-content-stack.ts.
-    secrets["DYNAMODB_GSI1_NAME"] = "gsi1-status-date"
-    secrets["DYNAMODB_GSI2_NAME"] = "gsi2-tag-date"
-
     return secrets
 
 
@@ -252,19 +248,10 @@ _ADMIN_SECRET_KEYS = [
 ]
 
 _ADMIN_CONFIG_KEYS = [
-    # Non-sensitive infrastructure references — safe to store in ConfigMap
-    "DYNAMODB_TABLE_NAME",
-    "DYNAMODB_GSI1_NAME",
-    "DYNAMODB_GSI2_NAME",
-    "ASSETS_BUCKET_NAME",
-    "BEDROCK_AGENT_API_URL",
-    "SSM_BEDROCK_PREFIX",
-    "PUBLISH_LAMBDA_ARN",
-    "ARTICLE_TRIGGER_ARN",
-    "STRATEGIST_TABLE_NAME",
-    "STRATEGIST_TRIGGER_ARN",
-    # BFF: admin-api base URL — used by start-admin fetch() calls after migration
+    # BFF: admin-api base URL — all data operations go through this service.
     "ADMIN_API_URL",
+    # Bedrock agent URL — consumed by the admin dashboard chat/Bedrock UI.
+    "BEDROCK_AGENT_API_URL",
 ]
 
 

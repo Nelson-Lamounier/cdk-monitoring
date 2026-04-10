@@ -50,10 +50,18 @@ app.use(
   '/api/admin/*',
   cors({
     origin: [
-      // start-admin TanStack application (admin subdomain)
-      'https://admin.nelsonlamounier.com',
+      // start-admin TanStack application — served at /admin sub-path on the main domain.
+      // NOT a subdomain (admin.nelsonlamounier.com). CloudFront routes /admin/* to the
+      // start-admin pod; the browser origin is always https://nelsonlamounier.com.
+      //
+      // Note: after the BFF migration all API calls originate from server functions
+      // (pod-to-pod), so the browser never sends cross-origin requests to admin-api.
+      // This origin config is enforced as a defence-in-depth measure for any future
+      // client-side fetch, not for the current server-function pattern.
+      'https://nelsonlamounier.com',
       // local TanStack dev server
       'http://localhost:3000',
+      'http://localhost:5001',
     ],
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Authorization', 'Content-Type'],

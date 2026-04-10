@@ -417,7 +417,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          # start-admin uses its own dedicated Dockerfile (TanStack Start runtime)
+          # start-admin uses its own dedicated Dockerfile (TanStack Start / Vite runtime)
           file: apps/start-admin/Dockerfile
           push: false
           load: false
@@ -426,6 +426,27 @@ jobs:
           cache-to: type=gha,mode=max,scope=start-admin
           provenance: false
           outputs: type=docker,dest=/tmp/admin-image.tar
+          # ---------------------------------------------------------------------------
+          # Build-time args — ONLY values that must be baked into the Vite bundle.
+          #
+          # Rules:
+          #   INCLUDE  — anything referenced via `import.meta.env.VITE_*` in client code.
+          #              Vite statically replaces these during bundling; they CANNOT be
+          #              changed at container runtime.
+          #
+          #   EXCLUDE  — runtime config injected by deploy.py (ADMIN_API_URL, Cognito
+          #              vars, etc.). These are in the K8s Secret/ConfigMap and arrive
+          #              via envFrom at pod startup — never baked into the image.
+          #
+          # Adding a new client-side variable:
+          #   1. Add VITE_MY_VAR to `build-args` below.
+          #   2. Add it as a GitHub Actions variable (`vars.VITE_MY_VAR`) in the
+          #      'development' environment settings.
+          #   3. Reference it in code as `import.meta.env.VITE_MY_VAR`.
+          # ---------------------------------------------------------------------------
+          build-args: |
+            NODE_ENV=production
+            VITE_ADMIN_BASE_PATH=/admin
 
       - name: Cache Admin Image
         uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
