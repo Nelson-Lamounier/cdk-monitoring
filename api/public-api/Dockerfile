@@ -15,6 +15,11 @@ COPY package.json yarn.lock .yarnrc.yml ./
 # Copy only this package's manifest — avoids rebuilding on unrelated changes
 COPY api/public-api/package.json ./api/public-api/
 
+# Activate Yarn Berry v4 via Corepack.
+# node:22-alpine ships Yarn 1.x; the packageManager field in package.json
+# specifies yarn@4.12.0 which requires Corepack to be explicitly enabled.
+RUN corepack enable && corepack prepare yarn@4.12.0 --activate
+
 # Install all deps (including devDependencies for tsc)
 RUN yarn workspaces focus @repo/public-api --production=false
 

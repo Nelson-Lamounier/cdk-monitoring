@@ -10,6 +10,11 @@ COPY package.json yarn.lock .yarnrc.yml ./
 COPY api/admin-api/package.json  api/admin-api/
 COPY api/admin-api/tsconfig.json api/admin-api/
 
+# Activate Yarn Berry v4 via Corepack.
+# node:22-alpine ships Yarn 1.x; the packageManager field in package.json
+# specifies yarn@4.12.0 which requires Corepack to be explicitly enabled.
+RUN corepack enable && corepack prepare yarn@4.12.0 --activate
+
 # Install only admin-api dependencies (no workspace hoisting needed at runtime).
 RUN yarn workspaces focus @repo/admin-api --production=false
 
