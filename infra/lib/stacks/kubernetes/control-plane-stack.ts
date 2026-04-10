@@ -704,6 +704,7 @@ function grantMonitoringPermissions(
             'ssm:GetParameter',
             'ssm:GetParameters',
             'ssm:GetParametersByPath',
+            'ssm:AddTagsToResource',
         ],
         resources: [
             `arn:aws:ssm:${region}:${account}:parameter${ssmPrefix}/*`,

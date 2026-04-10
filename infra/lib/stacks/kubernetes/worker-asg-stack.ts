@@ -388,7 +388,10 @@ export class KubernetesWorkerAsgStack extends cdk.Stack {
         launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
             sid: 'SsmPublishBootstrapParams',
             effect: iam.Effect.ALLOW,
-            actions: ['ssm:PutParameter'],
+            actions: [
+                'ssm:PutParameter',
+                'ssm:AddTagsToResource',
+            ],
             resources: [
                 `arn:aws:ssm:${this.region}:${this.account}:parameter${ssmPrefix}/bootstrap/*`,
                 `arn:aws:ssm:${this.region}:${this.account}:parameter${ssmPrefix}/nodes/${props.poolType}/*`,
