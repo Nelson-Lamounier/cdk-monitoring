@@ -1,0 +1,8 @@
+helm:
+  parameters:
+  - name: image.repository
+    value: 771826808455.dkr.ecr.eu-west-1.amazonaws.com/public-api
+    forcestring: true
+  - name: image.tag
+    value: f0139267774bb6345082a7fddedd566e4b2066a8-r1
+    forcestring: true
