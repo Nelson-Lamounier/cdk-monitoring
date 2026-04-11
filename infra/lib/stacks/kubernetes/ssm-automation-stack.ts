@@ -132,6 +132,18 @@ const DEPLOY_SECRETS_STEPS: AutomationStep[] = [
         timeoutSeconds: 300,
         description: 'Resolve SSM parameters and create/update start-admin-secrets K8s Secret',
     },
+    {
+        name: 'deployAdminApiSecrets',
+        scriptPath: 'app-deploy/admin-api/deploy.py',
+        timeoutSeconds: 300,
+        description: 'Resolve SSM parameters and create/update admin-api K8s resources',
+    },
+    {
+        name: 'deployPublicApiSecrets',
+        scriptPath: 'app-deploy/public-api/deploy.py',
+        timeoutSeconds: 300,
+        description: 'Resolve SSM parameters and create/update public-api K8s resources',
+    },
 ];
 
 // =============================================================================

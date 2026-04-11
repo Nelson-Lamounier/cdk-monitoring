@@ -106,7 +106,7 @@ class AdminApiConfig(DeployConfig):
 
     manifests_dir: str = field(
         default_factory=lambda: os.getenv(
-            "MANIFESTS_DIR", "/data/workloads/charts/admin-api"
+            "MANIFESTS_DIR", "/data/app-deploy/admin-api"
         ),
     )
     namespace: str = "admin-api"

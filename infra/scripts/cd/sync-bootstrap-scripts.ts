@@ -126,6 +126,20 @@ const SYNC_TARGETS: SyncTarget[] = [
         excludes: ['chart/*', 'start-admin-values.yaml', '__pycache__/*'],
         optional: true,
     },
+    {
+        label: 'Admin-API Deploy Scripts',
+        sourceDir: 'kubernetes-app/workloads/charts/admin-api',
+        s3Prefix: 'app-deploy/admin-api/',
+        excludes: ['chart/*', '__pycache__/*'],
+        optional: true,
+    },
+    {
+        label: 'Public-API Deploy Scripts',
+        sourceDir: 'kubernetes-app/workloads/charts/public-api',
+        s3Prefix: 'app-deploy/public-api/',
+        excludes: ['chart/*', '__pycache__/*'],
+        optional: true,
+    },
 ];
 
 // =============================================================================

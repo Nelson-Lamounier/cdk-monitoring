@@ -75,7 +75,7 @@ class PublicApiConfig(DeployConfig):
 
     manifests_dir: str = field(
         default_factory=lambda: os.getenv(
-            "MANIFESTS_DIR", "/data/workloads/charts/public-api"
+            "MANIFESTS_DIR", "/data/app-deploy/public-api"
         ),
     )
     namespace: str = "public-api"
