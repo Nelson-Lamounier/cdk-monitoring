@@ -1,28 +1,31 @@
 # @format
 # @description Deploy SSM Bootstrap to Development
 #
-# Dedicated pipeline for K8s bootstrap trigger (scripts sync + SSM Automation).
+# Dedicated pipeline for K8s bootstrap trigger (scripts sync + Step Functions).
 # The SSM Automation CDK stack is deployed by _deploy-kubernetes.yml.
 #
 # Triggers:
-#   - Push to main/develop when step scripts change
+#   - Push to develop when step scripts or deploy scripts change
 #   - Manual dispatch (workflow_dispatch)
 #
 # This pipeline:
 #   1. Syncs latest bootstrap scripts to S3
-#   2. Triggers SSM Automation on existing nodes
-#   3. Observes bootstrap progress with log streaming
+#   2. Starts Step Functions executions on existing nodes
+#   3. Observes bootstrap orchestrator progress
 #   4. Deploys application secrets
 
 name: Deploy SSM Bootstrap to Development
 
 on:
-  # push:
-  #   branches: [develop]
+  push:
+    branches: [develop]
+    paths:
+      - 'kubernetes-app/k8s-bootstrap/**'
+      - 'kubernetes-app/workloads/charts/**'
   workflow_dispatch:
     inputs:
       trigger_bootstrap:
-        description: "Trigger SSM bootstrap on nodes"
+        description: "Trigger Step Functions bootstrap on nodes"
         type: boolean
         default: true
 

@@ -30,7 +30,7 @@
 #                                           └ deploy-secrets → verify
 #
 #   1. sync-and-verify         - S3 sync + S3 artefact verification
-#   2. trigger-bootstrap       - Resolves instance IDs, triggers SSM Automation
+#   2. trigger-bootstrap       - Resolves instance IDs, starts Step Functions executions
 #   3. verify-ssm-automation   - Instance targeting + health integration tests
 #   4. post-bootstrap-config   - Deploys secrets + ArgoCD health + smoke tests
 #                                 (reusable: _post-bootstrap-config.yml)
@@ -267,14 +267,21 @@ jobs:
       # -----------------------------------------------------------------------
 
   # ===========================================================================
-  # Phase 4: Trigger SSM Bootstrap — Start SSM Automation on existing nodes
+  # Phase 4: Trigger Bootstrap — Start Step Functions Executions
   #
-  # Resolves instance IDs from SSM parameters (published by user data
-  # during boot). Triggers control-plane first, waits for completion,
-  # then triggers workers (they need join credentials from the CP).
+  # Resolves instance IDs from EC2 tags (live; never stale). Reads the
+  # state machine ARN from SSM ({ssmPrefix}/bootstrap/state-machine-arn).
+  #
+  # Execution order:
+  #   1. Start control-plane execution
+  #   2. Wait for control-plane to SUCCEED (workers need join credentials)
+  #   3. Start worker pool executions (general-pool, monitoring-pool)
+  #
+  # Each execution is started with a synthetic EventBridge-style payload
+  # so the router Lambda can resolve role tags from the ASG.
   # ===========================================================================
   trigger-bootstrap:
-    name: "Phase 4 — Trigger SSM Bootstrap"
+    name: "Phase 4 — Trigger Step Functions Bootstrap"
     needs: [sync-and-verify]
     if: inputs.trigger-bootstrap
     runs-on: ubuntu-latest
@@ -307,17 +314,16 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       # -----------------------------------------------------------------------
-      # Trigger SSM Automation on K8s Nodes
+      # Start Step Functions Bootstrap Executions
       #
-      # Resolves instance IDs from SSM parameters published by EC2 user data:
-      #   - /k8s/<env>/bootstrap/control-plane-instance-id
-      #   - /k8s/<env>/bootstrap/app-worker-instance-id
-      #   - /k8s/<env>/bootstrap/mon-worker-instance-id
+      # Resolves the state machine ARN from SSM, resolves instance IDs from
+      # EC2 tags (never stale), verifies SSM agent health, then calls
+      # states:StartExecution for each role.
       #
-      # Execution order: control-plane → wait → workers (need join creds)
-      # Each execution ID is published to SSM for the verify job to inspect.
+      # The Lambda router inside the state machine reads the ASG tags to
+      # determine the role and resolve the S3 bucket.
       # -----------------------------------------------------------------------
-      - name: Trigger SSM Automation on Nodes
+      - name: Start Step Functions Executions on Nodes
         id: trigger
         run: just ci-trigger-bootstrap --environment ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
 

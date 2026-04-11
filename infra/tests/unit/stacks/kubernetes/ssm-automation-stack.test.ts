@@ -355,9 +355,10 @@ describe('K8sSsmAutomationStack', () => {
         });
 
         it('should create custom resources for SSM parameter cleanup', () => {
-            // Cleanup targets (4 SSM params + 2 log groups + 1 SNS topic = 7) plus
-            // Provider framework resources and CDK custom resources = 11 total
-            template.resourceCountIs('AWS::CloudFormation::CustomResource', 11);
+            // Cleanup targets (5 SSM params + 2 log groups + 1 SNS topic = 8) plus
+            // Provider framework resources and CDK custom resources = 12 total
+            // (+1 for the new state-machine-arn SSM param registered with cleanup provider)
+            template.resourceCountIs('AWS::CloudFormation::CustomResource', 12);
         });
 
         it('should grant the cleanup Lambda logs:DeleteLogGroup permission', () => {

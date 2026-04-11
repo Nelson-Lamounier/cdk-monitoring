@@ -174,6 +174,9 @@ export class K8sSsmAutomationStack extends cdk.Stack {
     /** Automation execution role ARN */
     public readonly automationRoleArn: string;
 
+    /** Step Functions bootstrap orchestrator state machine ARN */
+    public readonly stateMachineArn: string;
+
     /** CloudWatch Log Group for SSM bootstrap RunCommand output */
     public readonly bootstrapLogGroup: logs.LogGroup;
 
@@ -500,7 +503,93 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             deployRunnerName: deployRunner.documentName,
             bootstrapLogGroupName: this.bootstrapLogGroup.logGroupName,
             deployLogGroupName: this.deployLogGroup.logGroupName,
+            // Default worker pool roles — matches k8s:bootstrap-role ASG tag values
+            workerRoles: ['general-pool', 'monitoring-pool'],
         });
+
+        this.stateMachineArn = orchestrator.stateMachine.stateMachineArn;
+
+        // ── SSM Parameter: State Machine ARN ─────────────────────────────────
+        // Consumed by trigger-bootstrap.ts (GitHub Actions) so it can start
+        // executions via states:StartExecution without cross-stack references.
+        const smArnParam = new ssm.StringParameter(this, 'StateMachineArnParam', {
+            parameterName: `${props.ssmPrefix}/bootstrap/state-machine-arn`,
+            stringValue: orchestrator.stateMachine.stateMachineArn,
+            description: 'Step Functions bootstrap orchestrator state machine ARN',
+        });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/state-machine-arn`, smArnParam);
+
+        // ── Grant State Machine Execution Role: SSM permissions ───────────────
+        //
+        // The Step Functions CallAwsService tasks use the SFn execution role
+        // (not the SSM automationRole). We must grant it explicitly here.
+        // CDK grants Lambda:InvokeFunction automatically via LambdaInvoke,
+        // but CallAwsService requires manual grants.
+        const smRole = orchestrator.stateMachine.role;
+
+        smRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SfnSendCommand',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:SendCommand',
+                'ssm:GetCommandInvocation',
+                'ssm:ListCommandInvocations',
+                'ssm:CancelCommand',
+            ],
+            resources: ['*'],
+        }));
+
+        smRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SfnSsmParameters',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:GetParameter',
+                'ssm:PutParameter',
+            ],
+            resources: [
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
+            ],
+        }));
+
+        smRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SfnCloudWatchLogs',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'logs:CreateLogDelivery',
+                'logs:GetLogDelivery',
+                'logs:UpdateLogDelivery',
+                'logs:DeleteLogDelivery',
+                'logs:ListLogDeliveries',
+                'logs:PutResourcePolicy',
+                'logs:DescribeResourcePolicies',
+                'logs:DescribeLogGroups',
+            ],
+            resources: ['*'],
+        }));
+
+        smRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SfnXRay',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'xray:PutTraceSegments',
+                'xray:PutTelemetryRecords',
+                'xray:GetSamplingRules',
+                'xray:GetSamplingTargets',
+            ],
+            resources: ['*'],
+        }));
+
+        // cdk-nag: SFn role needs wildcard for ssm:SendCommand (target is dynamic)
+        NagSuppressions.addResourceSuppressions(orchestrator.stateMachine, [{
+            id: 'AwsSolutions-IAM5',
+            reason: 'Step Functions CallAwsService tasks require ssm:SendCommand and ssm:GetCommandInvocation on \'*\' (instance IDs are resolved dynamically at runtime). CloudWatch log delivery actions also require \'*\'.',
+        }, {
+            id: 'AwsSolutions-SF1',
+            reason: 'Step Functions logging is enabled via vendedlogs destination at LogLevel.ALL including execution data.',
+        }, {
+            id: 'AwsSolutions-SF2',
+            reason: 'X-Ray tracing is enabled on the state machine.',
+        }], true);
 
         // Register orchestrator log group for cleanup
         const orchestratorLogGroupName = `/aws/vendedlogs/states/${prefix}-bootstrap-orchestrator`;

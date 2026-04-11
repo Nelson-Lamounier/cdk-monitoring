@@ -2,15 +2,14 @@
  * @format
  * Remediate Node Bootstrap — MCP Tool Lambda
  *
- * Triggers an SSM Automation Document to re-run the bootstrap sequence
- * on a failed Kubernetes node. Uses the existing SSM Documents deployed
- * by the `ssm-automation-stack` (k8s-bootstrap-control-plane,
- * k8s-bootstrap-worker).
+ * Triggers the Step Functions bootstrap orchestrator to re-run the bootstrap
+ * sequence on a failed Kubernetes node. Uses the `BootstrapOrchestratorConstruct`
+ * state machine deployed by `K8sSsmAutomationStack`.
  *
- * The tool resolves Document names and IAM roles from SSM Parameter Store
- * to ensure it always uses the latest deployed version. This is the
- * production-grade replacement for manually triggering the
- * `_deploy-ssm-automation.yml` GitHub Actions workflow.
+ * The tool starts a new Step Functions execution with an EventBridge-style
+ * payload that the router Lambda already understands — no new logic required
+ * in the orchestrator. This is the self-healing equivalent of the GitHub
+ * Actions `_deploy-ssm-automation.yml` manual trigger.
  *
  * Registered as an MCP tool via the AgentCore Gateway.
  *
@@ -20,21 +19,31 @@
  *
  * Output:
  *   - instanceId: Target instance
- *   - executionId: SSM Automation execution ID (for tracking)
- *   - documentName: SSM Document used
+ *   - executionArn: Step Functions execution ARN (for tracking)
  *   - status: 'triggered' or 'error'
  */
 
 import {
+    SFNClient,
+    StartExecutionCommand,
+} from '@aws-sdk/client-sfn';
+import {
     SSMClient,
-    StartAutomationExecutionCommand,
     GetParameterCommand,
 } from '@aws-sdk/client-ssm';
 
-const ssm = new SSMClient({});
+const sfnClient = new SFNClient({});
+const ssmClient = new SSMClient({});
 
 /** SSM Parameter Store prefix for K8s configuration */
 const SSM_PREFIX = process.env.SSM_PREFIX ?? '/k8s/development';
+
+/**
+ * Step Functions bootstrap orchestrator state machine ARN.
+ * Injected by the Gateway stack from the SSM parameter
+ * `{ssmPrefix}/bootstrap/state-machine-arn`.
+ */
+const STATE_MACHINE_ARN = process.env.STATE_MACHINE_ARN ?? '';
 
 // =============================================================================
 // Types
@@ -59,8 +68,8 @@ interface RemediateInput {
 interface RemediationReport {
     readonly instanceId: string;
     readonly role: string;
-    readonly documentName?: string;
-    readonly executionId?: string;
+    /** Step Functions execution ARN (for tracking in the console) */
+    readonly executionArn?: string;
     readonly status: 'triggered' | 'error';
     readonly error?: string;
 }
@@ -94,7 +103,7 @@ function validateRole(role: string): NodeRole {
  * @throws Error if the parameter is not found
  */
 async function resolveParameter(name: string): Promise<string> {
-    const result = await ssm.send(
+    const result = await ssmClient.send(
         new GetParameterCommand({
             Name: name,
             WithDecryption: false,
@@ -108,31 +117,23 @@ async function resolveParameter(name: string): Promise<string> {
     return value;
 }
 
-/**
- * Map a node role to the SSM Document parameter path suffix.
- *
- * @param role - Validated node role
- * @returns SSM parameter path suffix for the document name
- */
-function getDocumentParamSuffix(role: NodeRole): string {
-    return role === 'control-plane'
-        ? '/ssm-automation/cp-document-name'
-        : '/ssm-automation/worker-document-name';
-}
+
 
 // =============================================================================
 // Handler
 // =============================================================================
 
 /**
- * Lambda handler — trigger SSM Automation to re-bootstrap a failed node.
+ * Lambda handler — trigger the Step Functions bootstrap orchestrator to
+ * re-bootstrap a failed Kubernetes node.
  *
- * Resolves the appropriate SSM Document name and automation role from
- * Parameter Store, then starts the automation execution targeting the
- * specified instance.
+ * Starts a new execution with an EventBridge-style payload that the router
+ * Lambda processes identically to an ASG launch event. The `instanceId`
+ * and `role` are injected so the orchestrator targets the correct node
+ * without relying on ASG tag resolution.
  *
  * @param event - MCP tool invocation event with `instanceId` and `role`
- * @returns Structured remediation report
+ * @returns Structured remediation report with execution ARN
  */
 export async function handler(event: RemediateInput): Promise<RemediationReport> {
     const { instanceId, role: rawRole } = event;
@@ -168,75 +169,60 @@ export async function handler(event: RemediateInput): Promise<RemediationReport>
         // Validate role
         const role = validateRole(rawRole);
 
-        // Resolve the SSM Document name from Parameter Store
-        const documentParamPath = `${SSM_PREFIX}${getDocumentParamSuffix(role)}`;
-        let documentName: string;
-        try {
-            documentName = await resolveParameter(documentParamPath);
-        } catch {
-            // Fallback to convention-based document naming
-            const prefix = SSM_PREFIX.replace('/k8s/', '').replace('/', '-');
-            documentName = `k8s-bootstrap-${role}-${prefix}`;
-            console.log(
-                JSON.stringify({
-                    level: 'WARN',
-                    message: 'SSM Document parameter not found, using convention',
-                    paramPath: documentParamPath,
-                    fallbackDocument: documentName,
-                }),
-            );
+        // Resolve the state machine ARN — prefer env var injected by CDK,
+        // fall back to SSM parameter for local testing.
+        let stateMachineArn = STATE_MACHINE_ARN;
+        if (!stateMachineArn) {
+            const arnParamPath = `${SSM_PREFIX}/bootstrap/state-machine-arn`;
+            stateMachineArn = await resolveParameter(arnParamPath);
         }
 
-        // Resolve the automation assume role ARN
-        const roleParamPath = `${SSM_PREFIX}/ssm-automation/role-arn`;
-        let automationRoleArn: string | undefined;
-        try {
-            automationRoleArn = await resolveParameter(roleParamPath);
-        } catch {
-            console.log(
-                JSON.stringify({
-                    level: 'WARN',
-                    message: 'Automation role ARN not found in SSM, executing without AssumeRole',
-                    paramPath: roleParamPath,
-                }),
-            );
-        }
+        // Derive the ASG name from the SSM prefix + role so the router
+        // can resolve ASG tags and identify which pool to bootstrap.
+        // Convention: {env}-{role}-asg (matches the ASG configured in compute stack).
+        const envSuffix = SSM_PREFIX.replace('/k8s/', ''); // e.g. 'development'
+        const asgName = `${envSuffix}-${role}-asg`;
+
+        // Build an EventBridge-style payload matching the exact shape the
+        // router Lambda uses for ASG instance launch events.
+        const executionInput = JSON.stringify({
+            source: 'self-healing.remediation',
+            'detail-type': 'EC2 Instance Launch Successful',
+            detail: {
+                AutoScalingGroupName: asgName,
+                EC2InstanceId: instanceId,
+            },
+        });
 
         console.log(
             JSON.stringify({
                 level: 'INFO',
-                message: 'Starting SSM Automation execution',
-                documentName,
+                message: 'Starting Step Functions bootstrap execution',
+                stateMachineArn,
                 instanceId,
                 role,
-                automationRoleArn: automationRoleArn ?? 'default',
+                asgName,
             }),
         );
 
-        // Build the automation parameters
-        const parameters: Record<string, string[]> = {
-            InstanceId: [instanceId],
-        };
-
-        // Start the automation execution
-        const executionResult = await ssm.send(
-            new StartAutomationExecutionCommand({
-                DocumentName: documentName,
-                Parameters: parameters,
-                ...(automationRoleArn
-                    ? { TargetParameterName: 'InstanceId' }
-                    : {}),
+        // Start a new Step Functions execution — the router Lambda resolves
+        // the role from ASG tags and runs the appropriate bootstrap sequence.
+        const executionResult = await sfnClient.send(
+            new StartExecutionCommand({
+                stateMachineArn,
+                input: executionInput,
+                // Unique name prevents duplicate executions if retried within 90 days
+                name: `remediation-${instanceId}-${Date.now()}`,
             }),
         );
 
-        const executionId = executionResult.AutomationExecutionId;
+        const executionArn = executionResult.executionArn;
 
         console.log(
             JSON.stringify({
                 level: 'INFO',
-                message: 'SSM Automation execution started',
-                executionId,
-                documentName,
+                message: 'Step Functions execution started',
+                executionArn,
                 instanceId,
                 role,
             }),
@@ -245,8 +231,7 @@ export async function handler(event: RemediateInput): Promise<RemediationReport>
         return {
             instanceId,
             role,
-            documentName,
-            executionId,
+            executionArn,
             status: 'triggered',
         };
     } catch (err) {
@@ -254,7 +239,7 @@ export async function handler(event: RemediateInput): Promise<RemediationReport>
         console.error(
             JSON.stringify({
                 level: 'ERROR',
-                message: 'Bootstrap remediation failed',
+                message: 'Step Functions bootstrap remediation failed',
                 instanceId,
                 role: rawRole,
                 error,
@@ -265,7 +250,7 @@ export async function handler(event: RemediateInput): Promise<RemediationReport>
             instanceId,
             role: rawRole,
             status: 'error',
-            error: `Failed to trigger bootstrap remediation: ${error}`,
+            error: `Failed to trigger Step Functions execution: ${error}`,
         };
     }
 }

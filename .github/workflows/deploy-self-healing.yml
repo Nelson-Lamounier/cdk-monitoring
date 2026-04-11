@@ -12,18 +12,18 @@ name: Deploy Self-Healing (Dev)
 
 on:
   workflow_dispatch: # Manual trigger
-  # push:
-  #   branches: [develop]
-  #   paths:
-  #     - "infra/lib/stacks/self-healing/**"
-  #     - "infra/lib/config/self-healing/**"
-  #     - "infra/lib/projects/self-healing/**"
-  #     - "bedrock-applications/self-healing/**"
-  #     - "bedrock-applications/shared/**"
-  #     - "infra/bin/app.ts"
-  #     - ".github/workflows/deploy-self-healing.yml"
-  #     - ".github/workflows/_deploy-stack.yml"
-  #     - ".github/actions/**"
+  push:
+    branches: [develop]
+    paths:
+      - "infra/lib/stacks/self-healing/**"
+      - "infra/lib/config/self-healing/**"
+      - "infra/lib/projects/self-healing/**"
+      - "bedrock-applications/self-healing/**"
+      - "bedrock-applications/shared/**"
+      - "infra/bin/app.ts"
+      - ".github/workflows/deploy-self-healing.yml"
+      - ".github/workflows/_deploy-stack.yml"
+      - ".github/actions/**"
 
 permissions:
   id-token: write

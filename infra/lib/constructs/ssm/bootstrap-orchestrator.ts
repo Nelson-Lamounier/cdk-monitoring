@@ -13,6 +13,15 @@
  *
  * ## EventBridge Integration
  * Triggers automatically on any ASG `EC2 Instance Launch Successful` event.
+ *
+ * ## Manual Trigger (GitHub Actions)
+ * The state machine ARN is exported via `stateMachineArn` and stored in SSM
+ * at `{ssmPrefix}/bootstrap/state-machine-arn` for `trigger-bootstrap.ts` to
+ * start executions directly using `states:StartExecution`.
+ *
+ * ## Worker Pool Names
+ * The rejoin branches use the new ASG pool names (`general-pool`, `monitoring-pool`)
+ * which are configurable via `workerRoles` in props.
  */
 
 import * as events from 'aws-cdk-lib/aws-events';
@@ -40,6 +49,13 @@ export interface BootstrapOrchestratorProps {
     readonly deployRunnerName: string;
     readonly bootstrapLogGroupName: string;
     readonly deployLogGroupName: string;
+    /**
+     * Worker pool role names that will be re-joined after control-plane replacement.
+     * Defaults to `['general-pool', 'monitoring-pool']`.
+     * These must match the `k8s:bootstrap-role` tag values on the ASGs and the
+     * SSM parameter names `{ssmPrefix}/bootstrap/{role}-instance-id`.
+     */
+    readonly workerRoles?: readonly string[];
 }
 
 export interface BootstrapStep {
@@ -104,18 +120,29 @@ const DEPLOY_SECRETS_STEPS: BootstrapStep[] = [
     },
 ];
 
+/**
+ * Default worker pool names — matches the `k8s:bootstrap-role` ASG tag values
+ * and the SSM parameter suffix `{ssmPrefix}/bootstrap/{role}-instance-id`.
+ */
+const DEFAULT_WORKER_ROLES: readonly string[] = ['general-pool', 'monitoring-pool'];
+
 // =============================================================================
 // CONSTRUCT
 // =============================================================================
 
 export class BootstrapOrchestratorConstruct extends Construct {
+    /** The Step Functions state machine that drives the entire bootstrap flow */
     public readonly stateMachine: sfn.StateMachine;
+
+    /** Thin router Lambda that reads ASG tags and resolves role/instanceId/s3Bucket */
     public readonly routerFunction: lambda.Function;
 
     constructor(scope: Construct, id: string, props: BootstrapOrchestratorProps) {
         super(scope, id);
 
         const stack = cdk.Stack.of(this);
+
+        const workerRoles = props.workerRoles ?? DEFAULT_WORKER_ROLES;
 
         // =====================================================================
         // Router Lambda
@@ -253,13 +280,11 @@ def handler(event, context):
             comment: 'Update logical role SSM instance ID mapping',
         });
 
-        // ── Fail Block ──
-        const workflowFailed = new sfn.Fail(this, 'WorkflowFailed', {
-            error: 'OrchestrationFailed',
-            cause: 'One of the SSM commands failed or timed out',
-        });
-
         // ── Helper to chain steps explicitly ──
+        //
+        // Each step creates its own Fail state so it can be used independently
+        // inside the main graph or inside a Parallel branch sub-graph.
+        // (CDK forbids a state from being referenced in more than one graph).
         const chainSteps = (steps: BootstrapStep[], runnerDocName: string, logGroupName: string) => {
             if (steps.length === 0) throw new Error('Cannot chain empty steps array');
             const builtSteps = steps.map(step => this.buildRunCommandChain(
@@ -270,7 +295,6 @@ def handler(event, context):
                 '$.router.ssmPrefix',
                 '$.router.s3Bucket',
                 '$.router.region',
-                workflowFailed
             ));
 
             for (let i = 0; i < builtSteps.length - 1; i++) {
@@ -290,16 +314,33 @@ def handler(event, context):
             comment: 'Wait for CP to publish new CA hash before worker re-bootstrap',
         });
 
+        // ── Worker Rejoin Parallel — with full poll loop per branch ──
+        //
+        // Build one parallel branch per worker role. Each branch:
+        //   1. Reads the persisted instance-id SSM param for that role
+        //   2. Runs the worker.py bootstrap script via SSM SendCommand
+        //   3. Polls for completion (same wait→check→loop pattern as cpSteps)
+        //
+        // Each branch creates its own Fail states (CDK requires unique states
+        // per graph — sub-graphs inside Parallel are independent).
         const workerRejoinParallel = new sfn.Parallel(this, 'RejoinAllWorkers', {
             comment: 'Re-bootstrap all worker nodes in parallel after CP replacement',
             resultPath: JsonPath.DISCARD,
         });
 
-        workerRejoinParallel.branch(this.buildWorkerRejoinBranch('app-worker', props));
-        workerRejoinParallel.branch(this.buildWorkerRejoinBranch('mon-worker', props));
-        workerRejoinParallel.branch(this.buildWorkerRejoinBranch('argocd-worker', props));
+        // Top-level Fail for the outer Parallel wrapper (not inside any sub-graph)
+        const rejoinFailed = new sfn.Fail(this, 'RejoinFailed', {
+            error: 'WorkerRejoinFailed',
+            cause: 'At least one worker re-join branch failed',
+        });
 
-        workerRejoinParallel.addCatch(workflowFailed, { errors: ['States.ALL'] });
+        for (const role of workerRoles) {
+            workerRejoinParallel.branch(
+                this.buildWorkerRejoinBranch(role, props),
+            );
+        }
+
+        workerRejoinParallel.addCatch(rejoinFailed, { errors: ['States.ALL'] });
 
         // Stitch Control Plane branch
         cpSteps.end.next(deploySteps.start);
@@ -361,6 +402,24 @@ def handler(event, context):
     // Private Helpers
     // =========================================================================
 
+    /**
+     * Builds a full send → init-counter → wait → poll → check-status chain
+     * for a single bootstrap step.
+     *
+     * Each call creates uniquely-named states (prefixed by `step.name`) so the
+     * chain can be safely composed inside both the outer state machine graph
+     * and isolated Parallel branch sub-graphs without violating CDK's
+     * single-graph constraint.
+     *
+     * @param step          - Step definition (name, scriptPath, timeoutSeconds)
+     * @param runnerDocName - SSM Command document name
+     * @param logGroupName  - CloudWatch log group for SSM output
+     * @param instanceIdPath - JSONPath to EC2 instance ID
+     * @param ssmPrefixPath - JSONPath to SSM prefix
+     * @param s3BucketPath  - JSONPath to S3 bucket name
+     * @param regionPath    - JSONPath to AWS region
+     * @returns `{ start, end }` for chaining via `.next()`
+     */
     private buildRunCommandChain(
         step: BootstrapStep,
         runnerDocName: string,
@@ -369,12 +428,21 @@ def handler(event, context):
         ssmPrefixPath: string,
         s3BucketPath: string,
         regionPath: string,
-        failureTarget: sfn.IChainable,
     ): { start: sfn.IChainable; end: sfn.Pass } {
         const id = step.name;
 
         const MAX_POLL_ITERATIONS = Math.ceil(step.timeoutSeconds / 30);
         const pollCountPath = `$.${id}PollCount`;
+
+        // Local Fail states — unique per step so they can live in any graph.
+        const sendFailed = new sfn.Fail(this, `${id}SendFailed`, {
+            error: 'SendCommandFailed',
+            cause: `SSM SendCommand failed for step ${id}`,
+        });
+        const pollFailed = new sfn.Fail(this, `${id}PollFailed`, {
+            error: 'CommandFailed',
+            cause: `SSM command failed or timed out for step ${id}`,
+        });
 
         const startExec = new sfnTasks.CallAwsService(this, `${id}Start`, {
             service: 'ssm',
@@ -401,7 +469,7 @@ def handler(event, context):
             comment: step.description,
         });
 
-        startExec.addCatch(failureTarget, { errors: ['States.ALL'] });
+        startExec.addCatch(sendFailed, { errors: ['States.ALL'] });
 
         const initCounter = new sfn.CustomState(this, `${id}InitCount`, {
             stateJson: {
@@ -429,7 +497,7 @@ def handler(event, context):
             resultPath: `$.${id}Status`,
         });
 
-        pollStatus.addCatch(failureTarget, { errors: ['States.ALL'] });
+        pollStatus.addCatch(pollFailed, { errors: ['States.ALL'] });
 
         const incrPollCount = new sfn.CustomState(this, `${id}IncrCount`, {
             stateJson: {
@@ -446,7 +514,7 @@ def handler(event, context):
         const checkTimeout = new sfn.Choice(this, `${id}CheckTimeout`)
             .when(
                 sfn.Condition.numberGreaterThanEquals(`${pollCountPath}.value`, MAX_POLL_ITERATIONS),
-                failureTarget,
+                pollFailed,
             )
             .otherwise(waitStep);
 
@@ -463,7 +531,7 @@ def handler(event, context):
                 ),
                 incrPollCount,
             )
-            .otherwise(failureTarget);
+            .otherwise(pollFailed);
 
         startExec.next(initCounter);
         initCounter.next(waitStep);
@@ -474,13 +542,37 @@ def handler(event, context):
         return { start: startExec, end: successState };
     }
 
+    /**
+     * Builds a complete worker re-join branch with full SSM poll loop.
+     *
+     * Each call creates a fully self-contained set of states (uniquely named
+     * with the role prefix) so the branch can live in an isolated Parallel
+     * sub-graph without conflicting with the outer state machine graph.
+     *
+     * Flow:
+     *   1. Read `{ssmPrefix}/bootstrap/{role}-instance-id` from SSM
+     *   2. Send SSM RunCommand (worker.py) to that instance
+     *   3. Poll for completion using the same wait → check → loop pattern
+     *
+     * @param workerRole - Role name matching SSM param suffix and k8s:bootstrap-role tag
+     * @param props      - Orchestrator props (runner doc name, log group, SSM prefix)
+     * @returns A `sfn.Chain` representing the complete self-contained branch
+     */
     private buildWorkerRejoinBranch(
         workerRole: string,
-        props: BootstrapOrchestratorProps
+        props: BootstrapOrchestratorProps,
     ): sfn.Chain {
         const stack = cdk.Stack.of(this);
         const instanceParamName = `${props.ssmPrefix}/bootstrap/${workerRole}-instance-id`;
+        const branchId = `Rejoin-${workerRole}`;
 
+        // Local Fail state for SSM GetParameter (lives in this branch sub-graph)
+        const getInstFailed = new sfn.Fail(this, `${branchId}GetInstFailed`, {
+            error: 'GetParameterFailed',
+            cause: `Could not read instance ID for ${workerRole} from SSM`,
+        });
+
+        // Step 1: Read persisted instance ID from SSM
         const getWorkerInstance = new sfnTasks.CallAwsService(this, `GetInst-${workerRole}`, {
             service: 'ssm',
             action: 'getParameter',
@@ -490,30 +582,35 @@ def handler(event, context):
             ],
             resultSelector: { 'instanceId.$': '$.Parameter.Value' },
             resultPath: '$.workerInst',
+            comment: `Read persisted instance ID for ${workerRole}`,
         });
 
-        // Note: We use the generic BootstrapRunner directly for re-join
-        const startWorkerReboot = new sfnTasks.CallAwsService(this, `Rejoin-${workerRole}`, {
-            service: 'ssm',
-            action: 'sendCommand',
-            parameters: {
-                DocumentName: props.bootstrapRunnerName,
-                InstanceIds: JsonPath.array(JsonPath.stringAt('$.workerInst.instanceId')),
-                CloudWatchOutputConfig: {
-                    CloudWatchLogGroupName: props.bootstrapLogGroupName,
-                    CloudWatchOutputEnabled: true,
-                },
-                Parameters: {
-                    ScriptPath: JsonPath.array('boot/steps/worker.py'),
-                    SsmPrefix: JsonPath.array(JsonPath.stringAt('$.router.ssmPrefix')),
-                    S3Bucket: JsonPath.array(JsonPath.stringAt('$.router.s3Bucket')),
-                    Region: JsonPath.array(JsonPath.stringAt('$.router.region')),
-                },
-            },
-            iamResources: ['*'],
-            resultPath: JsonPath.DISCARD,
-        });
+        getWorkerInstance.addCatch(getInstFailed, { errors: ['States.ALL'] });
 
-        return sfn.Chain.start(getWorkerInstance).next(startWorkerReboot);
+        // Step 2: Build full send+poll chain for the worker.py step.
+        //
+        // buildRunCommandChain creates its own local Fail states, so this chain
+        // is fully independent of the outer state machine graph.
+        const workerStep: BootstrapStep = {
+            name: branchId,
+            scriptPath: 'boot/steps/worker.py',
+            timeoutSeconds: 900,
+            description: `Re-join ${workerRole} to the cluster after CP replacement`,
+        };
+
+        const chain = this.buildRunCommandChain(
+            workerStep,
+            props.bootstrapRunnerName,
+            props.bootstrapLogGroupName,
+            '$.workerInst.instanceId',
+            '$.router.ssmPrefix',
+            '$.router.s3Bucket',
+            '$.router.region',
+        );
+
+        // Link: getWorkerInstance → sendCommand poll chain
+        getWorkerInstance.next(chain.start as sfn.TaskStateBase);
+
+        return sfn.Chain.start(getWorkerInstance);
     }
 }
