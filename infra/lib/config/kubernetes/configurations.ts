@@ -525,7 +525,11 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
         workerPools: {
             general: {
                 instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
-                minCapacity: 1,
+                // Minimum 2 nodes — ensures a scheduling landing zone during
+                // CA scale-down and cold-start events. CA will not shrink
+                // below this floor, preventing single-point-of-failure scenarios
+                // where an OOM or eviction leaves zero available nodes.
+                minCapacity: 2,
                 maxCapacity: 4,
                 useSpotInstances: true,
                 rootVolumeSizeGb: 30,

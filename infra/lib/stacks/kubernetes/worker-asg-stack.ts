@@ -452,9 +452,9 @@ export class KubernetesWorkerAsgStack extends cdk.Stack {
 
         // Cluster Autoscaler — READ permissions (both pools)
         //
-        // All nodes need Describe* so the CA (running on the general pool) can
-        // discover ASG membership, available instance types, and launch template
-        // versions for BOTH pools. These are read-only calls with no blast radius.
+        // Both pools need Describe* so nodes can report ASG membership to CA.
+        // CA itself runs on the monitoring pool and issues API calls from there,
+        // but the Describe* actions have no blast radius — safe to grant broadly.
         launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
             sid: 'ClusterAutoscalerDescribe',
             effect: iam.Effect.ALLOW,
@@ -470,13 +470,14 @@ export class KubernetesWorkerAsgStack extends cdk.Stack {
             resources: ['*'],
         }));
 
-        // Cluster Autoscaler — WRITE permissions (general pool only)
+        // Cluster Autoscaler — WRITE permissions (monitoring pool only)
         //
-        // CA runs as a Deployment and is always scheduled onto the general pool
-        // (no taint, highest priority). Monitoring nodes will never host CA,
-        // so granting them scaling write-permissions is unnecessary and widens
-        // the blast radius if a monitoring node is compromised.
-        if (props.poolType === 'general') {
+        // CA is deployed with nodeSelector node-pool=monitoring so it runs on the
+        // stable monitoring pool and cannot be evicted by its own scale-down logic.
+        // Only the monitoring-pool instance role needs SetDesiredCapacity —
+        // granting it to general-pool nodes would widen the blast radius if a
+        // compromised general-pool node attempted to manipulate ASG capacity.
+        if (props.poolType === 'monitoring') {
             launchTemplateConstruct.addToRolePolicy(new iam.PolicyStatement({
                 sid: 'ClusterAutoscalerScale',
                 effect: iam.Effect.ALLOW,
@@ -595,7 +596,11 @@ export class KubernetesWorkerAsgStack extends cdk.Stack {
             maxCapacity: props.maxCapacity ?? defaultMaxCapacity,
             // desiredCapacity intentionally omitted: CA manages scale after initial launch.
             // Setting it would reset capacity on every cdk deploy.
-            disableScalingPolicy: false, // CA overrides this — CPU scaling is a fallback
+            // Disable CPU target tracking on the general pool.
+            // Cluster Autoscaler owns scale decisions for the general pool;
+            // CPU target tracking and CA conflict (both set desiredCapacity).
+            // The monitoring pool retains target tracking (CA does not manage it).
+            disableScalingPolicy: props.poolType === 'general',
             namePrefix: poolId,
             instanceName: `${namePrefix}-${props.poolType}-worker`,
             bootstrapRole,
