@@ -304,13 +304,13 @@ phases:
               # Install K8sGPT — AI-powered Kubernetes diagnostics tool.
               # Used by the self-healing pipeline's analyse-cluster-health Lambda
               # via SSM SendCommand to assess workload health after remediation.
+              export HOME=/root
               K8SGPT_VERSION="${imageConfig.bakedVersions.k8sgpt}"
-              curl -fsSL "https://github.com/k8sgpt-ai/k8sgpt/releases/download/v\${K8SGPT_VERSION}/k8sgpt_\${K8SGPT_VERSION}_linux_\${ARCH}.tar.gz" \\
-                -o /tmp/k8sgpt.tar.gz
-              tar -C /usr/local/bin -xzf /tmp/k8sgpt.tar.gz k8sgpt
-              chmod +x /usr/local/bin/k8sgpt
-              rm /tmp/k8sgpt.tar.gz
-              k8sgpt version
+              curl -fsSL "https://github.com/k8sgpt-ai/k8sgpt/releases/download/v\${K8SGPT_VERSION}/k8sgpt_amd64.rpm" \\
+                -o /tmp/k8sgpt.rpm || { echo "FATAL: k8sgpt download failed"; exit 1; }
+              rpm -ivh /tmp/k8sgpt.rpm || { echo "FATAL: k8sgpt RPM install failed"; exit 1; }
+              rm /tmp/k8sgpt.rpm
+              k8sgpt version || { echo "FATAL: k8sgpt not runnable after install"; exit 1; }
               echo "K8sGPT \${K8SGPT_VERSION} installed"
 
       - name: InstallPythonDependencies

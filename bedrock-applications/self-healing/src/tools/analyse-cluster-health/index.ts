@@ -209,6 +209,8 @@ async function ssmExec(
  */
 function buildK8sGPTCommand(namespace?: string, filters?: string[]): string {
     const parts = [
+        'export HOME=/root',
+        '&&',
         'export KUBECONFIG=/etc/kubernetes/admin.conf',
         '&&',
         'k8sgpt analyse --output json --no-explain',

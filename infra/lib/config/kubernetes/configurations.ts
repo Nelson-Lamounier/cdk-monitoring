@@ -483,7 +483,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
                 ecrCredentialProvider: 'v1.31.0',
-                k8sgpt: '0.4.29',
+                k8sgpt: '0.4.31',
             },
         },
         ssm: {
@@ -592,7 +592,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
                 ecrCredentialProvider: 'v1.31.0',
-                k8sgpt: '0.4.29',
+                k8sgpt: '0.4.31',
             },
         },
         ssm: {
@@ -695,7 +695,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
                 crictl: '1.32.0',
                 calico: 'v3.29.3',
                 ecrCredentialProvider: 'v1.31.0',
-                k8sgpt: '0.4.29',
+                k8sgpt: '0.4.31',
             },
         },
         ssm: {
