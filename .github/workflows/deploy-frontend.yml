@@ -230,7 +230,6 @@ jobs:
           echo "- **Static assets**: $ASSET_COUNT files" >> $GITHUB_STEP_SUMMARY
           echo "- **Source**: frontend-portfolio@${{ needs.resolve-targets.outputs.frontend-ref }}" >> $GITHUB_STEP_SUMMARY
 
-
   # ---------------------------------------------------------------------------
   # Job: Push site image to ECR
   # ---------------------------------------------------------------------------
@@ -576,6 +575,10 @@ jobs:
   # ---------------------------------------------------------------------------
   # Job: Build start-admin Docker image
   # Uses apps/start-admin/Dockerfile, serves on port 5001 under /admin/
+  # server.js in frontend-portfolio includes a static file handler (tryServeStatic)
+  # that maps /admin/assets/* → dist/client/assets/* before delegating to SSR.
+  # This is required because TanStack Start's SSR handler does not serve
+  # dist/client/ assets natively.
   # ---------------------------------------------------------------------------
   build-admin:
     name: "[Admin] Build Docker Image"
@@ -592,32 +595,6 @@ jobs:
           repository: Nelson-Lamounier/frontend-portfolio
           ref: ${{ needs.resolve-targets.outputs.frontend-ref }}
           token: ${{ secrets.CROSS_REPO_PAT }}
-
-      - name: Checkout cdk-monitoring patches
-        # Fetch only the .github/patches directory from this repo so we can
-        # overlay the patched server.js into the frontend-portfolio checkout.
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: Nelson-Lamounier/cdk-monitoring
-          ref: ${{ github.sha }}
-          sparse-checkout: .github/patches
-          sparse-checkout-cone-mode: false
-          path: _cdk-patches
-
-      - name: Patch start-admin server.js (add static asset serving)
-        # The original server.js in frontend-portfolio has no static-file handler.
-        # TanStack Start's SSR fetch handler does not serve dist/client/ assets —
-        # every GET /admin/assets/*.css|js returns 404, breaking all styles and JS.
-        #
-        # The patch in .github/patches/start-admin-server.js adds a fast-path
-        # tryServeStatic() that maps /admin/assets/* → dist/client/assets/* before
-        # delegating to the SSR handler.  We overwrite it here before docker build
-        # so the Dockerfile COPYs the corrected file into the image.
-        run: |
-          cp _cdk-patches/.github/patches/start-admin-server.js apps/start-admin/server.js
-          echo "[PATCH] Replaced apps/start-admin/server.js with static-asset-aware version"
-          echo "--- diff preview ---"
-          head -5 apps/start-admin/server.js
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -981,6 +958,76 @@ jobs:
           echo "- **Tag**: ${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
           echo "- Promotion executed via SSM on control-plane node. Green RS is now active." >> $GITHUB_STEP_SUMMARY
 
+  # ---------------------------------------------------------------------------
+  # Job: Invalidate CloudFront cache for /admin/* after promote-admin
+  # Required because TanStack Start uses content-hashed assets — stale HTML
+  # references old asset hashes after every deploy, causing CSS/JS 404s.
+  # ---------------------------------------------------------------------------
+  invalidate-admin:
+    name: "[Admin] Invalidate CloudFront Cache"
+    needs: [resolve-targets, promote-admin]
+    if: needs.resolve-targets.outputs.deploy-admin == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: development
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve CloudFront Distribution ID
+        id: resolve-dist
+        run: |
+          DIST_ID=$(aws ssm get-parameter \
+            --name "/nextjs/${{ env.ENVIRONMENT }}/cloudfront/distribution-id" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          if [ -z "$DIST_ID" ] || [ "$DIST_ID" = "None" ]; then
+            echo "::error::CloudFront distribution ID not found in SSM"
+            exit 1
+          fi
+
+          echo "dist-id=$DIST_ID" >> $GITHUB_OUTPUT
+
+      - name: Invalidate /admin/* paths
+        run: |
+          DIST_ID="${{ steps.resolve-dist.outputs.dist-id }}"
+
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
+            --distribution-id "$DIST_ID" \
+            --paths "/admin/*" "/admin/assets/*" \
+            --query "Invalidation.Id" \
+            --output text)
+
+          echo "[PASS] Invalidation created: $INVALIDATION_ID"
+          echo "invalidation-id=$INVALIDATION_ID" >> $GITHUB_ENV
+
+          # Wait for invalidation to complete (typically 30-60 seconds)
+          echo "[INFO] Waiting for invalidation to complete..."
+          aws cloudfront wait invalidation-completed \
+            --distribution-id "$DIST_ID" \
+            --id "$INVALIDATION_ID"
+
+          echo "[PASS] CloudFront cache invalidated for /admin/* and /admin/assets/*"
+
+      - name: Invalidation Summary
+        run: |
+          echo "## [Admin] CloudFront Invalidation" >> $GITHUB_STEP_SUMMARY
+          echo "- **Paths**: \`/admin/*\`, \`/admin/assets/*\` ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Distribution**: \`${{ steps.resolve-dist.outputs.dist-id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Cache cleared — browsers will fetch fresh HTML with new asset hashes." >> $GITHUB_STEP_SUMMARY
+
   # ===========================================================================
   # ── INDEPENDENT JOBS ─────────────────────────────────────────────────────────
   # ===========================================================================
@@ -1017,6 +1064,7 @@ jobs:
       - push-admin
       - deploy-admin
       - promote-admin
+      - invalidate-admin
     if: always()
     runs-on: ubuntu-latest
 
@@ -1043,6 +1091,7 @@ jobs:
             echo "| Admin (TanStack) | Push to ECR      | ${{ needs.push-admin.result }} |" >> $GITHUB_STEP_SUMMARY
             echo "| Admin (TanStack) | Deploy to K8s    | ${{ needs.deploy-admin.result }} |" >> $GITHUB_STEP_SUMMARY
             echo "| Admin (TanStack) | Promote Rollout  | ${{ needs.promote-admin.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Admin (TanStack) | Invalidate CF    | ${{ needs.invalidate-admin.result }} |" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -1057,7 +1106,8 @@ jobs:
             "${{ needs.build-admin.result }}" \
             "${{ needs.push-admin.result }}" \
             "${{ needs.deploy-admin.result }}" \
-            "${{ needs.promote-admin.result }}"; do
+            "${{ needs.promote-admin.result }}" \
+            "${{ needs.invalidate-admin.result }}"; do
             if [[ "$RESULT" == "failure" ]]; then
               FAILED=true
               break
@@ -1065,8 +1115,8 @@ jobs:
           done
 
           if [[ "$FAILED" == "true" ]]; then
-            echo "**Result: ❌ FAILED** — check individual job logs above" >> $GITHUB_STEP_SUMMARY
+            echo "**Result: FAILED** — check individual job logs above" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
 
-          echo "**Result: ✅ SUCCESS**" >> $GITHUB_STEP_SUMMARY
+          echo "**Result: SUCCESS**" >> $GITHUB_STEP_SUMMARY
