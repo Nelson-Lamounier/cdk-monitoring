@@ -9,10 +9,7 @@ namespace: public-api
 # ---------------------------------------------------------------------------
 image:
   repository: "" # Overridden at deploy time via --set or ArgoCD Image Updater write-back
-  # tag: intentionally omitted — ArgoCD Image Updater writes the tag to
-  #       chart/.argocd-source-public-api.yaml on every successful CI push.
-  #       An empty string here produces "<repo>:" which Kubernetes rejects
-  #       with InvalidImageName before even attempting an ECR pull.
+  tag: "latest" # Overridden by ArgoCD Image Updater write-back
   pullPolicy: Always
 
 # ---------------------------------------------------------------------------

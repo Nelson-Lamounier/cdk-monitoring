@@ -279,7 +279,7 @@ jobs:
 
     permissions:
       id-token: write
-      contents: write   # Required: commits .argocd-source-admin-api.yaml back to develop
+      contents: read
 
     steps:
       - name: Checkout
@@ -320,56 +320,7 @@ jobs:
 
           echo "[PASS] admin-api image URI written to SSM — ArgoCD will rolling-update the Deployment"
 
-      # -------------------------------------------------------------------------
-      # Seed the ArgoCD Image Updater write-back file.
-      #
-      # ArgoCD Image Updater (write-back-method: git) stores the resolved image
-      # tag in chart/.argocd-source-admin-api.yaml. Until that file exists,
-      # {{ .Values.image.tag }} evaluates to "" → Kubernetes rejects the pod
-      # with InvalidImageName.
-      #
-      # This step writes the file with the CI-computed tag on every deploy so
-      # ArgoCD has a valid tag from the first run. Image Updater overwrites it
-      # on subsequent runs. No values are hardcoded — IMAGE_TAG is derived from
-      # github.sha + github.run_attempt by the workflow env block.
-      # -------------------------------------------------------------------------
-      - name: Seed ArgoCD Image Updater write-back file (admin-api)
-        env:
-          WRITEBACK: kubernetes-app/workloads/charts/admin-api/chart/.argocd-source-admin-api.yaml
-          TAG: ${{ env.IMAGE_TAG }}
-        run: |
-          ECR_URL=$(aws ssm get-parameter \
-            --name "/shared/ecr-admin-api/${{ env.ENVIRONMENT }}/repository-uri" \
-            --query 'Parameter.Value' --output text)
 
-          # Idempotent: skip commit if tag has not changed
-          CURRENT_TAG=$(grep 'value:' "$WRITEBACK" 2>/dev/null | tail -1 | awk '{print $2}' || echo "")
-          if [[ "$CURRENT_TAG" == "$TAG" ]]; then
-            echo "[SKIP] write-back file already at tag $TAG"
-            exit 0
-          fi
-
-          cat > "$WRITEBACK" <<EOF
-          helm:
-            parameters:
-            - name: image.repository
-              value: ${ECR_URL}
-              forceString: true
-            - name: image.tag
-              value: ${TAG}
-              forceString: true
-          EOF
-
-          # Strip leading spaces introduced by heredoc indentation
-          sed -i 's/^          //' "$WRITEBACK"
-
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          git add "$WRITEBACK"
-          git diff --cached --quiet && echo "[SKIP] no changes to commit" && exit 0
-          git commit -m "chore(argocd): seed image tag for admin-api [${TAG}] [skip ci]"
-          git push origin develop
-          echo "[PASS] .argocd-source-admin-api.yaml committed: ${ECR_URL}:${TAG}"
 
       # -------------------------------------------------------------------------
       # Bootstrap admin-api K8s resources via deploy.py.
@@ -633,7 +584,7 @@ jobs:
 
     permissions:
       id-token: write
-      contents: write   # Required: commits .argocd-source-public-api.yaml back to develop
+      contents: read
 
     steps:
       - name: Checkout
@@ -671,47 +622,7 @@ jobs:
 
           echo "[PASS] public-api image URI written to SSM — ArgoCD will rolling-update the Deployment"
 
-      # -------------------------------------------------------------------------
-      # Seed the ArgoCD Image Updater write-back file.
-      # See admin-api step above for full rationale.
-      # -------------------------------------------------------------------------
-      - name: Seed ArgoCD Image Updater write-back file (public-api)
-        env:
-          WRITEBACK: kubernetes-app/workloads/charts/public-api/chart/.argocd-source-public-api.yaml
-          TAG: ${{ env.IMAGE_TAG }}
-        run: |
-          ECR_URL=$(aws ssm get-parameter \
-            --name "/shared/ecr-public-api/${{ env.ENVIRONMENT }}/repository-uri" \
-            --query 'Parameter.Value' --output text)
 
-          # Idempotent: skip commit if tag has not changed
-          CURRENT_TAG=$(grep 'value:' "$WRITEBACK" 2>/dev/null | tail -1 | awk '{print $2}' || echo "")
-          if [[ "$CURRENT_TAG" == "$TAG" ]]; then
-            echo "[SKIP] write-back file already at tag $TAG"
-            exit 0
-          fi
-
-          cat > "$WRITEBACK" <<EOF
-          helm:
-            parameters:
-            - name: image.repository
-              value: ${ECR_URL}
-              forceString: true
-            - name: image.tag
-              value: ${TAG}
-              forceString: true
-          EOF
-
-          # Strip leading spaces introduced by heredoc indentation
-          sed -i 's/^          //' "$WRITEBACK"
-
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          git add "$WRITEBACK"
-          git diff --cached --quiet && echo "[SKIP] no changes to commit" && exit 0
-          git commit -m "chore(argocd): seed image tag for public-api [${TAG}] [skip ci]"
-          git push origin develop
-          echo "[PASS] .argocd-source-public-api.yaml committed: ${ECR_URL}:${TAG}"
 
       # -------------------------------------------------------------------------
       # Bootstrap public-api K8s resources via deploy.py.
