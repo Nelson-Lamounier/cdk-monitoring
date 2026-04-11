@@ -354,7 +354,7 @@ jobs:
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["KUBECONFIG=/etc/kubernetes/admin.conf python3 /data/workloads/charts/admin-api/deploy.py 2>&1"]' \
+            --parameters 'commands=["KUBECONFIG=/etc/kubernetes/admin.conf python3 /data/app-deploy/admin-api/deploy.py 2>&1"]' \
             --region "$REGION" \
             --query "Command.CommandId" --output text)
 
@@ -652,7 +652,7 @@ jobs:
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["KUBECONFIG=/etc/kubernetes/admin.conf python3 /data/workloads/charts/public-api/deploy.py 2>&1"]' \
+            --parameters 'commands=["KUBECONFIG=/etc/kubernetes/admin.conf python3 /data/app-deploy/public-api/deploy.py 2>&1"]' \
             --region "$REGION" \
             --query "Command.CommandId" --output text)
 
