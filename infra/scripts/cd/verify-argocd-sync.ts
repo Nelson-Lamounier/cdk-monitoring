@@ -28,27 +28,24 @@
  *   - .github/workflows/_deploy-ssm-automation.yml (mode=health)
  */
 
-import {
-  DescribeInstancesCommand,
-  EC2Client,
-} from '@aws-sdk/client-ec2';
+import { DescribeInstancesCommand, EC2Client } from "@aws-sdk/client-ec2";
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
   PutSecretValueCommand,
-} from '@aws-sdk/client-secrets-manager';
+} from "@aws-sdk/client-secrets-manager";
 import {
   SSMClient,
   SendCommandCommand,
   GetCommandInvocationCommand,
-} from '@aws-sdk/client-ssm';
-import { parseArgs, buildAwsConfig } from '@repo/script-utils/aws.js';
+} from "@aws-sdk/client-ssm";
+import { parseArgs, buildAwsConfig } from "@repo/script-utils/aws.js";
 import {
   emitAnnotation,
   maskSecret,
   writeSummary,
-} from '@repo/script-utils/github.js';
-import logger from '@repo/script-utils/logger.js';
+} from "@repo/script-utils/github.js";
+import logger from "@repo/script-utils/logger.js";
 
 // =============================================================================
 // CLI argument parsing
@@ -57,49 +54,50 @@ import logger from '@repo/script-utils/logger.js';
 const args = parseArgs(
   [
     {
-      name: 'environment',
-      description: 'Deployment environment',
+      name: "environment",
+      description: "Deployment environment",
       hasValue: true,
-      default: 'development',
+      default: "development",
     },
     {
-      name: 'region',
-      description: 'AWS region',
+      name: "region",
+      description: "AWS region",
       hasValue: true,
-      default: 'eu-west-1',
+      default: "eu-west-1",
     },
     {
-      name: 'profile',
-      description: 'AWS profile (local only)',
+      name: "profile",
+      description: "AWS profile (local only)",
       hasValue: true,
     },
     {
-      name: 'mode',
-      description: 'Verification mode: sync (full polling) or health (reachability only)',
+      name: "mode",
+      description:
+        "Verification mode: sync (full polling) or health (reachability only)",
       hasValue: true,
-      default: 'sync',
+      default: "sync",
     },
     {
-      name: 'poll-interval',
-      description: 'Seconds between polls',
+      name: "poll-interval",
+      description: "Seconds between polls",
       hasValue: true,
-      default: '30',
+      default: "30",
     },
     {
-      name: 'max-polls',
-      description: 'Maximum number of poll attempts',
+      name: "max-polls",
+      description: "Maximum number of poll attempts",
       hasValue: true,
-      default: '12',
+      default: "12",
     },
   ],
-  'Verify ArgoCD sync/health status via SSM send-command.',
+  "Verify ArgoCD sync/health status via SSM send-command.",
 );
 
 const environment = args.environment as string;
-const mode = (args.mode as string) || 'sync';
+const mode = (args.mode as string) || "sync";
 const awsConfig = buildAwsConfig(args);
-const pollInterval = parseInt(args['poll-interval'] as string, 10) || 30;
-const maxPolls = parseInt(args['max-polls'] as string, 10) || 12;
+const pollInterval = parseInt(args["poll-interval"] as string, 10) || 30;
+const maxPolls = parseInt(args["max-polls"] as string, 10) || 12;
 
 // ArgoCD API path builder.
 // server.rootpath=/argocd is set in argocd-cmd-params-cm, so ALL API
@@ -109,7 +107,7 @@ const maxPolls = parseInt(args['max-polls'] as string, 10) || 12;
 //   2. server.insecure=true means ArgoCD serves plain HTTP on port 8080
 //      (Service port 80 → targetPort 8080), so we use http:// not https://
 
-const ARGOCD_ROOT_PATH = '/argocd';
+const ARGOCD_ROOT_PATH = "/argocd";
 
 /** Build a shell command that resolves the ArgoCD ClusterIP then curls it.
  *
@@ -119,16 +117,18 @@ const ARGOCD_ROOT_PATH = '/argocd';
  * Using https:// against a non-TLS backend causes an immediate TLS handshake
  * failure which curl reports as HTTP status 000.
  */
-function buildArgoCDCurl(curlFlags: string, apiPath: string, extraHeaders: string = ''): string {
+function buildArgoCDCurl(
+  curlFlags: string,
+  apiPath: string,
+  extraHeaders: string = "",
+): string {
   return [
-    'export KUBECONFIG=/etc/kubernetes/admin.conf',
-    'ARGOCD_IP=$(kubectl get svc argocd-server -n argocd -o jsonpath=\'{.spec.clusterIP}\' 2>/dev/null)',
+    "export KUBECONFIG=/etc/kubernetes/admin.conf",
+    "ARGOCD_IP=$(kubectl get svc argocd-server -n argocd -o jsonpath='{.spec.clusterIP}' 2>/dev/null)",
     'if [ -z "$ARGOCD_IP" ]; then echo "UNREACHABLE"; exit 0; fi',
-   `curl ${curlFlags} ${extraHeaders} "http://\${ARGOCD_IP}${ARGOCD_ROOT_PATH}${apiPath}" 2>/dev/null`,
-  ].join(' && ');
+    `curl ${curlFlags} ${extraHeaders} "http://\${ARGOCD_IP}${ARGOCD_ROOT_PATH}${apiPath}" 2>/dev/null`,
+  ].join(" && ");
 }
-
-
 
 // =============================================================================
 // Expected ArgoCD Applications
@@ -136,19 +136,19 @@ function buildArgoCDCurl(curlFlags: string, apiPath: string, extraHeaders: strin
 
 const EXPECTED_APPS = [
   // Wave 0: Certificate infrastructure
-  'cert-manager',
+  "cert-manager",
   // Wave 1: TLS configuration
-  'cert-manager-config',
+  "cert-manager-config",
   // Wave 2: Ingress controller
-  'traefik',
+  "traefik",
   // Wave 3: Applications & infrastructure
-  'nextjs',
-  'monitoring',
-  'metrics-server',
-  'local-path-provisioner',
-  'ecr-token-refresh',
-  'argocd-image-updater',
-  'argocd-notifications',
+  "nextjs",
+  "monitoring",
+  "metrics-server",
+  "local-path-provisioner",
+  "ecr-token-refresh",
+  "argocd-image-updater",
+  "argocd-notifications",
 ];
 
 // =============================================================================
@@ -176,7 +176,6 @@ const ec2 = new EC2Client({
 
 /** Track whether self-healing has already been attempted this run. */
 let tokenRefreshAttempted = false;
-
 
 /** Fetch a secret from Secrets Manager, returning undefined if missing. */
 async function getSecret(secretId: string): Promise<string | undefined> {
@@ -207,7 +206,7 @@ async function ssmCurl(
     const sendResult = await ssm.send(
       new SendCommandCommand({
         InstanceIds: [instanceId],
-        DocumentName: 'AWS-RunShellScript',
+        DocumentName: "AWS-RunShellScript",
         Parameters: { commands: [curlCommand] },
         TimeoutSeconds: 30,
       }),
@@ -227,10 +226,7 @@ async function ssmCurl(
           }),
         );
 
-        if (
-          invocation.Status === 'Success' ||
-          invocation.Status === 'Failed'
-        ) {
+        if (invocation.Status === "Success" || invocation.Status === "Failed") {
           return invocation.StandardOutputContent?.trim() || undefined;
         }
       } catch {
@@ -269,23 +265,28 @@ interface AppStatus {
  * This replaces the previous SSM parameter-based lookup, which
  * was prone to stale IDs when instances were replaced by the ASG.
  */
-async function resolveInstanceByTag(tagValue: string): Promise<string | undefined> {
+async function resolveInstanceByTag(
+  tagValue: string,
+): Promise<string | undefined> {
   try {
     const result = await ec2.send(
       new DescribeInstancesCommand({
         Filters: [
-          { Name: 'tag:k8s:bootstrap-role', Values: [tagValue] },
-          { Name: 'instance-state-name', Values: ['running'] },
+          { Name: "tag:k8s:bootstrap-role", Values: [tagValue] },
+          { Name: "instance-state-name", Values: ["running"] },
         ],
       }),
     );
 
-    const instances = result.Reservations?.flatMap((r) => r.Instances ?? []) ?? [];
+    const instances =
+      result.Reservations?.flatMap((r) => r.Instances ?? []) ?? [];
     if (instances.length === 0) return undefined;
     return instances[0].InstanceId;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    logger.warn(`EC2 describe-instances failed for tag k8s:bootstrap-role=${tagValue}: ${message}`);
+    logger.warn(
+      `EC2 describe-instances failed for tag k8s:bootstrap-role=${tagValue}: ${message}`,
+    );
     return undefined;
   }
 }
@@ -295,24 +296,24 @@ async function resolveInstanceByTag(tagValue: string): Promise<string | undefine
  * Used to route ArgoCD API calls via SSM send-command (localhost).
  */
 async function resolveControlPlaneInstance(): Promise<string | undefined> {
-  const totalSteps = mode === 'health' ? 2 : 3;
-  logger.step(1, totalSteps, 'Resolve Control Plane Instance');
+  const totalSteps = mode === "health" ? 2 : 3;
+  logger.step(1, totalSteps, "Resolve Control Plane Instance");
 
-  const instanceId = await resolveInstanceByTag('control-plane');
+  const instanceId = await resolveInstanceByTag("control-plane");
   if (!instanceId) {
     emitAnnotation(
-      'warning',
-      'No running control-plane instance found -- ArgoCD verification skipped',
-      'ArgoCD Endpoint',
+      "warning",
+      "No running control-plane instance found -- ArgoCD verification skipped",
+      "ArgoCD Endpoint",
     );
     logger.warn(
-      'No running instance with tag k8s:bootstrap-role=control-plane -- skipping verification',
+      "No running instance with tag k8s:bootstrap-role=control-plane -- skipping verification",
     );
     return undefined;
   }
 
   maskSecret(instanceId);
-  logger.info('Control plane instance resolved');
+  logger.info("Control plane instance resolved");
   return instanceId;
 }
 
@@ -328,13 +329,13 @@ async function resolveControlPlaneInstance(): Promise<string | undefined> {
 async function retrieveCIToken(): Promise<string | undefined> {
   // retrieveCIToken is only called in --mode sync (step 2 of 3).
   // Health mode no longer requires a token (uses kubectl readiness instead).
-  logger.step(2, 3, 'Retrieve CI Bot Token');
+  logger.step(2, 3, "Retrieve CI Bot Token");
 
   // Check env var first (SSM pipeline passes token from previous step)
   const envToken = process.env.ARGOCD_TOKEN;
   if (envToken) {
     maskSecret(envToken);
-    logger.success('CI bot token loaded from ARGOCD_TOKEN env var');
+    logger.success("CI bot token loaded from ARGOCD_TOKEN env var");
     return envToken;
   }
 
@@ -344,16 +345,16 @@ async function retrieveCIToken(): Promise<string | undefined> {
 
   if (!token) {
     emitAnnotation(
-      'warning',
-      'ArgoCD CI token not found -- skipping verification',
-      'ArgoCD Token',
+      "warning",
+      "ArgoCD CI token not found -- skipping verification",
+      "ArgoCD Token",
     );
-    logger.warn('ArgoCD CI token not found in Secrets Manager -- skipping');
+    logger.warn("ArgoCD CI token not found in Secrets Manager -- skipping");
     return undefined;
   }
 
   maskSecret(token);
-  logger.success('CI bot token retrieved from Secrets Manager');
+  logger.success("CI bot token retrieved from Secrets Manager");
   return token;
 }
 
@@ -372,28 +373,28 @@ async function retrieveCIToken(): Promise<string | undefined> {
  *
  * @returns The new token, or undefined if regeneration failed
  */
-async function refreshCIToken(
-  instanceId: string,
-): Promise<string | undefined> {
+async function refreshCIToken(instanceId: string): Promise<string | undefined> {
   if (tokenRefreshAttempted) {
-    logger.warn('  Token refresh already attempted this run — skipping');
+    logger.warn("  Token refresh already attempted this run — skipping");
     return undefined;
   }
   tokenRefreshAttempted = true;
 
-  logger.info('  → Self-healing: regenerating CI bot token via ArgoCD REST API...');
+  logger.info(
+    "  → Self-healing: regenerating CI bot token via ArgoCD REST API...",
+  );
 
   // Resolve admin password via SSM → argocd-initial-admin-secret fallback.
   // Mirrors the two-source fallback in bootstrap's _resolve_admin_password.
   const fetchAdminPassCmd = [
-    'export KUBECONFIG=/etc/kubernetes/admin.conf',
+    "export KUBECONFIG=/etc/kubernetes/admin.conf",
     // Source 1: SSM Parameter Store (set by Step 10b during bootstrap)
     `ADMIN_PASS=$(aws ssm get-parameter --name "/k8s/${environment}/argocd-admin-password" --with-decryption --query Parameter.Value --output text 2>/dev/null)`,
     // Source 2: argocd-initial-admin-secret (Day-0 — before Step 10b runs)
-    'if [ -z "$ADMIN_PASS" ]; then ADMIN_PASS=$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath=\'{.data.password}\' 2>/dev/null | base64 -d 2>/dev/null); fi',
+    "if [ -z \"$ADMIN_PASS\" ]; then ADMIN_PASS=$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null); fi",
     'if [ -z "$ADMIN_PASS" ]; then echo "ERROR: no admin password from SSM or initial-admin-secret"; exit 1; fi',
     // Resolve ArgoCD ClusterIP (same strategy as buildArgoCDCurl)
-    'ARGOCD_IP=$(kubectl get svc argocd-server -n argocd -o jsonpath=\'{.spec.clusterIP}\' 2>/dev/null)',
+    "ARGOCD_IP=$(kubectl get svc argocd-server -n argocd -o jsonpath='{.spec.clusterIP}' 2>/dev/null)",
     'if [ -z "$ARGOCD_IP" ]; then echo "ERROR: ArgoCD ClusterIP not found"; exit 1; fi',
     // Step 1: Login → obtain a short-lived admin session token
     'ARGOCD_SESSION=$(curl -sf --max-time 15 -X POST "http://${ARGOCD_IP}/argocd/api/v1/session" -H "Content-Type: application/json" -d "{\\"username\\":\\"admin\\",\\"password\\":\\"${ADMIN_PASS}\\"}" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get(\'token\',\'\'))" 2>/dev/null)',
@@ -402,29 +403,33 @@ async function refreshCIToken(
     'NEW_TOKEN=$(curl -sf --max-time 15 -X POST "http://${ARGOCD_IP}/argocd/api/v1/account/ci-bot/token" -H "Authorization: Bearer ${ARGOCD_SESSION}" -H "Content-Type: application/json" --data-raw \'{"expiresIn":0,"id":""}\' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get(\'token\',\'\'))" 2>/dev/null)',
     'if [ -z "$NEW_TOKEN" ]; then echo "ERROR: CI bot token generation failed"; exit 1; fi',
     'echo "$NEW_TOKEN"',
-  ].join(' && ');
+  ].join(" && ");
 
   const newToken = await ssmCurl(instanceId, fetchAdminPassCmd);
 
-  if (!newToken || newToken.startsWith('ERROR') || newToken.length < 20) {
-    logger.error(`  ✗ Token regeneration failed: ${newToken || 'empty response'}`);
+  if (!newToken || newToken.startsWith("ERROR") || newToken.length < 20) {
+    logger.error(
+      `  ✗ Token regeneration failed: ${newToken || "empty response"}`,
+    );
     return undefined;
   }
 
   // Validate the new token
   const validateCmd = buildArgoCDCurl(
     `-s -o /dev/null -w '%{http_code}' --max-time 10`,
-    '/api/v1/applications',
+    "/api/v1/applications",
     `-H 'Authorization: Bearer ${newToken}'`,
   );
 
   const httpCode = await ssmCurl(instanceId, validateCmd);
-  if (httpCode?.trim() !== '200') {
-    logger.error(`  ✗ Regenerated token validation failed (HTTP ${httpCode?.trim() || '000'})`);
+  if (httpCode?.trim() !== "200") {
+    logger.error(
+      `  ✗ Regenerated token validation failed (HTTP ${httpCode?.trim() || "000"})`,
+    );
     return undefined;
   }
 
-  logger.success('  ✓ Regenerated token validated (HTTP 200)');
+  logger.success("  ✓ Regenerated token validated (HTTP 200)");
 
   // Store in Secrets Manager
   const secretId = `k8s/${environment}/argocd-ci-token`;
@@ -432,7 +437,7 @@ async function refreshCIToken(
     await secretsManager.send(
       new PutSecretValueCommand({ SecretId: secretId, SecretString: newToken }),
     );
-    logger.success('  ✓ Token updated in Secrets Manager');
+    logger.success("  ✓ Token updated in Secrets Manager");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.warn(`  ⚠ Failed to update Secrets Manager: ${message}`);
@@ -468,47 +473,49 @@ async function diagnosticProbe(
 
   const output = await ssmCurl(instanceId, curlCmd);
 
-  if (!output || output.includes('UNREACHABLE')) {
+  if (!output || output.includes("UNREACHABLE")) {
     emitAnnotation(
-      'error',
-      'ArgoCD API is unreachable via SSM send-command',
-      'ArgoCD Connectivity',
+      "error",
+      "ArgoCD API is unreachable via SSM send-command",
+      "ArgoCD Connectivity",
     );
-    logger.error('  ArgoCD API unreachable via SSM');
+    logger.error("  ArgoCD API unreachable via SSM");
     return undefined;
   }
 
   // Output format: body\nHTTP_CODE
-  const lines = output.split('\n');
+  const lines = output.split("\n");
   const httpCode = lines[lines.length - 1]?.trim();
   logger.info(`  HTTP Status: ${httpCode}`);
 
-  if (httpCode === '401' || httpCode === '403') {
-    logger.warn('  Authentication failed — attempting self-healing token refresh...');
+  if (httpCode === "401" || httpCode === "403") {
+    logger.warn(
+      "  Authentication failed — attempting self-healing token refresh...",
+    );
 
     const refreshedToken = await refreshCIToken(instanceId);
     if (refreshedToken) {
-      logger.success('  ✓ Self-healing successful — using refreshed token');
+      logger.success("  ✓ Self-healing successful — using refreshed token");
       emitAnnotation(
-        'notice',
-        'CI bot token was stale and has been automatically regenerated',
-        'ArgoCD Token Refresh',
+        "notice",
+        "CI bot token was stale and has been automatically regenerated",
+        "ArgoCD Token Refresh",
       );
-      console.log('');
+      console.log("");
       return refreshedToken;
     }
 
     // Self-healing failed — emit the original error
     emitAnnotation(
-      'error',
-      'Authentication failed. Self-healing token refresh also failed. Manual fix: just argocd-ci-token',
-      'ArgoCD Auth',
+      "error",
+      "Authentication failed. Self-healing token refresh also failed. Manual fix: just argocd-ci-token",
+      "ArgoCD Auth",
     );
   } else if (httpCode && parseInt(httpCode, 10) >= 500) {
-    logger.warn('  ArgoCD server returned a server error');
+    logger.warn("  ArgoCD server returned a server error");
   }
 
-  console.log('');
+  console.log("");
   return undefined;
 }
 
@@ -527,24 +534,25 @@ async function checkApp(
   // SSM send-command doesn't preserve newlines in the command string.
   // Shell single-quotes wrap the python code so inner double-quotes are safe.
   const pythonFilter =
-    'import json,sys;' +
-    'd=json.loads(sys.stdin.read());' +
+    "import json,sys;" +
+    "d=json.loads(sys.stdin.read());" +
     'print(json.dumps({"error":d.get("error",""),' +
     '"sync":d.get("status",{}).get("sync",{}).get("status","Unknown"),' +
     '"health":d.get("status",{}).get("health",{}).get("status","Unknown")}))';
-  const curlCmd = buildArgoCDCurl(
-    '-s --max-time 10',
-    `/api/v1/applications/${app}`,
-    `-H 'Authorization: Bearer ${token}'`,
-  ) + ` | python3 -c '${pythonFilter}'`;
+  const curlCmd =
+    buildArgoCDCurl(
+      "-s --max-time 10",
+      `/api/v1/applications/${app}`,
+      `-H 'Authorization: Bearer ${token}'`,
+    ) + ` | python3 -c '${pythonFilter}'`;
 
   const output = await ssmCurl(instanceId, curlCmd);
 
   if (!output) {
     return {
       app,
-      syncStatus: 'Unknown',
-      healthStatus: 'Unknown',
+      syncStatus: "Unknown",
+      healthStatus: "Unknown",
       reachable: false,
     };
   }
@@ -556,11 +564,11 @@ async function checkApp(
       health?: string;
     };
 
-    if (data.error && data.error !== '') {
+    if (data.error && data.error !== "") {
       return {
         app,
-        syncStatus: 'Unknown',
-        healthStatus: 'Unknown',
+        syncStatus: "Unknown",
+        healthStatus: "Unknown",
         error: data.error,
         reachable: true,
       };
@@ -568,16 +576,16 @@ async function checkApp(
 
     return {
       app,
-      syncStatus: data.sync || 'Unknown',
-      healthStatus: data.health || 'Unknown',
+      syncStatus: data.sync || "Unknown",
+      healthStatus: data.health || "Unknown",
       reachable: true,
     };
   } catch {
     return {
       app,
-      syncStatus: 'Unknown',
-      healthStatus: 'Unknown',
-      error: 'Invalid JSON response',
+      syncStatus: "Unknown",
+      healthStatus: "Unknown",
+      error: "Invalid JSON response",
       reachable: true,
     };
   }
@@ -592,13 +600,13 @@ async function waitForSync(
   instanceId: string,
   token: string,
 ): Promise<boolean> {
-  logger.step(3, 3, 'Wait for ArgoCD Sync');
+  logger.step(3, 3, "Wait for ArgoCD Sync");
 
-  console.log('## ArgoCD Sync Verification (via SSM)');
-  console.log('');
-  console.log(`Expected Applications: ${EXPECTED_APPS.join(', ')}`);
+  console.log("## ArgoCD Sync Verification (via SSM)");
+  console.log("");
+  console.log(`Expected Applications: ${EXPECTED_APPS.join(", ")}`);
   console.log(`Poll interval: ${pollInterval}s, max polls: ${maxPolls}`);
-  console.log('');
+  console.log("");
 
   // Grace period: newly-added Applications may not exist in ArgoCD yet
   // because the root App-of-Apps hasn't reconciled. ArgoCD returns
@@ -630,18 +638,24 @@ async function waitForSync(
         // "permission denied" means the app doesn't exist in ArgoCD yet
         // (ArgoCD hides 404 behind 403 for security). During grace period,
         // treat as pending; after grace period, treat as error.
-        const isNotFound = status.error.toLowerCase().includes('permission denied');
+        const isNotFound = status.error
+          .toLowerCase()
+          .includes("permission denied");
         if (isNotFound && inGracePeriod) {
-          console.log(`  ${app}: [WAIT] Not yet discovered by ArgoCD (grace period ${poll}/${gracePollCount})`);
+          console.log(
+            `  ${app}: [WAIT] Not yet discovered by ArgoCD (grace period ${poll}/${gracePollCount})`,
+          );
         } else if (isNotFound) {
-          console.log(`  ${app}: [ERROR] Not found in ArgoCD — check root App-of-Apps sync`);
+          console.log(
+            `  ${app}: [ERROR] Not found in ArgoCD — check root App-of-Apps sync`,
+          );
         } else {
           console.log(`  ${app}: [ERROR] ${status.error}`);
         }
         allSynced = false;
       } else if (
-        status.syncStatus === 'Synced' &&
-        status.healthStatus === 'Healthy'
+        status.syncStatus === "Synced" &&
+        status.healthStatus === "Healthy"
       ) {
         console.log(`  ${app}: [PASS] Synced + Healthy`);
       } else {
@@ -653,32 +667,34 @@ async function waitForSync(
     }
 
     if (allSynced) {
-      console.log('');
+      console.log("");
       console.log(
         `## [PASS] All ${EXPECTED_APPS.length} Applications are Synced and Healthy`,
       );
 
-      writeSummary('## ArgoCD Sync Verification');
-      writeSummary('');
+      writeSummary("## ArgoCD Sync Verification");
+      writeSummary("");
       writeSummary(
         `✅ All ${EXPECTED_APPS.length} Applications are **Synced + Healthy**`,
       );
-      writeSummary('');
-      writeSummary('### Deployment Map');
-      writeSummary('');
-      writeSummary('| Wave | Application | Sync | Health | ArgoCD |');
-      writeSummary('|:---|:---|:---|:---|:---|');
+      writeSummary("");
+      writeSummary("### Deployment Map");
+      writeSummary("");
+      writeSummary("| Wave | Application | Sync | Health | ArgoCD |");
+      writeSummary("|:---|:---|:---|:---|:---|");
 
       const waveMap: Record<string, string> = {
-        'cert-manager': '0',
-        'cert-manager-config': '1',
-        'traefik': '2',
+        "cert-manager": "0",
+        "cert-manager-config": "1",
+        traefik: "2",
       };
 
       for (const app of EXPECTED_APPS) {
-        const wave = waveMap[app] || '3';
+        const wave = waveMap[app] || "3";
         const argoLink = `[View](ArgoCD UI)`;
-        writeSummary(`| ${wave} | ${app} | ✅ Synced | ✅ Healthy | ${argoLink} |`);
+        writeSummary(
+          `| ${wave} | ${app} | ✅ Synced | ✅ Healthy | ${argoLink} |`,
+        );
       }
 
       return true;
@@ -691,16 +707,14 @@ async function waitForSync(
 
   // Timed out
   const totalWait = maxPolls * pollInterval;
-  console.log('');
+  console.log("");
   console.log(
     `## [WARN] Some Applications did not reach Synced+Healthy within ${totalWait}s`,
   );
-  console.log(
-    'This is informational -- ArgoCD will continue retrying.',
-  );
+  console.log("This is informational -- ArgoCD will continue retrying.");
 
-  writeSummary('## ArgoCD Sync Verification');
-  writeSummary('');
+  writeSummary("## ArgoCD Sync Verification");
+  writeSummary("");
   writeSummary(
     `⚠️ Some Applications did not reach Synced+Healthy within ${totalWait}s`,
   );
@@ -735,9 +749,13 @@ async function waitForSync(
 async function healthCheck(instanceId: string): Promise<boolean> {
   const totalWait = maxPolls * pollInterval;
 
-  logger.info(`Health check: polling K8s pod readiness (timeout: ${totalWait}s)...`);
-  logger.info('  Strategy: kubectl wait --for=condition=Available (no HTTP/token dependency)');
-  console.log('');
+  logger.info(
+    `Health check: polling K8s pod readiness (timeout: ${totalWait}s)...`,
+  );
+  logger.info(
+    "  Strategy: kubectl wait --for=condition=Available (no HTTP/token dependency)",
+  );
+  console.log("");
 
   /**
    * Build the kubectl readiness probe command.
@@ -750,67 +768,76 @@ async function healthCheck(instanceId: string): Promise<boolean> {
    * StatefulSet check: argocd-application-controller (rollout status is the correct verb)
    */
 
-    // Split into two separate SSM commands to avoid output truncation
+  // Split into two separate SSM commands to avoid output truncation
   const deploymentCmd = [
-    'export KUBECONFIG=/etc/kubernetes/admin.conf',
-    'kubectl wait deployment/argocd-server deployment/argocd-repo-server' +
-      ' deployment/argocd-dex-server deployment/argocd-redis' +
-      ' -n argocd --for=condition=Available --timeout=30s 2>&1',
-  ].join(' && ');
+    "export KUBECONFIG=/etc/kubernetes/admin.conf",
+    "kubectl wait deployment/argocd-server deployment/argocd-repo-server" +
+      " deployment/argocd-dex-server deployment/argocd-redis" +
+      " -n argocd --for=condition=Available --timeout=30s 2>&1",
+  ].join(" && ");
 
-    const controllerCmd = [
-    'export KUBECONFIG=/etc/kubernetes/admin.conf',
-    'kubectl rollout status statefulset/argocd-application-controller' +
-      ' -n argocd --timeout=30s 2>&1',
-  ].join(' && ');
+  const controllerCmd = [
+    "export KUBECONFIG=/etc/kubernetes/admin.conf",
+    "kubectl rollout status statefulset/argocd-application-controller" +
+      " -n argocd --timeout=30s 2>&1",
+  ].join(" && ");
 
-    for (let attempt = 1; attempt <= maxPolls; attempt++) {
-
+  for (let attempt = 1; attempt <= maxPolls; attempt++) {
     // kubectl wait success: each deployment line prints "deployment.apps/<name> condition met"
     // kubectl rollout success: prints "statefulset rolling update complete" or "successfully rolled out"
     const deployOutput = await ssmCurl(instanceId, deploymentCmd);
-    const deploymentReady = !!deployOutput?.includes('condition met');
+    const deploymentReady = !!deployOutput?.includes("condition met");
 
-        // Check StatefulSet separately
+    // Check StatefulSet separately
     const controllerOutput = await ssmCurl(instanceId, controllerCmd);
-    const controllerReady = controllerOutput != null && (
-      controllerOutput.includes('successfully rolled out') ||
-      controllerOutput.includes('rolling update complete') ||
-      controllerOutput.includes('partitioned roll out complete') ||
-      controllerOutput.includes('roll out complete')
-    );
+    const controllerReady =
+      controllerOutput != null &&
+      (controllerOutput.includes("successfully rolled out") ||
+        controllerOutput.includes("rolling update complete") ||
+        controllerOutput.includes("partitioned roll out complete") ||
+        controllerOutput.includes("roll out complete"));
 
     if (deploymentReady && controllerReady) {
-      logger.success('All ArgoCD workloads are Available and rolled out');
-      writeSummary('## ArgoCD Health Check');
-      writeSummary('');
-      writeSummary('All ArgoCD workloads are **Running and Available** (kubectl readiness)');
-      writeSummary('');
-      writeSummary('| Workload | Kind | Check |');
-      writeSummary('|---|---|---|');
-      writeSummary('| argocd-server | Deployment | Available |');
-      writeSummary('| argocd-repo-server | Deployment | Available |');
-      writeSummary('| argocd-dex-server | Deployment | Available |');
-      writeSummary('| argocd-redis | Deployment | Available |');
-      writeSummary('| argocd-application-controller | StatefulSet | Rolled out |');
-      
+      logger.success("All ArgoCD workloads are Available and rolled out");
+      writeSummary("## ArgoCD Health Check");
+      writeSummary("");
+      writeSummary(
+        "All ArgoCD workloads are **Running and Available** (kubectl readiness)",
+      );
+      writeSummary("");
+      writeSummary("| Workload | Kind | Check |");
+      writeSummary("|---|---|---|");
+      writeSummary("| argocd-server | Deployment | Available |");
+      writeSummary("| argocd-repo-server | Deployment | Available |");
+      writeSummary("| argocd-dex-server | Deployment | Available |");
+      writeSummary("| argocd-redis | Deployment | Available |");
+      writeSummary(
+        "| argocd-application-controller | StatefulSet | Rolled out |",
+      );
+
       return true;
     }
 
     // Log both outputs separated for debugging
-    logger.info(` Attempt ${attempt}/${maxPolls} -- ArgoCD pods not yet ready, retrying in ${pollInterval}s...`);
-    logger.info(`  Deployment output: ${deployOutput?.slice(0, 300).replaceAll('\n', ' | ') || 'No output'}`);
-    logger.info(`  Controller output: ${controllerOutput?.slice(0, 300).replaceAll('\n', ' | ') || 'No output'}`);
+    logger.info(
+      ` Attempt ${attempt}/${maxPolls} -- ArgoCD pods not yet ready, retrying in ${pollInterval}s...`,
+    );
+    logger.info(
+      `  Deployment output: ${deployOutput?.slice(0, 300).replaceAll("\n", " | ") || "No output"}`,
+    );
+    logger.info(
+      `  Controller output: ${controllerOutput?.slice(0, 300).replaceAll("\n", " | ") || "No output"}`,
+    );
 
-    if(attempt < maxPolls) {
+    if (attempt < maxPolls) {
       await sleep(pollInterval * 1000);
     }
   }
 
   emitAnnotation(
-    'error',
+    "error",
     `ArgoCD pods not Available after ${totalWait}s — bootstrap may have failed`,
-    'ArgoCD Health',
+    "ArgoCD Health",
   );
   return false;
 }
@@ -820,23 +847,23 @@ async function healthCheck(instanceId: string): Promise<boolean> {
 // =============================================================================
 
 async function main(): Promise<void> {
-  const modeLabel = mode === 'health' ? 'Health Check' : 'Sync Verification';
+  const modeLabel = mode === "health" ? "Health Check" : "Sync Verification";
   logger.header(`Verify ArgoCD (${modeLabel})`);
   logger.info(`Environment: ${environment}`);
   logger.info(`Region:      ${awsConfig.region}`);
   logger.info(`Mode:        ${mode}`);
-  console.log('');
+  console.log("");
 
   // Step 1: Resolve control plane instance
   const instanceId = await resolveControlPlaneInstance();
   if (!instanceId) {
-    logger.warn('Exiting gracefully -- no control plane instance available');
+    logger.warn("Exiting gracefully -- no control plane instance available");
     process.exit(0);
   }
 
   // Step 2 (health mode): kubectl pod readiness — no token required.
   // Step 2-3 (sync mode):  retrieve token → poll ArgoCD Application status.
-  if (mode === 'health') {
+  if (mode === "health") {
     const reachable = await healthCheck(instanceId);
     if (!reachable) {
       process.exit(1);
@@ -844,15 +871,15 @@ async function main(): Promise<void> {
   } else {
     const token = await retrieveCIToken();
     if (!token) {
-      logger.warn('Exiting gracefully -- no CI bot token available');
+      logger.warn("Exiting gracefully -- no CI bot token available");
       process.exit(0);
     }
     const success = await waitForSync(instanceId, token);
     if (!success) {
       emitAnnotation(
-        'warning',
-        'Some ArgoCD Applications did not reach Synced+Healthy -- ArgoCD will continue retrying',
-        'ArgoCD Sync Timeout',
+        "warning",
+        "Some ArgoCD Applications did not reach Synced+Healthy -- ArgoCD will continue retrying",
+        "ArgoCD Sync Timeout",
       );
       process.exit(1);
     }
@@ -862,9 +889,9 @@ async function main(): Promise<void> {
 main().catch((err: unknown) => {
   const message = err instanceof Error ? err.message : String(err);
   emitAnnotation(
-    'error',
+    "error",
     `ArgoCD sync verification failed: ${message}`,
-    'ArgoCD Sync Error',
+    "ArgoCD Sync Error",
   );
   logger.fatal(`ArgoCD sync verification failed: ${message}`);
 });
