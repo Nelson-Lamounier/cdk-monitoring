@@ -59,6 +59,9 @@ import {
 import {
     ResourceCleanupProvider,
 } from '../../constructs/ssm/resource-cleanup-provider';
+import { 
+    SsmRunCommandDocument, 
+} from '../../constructs/ssm/ssm-run-command-document';
 
 // =============================================================================
 // PROPS
@@ -355,6 +358,87 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         this.deploySecretsDocName = deployDoc.documentName;
 
         // =====================================================================
+        // SSM Run Command Documents — NEW Step Functions Orchestrators
+        // =====================================================================
+
+        const runnerParams = {
+            ScriptPath: { type: 'String' as const, description: 'Relative path to python script' },
+            SsmPrefix: { type: 'String' as const, description: 'SSM parameter prefix' },
+            S3Bucket: { type: 'String' as const, description: 'S3 scripts bucket name' },
+            Region: { type: 'String' as const, description: 'AWS region' },
+        };
+
+        const bootstrapRunner = new SsmRunCommandDocument(this, 'BootstrapRunnerCommand', {
+            documentName: `${prefix}-bootstrap-runner`,
+            description: 'Step Functions Runner for K8s Bootstrap Scripts',
+            parameters: runnerParams,
+            steps: [{
+                name: 'runScript',
+                commands: [
+                    'export PATH="/opt/k8s-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
+                    'set -euo pipefail',
+                    'SCRIPT_PATH="{{ScriptPath}}"',
+                    'STEPS_DIR="/data/k8s-bootstrap/$(dirname "$SCRIPT_PATH")"',
+                    'SCRIPT="/data/k8s-bootstrap/$SCRIPT_PATH"',
+                    'mkdir -p "$STEPS_DIR"',
+                    'aws s3 sync "s3://{{S3Bucket}}/k8s-bootstrap/boot/steps/" "$STEPS_DIR/" --region {{Region}} --quiet',
+                    '',
+                    'echo "Clearing retryable step markers..."',
+                    'rm -f /etc/kubernetes/.calico-installed',
+                    'rm -f /etc/kubernetes/.ccm-installed',
+                    'echo "Retryable markers cleared"',
+                    '',
+                    'if [ -f /etc/profile.d/k8s-env.sh ]; then',
+                    '  source /etc/profile.d/k8s-env.sh',
+                    'fi',
+                    '',
+                    'export SSM_PREFIX="{{SsmPrefix}}"',
+                    'export AWS_REGION="{{Region}}"',
+                    'export S3_BUCKET="{{S3Bucket}}"',
+                    'export MOUNT_POINT="/data"',
+                    'export KUBECONFIG="/etc/kubernetes/admin.conf"',
+                    '',
+                    'cd "$STEPS_DIR"',
+                    'python3 "$SCRIPT" 2>&1'
+                ],
+            }],
+        });
+
+        const deployRunner = new SsmRunCommandDocument(this, 'DeployRunnerCommand', {
+            documentName: `${prefix}-deploy-runner`,
+            description: 'Step Functions Runner for K8s Deploy Scripts',
+            parameters: runnerParams,
+            steps: [{
+                name: 'runScript',
+                commands: [
+                    'export PATH="/opt/k8s-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
+                    'set -euo pipefail',
+                    'mkdir -p "/data/k8s-bootstrap"',
+                    'aws s3 sync "s3://{{S3Bucket}}/k8s-bootstrap/" "/data/k8s-bootstrap/" --region {{Region}} --quiet',
+                    '',
+                    'SCRIPT_PATH="{{ScriptPath}}"',
+                    'DEPLOY_DIR="/data/$(dirname "$SCRIPT_PATH")"',
+                    'SCRIPT="/data/$SCRIPT_PATH"',
+                    'mkdir -p "$DEPLOY_DIR"',
+                    'aws s3 sync "s3://{{S3Bucket}}/$(dirname "$SCRIPT_PATH")/" "$DEPLOY_DIR/" --region {{Region}} --quiet',
+                    '',
+                    'if [ -f "$DEPLOY_DIR/requirements.txt" ]; then',
+                    '  /opt/k8s-venv/bin/pip install -q -r "$DEPLOY_DIR/requirements.txt" 2>/dev/null',
+                    'fi',
+                    '',
+                    'export KUBECONFIG="/etc/kubernetes/admin.conf"',
+                    'export SSM_PREFIX="{{SsmPrefix}}"',
+                    'export AWS_REGION="{{Region}}"',
+                    'export S3_BUCKET="{{S3Bucket}}"',
+                    '',
+                    'cd "$DEPLOY_DIR"',
+                    'python3 "$SCRIPT" 2>&1'
+                ],
+            }],
+        });
+
+
+        // =====================================================================
         // SSM Parameters — Document Discovery
         //
         // EC2 user data reads these parameters to find the document names
@@ -412,6 +496,10 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             ssmPrefix: props.ssmPrefix,
             automationRoleArn: automationRole.roleArn,
             scriptsBucketName: props.scriptsBucketName,
+            bootstrapRunnerName: bootstrapRunner.documentName,
+            deployRunnerName: deployRunner.documentName,
+            bootstrapLogGroupName: this.bootstrapLogGroup.logGroupName,
+            deployLogGroupName: this.deployLogGroup.logGroupName,
         });
 
         // Register orchestrator log group for cleanup
