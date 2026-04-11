@@ -295,9 +295,11 @@ def handler(event, context):
             resultPath: JsonPath.DISCARD,
         });
 
-        workerRejoinParallel.branch(this.buildWorkerRejoinBranch('app-worker', props, workflowFailed));
-        workerRejoinParallel.branch(this.buildWorkerRejoinBranch('mon-worker', props, workflowFailed));
-        workerRejoinParallel.branch(this.buildWorkerRejoinBranch('argocd-worker', props, workflowFailed));
+        workerRejoinParallel.branch(this.buildWorkerRejoinBranch('app-worker', props));
+        workerRejoinParallel.branch(this.buildWorkerRejoinBranch('mon-worker', props));
+        workerRejoinParallel.branch(this.buildWorkerRejoinBranch('argocd-worker', props));
+
+        workerRejoinParallel.addCatch(workflowFailed, { errors: ['States.ALL'] });
 
         // Stitch Control Plane branch
         cpSteps.end.next(deploySteps.start);
@@ -474,8 +476,7 @@ def handler(event, context):
 
     private buildWorkerRejoinBranch(
         workerRole: string,
-        props: BootstrapOrchestratorProps,
-        failureTarget: sfn.IChainable
+        props: BootstrapOrchestratorProps
     ): sfn.Chain {
         const stack = cdk.Stack.of(this);
         const instanceParamName = `${props.ssmPrefix}/bootstrap/${workerRole}-instance-id`;
@@ -490,8 +491,6 @@ def handler(event, context):
             resultSelector: { 'instanceId.$': '$.Parameter.Value' },
             resultPath: '$.workerInst',
         });
-
-        getWorkerInstance.addCatch(failureTarget, { errors: ['States.ALL'] });
 
         // Note: We use the generic BootstrapRunner directly for re-join
         const startWorkerReboot = new sfnTasks.CallAwsService(this, `Rejoin-${workerRole}`, {
@@ -514,8 +513,6 @@ def handler(event, context):
             iamResources: ['*'],
             resultPath: JsonPath.DISCARD,
         });
-
-        startWorkerReboot.addCatch(failureTarget, { errors: ['States.ALL'] });
 
         return sfn.Chain.start(getWorkerInstance).next(startWorkerReboot);
     }
