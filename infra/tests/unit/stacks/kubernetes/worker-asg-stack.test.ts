@@ -373,21 +373,18 @@ describe('KubernetesWorkerAsgStack — general pool', () => {
             });
         });
 
-        it('should grant Cluster Autoscaler WRITE permissions (general pool hosts CA)', () => {
-            template.hasResourceProperties('AWS::IAM::Policy', {
-                PolicyDocument: Match.objectLike({
-                    Statement: Match.arrayWith([
-                        Match.objectLike({
-                            Sid: 'ClusterAutoscalerScale',
-                            Effect: 'Allow',
-                            Action: Match.arrayWith([
-                                'autoscaling:SetDesiredCapacity',
-                                'autoscaling:TerminateInstanceInAutoScalingGroup',
-                            ]),
-                        }),
-                    ]),
-                }),
+        it('should NOT grant CA scale-write permissions (general nodes do not host CA)', () => {
+            // ClusterAutoscalerScale (SetDesiredCapacity, TerminateInstanceInAutoScalingGroup)
+            // must be absent — these are write permissions that widen blast radius on nodes
+            // that will never schedule the Cluster Autoscaler Deployment.
+            const policies = template.findResources('AWS::IAM::Policy');
+            const hasScaleWrite = Object.values(policies).some((resource) => {
+                const statements = (resource as {
+                    Properties?: { PolicyDocument?: { Statement?: Array<{ Sid?: string }> } };
+                }).Properties?.PolicyDocument?.Statement;
+                return statements?.some((s) => s.Sid === 'ClusterAutoscalerScale');
             });
+            expect(hasScaleWrite).toBe(false);
         });
 
         it('should grant CloudWatch read-only for Grafana', () => {
@@ -601,18 +598,21 @@ describe('KubernetesWorkerAsgStack — monitoring pool', () => {
             });
         });
 
-        it('should NOT grant CA scale-write permissions (monitoring nodes never host CA)', () => {
-            // ClusterAutoscalerScale (SetDesiredCapacity, TerminateInstanceInAutoScalingGroup)
-            // must be absent — these are write permissions that widen blast radius on nodes
-            // that will never schedule the Cluster Autoscaler Deployment.
-            const policies = template.findResources('AWS::IAM::Policy');
-            const hasScaleWrite = Object.values(policies).some((resource) => {
-                const statements = (resource as {
-                    Properties?: { PolicyDocument?: { Statement?: Array<{ Sid?: string }> } };
-                }).Properties?.PolicyDocument?.Statement;
-                return statements?.some((s) => s.Sid === 'ClusterAutoscalerScale');
+        it('should grant Cluster Autoscaler WRITE permissions (monitoring pool hosts CA)', () => {
+            template.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: Match.objectLike({
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Sid: 'ClusterAutoscalerScale',
+                            Effect: 'Allow',
+                            Action: Match.arrayWith([
+                                'autoscaling:SetDesiredCapacity',
+                                'autoscaling:TerminateInstanceInAutoScalingGroup',
+                            ]),
+                        }),
+                    ]),
+                }),
             });
-            expect(hasScaleWrite).toBe(false);
         });
     });
 
