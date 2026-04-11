@@ -749,57 +749,62 @@ async function healthCheck(instanceId: string): Promise<boolean> {
    * Deployment check: argocd-server, argocd-repo-server, argocd-dex-server, argocd-redis
    * StatefulSet check: argocd-application-controller (rollout status is the correct verb)
    */
-  const buildReadinessCmd = (): string =>
-    [
-      'export KUBECONFIG=/etc/kubernetes/admin.conf',
-      'kubectl wait deployment/argocd-server deployment/argocd-repo-server' +
-        ' deployment/argocd-dex-server deployment/argocd-redis' +
-        ' -n argocd --for=condition=Available --timeout=30s 2>&1',
-      'kubectl rollout status statefulset/argocd-application-controller' +
-        ' -n argocd --timeout=30s 2>&1',
-    ].join(' && ');
 
-  for (let attempt = 1; attempt <= maxPolls; attempt++) {
-    const output = await ssmCurl(instanceId, buildReadinessCmd());
+    // Split into two separate SSM commands to avoid output truncation
+  const deploymentCmd = [
+    'export KUBECONFIG=/etc/kubernetes/admin.conf',
+    'kubectl wait deployment/argocd-server deployment/argocd-repo-server' +
+      ' deployment/argocd-dex-server deployment/argocd-redis' +
+      ' -n argocd --for=condition=Available --timeout=30s 2>&1',
+  ].join(' && ');
 
-    if (!output) {
-      logger.info(
-        `  Attempt ${attempt}/${maxPolls} -- SSM command returned no output, retrying in ${pollInterval}s...`,
-      );
-      await sleep(pollInterval * 1000);
-      continue;
-    }
+    const controllerCmd = [
+    'export KUBECONFIG=/etc/kubernetes/admin.conf',
+    'kubectl rollout status statefulset/argocd-application-controller' +
+      ' -n argocd --timeout=30s 2>&1',
+  ].join(' && ');
+
+    for (let attempt = 1; attempt <= maxPolls; attempt++) {
 
     // kubectl wait success: each deployment line prints "deployment.apps/<name> condition met"
     // kubectl rollout success: prints "statefulset rolling update complete" or "successfully rolled out"
-    const deploymentReady = output.includes('condition met');
-    const controllerReady =
-      output.includes('successfully rolled out') ||
-      output.includes('rolling update complete');
+    const deployOutput = await ssmCurl(instanceId, deploymentCmd);
+    const deploymentReady = !!deployOutput?.includes('condition met');
+
+        // Check StatefulSet separately
+    const controllerOutput = await ssmCurl(instanceId, controllerCmd);
+    const controllerReady = controllerOutput != null && (
+      controllerOutput.includes('successfully rolled out') ||
+      controllerOutput.includes('rolling update complete') ||
+      controllerOutput.includes('partitioned roll out complete') ||
+      controllerOutput.includes('roll out complete')
+    );
 
     if (deploymentReady && controllerReady) {
       logger.success('All ArgoCD workloads are Available and rolled out');
       writeSummary('## ArgoCD Health Check');
       writeSummary('');
-      writeSummary('✅ All ArgoCD workloads are **Running and Available** (kubectl readiness)');
+      writeSummary('All ArgoCD workloads are **Running and Available** (kubectl readiness)');
       writeSummary('');
       writeSummary('| Workload | Kind | Check |');
       writeSummary('|---|---|---|');
-      writeSummary('| argocd-server | Deployment | ✅ Available |');
-      writeSummary('| argocd-repo-server | Deployment | ✅ Available |');
-      writeSummary('| argocd-dex-server | Deployment | ✅ Available |');
-      writeSummary('| argocd-redis | Deployment | ✅ Available |');
-      writeSummary('| argocd-application-controller | StatefulSet | ✅ Rolled out |');
+      writeSummary('| argocd-server | Deployment | Available |');
+      writeSummary('| argocd-repo-server | Deployment | Available |');
+      writeSummary('| argocd-dex-server | Deployment | Available |');
+      writeSummary('| argocd-redis | Deployment | Available |');
+      writeSummary('| argocd-application-controller | StatefulSet | Rolled out |');
+      
       return true;
     }
 
-    // Surface a trimmed excerpt so the log isn't flooded but is still useful
-    const excerpt = output.slice(0, 200).replace(/\n/g, ' | ');
-    logger.info(
-      `  Attempt ${attempt}/${maxPolls} -- ArgoCD pods not yet ready, retrying in ${pollInterval}s...`,
-    );
-    logger.info(`  Output: ${excerpt}`);
-    await sleep(pollInterval * 1000);
+    // Log both outputs separated for debugging
+    logger.info(` Attempt ${attempt}/${maxPolls} -- ArgoCD pods not yet ready, retrying in ${pollInterval}s...`);
+    logger.info(`  Deployment output: ${deployOutput?.slice(0, 300).replaceAll('\n', ' | ') || 'No output'}`);
+    logger.info(`  Controller output: ${controllerOutput?.slice(0, 300).replaceAll('\n', ' | ') || 'No output'}`);
+
+    if(attempt < maxPolls) {
+      await sleep(pollInterval * 1000);
+    }
   }
 
   emitAnnotation(
