@@ -61,8 +61,8 @@ describe('K8sSsmAutomationStack', () => {
     describe('SSM Automation Documents', () => {
         const { template } = createSsmAutomationStack();
 
-        it('should create 4 SSM documents (3 Automation + 1 Command for drift enforcement)', () => {
-            template.resourceCountIs('AWS::SSM::Document', 4);
+        it('should create 6 SSM documents (3 Automation + 3 RunCommand)', () => {
+            template.resourceCountIs('AWS::SSM::Document', 6);
         });
 
         it('should create a control plane automation document', () => {
