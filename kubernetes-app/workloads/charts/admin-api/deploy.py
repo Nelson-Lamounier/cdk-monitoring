@@ -370,7 +370,7 @@ def main() -> None:
     # Step 1: Optional S3 sync
     if cfg.s3_bucket:
         log_info("Syncing manifests from S3", bucket=cfg.s3_bucket)
-        sync_from_s3(cfg.s3_bucket, cfg.s3_key_prefix, cfg.manifests_dir)
+        sync_from_s3(cfg.s3_bucket, cfg.s3_key_prefix, cfg.manifests_dir, cfg.aws_region)
 
     boto3, ClientError = _load_boto3()
     ssm_client = boto3.client("ssm", region_name=cfg.aws_region)
