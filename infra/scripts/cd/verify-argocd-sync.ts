@@ -295,7 +295,8 @@ async function resolveInstanceByTag(tagValue: string): Promise<string | undefine
  * Used to route ArgoCD API calls via SSM send-command (localhost).
  */
 async function resolveControlPlaneInstance(): Promise<string | undefined> {
-  logger.step(1, 3, 'Resolve Control Plane Instance');
+  const totalSteps = mode === 'health' ? 2 : 3;
+  logger.step(1, totalSteps, 'Resolve Control Plane Instance');
 
   const instanceId = await resolveInstanceByTag('control-plane');
   if (!instanceId) {
@@ -325,8 +326,9 @@ async function resolveControlPlaneInstance(): Promise<string | undefined> {
  * @returns Bearer token or undefined if not available
  */
 async function retrieveCIToken(): Promise<string | undefined> {
-  const totalSteps = mode === 'health' ? 2 : 3;
-  logger.step(2, totalSteps, 'Retrieve CI Bot Token');
+  // retrieveCIToken is only called in --mode sync (step 2 of 3).
+  // Health mode no longer requires a token (uses kubectl readiness instead).
+  logger.step(2, 3, 'Retrieve CI Bot Token');
 
   // Check env var first (SSM pipeline passes token from previous step)
   const envToken = process.env.ARGOCD_TOKEN;
@@ -711,63 +713,98 @@ async function waitForSync(
 // =============================================================================
 
 /**
- * Quick reachability check: poll ArgoCD API until HTTP 200.
- * Used by the SSM pipeline after bootstrap completes.
+ * Pod readiness health check: poll K8s until all ArgoCD Deployments are Available.
+ *
+ * Uses `kubectl wait` on the control-plane node via SSM send-command.
+ * Does NOT use the ArgoCD HTTP API — no token required, no ClusterIP dependency.
+ *
+ * Checks:
+ *   1. argocd-server Deployment Available
+ *   2. argocd-repo-server Deployment Available
+ *   3. argocd-dex-server Deployment Available
+ *   4. argocd-redis Deployment Available
+ *   5. argocd-application-controller StatefulSet rolled out
+ *
+ * This is the correct signal for "is ArgoCD alive?" — it asks Kubernetes
+ * directly rather than probing the ArgoCD HTTP API layer, which can fail
+ * transiently during re-bootstrap even when the cluster is healthy.
+ *
+ * @param instanceId - Control-plane EC2 instance ID
+ * @returns true if all ArgoCD workloads are Available within the timeout
  */
-async function healthCheck(
-  instanceId: string,
-  token: string,
-): Promise<boolean> {
+async function healthCheck(instanceId: string): Promise<boolean> {
   const totalWait = maxPolls * pollInterval;
-  let activeToken = token;
 
-  logger.info(
-    `Health check: polling until HTTP 200 (timeout: ${totalWait}s)...`,
-  );
+  logger.info(`Health check: polling K8s pod readiness (timeout: ${totalWait}s)...`);
+  logger.info('  Strategy: kubectl wait --for=condition=Available (no HTTP/token dependency)');
+  console.log('');
+
+  /**
+   * Build the kubectl readiness probe command.
+   *
+   * Both sub-commands run with a 30s per-attempt timeout so that a slow
+   * K8s API server doesn't stall the entire poll loop. The outer poll
+   * loop provides the cumulative retry window.
+   *
+   * Deployment check: argocd-server, argocd-repo-server, argocd-dex-server, argocd-redis
+   * StatefulSet check: argocd-application-controller (rollout status is the correct verb)
+   */
+  const buildReadinessCmd = (): string =>
+    [
+      'export KUBECONFIG=/etc/kubernetes/admin.conf',
+      'kubectl wait deployment/argocd-server deployment/argocd-repo-server' +
+        ' deployment/argocd-dex-server deployment/argocd-redis' +
+        ' -n argocd --for=condition=Available --timeout=30s 2>&1',
+      'kubectl rollout status statefulset/argocd-application-controller' +
+        ' -n argocd --timeout=30s 2>&1',
+    ].join(' && ');
 
   for (let attempt = 1; attempt <= maxPolls; attempt++) {
-    const curlCmd = buildArgoCDCurl(
-      `-s -o /dev/null -w '%{http_code}' --max-time 10`,
-      '/api/v1/applications',
-      `-H 'Authorization: Bearer ${activeToken}'`,
-    );
+    const output = await ssmCurl(instanceId, buildReadinessCmd());
 
-    const output = await ssmCurl(instanceId, curlCmd);
-    const httpCode = output?.trim() || '000';
+    if (!output) {
+      logger.info(
+        `  Attempt ${attempt}/${maxPolls} -- SSM command returned no output, retrying in ${pollInterval}s...`,
+      );
+      await sleep(pollInterval * 1000);
+      continue;
+    }
 
-    if (httpCode === '200') {
-      logger.success(`ArgoCD is reachable via SSM (HTTP ${httpCode})`);
+    // kubectl wait success: each deployment line prints "deployment.apps/<name> condition met"
+    // kubectl rollout success: prints "statefulset rolling update complete" or "successfully rolled out"
+    const deploymentReady = output.includes('condition met');
+    const controllerReady =
+      output.includes('successfully rolled out') ||
+      output.includes('rolling update complete');
+
+    if (deploymentReady && controllerReady) {
+      logger.success('All ArgoCD workloads are Available and rolled out');
       writeSummary('## ArgoCD Health Check');
       writeSummary('');
-      writeSummary('✅ ArgoCD server is reachable (HTTP 200)');
+      writeSummary('✅ All ArgoCD workloads are **Running and Available** (kubectl readiness)');
+      writeSummary('');
+      writeSummary('| Workload | Kind | Check |');
+      writeSummary('|---|---|---|');
+      writeSummary('| argocd-server | Deployment | ✅ Available |');
+      writeSummary('| argocd-repo-server | Deployment | ✅ Available |');
+      writeSummary('| argocd-dex-server | Deployment | ✅ Available |');
+      writeSummary('| argocd-redis | Deployment | ✅ Available |');
+      writeSummary('| argocd-application-controller | StatefulSet | ✅ Rolled out |');
       return true;
     }
 
-    // Self-heal on auth failure (token may be stale after bootstrap)
-    if ((httpCode === '401' || httpCode === '403') && !tokenRefreshAttempted) {
-      logger.warn(`  HTTP ${httpCode} — attempting self-healing token refresh...`);
-      const refreshedToken = await refreshCIToken(instanceId);
-      if (refreshedToken) {
-        activeToken = refreshedToken;
-        logger.success('  ✓ Self-healing successful — retrying with refreshed token');
-        emitAnnotation(
-          'notice',
-          'CI bot token was stale and has been automatically regenerated',
-          'ArgoCD Token Refresh',
-        );
-        continue; // Retry immediately with new token
-      }
-    }
-
+    // Surface a trimmed excerpt so the log isn't flooded but is still useful
+    const excerpt = output.slice(0, 200).replace(/\n/g, ' | ');
     logger.info(
-      `  Attempt ${attempt}/${maxPolls} -- HTTP ${httpCode}, retrying in ${pollInterval}s...`,
+      `  Attempt ${attempt}/${maxPolls} -- ArgoCD pods not yet ready, retrying in ${pollInterval}s...`,
     );
+    logger.info(`  Output: ${excerpt}`);
     await sleep(pollInterval * 1000);
   }
 
   emitAnnotation(
     'error',
-    `ArgoCD unreachable after ${totalWait}s -- bootstrapArgoCD may have failed`,
+    `ArgoCD pods not Available after ${totalWait}s — bootstrap may have failed`,
     'ArgoCD Health',
   );
   return false;
@@ -792,20 +829,19 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Step 2: Retrieve token
-  const token = await retrieveCIToken();
-  if (!token) {
-    logger.warn('Exiting gracefully -- no CI bot token available');
-    process.exit(0);
-  }
-
-  // Step 3: Execute mode
+  // Step 2 (health mode): kubectl pod readiness — no token required.
+  // Step 2-3 (sync mode):  retrieve token → poll ArgoCD Application status.
   if (mode === 'health') {
-    const reachable = await healthCheck(instanceId, token);
+    const reachable = await healthCheck(instanceId);
     if (!reachable) {
       process.exit(1);
     }
   } else {
+    const token = await retrieveCIToken();
+    if (!token) {
+      logger.warn('Exiting gracefully -- no CI bot token available');
+      process.exit(0);
+    }
     const success = await waitForSync(instanceId, token);
     if (!success) {
       emitAnnotation(

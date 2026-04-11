@@ -274,23 +274,34 @@ jobs:
           echo "::warning::ArgoCD token not found after ${MAX_ATTEMPTS} attempts — Day-0 bootstrap; skipping ArgoCD verification"
 
       # -----------------------------------------------------------------------
-      # ArgoCD Server Health (via SSM send-command)
+      # ArgoCD Pod Readiness (via SSM send-command)
       #
-      # Verifies the ArgoCD SERVER is reachable after bootstrap.
-      # Uses the same verify-argocd-sync.ts script in --mode health,
-      # which runs curl on the control plane node via SSM send-command.
+      # Verifies ArgoCD workloads are Available after bootstrap by running
+      # `kubectl wait` on the control-plane node via SSM send-command.
       #
-      # On Day-0 (no token), this step is skipped gracefully.
+      # Strategy: kubectl --for=condition=Available (NO HTTP / NO token).
+      #   - argocd-server, argocd-repo-server, argocd-dex-server, argocd-redis
+      #     → checked via `kubectl wait deployment ... --for=condition=Available`
+      #   - argocd-application-controller
+      #     → checked via `kubectl rollout status statefulset/...`
+      #
+      # Why NOT HTTP:
+      #   The previous HTTP-poll approach returned HTTP 000 on Day 1+ because
+      #   the ArgoCD ClusterIP is transiently unreachable during the re-bootstrap
+      #   window. kubectl talks to the local K8s API server, not the network layer.
+      #
+      # Day-0 safe: if no control-plane instance exists yet, resolveControlPlane
+      #   exits 0 gracefully (no token required, no conditional skip needed).
+      #
+      # Poll budget: 18 × 20s = 360s — accommodates the ~3-5 min re-bootstrap
+      #   stabilisation window on Day 1+.
       # -----------------------------------------------------------------------
-      - name: "ArgoCD Server Health"
-        if: steps.argocd-token.outputs.token != '' && steps.argocd-token.outcome == 'success'
-        env:
-          ARGOCD_TOKEN: ${{ steps.argocd-token.outputs.token }}
+      - name: "ArgoCD Pod Readiness"
         run: |
           just ci-argocd-health \
             --environment ${{ inputs.cdk-environment }} \
             --region ${{ env.AWS_REGION }} \
-            --max-polls 6 \
+            --max-polls 18 \
             --poll-interval 20
 
       # -----------------------------------------------------------------------

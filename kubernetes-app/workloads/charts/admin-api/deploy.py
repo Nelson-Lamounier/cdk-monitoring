@@ -236,22 +236,28 @@ def create_public_api_k8s_resources(v1: object, cfg: AdminApiConfig) -> None:
         k: cfg.secrets[k] for k in _SECRET_KEYS if k in cfg.secrets and cfg.secrets[k]
     }
 
-    if secret_data:
-        upsert_secret(v1, "admin-api-secrets", cfg.namespace, secret_data)
-        log_info("admin-api-secrets created/updated", keys=len(secret_data))
-    else:
-        log_warn("No secrets resolved — skipping secret creation")
+    if not secret_data:
+        raise RuntimeError(
+            "admin-api-secrets: no Cognito values resolved from SSM. "
+            f"Ensure /nextjs/development/auth/cognito-* parameters exist "
+            f"(frontend_ssm_prefix={cfg.frontend_ssm_prefix!r})."
+        )
+    upsert_secret(v1, "admin-api-secrets", cfg.namespace, secret_data)
+    log_info("admin-api-secrets created/updated", keys=len(secret_data))
 
     # --- ConfigMap (non-sensitive infrastructure refs) ---
     config_data: dict[str, str] = {
         k: cfg.secrets[k] for k in _CONFIG_KEYS if k in cfg.secrets and cfg.secrets[k]
     }
 
-    if config_data:
-        upsert_configmap(v1, "admin-api-config", cfg.namespace, config_data)
-        log_info("admin-api-config created/updated", keys=len(config_data))
-    else:
-        log_warn("No config values resolved — skipping ConfigMap creation")
+    if not config_data:
+        raise RuntimeError(
+            "admin-api-config: no infrastructure values resolved from SSM. "
+            "Ensure /bedrock-dev/* parameters exist "
+            f"(ssm_prefix={cfg.ssm_prefix!r})."
+        )
+    upsert_configmap(v1, "admin-api-config", cfg.namespace, config_data)
+    log_info("admin-api-config created/updated", keys=len(config_data))
 
 
 # ---------------------------------------------------------------------------

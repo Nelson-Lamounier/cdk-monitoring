@@ -205,11 +205,14 @@ def create_public_api_k8s_resources(v1: object, cfg: PublicApiConfig) -> None:
         if value:
             config_data[key] = value
 
-    if config_data:
-        upsert_configmap(v1, "public-api-config", cfg.namespace, config_data)
-        log_info("public-api-config created/updated", keys=len(config_data))
-    else:
-        log_warn("No config values resolved — skipping ConfigMap creation")
+    if not config_data:
+        raise RuntimeError(
+            "public-api-config: no values resolved from SSM. "
+            "Ensure /bedrock-dev/* and /nextjs/development/* parameters exist "
+            f"(ssm_prefix={cfg.ssm_prefix!r})."
+        )
+    upsert_configmap(v1, "public-api-config", cfg.namespace, config_data)
+    log_info("public-api-config created/updated", keys=len(config_data))
 
 
 # ---------------------------------------------------------------------------
