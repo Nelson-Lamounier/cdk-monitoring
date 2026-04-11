@@ -37,8 +37,8 @@ nodeSelector:
 # ── Resources ─────────────────────────────────────────────────────────────────
 resources:
   requests:
-    cpu: 50m
-    memory: 64Mi
+    cpu: 10m      # Observed p50: ~2m. 10m provides safe headroom for burst/startup.
+    memory: 64Mi  # Observed p50: ~20Mi. 64Mi covers peak — kept at limit minimum.
   limits:
     cpu: 300m
     memory: 256Mi
@@ -90,3 +90,15 @@ ingress:
 service:
   type: ClusterIP
   port: 3002
+
+# ── PodDisruptionBudget ───────────────────────────────────────────────────────
+# Prevents the sole admin-api replica from being evicted simultaneously
+# during CA scale-down or node drain events.
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# ── Topology Spread Constraints ───────────────────────────────────────────────
+# Empty by default (replicas: 1 — no spread needed).
+# Set when scaling to replicas > 1 to enforce maxSkew: 1 across nodes.
+topologySpreadConstraints: []

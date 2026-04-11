@@ -20,8 +20,8 @@ port: 5001
 
 resources:
   requests:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 10m      # Observed p50: ~1m. 10m provides headroom for startup/bust cycles.
+    memory: 96Mi  # Observed p50: ~62Mi. 96Mi covers peak without over-reservation.
   limits:
     cpu: 500m
     memory: 512Mi
@@ -145,14 +145,23 @@ cloudfront:
   originSecret: "^PLACEHOLDER_NEVER_MATCHES$"  # Never rendered — IngressRoute is managed by deploy.py
 
 # ---------------------------------------------------------------------------
+# PodDisruptionBudget
+# ---------------------------------------------------------------------------
+# Prevents the sole start-admin replica from being evicted simultaneously
+# during CA scale-down or node drain events.
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# ---------------------------------------------------------------------------
 # Resource Quota (namespace-level limits)
 # ---------------------------------------------------------------------------
 # Sized for blue/green: 2x replicas running simultaneously + headroom.
 # Formula: (replicas × 2 × per-pod limit) × 1.5 safety margin
 resourceQuota:
   hard:
-    requests.cpu: "600m"
-    requests.memory: 768Mi
+    requests.cpu: "100m"
+    requests.memory: 384Mi
     limits.cpu: "1500m"
     limits.memory: 1536Mi
     persistentvolumeclaims: "1"
@@ -184,3 +193,11 @@ rollout:
     consecutiveErrorLimit: 5
     errorRateThreshold: 0.05
     latencyThresholdMs: 2000
+
+# ---------------------------------------------------------------------------
+# Topology Spread Constraints
+# ---------------------------------------------------------------------------
+# Empty by default (replicas: 1 — no spread needed).
+# Set when scaling to replicas > 1 to enforce maxSkew: 1 across nodes.
+# Descheduler respects these constraints and evicts violating pods.
+topologySpreadConstraints: []

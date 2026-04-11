@@ -20,8 +20,8 @@ port: 3000
 
 resources:
   requests:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 25m       # Observed p50: ~10m. 25m covers burst (ISR caching, auth middleware).
+    memory: 192Mi  # Observed p50: ~124Mi. 192Mi covers peak without over-reservation.
   limits:
     cpu: 500m
     memory: 512Mi
@@ -171,11 +171,28 @@ cloudfront:
 # Formula: (replicas × 2 × per-pod limit) × 1.5 safety margin
 resourceQuota:
   hard:
-    requests.cpu: "1500m"
+    requests.cpu: "300m"  # 2x replicas × 25m × 2 (blue+green) × 1.5 safety margin
     requests.memory: 1536Mi
     limits.cpu: "3"
     limits.memory: 3Gi
     persistentvolumeclaims: "2"
+
+# ---------------------------------------------------------------------------
+# Topology Spread Constraints
+# ---------------------------------------------------------------------------
+# Enforces maxSkew: 1 across nodes for the 2-replica blue/green deployment.
+# Prevents both active and preview pods from landing on the same node.
+# The Descheduler evicts violating pods when CA adds a new node.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    # ScheduleAnyway: on a 2-node cluster DoNotSchedule blocks pod creation
+    # when maxSkew is already violated. ScheduleAnyway allows the scheduler
+    # to still place the pod; the Descheduler rebalances async via eviction.
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app: nextjs
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry (OTel) — Tracing Configuration
