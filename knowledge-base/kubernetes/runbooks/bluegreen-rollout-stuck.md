@@ -13,7 +13,7 @@ related_docs:
   - kubernetes/adrs/argo-rollouts-zero-downtime.md
   - frontend/frontend-integration.md
   - operations/ci-cd-implementation.md
-last_updated: "2026-03-27"
+last_updated: "2026-04-11"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -22,7 +22,7 @@ status: accepted
 
 **Severity:** Medium
 **Component:** Frontend / ArgoCD
-**Last Updated:** 2026-03-27
+**Last Updated:** 2026-04-11
 
 ## Symptoms
 - A new Next.js deployment was pushed to `develop`, the GitHub Action completed, but the new version is not available on the live website.
@@ -68,6 +68,11 @@ If the `.argocd-source-nextjs.yaml` was not updated, review the ArgoCD Image Upd
 ```bash
 kubectl logs -n argocd -l app.kubernetes.io/name=argocd-image-updater
 ```
+
+### Scenario 4: Pods Pending due to Topology Spread Constraints
+If the rollout is stuck with new pods in `Pending` state with `FailedScheduling` events citing `node(s) didn't match pod topology spread constraints`:
+This typically occurs on 2-node clusters when `maxSkew` is severely violated and the scheduler is blocking due to `DoNotSchedule`.
+- **Fix:** Update the Helm chart to use `whenUnsatisfiable: ScheduleAnyway` rather than `DoNotSchedule`. This allows the rollout to proceed, and a descheduler will subsequently rebalance the pods as needed without breaking the CI pipeline.
 
 ## Transferable Skills Demonstrated
 

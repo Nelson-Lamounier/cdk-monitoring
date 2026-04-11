@@ -19,7 +19,7 @@ related_docs:
   - kubernetes/adrs/argocd-over-flux.md
   - kubernetes/runbooks/instance-terminated.md
   - operations/ci-cd-implementation.md
-last_updated: "2026-04-10"
+last_updated: "2026-04-11"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -86,8 +86,8 @@ boot/steps/
 ├── cp/                       # 10 control plane step modules
 │   ├── ebs_volume.py         # Format + mount launch-template data volume
 │   ├── dr_restore.py         # Restore etcd snapshot + certs from S3
-│   ├── kubeadm_init.py       # kubeadm init + DNS + cert backup
-│   ├── calico.py             # Install Calico CNI
+│   ├── kubeadm_init.py       # kubeadm init + DNS + cert backup + apiserver resource patch
+│   ├── calico.py             # Install Calico CNI + DaemonSet resource injection
 │   ├── ccm.py                # AWS Cloud Controller Manager (Helm)
 │   ├── kubectl_access.py     # Configure kubectl for ubuntu / root
 │   ├── s3_sync.py            # Sync manifests from S3
@@ -130,6 +130,12 @@ the ambiguity. The `pyproject.toml` pythonpath now safely includes both
 Every step uses the `StepRunner` context manager which creates marker files
 under `/var/run/k8s-bootstrap/` (e.g. `step-03-kubeadm-init.done`). Steps
 are skipped on retry if the marker exists; markers are removed on failure.
+
+### Critical Modifications at Bootstrap
+
+To ensure scheduler resilience, certain resource-related patches are applied programmatically during the bootstrap process:
+- **`calico.py`**: Intercepts the default Tigera Calico Installation CR and injects `cpu: 25m` and `memory: 160Mi` requests into the `calicoNodeDaemonSet` spec. This prevents the scheduler from treating the CNI DaemonSet as having zero cost.
+- **`kubeadm_init.py`**: After cluster initialisation or DR reconstruction, applies an idempotent patch (`patch_apiserver_resources()`) to the static pod manifest `/etc/kubernetes/manifests/kube-apiserver.yaml`. It injects a `cpu: 250m` and `memory: 512Mi` request, causing the kubelet to hot-reload the pod correctly dimensioned for scheduling calculations.
 
 ### Boot Test Suite (35 Tests)
 

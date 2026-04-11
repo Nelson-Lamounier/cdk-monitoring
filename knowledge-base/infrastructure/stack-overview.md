@@ -22,7 +22,7 @@ related_docs:
   - infrastructure/infrastructure-topology.md
   - infrastructure/stacks/kubernetes-base-stack.md
   - operations/ci-cd-implementation.md
-last_updated: "2026-04-08"
+last_updated: "2026-04-11"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -31,7 +31,7 @@ status: accepted
 
 **Project:** cdk-monitoring
 **Author:** Nelson Lamounier
-**Last Updated:** 2026-03-31
+**Last Updated:** 2026-04-11
 
 ## Multi-Project Architecture
 
@@ -53,7 +53,7 @@ The Kubernetes platform is deployed as 14 independent CloudFormation stacks, orc
   3b. Kubernetes-AppWorker       → Application node EC2 (t3.small), ASG, kubeadm join (legacy)
   3c. Kubernetes-MonitoringWorker → Monitoring node EC2 (t3.medium Spot), ASG, kubeadm join (legacy)
   3d. Kubernetes-ArgocdWorker    → ArgoCD node EC2 (t3.small Spot), ASG, kubeadm join (legacy)
-  3e. Kubernetes-GeneralPool → Parameterised ASG pool (t3.small Spot, min=1/max=4, CA-enabled, node-pool=general)
+  3e. Kubernetes-GeneralPool → Parameterised ASG pool (t3.small Spot, min=2/max=4, CA-enabled, node-pool=general)
   3f. Kubernetes-MonitoringPool → Parameterised ASG pool (t3.medium Spot, min=1/max=2, CA-enabled, tainted)
 4. Kubernetes-AppIam        → Application-tier IAM grants (DynamoDB, S3, Secrets)
 5. Kubernetes-API           → API Gateway + Lambda (email subscriptions)
@@ -129,7 +129,7 @@ All cluster parameters are defined in `infra/lib/config/kubernetes/configuration
 | App worker instance | t3.small | t3.small |
 | Monitoring worker | t3.medium (Spot) | t3.small (Spot) |
 | ArgoCD worker | t3.small (Spot) | t3.small (Spot) |
-| **General pool** (new) | t3.small Spot, min=1/max=4 | t3.small Spot |
+| **General pool** (new) | t3.small Spot, min=2/max=4 | t3.small Spot |
 | **Monitoring pool** (new) | t3.medium Spot, min=1/max=2 | t3.medium Spot |
 | EBS volume | 30 GB | 50 GB |
 | Log retention | 1 week | 3 months |

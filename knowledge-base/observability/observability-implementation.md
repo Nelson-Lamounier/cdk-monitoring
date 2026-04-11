@@ -15,7 +15,7 @@ related_docs:
   - observability/rum-dashboard-review.md
   - observability/frontend-performance.md
   - observability/runbooks/faro-rum-no-data.md
-last_updated: "2026-03-31"
+last_updated: "2026-04-11"
 author: Nelson Lamounier
 status: accepted
 ---
@@ -23,7 +23,7 @@ status: accepted
 # Observability Implementation — Prometheus, Grafana, CloudWatch, Loki, Tempo, Alloy
 
 **Project:** cdk-monitoring
-**Last Updated:** 2026-03-29
+**Last Updated:** 2026-04-11
 
 ## Architecture
 
@@ -89,6 +89,7 @@ Prometheus is deployed as a single-replica Deployment with native `scrape_config
 | `opencost` | FinOps cost metrics | Static |
 
 Configuration: 15d retention, 30s scrape interval, ClusterRole RBAC for cross-namespace discovery.
+Resilience: `topologySpreadConstraints` (maxSkew: 1, `ScheduleAnyway`) are applied to ensure replicas distribute across nodes if scaled, preventing a single node failure from taking down the metrics tier.
 
 ## Tempo — Distributed Tracing with Metrics Generator
 
@@ -109,6 +110,11 @@ Alloy bridges browser telemetry into the backend:
 4. **Prometheus Exporter** — self-monitoring metrics
 
 Exposed at `/faro` via Traefik IngressRoute with `StripPrefix` middleware.
+
+## Loki — Log Aggregation
+
+Loki handles log aggregation (TSDB store, v13 schema, `7d` retention in dev).
+Resilience: like Prometheus, `topologySpreadConstraints` (maxSkew: 1, `whenUnsatisfiable: ScheduleAnyway`) across hostnames prevents total log loss during node evictions if scaled beyond 1 replica.
 
 ## Grafana — Federated Datasources
 
