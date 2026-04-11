@@ -72,6 +72,20 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
         const foundationModel = context.foundationModel ?? configs.foundationModel;
 
         // =================================================================
+        // Resolve the Step Functions bootstrap orchestrator ARN path.
+        //
+        // We pass the SSM parameter path (not the value) to the GatewayStack.
+        // The stack resolves it via StringParameter.valueForStringParameter
+        // within its own Stack scope, emitting a CloudFormation dynamic
+        // reference ({{resolve:ssm:...}}) at deploy time.
+        //
+        // This means the self-healing stacks must be deployed AFTER the
+        // kubernetes stacks to guarantee the parameter exists.
+        // =================================================================
+        const k8sSsmPrefix = `/k8s/${this.environment}`;
+        const stateMachineArnSsmPath = `${k8sSsmPrefix}/bootstrap/state-machine-arn`;
+
+        // =================================================================
         // Stack 1: Gateway (AgentCore Gateway — MCP tool server)
         //
         // Creates tool Lambda functions (diagnose-alarm, ebs-detach)
@@ -89,6 +103,7 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
                 throttlingBurstLimit: allocs.gateway.throttlingBurstLimit,
                 sonnetProfileSourceArn: SYSTEM_INFERENCE_PROFILES.CLAUDE_SONNET_4_6,
                 environmentName: this.environment,
+                stateMachineArnSsmPath,
                 env,
             }
         );

@@ -65,6 +65,14 @@ export interface SelfHealingGatewayStackProps extends cdk.StackProps {
     readonly sonnetProfileSourceArn: string;
     /** Runtime environment name (for profile tags) */
     readonly environmentName: string;
+    /**
+     * SSM Parameter Store path for the Step Functions bootstrap orchestrator ARN.
+     * The ARN is resolved within the Stack constructor using
+     * `StringParameter.valueForStringParameter`, emitting a CloudFormation
+     * dynamic reference. Set by `K8sSsmAutomationStack` at deploy time.
+     * Example: `/k8s/development/bootstrap/state-machine-arn`
+     */
+    readonly stateMachineArnSsmPath: string;
 }
 
 /**
@@ -103,6 +111,18 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         super(scope, id, props);
 
         const { namePrefix } = props;
+
+        // =================================================================
+        // Resolve the Step Functions bootstrap orchestrator ARN.
+        //
+        // valueForStringParameter must be called on a Stack scope (this),
+        // not on the App. It emits {{resolve:ssm:...}} CloudFormation token
+        // resolved at deploy time — no synth-time AWS call needed.
+        // =================================================================
+        const stateMachineArn = ssm.StringParameter.valueForStringParameter(
+            this,
+            props.stateMachineArnSsmPath,
+        );
 
         // =================================================================
         // CloudWatch Log Group — Gateway invocations
@@ -329,9 +349,11 @@ export class SelfHealingGatewayStack extends cdk.Stack {
                 removalPolicy: props.removalPolicy,
             }),
             tracing: lambda.Tracing.ACTIVE,
-            description: `MCP tool: trigger SSM Automation to remediate failed node bootstrap for ${namePrefix}`,
+            description: `MCP tool: trigger Step Functions bootstrap orchestrator for ${namePrefix}`,
             environment: {
                 SSM_PREFIX: '/k8s/development',
+                // Injected at deploy time from SSM — avoids runtime parameter lookup
+                STATE_MACHINE_ARN: stateMachineArn,
             },
             bundling: {
                 minify: true,
@@ -340,30 +362,24 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             },
         });
 
-        // Grant SSM Automation execution + parameter resolution
+        // Grant states:StartExecution + DescribeExecution on the bootstrap state machine.
+        // The tool re-triggers the orchestrator as the self-healing remediation action.
         remediateNodeBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'StartSsmAutomation',
+            sid: 'StartSfnExecution',
             effect: iam.Effect.ALLOW,
             actions: [
-                'ssm:StartAutomationExecution',
-                'ssm:GetAutomationExecution',
+                'states:StartExecution',
+                'states:DescribeExecution',
             ],
-            resources: ['*'],
+            resources: [stateMachineArn],
         }));
 
+        // SSM GetParameter: allows fallback ARN resolution at runtime (local testing)
         remediateNodeBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
             sid: 'ResolveSsmParameters',
             effect: iam.Effect.ALLOW,
             actions: ['ssm:GetParameter'],
             resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/k8s/*`],
-        }));
-
-        // Grant IAM PassRole so SSM Automation can assume the automation role
-        remediateNodeBootstrapFn.addToRolePolicy(new iam.PolicyStatement({
-            sid: 'PassAutomationRole',
-            effect: iam.Effect.ALLOW,
-            actions: ['iam:PassRole'],
-            resources: [`arn:aws:iam::${this.account}:role/*ssm-automation*`],
         }));
 
         // =================================================================
@@ -517,11 +533,11 @@ export class SelfHealingGatewayStack extends cdk.Stack {
 
         this.gateway.addLambdaTarget('RemediateNodeBootstrapTarget', {
             gatewayTargetName: 'remediate-node-bootstrap',
-            description: 'Trigger SSM Automation to re-bootstrap a failed Kubernetes node',
+            description: 'Trigger Step Functions bootstrap orchestrator to re-bootstrap a failed Kubernetes node',
             lambdaFunction: remediateNodeBootstrapFn,
             toolSchema: ToolSchema.fromInline([{
                 name: 'remediate_node_bootstrap',
-                description: 'Trigger an SSM Automation Document to re-run the full bootstrap sequence on a failed Kubernetes node. Resolves the correct SSM Document name (control-plane or worker) and IAM role from Parameter Store. Returns the automation execution ID for tracking.',
+                description: 'Trigger the Step Functions bootstrap orchestrator to re-run the full bootstrap sequence on a failed Kubernetes node. Starts a new execution targeting the specified instance and role. Returns the execution ARN for tracking progress in the AWS console.',
                 inputSchema: {
                     type: SchemaDefinitionType.OBJECT,
                     properties: {
@@ -541,8 +557,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
                     properties: {
                         instanceId: { type: SchemaDefinitionType.STRING, description: 'Target instance ID' },
                         role: { type: SchemaDefinitionType.STRING, description: 'Node role used for remediation' },
-                        documentName: { type: SchemaDefinitionType.STRING, description: 'SSM Automation Document executed' },
-                        executionId: { type: SchemaDefinitionType.STRING, description: 'SSM Automation execution ID' },
+                        executionArn: { type: SchemaDefinitionType.STRING, description: 'Step Functions execution ARN for tracking' },
                         status: { type: SchemaDefinitionType.STRING, description: 'triggered or error' },
                     },
                 },
@@ -623,7 +638,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             remediateNodeBootstrapFn,
             [{
                 id: 'AwsSolutions-IAM5',
-                reason: 'SSM StartAutomationExecution requires wildcard — document names are resolved dynamically from Parameter Store',
+                reason: 'ssm:GetParameter requires wildcard path prefix for fallback ARN resolution. states:StartExecution is scoped to the specific bootstrap state machine ARN.',
             }, {
                 id: 'AwsSolutions-L1',
                 reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
