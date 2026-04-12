@@ -193,7 +193,12 @@ export class SsmRunCommandDocument extends Construct {
             inputs: {
                 runCommand: [
                     '#!/bin/bash',
-                    'set -euxo pipefail',
+                    // NOTE: -u (nounset) is intentionally omitted. SSM Agent runs documents in a
+                    // non-login, non-interactive shell where standard vars like $HOME are not
+                    // guaranteed to be set. Using -u would cause an immediate fatal exit before
+                    // any user commands run (manifests as "Error: $HOME is not defined").
+                    'set -exo pipefail',
+                    'export HOME="${HOME:-/root}"',
                     '',
                     `echo "=== SSM Step: ${step.name} started at $(date) ==="`,
                     '',

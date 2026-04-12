@@ -379,7 +379,8 @@ export class K8sSsmAutomationStack extends cdk.Stack {
                 name: 'runScript',
                 commands: [
                     'export PATH="/opt/k8s-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
-                    'set -euo pipefail',
+                    // set -euo pipefail is prepended by SsmRunCommandDocument (without -u).
+                    // Do NOT re-add -u here — SSM non-login shells lack $HOME.
                     'SCRIPT_PATH="{{ScriptPath}}"',
                     'STEPS_DIR="/data/k8s-bootstrap/$(dirname "$SCRIPT_PATH")"',
                     'SCRIPT="/data/k8s-bootstrap/$SCRIPT_PATH"',
@@ -415,7 +416,8 @@ export class K8sSsmAutomationStack extends cdk.Stack {
                 name: 'runScript',
                 commands: [
                     'export PATH="/opt/k8s-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
-                    'set -euo pipefail',
+                    // set -euo pipefail is prepended by SsmRunCommandDocument (without -u).
+                    // Do NOT re-add -u here — SSM non-login shells lack $HOME.
                     'mkdir -p "/data/k8s-bootstrap"',
                     'aws s3 sync "s3://{{S3Bucket}}/k8s-bootstrap/" "/data/k8s-bootstrap/" --region {{Region}} --quiet',
                     '',
