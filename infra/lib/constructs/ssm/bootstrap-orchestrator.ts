@@ -1,18 +1,28 @@
 /**
  * @format
- * Bootstrap Orchestrator Construct
+ * Bootstrap Orchestrator Construct (SM-A — Cluster Infrastructure Only)
  *
- * Step Functions state machine that orchestrates K8s instance bootstrap:
+ * Step Functions state machine that orchestrates K8s cluster infrastructure:
  *   1. Router Lambda reads ASG tags and resolves instance constraints
  *   2. Updates instance-id SSM parameter
  *   3. Triggers targeted SSM RunCommand scripts natively
  *   4. Polls for completion (wait → check → loop)
- *   5. For control-plane: explicitly chains robust Python secrets deployment steps + worker CA re-join
+ *   5. For control-plane: waits for CA hash publication, then re-joins all worker pools in parallel
+ *
+ * ## Separation of Concerns
+ * SM-A is responsible for cluster infrastructure only:
+ *   - control_plane.py — kubeadm init, Calico, CCM, ArgoCD bootstrap
+ *   - worker.py — kubeadm join, CloudWatch, EIP association
+ *
+ * App config injection (SSM → K8s Secrets/ConfigMaps) is handled by SM-B
+ * (`ConfigOrchestratorConstruct`), which triggers automatically via EventBridge
+ * when this state machine emits an `ExecutionSucceeded` event.
+ *
+ * ## Self-Healing Path
+ * EC2 replacement → SM-A rebuilds cluster → SM-A SUCCEEDS →
+ * EventBridge fires → SM-B re-injects all app secrets automatically.
  *
  * Non-K8s ASGs are silently ignored (no `k8s:bootstrap-role` tag).
- *
- * ## EventBridge Integration
- * Triggers automatically on any ASG `EC2 Instance Launch Successful` event.
  *
  * ## Manual Trigger (GitHub Actions)
  * The state machine ARN is exported via `stateMachineArn` and stored in SSM
@@ -20,7 +30,7 @@
  * start executions directly using `states:StartExecution`.
  *
  * ## Worker Pool Names
- * The rejoin branches use the new ASG pool names (`general-pool`, `monitoring-pool`)
+ * The rejoin branches use ASG pool names (`general-pool`, `monitoring-pool`)
  * which are configurable via `workerRoles` in props.
  */
 
@@ -45,10 +55,10 @@ export interface BootstrapOrchestratorProps {
     readonly ssmPrefix: string;
     readonly automationRoleArn: string;
     readonly scriptsBucketName: string;
+    /** SSM Run Command document name for bootstrap scripts (control_plane.py, worker.py) */
     readonly bootstrapRunnerName: string;
-    readonly deployRunnerName: string;
+    /** CloudWatch Log Group name for bootstrap RunCommand output */
     readonly bootstrapLogGroupName: string;
-    readonly deployLogGroupName: string;
     /**
      * Worker pool role names that will be re-joined after control-plane replacement.
      * Defaults to `['general-pool', 'monitoring-pool']`.
@@ -84,39 +94,6 @@ const WORKER_STEPS: BootstrapStep[] = [
         scriptPath: 'boot/steps/worker.py',
         timeoutSeconds: 900,
         description: 'Run consolidated worker bootstrap',
-    },
-];
-
-const DEPLOY_SECRETS_STEPS: BootstrapStep[] = [
-    {
-        name: 'DeployNextjsSecrets',
-        scriptPath: 'app-deploy/nextjs/deploy.py',
-        timeoutSeconds: 300,
-        description: 'Resolve SSM parameters and create Nextjs K8s Secret',
-    },
-    {
-        name: 'DeployMonitoringSecrets',
-        scriptPath: 'app-deploy/monitoring/deploy.py',
-        timeoutSeconds: 600,
-        description: 'Resolve SSM parameters and create Monitoring K8s Secrets',
-    },
-    {
-        name: 'DeployStartAdminSecrets',
-        scriptPath: 'app-deploy/start-admin/deploy.py',
-        timeoutSeconds: 300,
-        description: 'Resolve SSM parameters and create Start Admin K8s Secret',
-    },
-    {
-        name: 'DeployAdminApiSecrets',
-        scriptPath: 'app-deploy/admin-api/deploy.py',
-        timeoutSeconds: 300,
-        description: 'Resolve SSM parameters and create Admin API K8s Secret',
-    },
-    {
-        name: 'DeployPublicApiSecrets',
-        scriptPath: 'app-deploy/public-api/deploy.py',
-        timeoutSeconds: 300,
-        description: 'Resolve SSM parameters and create Public API K8s Secret',
     },
 ];
 
@@ -306,7 +283,6 @@ def handler(event, context):
 
         // ── Branches ──
         const cpSteps = chainSteps(CONTROL_PLANE_STEPS, props.bootstrapRunnerName, props.bootstrapLogGroupName);
-        const deploySteps = chainSteps(DEPLOY_SECRETS_STEPS, props.deployRunnerName, props.deployLogGroupName);
         const workerSteps = chainSteps(WORKER_STEPS, props.bootstrapRunnerName, props.bootstrapLogGroupName);
 
         const waitForCa = new sfn.Wait(this, 'WaitForCaPublish', {
@@ -342,9 +318,10 @@ def handler(event, context):
 
         workerRejoinParallel.addCatch(rejoinFailed, { errors: ['States.ALL'] });
 
-        // Stitch Control Plane branch
-        cpSteps.end.next(deploySteps.start);
-        deploySteps.end.next(waitForCa);
+        // ── Stitch Control Plane branch (SM-A: cluster infrastructure only) ──
+        // App config injection is SM-B's responsibility — triggered automatically
+        // by EventBridge when this state machine emits ExecutionSucceeded.
+        cpSteps.end.next(waitForCa);
         waitForCa.next(workerRejoinParallel);
 
         const cpChain = sfn.Chain.start(cpSteps.start);

@@ -54,6 +54,9 @@ import {
     BootstrapOrchestratorConstruct,
 } from '../../constructs/ssm/bootstrap-orchestrator';
 import {
+    ConfigOrchestratorConstruct,
+} from '../../constructs/ssm/config-orchestrator';
+import {
     NodeDriftEnforcementConstruct,
 } from '../../constructs/ssm/node-drift-enforcement';
 import {
@@ -116,39 +119,6 @@ const WORKER_STEPS: AutomationStep[] = [
     },
 ];
 
-const DEPLOY_SECRETS_STEPS: AutomationStep[] = [
-    {
-        name: 'deployNextjsSecrets',
-        scriptPath: 'app-deploy/nextjs/deploy.py',
-        timeoutSeconds: 300,
-        description: 'Resolve SSM parameters and create/update nextjs-secrets K8s Secret',
-    },
-    {
-        name: 'deployMonitoringSecrets',
-        scriptPath: 'app-deploy/monitoring/deploy.py',
-        timeoutSeconds: 600,
-        description: 'Resolve SSM parameters and create monitoring K8s Secrets',
-    },
-    {
-        name: 'deployStartAdminSecrets',
-        scriptPath: 'app-deploy/start-admin/deploy.py',
-        timeoutSeconds: 300,
-        description: 'Resolve SSM parameters and create/update start-admin-secrets K8s Secret',
-    },
-    {
-        name: 'deployAdminApiSecrets',
-        scriptPath: 'app-deploy/admin-api/deploy.py',
-        timeoutSeconds: 300,
-        description: 'Resolve SSM parameters and create/update admin-api K8s resources',
-    },
-    {
-        name: 'deployPublicApiSecrets',
-        scriptPath: 'app-deploy/public-api/deploy.py',
-        timeoutSeconds: 300,
-        description: 'Resolve SSM parameters and create/update public-api K8s resources',
-    },
-];
-
 // =============================================================================
 // STACK
 // =============================================================================
@@ -168,14 +138,17 @@ export class K8sSsmAutomationStack extends cdk.Stack {
     /** Unified worker SSM Automation document name (all worker roles) */
     public readonly workerDocName: string;
 
-    /** Consolidated deploy secrets SSM Automation document name (nextjs + monitoring + start-admin) */
+    /** Consolidated deploy secrets SSM Automation document name (kept for backwards compatibility) */
     public readonly deploySecretsDocName: string;
 
     /** Automation execution role ARN */
     public readonly automationRoleArn: string;
 
-    /** Step Functions bootstrap orchestrator state machine ARN */
+    /** Step Functions bootstrap orchestrator (SM-A — cluster infra) state machine ARN */
     public readonly stateMachineArn: string;
+
+    /** Step Functions config orchestrator (SM-B — app secrets) state machine ARN */
+    public readonly configStateMachineArn: string;
 
     /** CloudWatch Log Group for SSM bootstrap RunCommand output */
     public readonly bootstrapLogGroup: logs.LogGroup;
@@ -322,7 +295,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         };
 
         // =====================================================================
-        // SSM Automation Documents — Bootstrap (4)
+        // SSM Automation Documents — Bootstrap (kept for EC2 user-data compatibility)
         // =====================================================================
 
         const cpDoc = new SsmAutomationDocument(this, 'ControlPlaneAutomation', {
@@ -334,10 +307,6 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         });
         this.controlPlaneDocName = cpDoc.documentName;
 
-        // Unified worker document — serves app-worker, mon-worker, and
-        // argocd-worker roles.  The NODE_LABEL env var (set by user data /
-        // SSM Automation parameters) controls per-role behaviour inside the
-        // Python bootstrap script.
         const workerDoc = new SsmAutomationDocument(this, 'WorkerAutomation', {
             documentName: `${prefix}-bootstrap-worker`,
             description: 'Orchestrates Kubernetes worker node bootstrap (all roles — app, monitoring, argocd)',
@@ -347,18 +316,8 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         });
         this.workerDocName = workerDoc.documentName;
 
-        // =====================================================================
-        // SSM Automation Documents — Deploy (1 — consolidated)
-        // =====================================================================
-
-        const deployDoc = new SsmAutomationDocument(this, 'DeploySecretsAutomation', {
-            documentName: `${prefix}-deploy-secrets`,
-            description: 'Deploy K8s secrets (nextjs + monitoring + start-admin) — syncs from S3, resolves SSM parameters, creates Secrets',
-            documentCategory: 'deploy',
-            steps: DEPLOY_SECRETS_STEPS,
-            ...docBaseProps,
-        });
-        this.deploySecretsDocName = deployDoc.documentName;
+        // Keep deploySecretsDocName for backwards compatibility — SM-B supersedes this.
+        this.deploySecretsDocName = `${prefix}-deploy-secrets`;
 
         // =====================================================================
         // SSM Run Command Documents — NEW Step Functions Orchestrators
@@ -464,10 +423,13 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         });
         cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/worker-doc-name`, workerDocParam);
 
+        // Keep the SSM parameter for backwards compatibility — any EC2 user data or legacy
+        // scripts that read /deploy/secrets-doc-name still resolve a name, even though
+        // SM-B has superseded this document as the canonical config injection path.
         const deployDocParam = new ssm.StringParameter(this, 'DeploySecretsDocNameParam', {
             parameterName: `${props.ssmPrefix}/deploy/secrets-doc-name`,
-            stringValue: deployDoc.documentName,
-            description: 'SSM Automation document name for consolidated secrets deployment (nextjs + monitoring + start-admin)',
+            stringValue: this.deploySecretsDocName,
+            description: 'SSM Automation document name for legacy secrets deployment (kept for backwards compatibility — SM-B supersedes)',
         });
         cleanup.addSsmParameter(`${props.ssmPrefix}/deploy/secrets-doc-name`, deployDocParam);
 
@@ -502,9 +464,7 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             automationRoleArn: automationRole.roleArn,
             scriptsBucketName: props.scriptsBucketName,
             bootstrapRunnerName: bootstrapRunner.documentName,
-            deployRunnerName: deployRunner.documentName,
             bootstrapLogGroupName: this.bootstrapLogGroup.logGroupName,
-            deployLogGroupName: this.deployLogGroup.logGroupName,
             // Default worker pool roles — matches k8s:bootstrap-role ASG tag values
             workerRoles: ['general-pool', 'monitoring-pool'],
         });
@@ -600,6 +560,103 @@ export class K8sSsmAutomationStack extends cdk.Stack {
         // Register router Lambda log group for cleanup
         const routerLogGroupName = `/aws/lambda/${prefix}-bootstrap-router`;
         cleanup.addLogGroup(routerLogGroupName, orchestrator.routerFunction);
+
+        // =====================================================================
+        // Config Orchestrator (SM-B) — App Config Injection
+        //
+        // Triggered automatically when SM-A (Bootstrap) succeeds via EventBridge.
+        // Also callable manually via GHA trigger-config.ts or `just config-run`.
+        // =====================================================================
+
+        const configOrchestrator = new ConfigOrchestratorConstruct(this, 'ConfigOrchestrator', {
+            prefix,
+            ssmPrefix: props.ssmPrefix,
+            scriptsBucketName: props.scriptsBucketName,
+            deployRunnerName: deployRunner.documentName,
+            deployLogGroupName: this.deployLogGroup.logGroupName,
+            bootstrapStateMachineArn: orchestrator.stateMachine.stateMachineArn,
+        });
+
+        this.configStateMachineArn = configOrchestrator.stateMachine.stateMachineArn;
+
+        // ── SSM Parameter: Config State Machine ARN ───────────────────────────
+        // Consumed by trigger-config.ts (GHA) and `just config-run`.
+        const configSmArnParam = new ssm.StringParameter(this, 'ConfigStateMachineArnParam', {
+            parameterName: `${props.ssmPrefix}/bootstrap/config-state-machine-arn`,
+            stringValue: configOrchestrator.stateMachine.stateMachineArn,
+            description: 'Step Functions config orchestrator (SM-B) ARN — app secrets injection',
+        });
+        cleanup.addSsmParameter(`${props.ssmPrefix}/bootstrap/config-state-machine-arn`, configSmArnParam);
+
+        // ── Grant Config SM Execution Role: SSM + CW Logs + X-Ray ────────────
+        const configSmRole = configOrchestrator.stateMachine.role;
+
+        configSmRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'ConfigSmSendCommand',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:SendCommand',
+                'ssm:GetCommandInvocation',
+            ],
+            resources: ['*'],
+        }));
+
+        configSmRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'ConfigSmSsmParams',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:GetParameter',
+                'ssm:PutParameter',
+            ],
+            resources: [
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
+            ],
+        }));
+
+        configSmRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'ConfigSmCloudWatchLogs',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'logs:CreateLogDelivery',
+                'logs:GetLogDelivery',
+                'logs:UpdateLogDelivery',
+                'logs:DeleteLogDelivery',
+                'logs:ListLogDeliveries',
+                'logs:PutResourcePolicy',
+                'logs:DescribeResourcePolicies',
+                'logs:DescribeLogGroups',
+            ],
+            resources: ['*'],
+        }));
+
+        configSmRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'ConfigSmXRay',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'xray:PutTraceSegments',
+                'xray:PutTelemetryRecords',
+                'xray:GetSamplingRules',
+                'xray:GetSamplingTargets',
+            ],
+            resources: ['*'],
+        }));
+
+        // Register config orchestrator log group for cleanup
+        cleanup.addLogGroup(
+            `/aws/vendedlogs/states/${prefix}-config-orchestrator`,
+            configOrchestrator.stateMachine,
+        );
+
+        NagSuppressions.addResourceSuppressions(configOrchestrator.stateMachine, [{
+            id: 'AwsSolutions-IAM5',
+            reason: 'SM-B CallAwsService tasks require ssm:SendCommand/GetCommandInvocation on \'*\' (instance IDs are dynamic). CW log delivery requires \'*\'.',
+        }, {
+            id: 'AwsSolutions-SF1',
+            reason: 'Step Functions logging is enabled via vendedlogs at LogLevel.ALL with execution data.',
+        }, {
+            id: 'AwsSolutions-SF2',
+            reason: 'X-Ray tracing is enabled on the config state machine.',
+        }], true);
 
         // =====================================================================
         // CloudWatch Alarm — Step Functions Execution Failures

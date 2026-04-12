@@ -46,16 +46,16 @@ import {
     RebootInstancesCommand,
 } from '@aws-sdk/client-ec2';
 import {
+    SFNClient,
+    StartExecutionCommand,
+    DescribeExecutionCommand,
+} from '@aws-sdk/client-sfn';
+import {
     DescribeInstanceInformationCommand,
     GetParameterCommand,
     PutParameterCommand,
     SSMClient,
 } from '@aws-sdk/client-ssm';
-import {
-    SFNClient,
-    StartExecutionCommand,
-    DescribeExecutionCommand,
-} from '@aws-sdk/client-sfn';
 import { parseArgs, buildAwsConfig } from '@repo/script-utils/aws.js';
 import { setOutput, writeSummary, emitAnnotation } from '@repo/script-utils/github.js';
 import logger from '@repo/script-utils/logger.js';
