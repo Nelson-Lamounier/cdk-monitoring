@@ -43,9 +43,9 @@ GitHub Actions (infrastructure)                ArgoCD (workloads)
 
 2. **Day-1 orchestration** — `day-1-orchestration.yml` provides full-stack deployment from zero: shared stacks → K8s base → Golden AMI → SSM Automation → Compute (CP + workers) → post-bootstrap config. This is the "big red button" for disaster recovery.
 
-3. **6-phase SSM Automation pipeline** — `_deploy-ssm-automation.yml` implements a phased deployment: Admin IPs → S3 Sync → S3 Verify (integration test) → Trigger SSM → Verify SSM (integration test) → Post-Bootstrap. Each step is labelled with its phase number for clear observability. The S3 verification phase runs `s3-bootstrap-artefacts.integration.test.ts` to validate artefact presence before triggering SSM Automation.
+3. **5-phase SSM Automation pipeline** — `_deploy-ssm-automation.yml` implements a phased deployment: Admin IPs → S3 Sync → S3 Verify (integration test) → Trigger Bootstrap (SM-A) → Verify SSM (integration test). Each step is labelled with its phase number for clear observability. The S3 verification phase runs `s3-bootstrap-artefacts.integration.test.ts` to validate artefact presence before triggering Bootstrap Automation.
 
-4. **Consolidated secrets deployment** — `_post-bootstrap-config.yml` deploys both Next.js and monitoring secrets via a single `deploy-secrets` job, aligned with the consolidated `k8s-deploy-secrets` SSM Automation document. Eliminates redundant checkout/build/credential steps.
+4. **Two-Tier orchestration for Configs** — `_post-bootstrap-config.yml` now functions as phase 6, but decoupled. It triggers the Config Orchestrator (SM-B) via `trigger-config.ts`. SM-B deploys 5 application runtimes natively in Step Functions without waiting for the slow node-bootstrap process.
 
 5. **Python test integration** — `ci.yml` includes a `test-k8s-bootstrap` job running the full 135-test Python suite (boot, deploy, system) via `just bootstrap-pytest`. Fully offline with all AWS/K8s calls mocked.
 
@@ -61,7 +61,7 @@ GitHub Actions (infrastructure)                ArgoCD (workloads)
 | `deploy-kubernetes.yml` | Deploy all 12 K8s stacks |
 | `deploy-bedrock.yml` | Deploy 5 Bedrock AI stacks + sync KB docs |
 | `deploy-shared.yml` | Deploy shared infrastructure (VPC, security, FinOps) |
-| `deploy-ssm-automation.yml` | 6-phase: Admin IPs → S3 Sync → Verify → Trigger → SSM Verify → Secrets |
+| `deploy-ssm-automation.yml` | 5-phase: Admin IPs → S3 Sync → Verify → Trigger Bootstrap (SM-A) → Verify |
 | `deploy-frontend.yml` | Build + push Next.js image to ECR |
 | `deploy-post-bootstrap.yml` | Post-bootstrap K8s configuration (single deploy-secrets job) |
 | `day-1-orchestration.yml` | Full-stack deployment from zero |
@@ -97,7 +97,7 @@ Both layout tests (`s3` and `ssm`) use the vacuous-pass pattern — assertions p
 - **Sync-wave dependency ordering** — initial ArgoCD deployments failed because cert-manager wasn't ready when Traefik needed TLS certificates. Solved by assigning sync-wave annotations (0-5) to enforce correct deployment ordering.
 - **Custom CI Docker image** — the default GitHub Actions runners didn't have `kubectl`, `helm`, or the AWS CLI v2 pre-installed. Built a custom CI image (`build-ci-image.yml`) to reduce pipeline execution time by 30%.
 - **ArgoCD Redis CrashLoop** — ArgoCD's `secret-init` container failed when the redis-initial-password Secret was missing. Fixed by ensuring the ArgoCD namespace and secrets are provisioned before the ArgoCD Helm install.
-- **SSM document proliferation** — separate SSM Automation documents for Next.js and monitoring secrets caused 4-state Step Functions orchestration. Consolidated into a single `k8s-deploy-secrets` document with 2-step sequence, reducing to 2-state (1 lookup + 1 chain).
+- **SSM document proliferation** — Application configuration updates and Node Bootstrap workflows were tightly coupled inside the Bootstrap Step Function. Refactored to Two-Tier Orchestration: **SM-A** (Bootstrap Orchestrator) for OS/Nodes and **SM-B** (Config Orchestrator) for day-2 Application configs. SM-B uses a separate State Machine triggered on-demand via `trigger-config.ts` or by EventBridge after SM-A completes.
 - **Broken CSS during Deployments (Zero-Downtime constraints)** — Users encountered `404 Not Found` for static Next.js assets during rollout. CI was executing an imperative `kubectl rollout restart` while executing a destructive `aws s3 sync --delete`. Fixed by implementing an Argo Rollout constraint and a smart S3 sync script (`sync-static-to-s3.ts`) which retains historical chunk mapping for the preceding BUILD_ID.
 
 ## Transferable Skills Demonstrated

@@ -24,7 +24,9 @@ status: accepted
 
 ## Context
 
-The Kubernetes bootstrap pipeline requires orchestrating multiple steps in sequence: resolve ASG tags → update SSM parameter → run SSM Automation → poll for completion → optionally chain secrets deployment + worker CA re-join. The two options were Step Functions (state machine) or Lambda-to-Lambda orchestration.
+The Kubernetes bootstrap pipeline requires orchestrating multiple steps in sequence from node provisioning through to application runtime configurations. The two original options were Step Functions (state machine) or Lambda-to-Lambda orchestration. After outgrowing a single monolithic state machine, we refactored into a Two-Tier Orchestration model:
+1. **Bootstrap Orchestrator (SM-A)** for OS-level joining (Control Plane/Workers) triggered by EventBridge.
+2. **Config Orchestrator (SM-B)** for sequentially applying K8s App Configs via `deploy.py` scripts.
 
 ## Decision
 
@@ -40,19 +42,22 @@ I chose AWS Step Functions over direct Lambda orchestration for three reasons:
 
 Key implementation files:
 
-- `infra/lib/constructs/ssm/bootstrap-orchestrator.ts` — Step Functions state machine definition
+- `infra/lib/constructs/ssm/bootstrap-orchestrator.ts` — SM-A (Bootstrap Orchestrator) definition
   - EventBridge rule triggers on ASG `EC2 Instance Launch Successful`
   - Router Lambda reads `k8s:bootstrap-role` tag from ASG to resolve SSM doc name
-  - State machine chains: Resolve → Update SSM → Start Automation → Poll → (optional) Chain secrets + worker CA
+  - State machine chains: Resolve → Update SSM → Start Automation → Poll → EventBridge Emit (to SM-B)
   - Non-K8s ASGs silently ignored (no `k8s:bootstrap-role` tag)
 
-- `infra/lib/stacks/kubernetes/ssm-automation-stack.ts` — SSM Automation documents ×6:
+- `infra/lib/constructs/ssm/config-orchestrator.ts` — SM-B (Config Orchestrator) definition
+  - Sequentially applies all application runtime configs (Next.js, Monitoring, BFFs)
+  - Triggered by SM-A completion event OR manually via `trigger-config.ts`
+
+- `infra/lib/stacks/kubernetes/ssm-automation-stack.ts` — SSM Automation documents ×5:
   1. Control plane bootstrap (`kubeadm init`)
   2. Application worker join (`kubeadm join`)
   3. Monitoring worker join
   4. ArgoCD worker join
-  5. Next.js secrets deployment
-  6. Monitoring secrets deployment
+  5. Config deployments (unified `k8s-deploy-secrets`)
 
 - CloudWatch Alarm + SNS: failure notifications for bootstrap timeout or SSM Automation failure
 
@@ -60,10 +65,12 @@ Key implementation files:
 
 ### Benefits
 
+### Benefits
+
 - **Visual debugging** — Step Functions console shows exact failure point in the bootstrap sequence
 - **Declarative retry logic** — backoff and timeout policies expressed in state machine, not Lambda code
+- **Two-Tier Decoupling** — Splitting SM-A (OS level) and SM-B (App level) prevents slow app script deployments from holding up worker node bootstrap processes.
 - **Event-driven** — EventBridge trigger on ASG launch means zero manual intervention for instance replacement
-- **Chained orchestration** — control plane bootstrap automatically chains secrets deployment + worker re-join
 
 ### Trade-offs
 

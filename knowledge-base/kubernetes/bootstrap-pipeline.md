@@ -200,11 +200,10 @@ Step Functions state machine that orchestrates K8s instance bootstrap:
   2. Updates instance-id SSM parameter
   3. Starts SSM Automation document
   4. Polls for completion (wait → check → loop)
-  5. For control-plane: chains secrets deployment (k8s-deploy-secrets) + worker CA re-join
+  5. For control-plane: triggers Config Orchestrator (SM-B) via EventBridge + worker CA re-join
 Non-K8s ASGs are silently ignored (no `k8s:bootstrap-role` tag).
 
-Simplified from 4-state (2 lookups + 2 chains for separate secrets docs) to
-2-state (1 lookup + 1 chain) after the k8s-deploy-secrets consolidation.
+Architected as part of a two-tier model (Bootstrap Orchestrator + Config Orchestrator) to decouple OS-level node bootstrapping from application-level Day-2 configurations.
 ## EventBridge Integration
 Triggers automatically on any ASG `EC2 Instance Launch Successful` event.
 @example
@@ -263,11 +262,11 @@ The `_deploy-ssm-automation.yml` workflow implements a phased deployment:
 | Phase | Job | Description |
 |-------|-----|-------------|
 | 1 | `sync-and-verify` | Write Admin IPs to SSM (Traefik allowlists) |
-| 2 | `sync-and-verify` | Sync scripts to S3 (3 targets) |
+| 2 | `sync-and-verify` | Sync Scripts to S3 (3 targets) |
 | 3 | `sync-and-verify` | Verify S3 artefacts via integration test |
-| 4 | `trigger-bootstrap` | Trigger SSM Automation (CP → workers) |
+| 4 | `trigger-bootstrap` | Trigger SM-A Bootstrap Orchestrator |
 | 5 | `verify-ssm-automation` | Instance targeting + health integration tests |
-| 6 | `post-bootstrap-config` | Deploy secrets + ArgoCD health |
+| 6 | `post-bootstrap-config` | Trigger SM-B Config Injection + test verify |
 
 ### S3 Sync Targets
 
@@ -284,13 +283,13 @@ The `_deploy-ssm-automation.yml` workflow implements a phased deployment:
 | `s3-bootstrap-artefacts.integration.test.ts` | 3 | S3 bucket exists, file counts per prefix |
 | `ssm-automation-runtime.integration.test.ts` | 5 | Instance targeting, EC2 health, SSM Agent |
 
-### Post-Bootstrap Secrets Consolidation
+### Two-Tier Configuration Delivery
 
-`_post-bootstrap-config.yml` deploys both Next.js and monitoring secrets via a single `deploy-secrets` job:
-- **Step 1:** Next.js secrets (`just ci-deploy-nextjs-secrets`)
-- **Step 2:** Monitoring secrets (`just ci-deploy-monitoring-secrets`)
+`_post-bootstrap-config.yml` triggers the Config Orchestrator (SM-B) which sequentially deploys all application secrets and ConfigMaps without blocking node bootstrap:
+- **Phase 6:** Triggers SM-B via `trigger-config.ts` replacing direct SSM calls
+- SM-B runs 5 deploy scripts: Next.js, Monitoring, Start Admin, Admin API, and Public API scripts over SSM.
 
-Both resolve the SSM Automation document from `/k8s/<env>/deploy/secrets-doc-name`.
+Both SM-A and SM-B execution artifacts leverage consistent EventBridge + Step Function state machines for self-healing across nodes.
 
 ## Source Files
 
@@ -300,6 +299,8 @@ Both resolve the SSM Automation document from `/k8s/<env>/deploy/secrets-doc-nam
 - `infra/lib/stacks/kubernetes/golden-ami-stack.ts` *(code)*
 - `infra/lib/stacks/kubernetes/control-plane-stack.ts` *(code)*
 - `infra/lib/constructs/ssm/bootstrap-orchestrator.ts` *(code)*
+- `infra/lib/constructs/ssm/config-orchestrator.ts` *(code)*
+- `infra/scripts/cd/trigger-config.ts` *(code)*
 - `infra/lib/constructs/ssm/node-drift-enforcement.ts` *(code)*
 - `infra/lib/constructs/ssm/automation-document.ts` *(code)*
 - `infra/tests/integration/kubernetes/s3-bootstrap-artefacts.integration.test.ts` *(integration test)*
