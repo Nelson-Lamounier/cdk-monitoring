@@ -1245,6 +1245,70 @@ bootstrap-test instance-id env="development" region="eu-west-1" profile="dev-acc
     echo "     just bootstrap-run {{instance-id}}"
     echo "═══════════════════════════════════════════════════════════"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Config Orchestrator (SM-B) — local developer recipes
+#
+# SM-B injects all application secrets into K8s without re-running bootstrap.
+# It is triggered automatically by EventBridge when SM-A succeeds, but you
+# can also invoke it manually via these recipes during:
+#   - Local secret rotation testing
+#   - Standalone config re-injection after a partial failure
+#   - Verifying new deploy.py scripts before committing to CI
+#
+# Pre-requisites:
+#   1. SsmAutomation CDK stack deployed  (just deploy-stack SsmAutomation-development)
+#   2. SM-A has run at least once  (SSM param control-plane-instance-id populated)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Trigger Config Orchestrator (SM-B) — injects all app secrets into K8s
+# Usage: just config-run development
+# Usage: just config-run development eu-west-1
+[group('k8s')]
+config-run env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  🔑  Config Orchestrator (SM-B)"
+    echo "  Environment : {{env}}"
+    echo "  Region      : {{region}}"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    npx tsx infra/scripts/cd/trigger-config.ts \
+        --environment {{env}} \
+        --region {{region}} \
+        --max-wait 3600
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  ✅  Config injection complete"
+    echo "═══════════════════════════════════════════════════════════"
+
+# Show recent Config Orchestrator (SM-B) execution history
+# Usage: just config-status
+# Usage: just config-status 5 staging eu-west-1 dev-account
+[group('k8s')]
+config-status count="3" env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_PREFIX="/k8s/{{env}}"
+    CONFIG_SM_ARN=$(aws ssm get-parameter \
+        --name "${SSM_PREFIX}/bootstrap/config-state-machine-arn" \
+        --query Parameter.Value --output text \
+        --region {{region}} --profile {{profile}} 2>/dev/null || echo "")
+    if [ -z "$CONFIG_SM_ARN" ] || [ "$CONFIG_SM_ARN" = "None" ]; then
+        echo "❌  Config SM ARN not found at ${SSM_PREFIX}/bootstrap/config-state-machine-arn"
+        echo "    Run: just deploy-stack SsmAutomation-{{env}} kubernetes {{env}}"
+        exit 1
+    fi
+    echo "Config Orchestrator (SM-B) — last {{count}} executions"
+    echo "ARN: $CONFIG_SM_ARN"
+    echo ""
+    aws stepfunctions list-executions \
+        --state-machine-arn "$CONFIG_SM_ARN" \
+        --max-results {{count}} \
+        --query "executions[].{Name:name,Status:status,Start:startDate,Stop:stopDate}" \
+        --output table \
+        --region {{region}} --profile {{profile}}
+
 # Run k8s-bootstrap Python tests locally (unit + static validation)
 # Usage: just bootstrap-pytest
 # Usage: just bootstrap-pytest tests/system/test_dr_scripts.py   (specific file)
