@@ -167,9 +167,14 @@ export class ConfigOrchestratorConstruct extends Construct {
         });
 
         const extractInstanceId = new sfn.Pass(this, 'ExtractInstanceId', {
-            comment: 'Flatten SSM response: $.cpParam.Parameter.Value → $.instanceId',
+            comment: 'Flatten SSM response and seed execution context for all deploy steps',
             parameters: {
                 'instanceId.$': '$.cpParam.Parameter.Value',
+                // ssmPrefix and s3Bucket are static at synth time but must be in the
+                // execution context so each deploy step's sendCommand can read them
+                // via JsonPath.stringAt('$.ssmPrefix') / JsonPath.stringAt('$.s3Bucket').
+                ssmPrefix:      props.ssmPrefix,
+                s3Bucket:       props.scriptsBucketName,
                 'trigger.$':    '$.trigger',
                 'source.$':     '$.source',
             },
@@ -212,12 +217,12 @@ export class ConfigOrchestratorConstruct extends Construct {
                 action: 'sendCommand',
                 parameters: {
                     DocumentName: props.deployRunnerName,
-                    InstanceIds:  [JsonPath.stringAt('$.instanceId')],
+                    InstanceIds:  JsonPath.array(JsonPath.stringAt('$.instanceId')),
                     Parameters: {
-                        ScriptPath: [step.scriptPath],
-                        SsmPrefix:  [props.ssmPrefix],
-                        S3Bucket:   [props.scriptsBucketName],
-                        Region:     [region],
+                        ScriptPath: JsonPath.array(step.scriptPath),
+                        SsmPrefix:  JsonPath.array(JsonPath.stringAt('$.ssmPrefix')),
+                        S3Bucket:   JsonPath.array(JsonPath.stringAt('$.s3Bucket')),
+                        Region:     JsonPath.array(region),
                     },
                     CloudWatchOutputConfig: {
                         CloudWatchLogGroupName:  props.deployLogGroupName,
@@ -226,18 +231,20 @@ export class ConfigOrchestratorConstruct extends Construct {
                     TimeoutSeconds: step.timeoutSeconds,
                 },
                 iamResources: ['*'],
-                resultPath: `$.${safeId}Cmd`,
+                resultSelector: {
+                    'CommandId.$': '$.Command.CommandId',
+                },
+                resultPath: `$.${safeId}Result`,
             });
             sendCommand.addCatch(sendFailed, { errors: ['States.ALL'] });
 
             // 2. Init poll counter
-            const initCounter = new sfn.Pass(this, `${id}InitCounter`, {
-                parameters: {
-                    'instanceId.$':             '$.instanceId',
-                    'trigger.$':                '$.trigger',
-                    'source.$':                 '$.source',
-                    [`${safeId}CommandId.$`]:   `$.${safeId}Cmd.Command.CommandId`,
-                    [`${safeId}PollCount`]:     0,
+            const pollCountPath = `$.${safeId}PollCount`;
+            const initCounter = new sfn.CustomState(this, `${id}InitCounter`, {
+                stateJson: {
+                    Type: 'Pass',
+                    Result: { value: 0 },
+                    ResultPath: pollCountPath,
                 },
             });
 
@@ -251,43 +258,45 @@ export class ConfigOrchestratorConstruct extends Construct {
                 service: 'ssm',
                 action: 'getCommandInvocation',
                 parameters: {
-                    CommandId:  JsonPath.stringAt(`$.${safeId}CommandId`),
+                    CommandId:  JsonPath.stringAt(`$.${safeId}Result.CommandId`),
                     InstanceId: JsonPath.stringAt('$.instanceId'),
                 },
                 iamResources: ['*'],
-                resultSelector: { 'StatusDetails.$': '$.StatusDetails' },
-                resultPath: `$.${safeId}Poll`,
+                resultSelector: { 'Status.$': '$.Status' },
+                resultPath: `$.${safeId}Status`,
             });
 
             // 5. Increment counter
-            const incrCounter = new sfn.Pass(this, `${id}IncrCounter`, {
-                parameters: {
-                    'instanceId.$':             '$.instanceId',
-                    'trigger.$':                '$.trigger',
-                    'source.$':                 '$.source',
-                    [`${safeId}CommandId.$`]:   `$.${safeId}CommandId`,
-                    [`${safeId}PollCount.$`]:   JsonPath.mathAdd(
-                        JsonPath.numberAt(`$.${safeId}PollCount`), 1,
-                    ),
-                    [`${safeId}Poll.$`]:        `$.${safeId}Poll`,
+            const MAX_POLL = Math.ceil(step.timeoutSeconds / 30) + 10;
+            const incrCounter = new sfn.CustomState(this, `${id}IncrCounter`, {
+                stateJson: {
+                    Type: 'Pass',
+                    Parameters: {
+                        'value.$': `States.MathAdd(${pollCountPath}.value, 1)`,
+                    },
+                    ResultPath: pollCountPath,
                 },
             });
 
-            // 6. Timeout guard (60 × 30s = 30 min)
+            // 6. Timeout guard
+            const pollFailed = new sfn.Fail(this, `${id}Timeout`, {
+                error: `${id}Timeout`,
+                cause: `${step.scriptPath} did not complete within ${step.timeoutSeconds}s`,
+            });
+
             const timeoutGuard = new sfn.Choice(this, `${id}TimeoutCheck`)
                 .when(
-                    sfn.Condition.numberGreaterThan(`$.${safeId}PollCount`, 60),
-                    new sfn.Fail(this, `${id}Timeout`, {
-                        error: `${id}Timeout`,
-                        cause: `${step.scriptPath} did not complete within 30 minutes`,
-                    }),
+                    sfn.Condition.numberGreaterThanEquals(`${pollCountPath}.value`, MAX_POLL),
+                    pollFailed,
                 )
                 .otherwise(waitState);
 
-            // 7. Success pass (caller chains .next() on this)
+            // 7. Success pass
             const successPass = new sfn.Pass(this, `${id}Succeeded`, {
                 parameters: {
                     'instanceId.$': '$.instanceId',
+                    'ssmPrefix.$':  '$.ssmPrefix',
+                    's3Bucket.$':   '$.s3Bucket',
                     'trigger.$':    '$.trigger',
                     'source.$':     '$.source',
                 },
@@ -296,12 +305,16 @@ export class ConfigOrchestratorConstruct extends Construct {
             // 8. Status branch
             const checkStatus = new sfn.Choice(this, `${id}CheckStatus`)
                 .when(
-                    sfn.Condition.stringEquals(`$.${safeId}Poll.StatusDetails`, 'InProgress'),
-                    incrCounter.next(timeoutGuard),
+                    sfn.Condition.stringEquals(`$.${safeId}Status.Status`, 'Success'),
+                    successPass,
                 )
                 .when(
-                    sfn.Condition.stringEquals(`$.${safeId}Poll.StatusDetails`, 'Success'),
-                    successPass,
+                    sfn.Condition.or(
+                        sfn.Condition.stringEquals(`$.${safeId}Status.Status`, 'InProgress'),
+                        sfn.Condition.stringEquals(`$.${safeId}Status.Status`, 'Pending'),
+                        sfn.Condition.stringEquals(`$.${safeId}Status.Status`, 'Delayed'),
+                    ),
+                    incrCounter,
                 )
                 .otherwise(stepFailed);
 
@@ -310,6 +323,7 @@ export class ConfigOrchestratorConstruct extends Construct {
                 .next(waitState)
                 .next(pollStatus)
                 .next(checkStatus);
+            incrCounter.next(timeoutGuard);
 
             return { start: sendCommand, successPass };
         };
@@ -349,7 +363,9 @@ export class ConfigOrchestratorConstruct extends Construct {
             definitionBody:   sfn.DefinitionBody.fromChainable(
                 sfn.Chain.start(readInstanceId),
             ),
-            stateMachineType: sfn.StateMachineType.EXPRESS,
+            // STANDARD (not EXPRESS) — Express Workflows cap at 5 minutes.
+            // SM-B may run up to 1 hour across 5 sequential deploy scripts.
+            stateMachineType: sfn.StateMachineType.STANDARD,
             timeout:          cdk.Duration.hours(1),
             tracingEnabled:   true,
             comment:          'Injects SSM-sourced app config into K8s. Triggered by SM-A SUCCEEDED for self-healing.',
