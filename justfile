@@ -1959,6 +1959,269 @@ k8s-etcd-backup env="development" region="eu-west-1" profile="dev-account":
       --region {{region}} --profile {{profile}} \
       --query '[Status, StandardOutputContent]' --output text
 
+# =============================================================================
+# LOCAL DEBUGGING — No pipeline required
+#
+# These recipes let you interact with the live cluster or test Python scripts
+# locally without pushing code or triggering GitHub Actions.
+# =============================================================================
+
+# Sync a single deploy script (or entire chart directory) directly to S3.
+# Bypasses the full CI pipeline — push a local change and immediately test it
+# via `just ssm-shell` or `just deploy-script` without committing first.
+#
+# HOW IT WORKS:
+#   1. Resolves the scripts S3 bucket from SSM (same param as CI uses)
+#   2. Uploads deploy.py only (mode=file) or entire directory (mode=full)
+#   3. Prints the EC2 path and the commands to pull and run it interactively
+#
+# SINGLE FILE  — fastest, for iterating on deploy.py:
+#   just deploy-sync admin-api
+#   just deploy-sync public-api
+#
+# FULL DIRECTORY — when helpers or other files also changed:
+#   just deploy-sync admin-api development full
+#   just deploy-sync public-api development full
+#
+# THEN TEST — open a shell and run the synced script directly:
+#   just ssm-shell
+#   > aws s3 cp s3://<bucket>/app-deploy/admin-api/deploy.py /data/app-deploy/admin-api/deploy.py
+#   > KUBECONFIG=/etc/kubernetes/admin.conf python3 /data/app-deploy/admin-api/deploy.py --dry-run
+[group('k8s')]
+deploy-sync script env="development" mode="file" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -exo pipefail
+    export HOME="${HOME:-/root}"
+    SSM_PREFIX="/k8s/{{env}}"
+    LOCAL_DIR="kubernetes-app/workloads/charts/{{script}}"
+    if [ ! -f "${LOCAL_DIR}/deploy.py" ]; then
+      echo "✗ deploy.py not found at ${LOCAL_DIR}/deploy.py"
+      echo "  Supported scripts: admin-api, public-api, nextjs, monitoring, start-admin"
+      exit 1
+    fi
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  deploy-sync  :  {{script}} → S3  (mode: {{mode}})"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    BUCKET=$(aws ssm get-parameter \
+      --name "${SSM_PREFIX}/scripts-bucket" \
+      --region {{region}} --profile {{profile}} \
+      --query "Parameter.Value" --output text)
+    if [ -z "${BUCKET}" ] || [ "${BUCKET}" = "None" ]; then
+      echo "✗ Could not resolve scripts bucket from ${SSM_PREFIX}/scripts-bucket"
+      exit 1
+    fi
+    S3_PREFIX="app-deploy/{{script}}"
+    S3_DEST="s3://${BUCKET}/${S3_PREFIX}"
+    echo "  Local source : ${LOCAL_DIR}/"
+    echo "  S3 dest      : ${S3_DEST}/"
+    echo "  Bucket       : ${BUCKET}"
+    echo ""
+    if [ "{{mode}}" = "full" ]; then
+      echo "  Mode: FULL — syncing entire directory (with --delete)"
+      aws s3 sync \
+        "${LOCAL_DIR}/" \
+        "${S3_DEST}/" \
+        --delete \
+        --exclude "chart/*" \
+        --exclude "__pycache__/*" \
+        --exclude "*.pyc" \
+        --exclude "test_*" \
+        --region {{region}} \
+        --profile {{profile}}
+    else
+      echo "  Mode: FILE — uploading deploy.py only"
+      aws s3 cp \
+        "${LOCAL_DIR}/deploy.py" \
+        "${S3_DEST}/deploy.py" \
+        --region {{region}} \
+        --profile {{profile}}
+    fi
+    EC2_PATH="/data/${S3_PREFIX}/deploy.py"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  ✅  Sync complete → ${S3_DEST}/deploy.py"
+    echo ""
+    echo "  ── Interactive (recommended): open shell, then run ────────"
+    echo "    just ssm-shell {{env}}"
+    echo ""
+    echo "  Inside the shell — paste each line individually:"
+    echo "    aws s3 cp ${S3_DEST}/deploy.py ${EC2_PATH} --region {{region}}"
+    echo ""
+    echo "    KUBECONFIG=/etc/kubernetes/admin.conf SSM_PREFIX=${SSM_PREFIX} /opt/k8s-venv/bin/python3 ${EC2_PATH} --dry-run"
+    echo ""
+    echo "    # Live run (applies K8s resources):"
+    echo "    KUBECONFIG=/etc/kubernetes/admin.conf SSM_PREFIX=${SSM_PREFIX} /opt/k8s-venv/bin/python3 ${EC2_PATH}"
+    echo ""
+    echo "  ── One-shot: trigger via SSM + tail CloudWatch ─────────────"
+    echo "    just deploy-script {{script}} {{env}}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Open an interactive SSM Session Manager shell on the control-plane node.
+# Gives you a real bash prompt on the EC2 instance — no SSH key needed.
+# Use this for real-time debugging: check files, run scripts manually, inspect logs.
+#
+# Usage:
+#   just ssm-shell                              # control-plane (default)
+#   just ssm-shell development i-0abc123def456  # specific instance
+[group('k8s')]
+ssm-shell env="development" instance-id="" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -exo pipefail
+    export HOME="${HOME:-/root}"
+    SSM_PREFIX="/k8s/{{env}}"
+    if [ -z "{{instance-id}}" ]; then
+      INSTANCE_ID=$(aws ssm get-parameter \
+        --name "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
+        --region {{region}} --profile {{profile}} \
+        --query "Parameter.Value" --output text 2>/dev/null || echo "")
+    else
+      INSTANCE_ID="{{instance-id}}"
+    fi
+    if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "None" ]; then
+      echo "✗ Could not resolve instance ID. Is the cluster running?"
+      exit 1
+    fi
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  SSM Session → ${INSTANCE_ID}  ({{env}})"
+    echo "  Tip: run 'sudo -i' for root, Ctrl-D to exit"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    aws ssm start-session \
+      --target "${INSTANCE_ID}" \
+      --region {{region}} --profile {{profile}}
+
+# Trigger a single deploy.py script via the deploy-runner SSM document and
+# tail the CloudWatch output in real-time — no pipeline, no Step Functions.
+# The script pulled from S3 is whatever was last synced by ci-sync-scripts.
+#
+# Usage:
+#   just deploy-script admin-api               # deploy admin-api
+#   just deploy-script public-api              # deploy public-api
+#   just deploy-script nextjs development      # specify env
+[group('k8s')]
+deploy-script script env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -exo pipefail
+    export HOME="${HOME:-/root}"
+    SSM_PREFIX="/k8s/{{env}}"
+    LOG_GROUP="/ssm/k8s/{{env}}/deploy"
+
+    INSTANCE_ID=$(aws ssm get-parameter \
+      --name "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
+      --region {{region}} --profile {{profile}} \
+      --query "Parameter.Value" --output text)
+
+    S3_BUCKET=$(aws ssm get-parameter \
+      --name "${SSM_PREFIX}/scripts-bucket" \
+      --region {{region}} --profile {{profile}} \
+      --query "Parameter.Value" --output text)
+
+    DOC_NAME=$(aws ssm get-parameter \
+      --name "${SSM_PREFIX}/ssm/deploy-runner-document-name" \
+      --region {{region}} --profile {{profile}} \
+      --query "Parameter.Value" --output text 2>/dev/null \
+      || echo "k8s-dev-deploy-runner")
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Deploy script : app-deploy/{{script}}/deploy.py"
+    echo "  Instance      : ${INSTANCE_ID}"
+    echo "  S3 bucket     : ${S3_BUCKET}"
+    echo "  Document      : ${DOC_NAME}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    CMD_ID=$(aws ssm send-command \
+      --instance-ids "${INSTANCE_ID}" \
+      --document-name "${DOC_NAME}" \
+      --parameters "{
+        \"ScriptPath\": [\"app-deploy/{{script}}/deploy.py\"],
+        \"SsmPrefix\": [\"${SSM_PREFIX}\"],
+        \"S3Bucket\":  [\"${S3_BUCKET}\"],
+        \"Region\":    [\"{{region}}\"]
+      }" \
+      --cloud-watch-output-config "{
+        \"CloudWatchLogGroupName\": \"${LOG_GROUP}\",
+        \"CloudWatchOutputEnabled\": true
+      }" \
+      --region {{region}} --profile {{profile}} \
+      --query "Command.CommandId" --output text)
+
+    echo "CommandId: ${CMD_ID}"
+    echo "Tailing CloudWatch logs (Ctrl-C to stop, script continues on EC2)..."
+    echo ""
+
+    aws logs tail "${LOG_GROUP}" \
+      --region {{region}} --profile {{profile}} \
+      --follow --format short &
+    TAIL_PID=$!
+
+    # Poll until done, then kill the tail
+    for i in $(seq 1 60); do
+      STATUS=$(aws ssm get-command-invocation \
+        --command-id "${CMD_ID}" --instance-id "${INSTANCE_ID}" \
+        --region {{region}} --profile {{profile}} \
+        --query "Status" --output text 2>/dev/null || echo "Pending")
+      if [[ "${STATUS}" == "Success" || "${STATUS}" == "Failed" || "${STATUS}" == "Cancelled" || "${STATUS}" == "TimedOut" ]]; then
+        sleep 2  # let CW flush final lines
+        kill "${TAIL_PID}" 2>/dev/null || true
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Status: ${STATUS}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        [[ "${STATUS}" != "Success" ]] && exit 1
+        break
+      fi
+      sleep 5
+    done
+
+# Run deploy.py unit tests locally — no AWS credentials, no cluster required.
+# Uses env-var overrides to bypass all boto3 and kubectl calls.
+# Tests: config defaults, SSM env bypass, Secret/ConfigMap split, dry-run, errors.
+#
+# Usage:
+#   just deploy-test admin-api        # test admin-api deploy.py
+#   just deploy-test public-api       # test public-api deploy.py
+[group('k8s')]
+deploy-test script:
+    #!/usr/bin/env bash
+    set -exo pipefail
+    SCRIPT_DIR="kubernetes-app/workloads/charts/{{script}}"
+    TEST_FILE="${SCRIPT_DIR}/test_deploy_local.py"
+    if [ ! -f "${TEST_FILE}" ]; then
+      echo "✗ No local test file found at ${TEST_FILE}"
+      echo "  Expected: test_deploy_local.py alongside deploy.py"
+      exit 1
+    fi
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Running local tests for {{script}}/deploy.py"
+    echo "  No AWS credentials or cluster required"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    cd "${SCRIPT_DIR}" && python3 test_deploy_local.py -v
+
+# Simulate the SSM deploy-runner shell preamble locally.
+# Validates the bash script that wraps deploy.py — the exact commands the
+# SSM document runs on EC2 — without touching AWS or the cluster.
+# Useful for testing the 'set -u' fix and HOME export in isolation.
+#
+# Usage:
+#   just ssm-preamble-test            # test the preamble only (no Python)
+[group('k8s')]
+ssm-preamble-test:
+    #!/usr/bin/env bash
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Simulating SSM deploy-runner preamble locally"
+    echo "  (matches what SsmRunCommandDocument generates)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    bash -c '
+      set -exo pipefail
+      export HOME="${HOME:-/root}"
+      echo "=== SSM Step: runScript started at $(date) ==="
+      export PATH="/opt/k8s-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+      echo "HOME   = ${HOME}"
+      echo "PATH   = ${PATH}"
+      echo "USER   = ${USER:-<not set>}"
+      echo "SHELL  = ${SHELL:-<not set>}"
+      echo "=== Preamble OK — no \$HOME error ==="
+    '
+
 # Build the unified MCP infrastructure server (K8s + AWS diagnostics → dist/)
 [group('mcp')]
 mcp-build:

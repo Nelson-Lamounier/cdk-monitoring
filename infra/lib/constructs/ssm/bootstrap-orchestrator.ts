@@ -431,8 +431,15 @@ def handler(event, context):
     ): { start: sfn.IChainable; end: sfn.Pass } {
         const id = step.name;
 
+        // Step Functions intrinsic functions (e.g. States.MathAdd) require dot-notation
+        // JSONPath inside their arguments. Keys containing hyphens are invalid in dot-notation
+        // (e.g. $.Rejoin-general-poolPollCount.value fails schema validation).
+        // safeId strips hyphens so the state data key is a valid identifier.
+        // CDK construct IDs and state names continue to use `id` directly — hyphens are fine there.
+        const safeId = id.replace(/-/g, '');
+
         const MAX_POLL_ITERATIONS = Math.ceil(step.timeoutSeconds / 30);
-        const pollCountPath = `$.${id}PollCount`;
+        const pollCountPath = `$.${safeId}PollCount`;
 
         // Local Fail states — unique per step so they can live in any graph.
         const sendFailed = new sfn.Fail(this, `${id}SendFailed`, {
