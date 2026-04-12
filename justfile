@@ -1155,10 +1155,12 @@ bootstrap-dry-run instance-id env="development" region="eu-west-1" profile="dev-
     #!/usr/bin/env bash
     set -euo pipefail
     echo "🧪 Running ArgoCD bootstrap --dry-run on {{instance-id}}..."
+    # Delegates to bootstrap-argocd.sh which self-heals pip3 on AL2023.
+    # Direct pip3 calls fail with exit 127 because python3-pip is not pre-installed.
     COMMAND_ID=$(aws ssm send-command \
       --instance-ids "{{instance-id}}" \
       --document-name "AWS-RunShellScript" \
-      --parameters "commands=['cd /data/k8s-bootstrap/system/argocd && pip3 install -q -r requirements.txt 2>/dev/null && KUBECONFIG=/etc/kubernetes/admin.conf python3 bootstrap_argocd.py --dry-run']" \
+      --parameters "commands=['KUBECONFIG=/etc/kubernetes/admin.conf bash /data/k8s-bootstrap/system/argocd/bootstrap-argocd.sh --dry-run 2>&1']" \
       --timeout-seconds 300 \
       --region {{region}} --profile {{profile}} \
       --query "Command.CommandId" --output text)
@@ -1200,7 +1202,7 @@ bootstrap-run instance-id env="development" region="eu-west-1" profile="dev-acco
     COMMAND_ID=$(aws ssm send-command \
       --instance-ids "{{instance-id}}" \
       --document-name "AWS-RunShellScript" \
-      --parameters "commands=['cd /data/k8s-bootstrap/system/argocd && pip3 install -q -r requirements.txt 2>/dev/null && KUBECONFIG=/etc/kubernetes/admin.conf python3 bootstrap_argocd.py']" \
+      --parameters "commands=['KUBECONFIG=/etc/kubernetes/admin.conf bash /data/k8s-bootstrap/system/argocd/bootstrap-argocd.sh 2>&1']" \
       --timeout-seconds 600 \
       --region {{region}} --profile {{profile}} \
       --query "Command.CommandId" --output text)
