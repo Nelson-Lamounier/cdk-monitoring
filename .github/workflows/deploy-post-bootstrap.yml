@@ -1,15 +1,31 @@
 # @format
-# @description Deploy Post-Bootstrap Config to Development
+# @description Deploy Post-Bootstrap Config (Standalone)
 #
-# Standalone pipeline to re-deploy K8s application secrets and verify
-# ArgoCD health WITHOUT re-triggering SSM Automation/Bootstrap.
+# ─── Purpose ───────────────────────────────────────────────────────
+# Standalone pipeline to re-inject Kubernetes application secrets and
+# verify ArgoCD health WITHOUT re-triggering SM-A (Bootstrap Orchestrator).
 #
-# Use this when:
-#   - SSM parameters changed (secret values rotated, new config)
-#   - Helm charts or K8s secrets need redeployment
-#   - ArgoCD health verification after manual cluster changes
+# This calls SM-B (Config Orchestrator) via _post-bootstrap-config.yml
+# which runs the five deploy.py scripts sequentially on the control plane:
+#   1. nextjs/deploy.py      — K8s Secret + IngressRoute originSecret patch
+#   2. monitoring/deploy.py  — K8s Secrets + Helm chart + Grafana reset
+#   3. start-admin/deploy.py — Cognito / DynamoDB / Bedrock Secret
+#   4. admin-api/deploy.py   — ConfigMap + Secret + IngressRoute
+#   5. public-api/deploy.py  — ConfigMap + Secret + IngressRoute
 #
-# No bootstrap is triggered — this only deploys secrets and verifies.
+# ─── Use This When ─────────────────────────────────────────────────
+#   - Rotating secrets (new SSM parameter values → re-inject via SM-B)
+#   - Helm chart config changes (values.yaml updates in workloads/charts/)
+#   - Verifying ArgoCD health after manual cluster changes
+#   - Testing SM-B independently after infrastructure changes
+#
+# ─── Local Equivalent ──────────────────────────────────────────────
+#   just config-run development
+#   just config-status          # check execution status
+#
+# ─── No Bootstrap ──────────────────────────────────────────────────
+# SM-A bootstrap is NOT triggered. Use _deploy-ssm-automation.yml
+# (via deploy-ssm-automation.yml) when cluster re-bootstrap is needed.
 
 name: Deploy Post-Bootstrap Config
 
@@ -34,7 +50,7 @@ concurrency:
 
 jobs:
   post-bootstrap:
-    name: Deploy Secrets & Verify
+    name: "SM-B Config Injection & Verify"
     uses: ./.github/workflows/_post-bootstrap-config.yml
     with:
       environment: ${{ inputs.environment }}

@@ -2,38 +2,50 @@
 # @description Reusable SSM Bootstrap Workflow
 #
 # ─── Purpose ───────────────────────────────────────────────────────
-# Bootstrap-only pipeline. Syncs scripts to S3, triggers SSM Automation
-# on existing EC2 nodes, and then delegates secrets + verification to
-# _post-bootstrap-config.yml.
+# Bootstrap-only pipeline. Syncs scripts to S3, triggers SM-A (Bootstrap
+# Orchestrator) on existing EC2 nodes, then delegates app config injection
+# and verification to _post-bootstrap-config.yml (which calls SM-B).
 #
 # Does NOT deploy any CDK stacks — all infrastructure (including the
-# SSM Automation stack) is deployed by _deploy-kubernetes.yml.
+# SsmAutomation stack with both SM-A and SM-B) is deployed by _deploy-kubernetes.yml.
 #
 # ─── Two-Pipeline Architecture ─────────────────────────────────────
 #
 #   Pipeline 1: _deploy-kubernetes.yml
 #     - Deploys ALL CDK stacks: networking, compute, IAM, API, edge,
-#       AND SSM Automation (documents + IAM role)
+#       AND SsmAutomation (SM-A + SM-B + EventBridge + IAM roles)
 #
 #   Pipeline 2: _deploy-ssm-automation.yml (this file)
 #     - Phase 1:  Writes admin IPs to SSM Parameter Store
 #     - Phase 1b: Seeds CloudFront origin secret (idempotent)
 #     - Phase 2:  Syncs bootstrap + deploy scripts to S3
-#     - Phase 3: Verifies S3 artefacts landed (file counts per prefix)
-#     - Phase 4: Triggers SSM Automation (control-plane → workers)
-#     - Phase 5: Verifies SSM Automation execution targeting + health
-#     - Phase 6: Deploys secrets + ArgoCD health + smoke tests
+#     - Phase 3:  Verifies S3 artefacts landed (file counts per prefix)
+#     - Phase 4:  Triggers SM-A (Bootstrap Orchestrator) via trigger-bootstrap.ts
+#     - Phase 5:  Verifies SM-A execution targeting + instance health
+#     - Phase 6:  SM-B (Config Orchestrator) injects app secrets + verify
+#
+# ─── Two-State-Machine Architecture ─────────────────────────────────
+#
+#   SM-A (Bootstrap Orchestrator) — cluster infrastructure
+#     Manages: control-plane bootstrap + worker re-join
+#     Started by: this pipeline (Phase 4) via trigger-bootstrap.ts
+#     On SUCCEED: EventBridge automatically fires SM-B (self-healing)
+#
+#   SM-B (Config Orchestrator) — application runtime config
+#     Manages: 5 deploy.py scripts → K8s Secrets + ConfigMaps + IngressRoutes
+#     Started by: EventBridge (auto) OR trigger-config.ts (manual / Phase 6)
+#     Self-healing: Any control-plane replacement auto-retriggers SM-B
 #
 # ─── Job Flow ───────────────────────────────────────────────────
-#   sync-and-verify → trigger-bootstrap → verify-ssm-automation
-#                                        → post-bootstrap-config
-#                                           └ deploy-secrets → verify
+#   sync-and-verify → trigger-bootstrap (SM-A) → verify-ssm-automation
+#                                               → post-bootstrap-config
+#                                                  └ wait-workers → inject-config (SM-B) → verify
 #
 #   1. sync-and-verify         - S3 sync + S3 artefact verification
-#   2. trigger-bootstrap       - Resolves instance IDs, starts Step Functions executions
+#   2. trigger-bootstrap       - Resolves instance IDs, starts SM-A executions
 #   3. verify-ssm-automation   - Instance targeting + health integration tests
-#   4. post-bootstrap-config   - Deploys secrets + ArgoCD health + smoke tests
-#                                 (reusable: _post-bootstrap-config.yml)
+#   4. post-bootstrap-config   - SM-B injects app secrets + ArgoCD health + smoke tests
+#                                 (reusable: _post-bootstrap-config.yml → trigger-config.ts)
 #
 # ─── How Instance Discovery Works ─────────────────────────────
 # EC2 user data publishes instance IDs to SSM parameters on boot:
@@ -41,11 +53,12 @@
 #   - /k8s/<env>/bootstrap/app-worker-instance-id
 #   - /k8s/<env>/bootstrap/mon-worker-instance-id
 #
-# The trigger job reads these to target SSM Automation. If a parameter
+# trigger-bootstrap.ts reads these to target SM-A. If a parameter
 # is missing, that node role is skipped (not yet deployed).
+# SM-B reads /bootstrap/control-plane-instance-id internally —
+# no instance ID is required in the trigger-config.ts call.
 #
 # ─── Day-2+ Updates ───────────────────────────────────────────────
-# Push changes to boot/steps/ to re-sync scripts and re-run bootstrap.
 # To update secrets only (without bootstrap), use deploy-post-bootstrap.yml.
 
 name: Deploy SSM Automation (Reusable)
@@ -391,15 +404,23 @@ jobs:
         run: just ci-integration-test kubernetes/ssm-automation-runtime $CDK_ENV --verbose
 
   # ===========================================================================
-  # Phase 6: Post-Bootstrap Config — Deploy secrets + verify ArgoCD
+  # Phase 6: Post-Bootstrap Config — SM-B App Config Injection + Verify
   #
-  # Calls the reusable _post-bootstrap-config.yml workflow which deploys
-  # Next.js and monitoring secrets via the consolidated k8s-deploy-secrets
-  # SSM Automation document, then verifies ArgoCD health.
-  # Can also be run independently via deploy-post-bootstrap.yml.
+  # Calls the reusable _post-bootstrap-config.yml workflow which:
+  #   1. wait-workers    — polls SSM execution IDs until worker automations settle
+  #   2. inject-config   — starts SM-B (Config Orchestrator) via trigger-config.ts;
+  #                         SM-B runs 5 deploy.py scripts sequentially:
+  #                           nextjs / monitoring / start-admin / admin-api / public-api
+  #   3. verify          — ArgoCD health + IngressRoute origin-secret + smoke tests
+  #
+  # EventBridge Note: SM-A SUCCEED automatically re-fires SM-B even without this
+  # pipeline (self-healing). This Phase 6 call ensures CI completion gates on SM-B.
+  #
+  # Can also be run independently via deploy-post-bootstrap.yml or:
+  #   just config-run development
   # ===========================================================================
   post-bootstrap-config:
-    name: "Phase 6 — Post-Bootstrap Config"
+    name: "Phase 6 — Config Injection (SM-B)"
     needs: [trigger-bootstrap]
     if: >-
       always()
