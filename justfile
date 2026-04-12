@@ -2057,8 +2057,16 @@ deploy-sync script env="development" mode="file" region="eu-west-1" profile="dev
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Open an interactive SSM Session Manager shell on the control-plane node.
-# Gives you a real bash prompt on the EC2 instance — no SSH key needed.
-# Use this for real-time debugging: check files, run scripts manually, inspect logs.
+# Connects as ROOT — no sudo password needed, no SSH key required.
+# Use this for real-time debugging: sync scripts, inspect logs, run deploy.py.
+#
+# Why root: /data/app-deploy/ is owned by root (created during bootstrap).
+# AWS-StartInteractiveCommand runs sudo su - before handing you the prompt,
+# so you land directly in a root shell regardless of ssm-user sudo config.
+#
+# After entering the shell:
+#   aws s3 cp s3://... /data/app-deploy/admin-api/deploy.py   # no sudo needed
+#   /opt/k8s-venv/bin/python3 /data/app-deploy/admin-api/deploy.py
 #
 # Usage:
 #   just ssm-shell                              # control-plane (default)
@@ -2082,11 +2090,15 @@ ssm-shell env="development" instance-id="" region="eu-west-1" profile="dev-accou
       exit 1
     fi
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  SSM Session → ${INSTANCE_ID}  ({{env}})"
-    echo "  Tip: run 'sudo -i' for root, Ctrl-D to exit"
+    echo "  SSM Root Shell → ${INSTANCE_ID}  ({{env}})"
+    echo "  Python: /opt/k8s-venv/bin/python3"
+    echo "  Scripts: /data/app-deploy/<service>/deploy.py"
+    echo "  Ctrl-D to exit"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     aws ssm start-session \
       --target "${INSTANCE_ID}" \
+      --document-name AWS-StartInteractiveCommand \
+      --parameters '{"command":["sudo su -"]}' \
       --region {{region}} --profile {{profile}}
 
 # Trigger a single deploy.py script via the deploy-runner SSM document and
