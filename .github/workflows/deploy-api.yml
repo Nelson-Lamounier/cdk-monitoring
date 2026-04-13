@@ -161,10 +161,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build Docker Image (admin-api)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           # Build context MUST be the repo root — the Dockerfile references
           # workspace root manifests (package.json, yarn.lock, .yarn/).
@@ -179,7 +179,7 @@ jobs:
           outputs: type=docker,dest=/tmp/admin-api-image.tar
 
       - name: Cache Admin-API Image
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: /tmp/admin-api-image.tar
           key: admin-api-image-${{ env.ENVIRONMENT }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -218,7 +218,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Restore Admin-API Image from Cache
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: /tmp/admin-api-image.tar
           key: admin-api-image-${{ env.ENVIRONMENT }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -395,10 +395,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build Docker Image (public-api)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: api/public-api/Dockerfile
@@ -411,7 +411,7 @@ jobs:
           outputs: type=docker,dest=/tmp/public-api-image.tar
 
       - name: Cache Public-API Image
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: /tmp/public-api-image.tar
           key: public-api-image-${{ env.ENVIRONMENT }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -450,7 +450,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Restore Public-API Image from Cache
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: /tmp/public-api-image.tar
           key: public-api-image-${{ env.ENVIRONMENT }}-${{ github.run_id }}-${{ github.run_attempt }}
