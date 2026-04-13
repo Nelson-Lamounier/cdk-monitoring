@@ -423,10 +423,84 @@ def handler(event, context):
             error: 'SendCommandFailed',
             cause: `SSM SendCommand failed for step ${id}`,
         });
-        const pollFailed = new sfn.Fail(this, `${id}PollFailed`, {
-            error: 'CommandFailed',
-            cause: `SSM command failed or timed out for step ${id}`,
+
+        /**
+         * Static API-error fail — fired when the SSM `getCommandInvocation`
+         * API call itself fails (permissions / network), so no output is
+         * available to enrich the failure message.
+         */
+        const pollApiFailed = new sfn.Fail(this, `${id}PollApiFailed`, {
+            error: 'PollApiFailed',
+            cause: `SSM getCommandInvocation API error for step ${id} — check CloudWatch log group: ${logGroupName}`,
         });
+
+        /**
+         * Dynamic command-failure fail — Cause and Error are populated at
+         * runtime by the enrichment chain (fetchFailureOutput → formatFailureCause).
+         * Surfaces stdout snapshot, stderr, CloudWatch stream path, and SSM
+         * step-status query hints directly in the Step Functions console.
+         */
+        const pollFailed = new sfn.Fail(this, `${id}PollFailed`, {
+            causePath: `$.${safeId}FailCause.cause`,
+            errorPath: `$.${safeId}FailCause.error`,
+        });
+
+        // ── Failure enrichment chain ─────────────────────────────────────────────
+        // On non-Success SSM status OR poll timeout, this chain:
+        //   1. Calls GetCommandInvocation for StatusDetails + stdout/stderr head
+        //   2. Formats an enriched Cause string via States.Format intrinsic
+        //   3. Routes to the dynamic pollFailed Fail state
+        //
+        // Note: StandardOutputContent returns the FIRST 2500 chars of stdout.
+        // The Layer-1 SSM step-status parameters written by the Python scripts
+        // hold the exact failing step name and error message (the tail),
+        // which you can retrieve via:
+        //   aws ssm get-parameter --name <ssmPrefix>/bootstrap/status/argocd/<step>
+        //   aws ssm get-parameter --name <ssmPrefix>/bootstrap/status/boot/<step>
+        const fetchFailureOutput = new sfnTasks.CallAwsService(this, `${id}FetchOutput`, {
+            service: 'ssm',
+            action: 'getCommandInvocation',
+            parameters: {
+                CommandId: JsonPath.stringAt(`$.${id}Result.CommandId`),
+                InstanceId: JsonPath.stringAt(instanceIdPath),
+            },
+            iamResources: ['*'],
+            resultSelector: {
+                'StatusDetails.$': '$.StatusDetails',
+                'StandardOutputContent.$': '$.StandardOutputContent',
+                'StandardErrorContent.$': '$.StandardErrorContent',
+            },
+            resultPath: `$.${safeId}FailureOutput`,
+            comment: `Fetch SSM stdout/stderr for failure diagnostics (step ${id})`,
+        });
+        // If the diagnostic fetch itself fails, fall through to the static API-error state
+        fetchFailureOutput.addCatch(pollApiFailed, { errors: ['States.ALL'] });
+
+        /**
+         * Formats an enriched Step Functions error Cause via States.Format, embedding:
+         *   - SSM StatusDetails (Failed / TimedOut / Cancelled)
+         *   - First 2500 chars of stdout (head — CloudWatch has the full tail)
+         *   - Stderr content
+         *   - CloudWatch log group name + log stream naming pattern
+         *   - SSM Parameter Store query hints for the per-step status markers
+         *     written by Layer-1 (BootstrapLogger / StepRunner)
+         *
+         * The formatted string is written to $.${safeId}FailCause and read
+         * by the dynamic pollFailed Fail state via causePath/errorPath.
+         */
+        const formatFailureCause = new sfn.CustomState(this, `${id}FormatCause`, {
+            stateJson: {
+                Type: 'Pass',
+                Parameters: {
+                    'error': 'CommandFailed',
+                    // States.Format args: StatusDetails, stdout, stderr, ssmPrefix (×2)
+                    'cause.$': `States.Format('⚠ Bootstrap step ${id} FAILED.\nSSM status: {}.\n\n─── stdout snapshot (first 2500 chars — see CloudWatch for tail) ───\n{}\n─── stderr ───\n{}\n\nFull logs in CloudWatch:\n  Log group:  ${logGroupName}\n  Log stream: <CommandId>/<InstanceId>/aws-runShellScript/stdout\n\nLast step detail (query SSM after run):\n  aws ssm get-parameter --name {}/bootstrap/status/argocd/<step-name>\n  aws ssm get-parameter --name {}/bootstrap/status/boot/<step-name>', $.${safeId}FailureOutput.StatusDetails, $.${safeId}FailureOutput.StandardOutputContent, $.${safeId}FailureOutput.StandardErrorContent, $.router.ssmPrefix, $.router.ssmPrefix)`,
+                },
+                ResultPath: `$.${safeId}FailCause`,
+            },
+        });
+        fetchFailureOutput.next(formatFailureCause);
+        formatFailureCause.next(pollFailed);
 
         const startExec = new sfnTasks.CallAwsService(this, `${id}Start`, {
             service: 'ssm',
@@ -481,7 +555,8 @@ def handler(event, context):
             resultPath: `$.${id}Status`,
         });
 
-        pollStatus.addCatch(pollFailed, { errors: ['States.ALL'] });
+        // GetCommandInvocation API errors → static fail (no output to enrich)
+        pollStatus.addCatch(pollApiFailed, { errors: ['States.ALL'] });
 
         const incrPollCount = new sfn.CustomState(this, `${id}IncrCount`, {
             stateJson: {
@@ -495,13 +570,15 @@ def handler(event, context):
 
         const successState = new sfn.Pass(this, `${id}Done`);
 
+        // Timeout → enrichment chain → dynamic pollFailed (has CommandId in context)
         const checkTimeout = new sfn.Choice(this, `${id}CheckTimeout`)
             .when(
                 sfn.Condition.numberGreaterThanEquals(`${pollCountPath}.value`, MAX_POLL_ITERATIONS),
-                pollFailed,
+                fetchFailureOutput,
             )
             .otherwise(waitStep);
 
+        // Non-Success / non-InProgress status → enrichment chain → dynamic pollFailed
         const checkStatus = new sfn.Choice(this, `${id}Check`)
             .when(
                 sfn.Condition.stringEquals(`$.${id}Status.Status`, 'Success'),
@@ -515,7 +592,7 @@ def handler(event, context):
                 ),
                 incrPollCount,
             )
-            .otherwise(pollFailed);
+            .otherwise(fetchFailureOutput);
 
         startExec.next(initCounter);
         initCounter.next(waitStep);
