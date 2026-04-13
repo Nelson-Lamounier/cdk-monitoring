@@ -387,7 +387,7 @@ def main() -> None:
         return
 
     # Step 3: Create/update K8s resources
-    v1, _ = load_k8s(cfg.kubeconfig)
+    v1 = load_k8s(cfg.kubeconfig)
     create_public_api_k8s_resources(v1, cfg)
 
     # Step 4: Apply IngressRoute
