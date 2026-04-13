@@ -370,6 +370,13 @@ def handler(event, context):
             eventPattern: {
                 source: ['aws.autoscaling'],
                 detailType: ['EC2 Instance Launch Successful'],
+                detail: {
+                    AutoScalingGroupName: [ {
+                        prefix: `${props.prefix}-`
+                    }
+
+                    ],
+                },
             },
             targets: [new targets.SfnStateMachine(this.stateMachine)],
         });
