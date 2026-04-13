@@ -300,7 +300,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     environment: ${{ inputs.environment }}
     outputs:
       cp-execution-id: ${{ steps.trigger.outputs.cp_execution_id }}

@@ -48,9 +48,56 @@ concurrency:
   group: deploy-post-bootstrap-${{ inputs.environment }}
   cancel-in-progress: false
 
+env:
+  NODE_VERSION: "22"
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
 jobs:
+  # ===========================================================================
+  # Sync deploy.py scripts to S3 before triggering SM-B.
+  #
+  # SM-B downloads scripts from S3 before executing them on EC2. Without this
+  # step, SM-B runs whatever was last synced — stale code from a previous
+  # pipeline run. This ensures the latest committed scripts are always used.
+  #
+  # Syncs three targets (same as Phase 2 in _deploy-ssm-automation.yml):
+  #   1. k8s-bootstrap/                → s3://{bucket}/k8s-bootstrap/
+  #   2. workloads/charts/nextjs/      → s3://{bucket}/app-deploy/nextjs/
+  #   3. platform/charts/monitoring/   → s3://{bucket}/app-deploy/monitoring/
+  #   4. workloads/charts/start-admin/ → s3://{bucket}/app-deploy/start-admin/
+  # ===========================================================================
+  sync-scripts:
+    name: "Sync Scripts to S3"
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build TypeScript
+        run: just build
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+      - name: Sync Scripts to S3
+        run: just ci-sync-scripts --environment ${{ inputs.environment }} --region ${{ env.AWS_REGION }}
+
   post-bootstrap:
     name: "SM-B Config Injection & Verify"
+    needs: [sync-scripts]
     uses: ./.github/workflows/_post-bootstrap-config.yml
     with:
       environment: ${{ inputs.environment }}

@@ -79,9 +79,9 @@ const args = parseArgs(
         },
         {
             name: 'max-wait',
-            description: 'Max seconds to wait for control-plane execution (default: 600)',
+            description: 'Max seconds to wait for control-plane execution (default: 1200)',
             hasValue: true,
-            default: '600',
+            default: '1200',
         },
     ],
     'Trigger Step Functions K8s bootstrap on K8s nodes',
@@ -96,7 +96,7 @@ if (!args.environment) {
 
 const environment = args.environment as string;
 const awsConfig = buildAwsConfig(args);
-const maxWait = parseInt(args['max-wait'] as string, 10) || 600;
+const maxWait = parseInt(args['max-wait'] as string, 10) || 1200;
 const ssmPrefix = `/k8s/${environment}`;
 
 // =============================================================================
