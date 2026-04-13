@@ -314,10 +314,81 @@ def handler(event, context):
       props.bootstrapLogGroupName,
     );
 
-    const waitForCa = new sfn.Wait(this, "WaitForCaPublish", {
-      time: sfn.WaitTime.duration(cdk.Duration.minutes(15)),
-      comment: "Wait for CP to publish new CA hash before worker re-bootstrap",
+    // ── Poll SSM for join-token instead of a fixed 15-minute sleep ──────────
+    //
+    // control_plane.py writes /k8s/{env}/join-token after kubeadm init.
+    // Workers need this token to join the cluster. Instead of sleeping a
+    // fixed 15 minutes, poll SSM every 30s for up to 20 minutes (40 attempts).
+    // Typically resolves within 1–2 minutes of CP completion.
+    //
+    // Pattern: InitCount → CheckParam → (success) workers
+    //                               → (catch)   IncrCount → MaxCheck
+    //                                                      → (≥ 40) Timeout
+    //                                                      → (<  40) Wait30s → CheckParam
+    const CA_POLL_MAX = 40; // 40 × 30s = 20 min
+
+    const initCaPollCount = new sfn.CustomState(this, "InitCaPollCount", {
+      stateJson: {
+        Type: "Pass",
+        Result: { value: 0 },
+        ResultPath: "$.CaPollCount",
+      },
     });
+
+    const checkCaParam = new sfnTasks.CallAwsService(this, "CheckCaParam", {
+      service: "ssm",
+      action: "getParameter",
+      parameters: {
+        Name: JsonPath.format(
+          "{}/join-token",
+          JsonPath.stringAt("$.router.ssmPrefix"),
+        ),
+      },
+      iamResources: [
+        `arn:aws:ssm:${stack.region}:${stack.account}:parameter${props.ssmPrefix}/*`,
+      ],
+      resultPath: JsonPath.DISCARD,
+      comment: "Poll SSM for join-token written by control_plane.py after kubeadm init",
+    });
+
+    const waitForCaPoll = new sfn.Wait(this, "WaitForCaPublish", {
+      time: sfn.WaitTime.duration(cdk.Duration.seconds(30)),
+      comment: "Wait 30s before re-checking join-token in SSM",
+    });
+
+    const incrCaPollCount = new sfn.CustomState(this, "IncrCaPollCount", {
+      stateJson: {
+        Type: "Pass",
+        Parameters: {
+          "value.$": "States.MathAdd($.CaPollCount.value, 1)",
+        },
+        ResultPath: "$.CaPollCount",
+      },
+    });
+
+    const caPublishTimeout = new sfn.Fail(this, "CaPublishTimeout", {
+      error: "CaPublishTimeout",
+      cause:
+        "join-token not published to SSM within 20 min of CP completion — " +
+        "check control_plane.py CloudWatch logs for kubeadm init failure",
+    });
+
+    const checkCaPollMax = new sfn.Choice(this, "CaPollMaxCheck", {
+      comment: "Abort if join-token still absent after 20 min",
+    })
+      .when(
+        sfn.Condition.numberGreaterThanEquals("$.CaPollCount.value", CA_POLL_MAX),
+        caPublishTimeout,
+      )
+      .otherwise(waitForCaPoll);
+
+    // Wire the poll loop: catch (param absent) → increment → max-check → wait → retry
+    checkCaParam.addCatch(incrCaPollCount, {
+      errors: ["States.ALL"],
+      resultPath: JsonPath.DISCARD,
+    });
+    incrCaPollCount.next(checkCaPollMax);
+    waitForCaPoll.next(checkCaParam);
 
     // ── Worker Rejoin Parallel — with full poll loop per branch ──
     //
@@ -348,8 +419,12 @@ def handler(event, context):
     // ── Stitch Control Plane branch (SM-A: cluster infrastructure only) ──
     // App config injection is SM-B's responsibility — triggered automatically
     // by EventBridge when this state machine emits ExecutionSucceeded.
-    cpSteps.end.next(waitForCa);
-    waitForCa.next(workerRejoinParallel);
+    // CP completes → initialise poll counter → poll SSM for join-token
+    // → (param present) trigger worker rejoin parallel
+    // → (param absent) wait 30s loop → timeout after 20 min
+    checkCaParam.next(workerRejoinParallel);
+    cpSteps.end.next(initCaPollCount);
+    initCaPollCount.next(checkCaParam);
 
     const cpChain = sfn.Chain.start(cpSteps.start);
     const workerChain = sfn.Chain.start(workerSteps.start);
