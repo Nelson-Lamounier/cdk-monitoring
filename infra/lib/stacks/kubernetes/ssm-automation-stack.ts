@@ -336,6 +336,12 @@ export class K8sSsmAutomationStack extends cdk.Stack {
             parameters: runnerParams,
             steps: [{
                 name: 'runScript',
+                // control_plane.py: kubeadm init + Calico + CCM + ArgoCD bootstrap takes up to
+                // ~25 minutes on a fresh node. The SM-A poll ceiling is 1800s (30 min).
+                // SSM's own timeoutSeconds must be >= SM-A ceiling or it will SIGKILL mid-run.
+                // Root cause of 2026-04-13 failure: default 600s killed control_plane.py at
+                // Step 9 (create_ci_bot rollout wait) after exactly 10 minutes of execution.
+                timeoutSeconds: 3600,
                 commands: [
                     'export PATH="/opt/k8s-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
                     // set -euo pipefail is prepended by SsmRunCommandDocument (without -u).
