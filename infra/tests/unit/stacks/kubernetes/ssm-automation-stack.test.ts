@@ -61,8 +61,8 @@ describe('K8sSsmAutomationStack', () => {
     describe('SSM Automation Documents', () => {
         const { template } = createSsmAutomationStack();
 
-        it('should create 6 SSM documents (3 Automation + 3 RunCommand)', () => {
-            template.resourceCountIs('AWS::SSM::Document', 6);
+        it('should create 5 SSM documents (2 Automation + 3 Command)', () => {
+            template.resourceCountIs('AWS::SSM::Document', 5);
         });
 
         it('should create a control plane automation document', () => {
@@ -148,65 +148,43 @@ describe('K8sSsmAutomationStack', () => {
             });
         });
 
-        it('should create a consolidated deploy secrets automation document', () => {
+        it('should create a deploy-runner command document (SM-B runner)', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
-                DocumentType: 'Automation',
-                Name: 'k8s-dev-deploy-secrets',
+                DocumentType: 'Command',
+                Name: 'k8s-dev-deploy-runner',
                 DocumentFormat: 'JSON',
                 UpdateMethod: 'NewVersion',
             });
         });
 
-        it('should have 3 steps (nextjs + monitoring + start-admin) in the deploy secrets document', () => {
+        it('should have a single runScript step in the deploy-runner document', () => {
             template.hasResourceProperties('AWS::SSM::Document', {
-                Name: 'k8s-dev-deploy-secrets',
+                Name: 'k8s-dev-deploy-runner',
                 Content: Match.objectLike({
                     mainSteps: Match.arrayWith([
-                        Match.objectLike({ name: 'deployNextjsSecrets' }),
-                        Match.objectLike({ name: 'deployMonitoringSecrets' }),
-                        Match.objectLike({ name: 'deployStartAdminSecrets' }),
+                        Match.objectLike({ name: 'runScript' }),
                     ]),
                 }),
             });
         });
 
-        it('should use correct S3 script path for each deploy step', () => {
-            // This test validates that scriptPath values match what is actually
-            // synced to S3 by sync-bootstrap-scripts.ts. If a new app is added
-            // to DEPLOY_SECRETS_STEPS, its scriptPath MUST follow the
-            // 'app-deploy/<app>/deploy.py' convention and be added to SYNC_TARGETS.
+        it('should accept ScriptPath and S3Bucket parameters and execute via python3', () => {
+            // deploy-runner receives ScriptPath at runtime from SM-B (ConfigOrchestrator).
+            // Script paths are no longer hardcoded in the document — they are passed as
+            // parameters, keeping the document generic for any app-deploy/<app>/deploy.py.
             template.hasResourceProperties('AWS::SSM::Document', {
-                Name: 'k8s-dev-deploy-secrets',
+                Name: 'k8s-dev-deploy-runner',
                 Content: Match.objectLike({
+                    parameters: Match.objectLike({
+                        ScriptPath: Match.objectLike({ type: 'String' }),
+                        S3Bucket: Match.objectLike({ type: 'String' }),
+                    }),
                     mainSteps: Match.arrayWith([
                         Match.objectLike({
-                            name: 'deployNextjsSecrets',
                             inputs: Match.objectLike({
-                                Parameters: Match.objectLike({
-                                    commands: Match.arrayWith([
-                                        Match.stringLikeRegexp('app-deploy/nextjs/deploy\\.py'),
-                                    ]),
-                                }),
-                            }),
-                        }),
-                        Match.objectLike({
-                            name: 'deployMonitoringSecrets',
-                            inputs: Match.objectLike({
-                                Parameters: Match.objectLike({
-                                    commands: Match.arrayWith([
-                                        Match.stringLikeRegexp('app-deploy/monitoring/deploy\\.py'),
-                                    ]),
-                                }),
-                            }),
-                        }),
-                        Match.objectLike({
-                            name: 'deployStartAdminSecrets',
-                            inputs: Match.objectLike({
-                                Parameters: Match.objectLike({
-                                    commands: Match.arrayWith([
-                                        Match.stringLikeRegexp('app-deploy/start-admin/deploy\\.py'),
-                                    ]),
-                                }),
+                                runCommand: Match.arrayWith([
+                                    Match.stringLikeRegexp('python3'),
+                                ]),
                             }),
                         }),
                     ]),
@@ -355,10 +333,15 @@ describe('K8sSsmAutomationStack', () => {
         });
 
         it('should create custom resources for SSM parameter cleanup', () => {
-            // Cleanup targets (5 SSM params + 2 log groups + 1 SNS topic = 8) plus
-            // Provider framework resources and CDK custom resources = 12 total
-            // (+1 for the new state-machine-arn SSM param registered with cleanup provider)
-            template.resourceCountIs('AWS::CloudFormation::CustomResource', 12);
+            // Cleanup targets:
+            //   SSM params (8): control-plane-doc-name, worker-doc-name, secrets-doc-name,
+            //     automation-role-arn, ssm-bootstrap-log-group, ssm-deploy-log-group,
+            //     state-machine-arn, config-state-machine-arn
+            //   Log groups (5): bootstrap, deploy, bootstrap-orchestrator, bootstrap-router,
+            //     config-orchestrator
+            //   SNS topics (1): bootstrap-alarm
+            // Total cleanup registrations = 14
+            template.resourceCountIs('AWS::CloudFormation::CustomResource', 14);
         });
 
         it('should grant the cleanup Lambda logs:DeleteLogGroup permission', () => {
