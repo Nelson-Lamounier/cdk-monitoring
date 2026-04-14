@@ -426,10 +426,14 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/${resourceNames.dynamoTableName}`,
                     // Bedrock content pipeline — AI-enhanced article metadata
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
+                    // Bedrock strategist pipeline — job applications + resume entities
+                    `arn:aws:dynamodb:${env.region}:${env.account}:table/${bedrockNamePrefix}-job-strategist`,
                 ],
-                // Admin write access — article publishing and deletion
+                // Admin write access — article publishing, deletion, and resume CRUD
                 dynamoWriteTableArns: [
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
+                    // Resumes are stored in the strategist table (migrated 2026-03)
+                    `arn:aws:dynamodb:${env.region}:${env.account}:table/${bedrockNamePrefix}-job-strategist`,
                 ],
                 // Admin S3 write — article image and video uploads from admin panel
                 s3WriteBucketArns: [

@@ -247,6 +247,7 @@ function grantApplicationPermissions(
             sid: 'DynamoDbAdminWrite',
             effect: iam.Effect.ALLOW,
             actions: [
+                'dynamodb:PutItem',
                 'dynamodb:UpdateItem',
                 'dynamodb:DeleteItem',
             ],
