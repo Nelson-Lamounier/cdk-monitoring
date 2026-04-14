@@ -44,7 +44,7 @@ let _lambdaClient: LambdaClient | undefined;
 function getLambdaClient(): LambdaClient {
   if (!_lambdaClient) {
     _lambdaClient = new LambdaClient({
-      region: process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
+      region: process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? 'eu-west-1',
     });
   }
   return _lambdaClient;

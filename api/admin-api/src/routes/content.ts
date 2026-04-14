@@ -34,7 +34,7 @@ import { docClient } from '../lib/dynamo.js';
 
 /** Singleton S3 client — credentials resolved from IMDS. */
 const s3 = new S3Client({
-  region: process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
+  region: process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? 'eu-west-1',
 });
 
 /**
