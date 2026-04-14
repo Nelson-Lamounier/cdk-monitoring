@@ -33,7 +33,9 @@ import type { AdminApiConfig } from '../lib/config.js';
 import { docClient } from '../lib/dynamo.js';
 
 /** Singleton S3 client — credentials resolved from IMDS. */
-const s3 = new S3Client({});
+const s3 = new S3Client({
+  region: process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
+});
 
 /**
  * Parse an S3 URI of the form `s3://bucket/key` into its components.

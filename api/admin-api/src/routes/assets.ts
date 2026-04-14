@@ -23,7 +23,9 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { AdminApiConfig } from '../lib/config.js';
 
 /** S3 client singleton — credentials from IMDS, no explicit config. */
-const s3 = new S3Client({});
+const s3 = new S3Client({
+  region: process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
+});
 
 /** Allowed MIME types for article asset uploads. */
 const ALLOWED_CONTENT_TYPES = new Set([
