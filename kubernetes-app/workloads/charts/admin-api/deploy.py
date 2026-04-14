@@ -282,6 +282,14 @@ def create_public_api_k8s_resources(v1: object, cfg: AdminApiConfig) -> None:
 # In Traefik, more-specific rules win. The `/api/admin` prefix is
 # explicitly excluded from the public-api IngressRoute regex.
 
+# ENTRYPOINT: 'web' (port 80) — not 'websecure'.
+# CloudFront → EIP uses HTTP_ONLY (port 80). Traefik's 'web' entrypoint handles
+# all CloudFront traffic. The 'websecure' entrypoint (port 443) is for direct
+# HTTPS access and would never be reached from CloudFront.
+#
+# SECURITY: The X-CloudFront-Origin-Secret header is required on all routes.
+# CloudFront injects this header via a custom origin header; direct requests to
+# the EIP without this header are rejected by Traefik before reaching the pod.
 INGRESSROUTE_TEMPLATE = """\
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -294,23 +302,57 @@ metadata:
     kubernetes.io/description: "Traefik IngressRoute for admin-api BFF (managed by deploy.py)"
 spec:
   entryPoints:
-    - websecure
+    - web
   routes:
     - match: >-
         Host(`{host}`) &&
-        PathPrefix(`/api/admin`)
+        PathPrefix(`/api/admin`) &&
+        HeaderRegexp(`X-CloudFront-Origin-Secret`, `{origin_secret}`)
       kind: Rule
       priority: 200
       services:
         - name: admin-api
           namespace: admin-api
           port: 3002
-  tls:
-    secretName: tls-portfolio-cert
 """
 
 
-def upsert_admin_api_ingressroute(cfg: AdminApiConfig) -> None:
+def _resolve_origin_secret(ssm_client: object, environment: str, client_error_cls: type) -> str:
+    """Fetch the CloudFront origin secret from SSM.
+
+    Mirrors the start-admin deploy.py pattern — the secret is stored at
+    /k8s/{environment}/cloudfront-origin-secret and rotated periodically.
+    During rotation both old and new values are accepted (regex alternation).
+
+    Args:
+        ssm_client: boto3 SSM client.
+        environment: Environment name (e.g. 'development').
+        client_error_cls: botocore ClientError class.
+
+    Returns:
+        Regex pattern string for HeaderRegexp matcher (one or two values).
+    """
+    import re
+    path = f"/k8s/{environment}/cloudfront-origin-secret"
+    log_info("Fetching CloudFront origin secret", ssm_path=path)
+    try:
+        history = ssm_client.get_parameter_history(Name=path, WithDecryption=True)
+        versions = sorted(history["Parameters"], key=lambda p: p["Version"], reverse=True)
+        if not versions:
+            raise RuntimeError(f"No versions found for SSM parameter: {path}")
+        latest = re.escape(versions[0]["Value"])
+        if len(versions) >= 2:
+            previous = re.escape(versions[1]["Value"])
+            return f"{previous}|{latest}"
+        return latest
+    except client_error_cls as exc:
+        raise RuntimeError(
+            f"CloudFront origin secret not found at {path}. "
+            "Ensure the SSM parameter exists before running deploy.py."
+        ) from exc
+
+
+def upsert_admin_api_ingressroute(cfg: AdminApiConfig, ssm_client: object, client_error_cls: type) -> None:
     """Create or replace the admin-api Traefik IngressRoute.
 
     This function is the sole owner of the admin-api IngressRoute.
@@ -319,6 +361,8 @@ def upsert_admin_api_ingressroute(cfg: AdminApiConfig) -> None:
 
     Args:
         cfg: admin-api deployment configuration.
+        ssm_client: boto3 SSM client (for origin secret resolution).
+        client_error_cls: botocore ClientError class.
     """
     import subprocess
     import tempfile
@@ -326,11 +370,10 @@ def upsert_admin_api_ingressroute(cfg: AdminApiConfig) -> None:
     # admin-api is routed via the main domain at /api/admin/* for all environments.
     # The subpath exclusion on the public-api IngressRoute ensures Traefik correctly
     # routes /api/admin/* to admin-api and /api/* (excluding admin) to public-api.
-    # Subdomain routing (admin-api.nelsonlamounier.com) was intentionally abandoned:
-    # those DNS records do not exist and BFF calls are server-to-server (in-cluster).
     host = "nelsonlamounier.com"
+    origin_secret = _resolve_origin_secret(ssm_client, cfg.environment_name, client_error_cls)
 
-    manifest = INGRESSROUTE_TEMPLATE.format(host=host)
+    manifest = INGRESSROUTE_TEMPLATE.format(host=host, origin_secret=origin_secret)
 
     log_info("Upserting admin-api IngressRoute", host=host, namespace=cfg.namespace)
 
@@ -397,7 +440,7 @@ def main() -> None:
     create_public_api_k8s_resources(v1, cfg)
 
     # Step 4: Apply IngressRoute
-    upsert_admin_api_ingressroute(cfg)
+    upsert_admin_api_ingressroute(cfg, ssm_client, ClientError)
 
     log_info("=== admin-api deploy complete ===")
 
