@@ -408,7 +408,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             stackId(this.namespace, 'AppIam', environment),
             {
                 controlPlaneStack,
-                workerPoolRole: generalPoolStack.instanceRole,
+                workerRoleSsmPath: `${ssmPrefix}/general-instance-role-arn`,
                 env,
                 description: `Application-tier IAM grants for Kubernetes cluster - ${environment}`,
                 targetEnvironment: environment,
@@ -453,7 +453,6 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             },
         );
         appIamStack.addDependency(controlPlaneStack);
-        appIamStack.addDependency(generalPoolStack);
         stacks.push(appIamStack);
         stackMap.appIam = appIamStack;
 

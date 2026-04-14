@@ -770,6 +770,16 @@ echo "SSM Automation will be triggered by the CI pipeline"
             description: `${props.poolType} pool IAM instance role ARN`,
         });
 
+        // Publish the instance role ARN to SSM so other stacks (e.g. AppIam)
+        // can import it without a CloudFormation cross-stack export dependency.
+        // Path: /k8s/{env}/{poolType}-instance-role-arn
+        new ssm.StringParameter(this, 'InstanceRoleArnParam', {
+            parameterName: `${props.controlPlaneSsmPrefix}/${props.poolType}-instance-role-arn`,
+            stringValue: launchTemplateConstruct.instanceRole.roleArn,
+            description: `${props.poolType} pool EC2 instance role ARN`,
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
         if (isMonitoringPool && this.alertsTopic) {
             new cdk.CfnOutput(this, 'MonitoringAlertsTopicArn', {
                 value: this.alertsTopic.topicArn,

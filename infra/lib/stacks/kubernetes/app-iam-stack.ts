@@ -15,6 +15,7 @@
  */
 
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -39,13 +40,17 @@ export interface KubernetesAppIamStackProps extends cdk.StackProps {
     readonly controlPlaneStack: KubernetesControlPlaneStack;
 
     /**
-     * Instance role of the general-pool worker ASG.
+     * SSM parameter path holding the general-pool worker instance role ARN.
+     *
+     * Written by KubernetesWorkerAsgStack (general pool) at:
+     *   /k8s/{env}/general-instance-role-arn
      *
      * Application pods (admin-api, public-api, start-admin) run on worker nodes,
      * not the control plane. DynamoDB, S3, and Lambda grants must be attached to
      * the worker node instance role so pods can reach AWS services via IMDS.
+     * Using SSM avoids a CloudFormation cross-stack export dependency.
      */
-    readonly workerPoolRole: iam.IRole;
+    readonly workerRoleSsmPath: string;
 
     /** Target deployment environment */
     readonly targetEnvironment: Environment;
@@ -140,7 +145,8 @@ export class KubernetesAppIamStack extends cdk.Stack {
         // grants must land on the worker role. The control plane role also receives
         // the same grants for deploy.py bootstrap scripts (S3/SSM access).
         const controlPlaneRole = props.controlPlaneStack.instanceRole;
-        const workerRole = props.workerPoolRole;
+        const workerRoleArn = ssm.StringParameter.valueFromLookup(this, props.workerRoleSsmPath);
+        const workerRole = iam.Role.fromRoleArn(this, 'WorkerRole', workerRoleArn, { mutable: true });
 
         const grantProps = {
             region: this.region,
