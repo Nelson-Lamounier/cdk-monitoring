@@ -190,6 +190,7 @@ export class BedrockKbStack extends cdk.Stack {
             bucket: dataBucket,
             dataSourceName: `${namePrefix}-repo-docs`,
             chunkingStrategy: bedrock.ChunkingStrategy.HIERARCHICAL_TITAN,
+            inclusionPrefixes: ['kb-docs/'],
         });
 
         // =================================================================
