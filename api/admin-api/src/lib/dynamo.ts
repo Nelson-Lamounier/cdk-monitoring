@@ -15,7 +15,12 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 
 /** Singleton raw DynamoDB client — resolves credentials from IMDS. */
-export const ddbClient = new DynamoDBClient({});
+export const ddbClient = new DynamoDBClient({
+  // AWS_REGION takes priority; fall back to AWS_DEFAULT_REGION (ConfigMap key).
+  // Explicit override prevents SDK v3 region-resolver from failing when only
+  // AWS_DEFAULT_REGION is set (smithy resolves AWS_REGION but not always the default).
+  region: process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
+});
 
 /**
  * DynamoDB Document client — provides automatic marshalling/unmarshalling

@@ -89,6 +89,7 @@ _CONFIG_KEYS: list[str] = [
     "STRATEGIST_TABLE_NAME",
     "SSM_BEDROCK_PREFIX",
     "AWS_DEFAULT_REGION",
+    "AWS_REGION",
 ]
 
 
@@ -209,6 +210,9 @@ def resolve_public_api_config(
     resolved["DYNAMODB_GSI2_NAME"] = "gsi2-tag-date"
     resolved["SSM_BEDROCK_PREFIX"] = f"/bedrock-{cfg.short_env}"
     resolved["AWS_DEFAULT_REGION"] = cfg.aws_region
+    # AWS_REGION is the canonical env var read by AWS SDK v3 (smithy).
+    # AWS_DEFAULT_REGION is a fallback but not always resolved by the SDK.
+    resolved["AWS_REGION"] = cfg.aws_region
 
     return resolved
 

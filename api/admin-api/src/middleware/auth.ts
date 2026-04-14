@@ -63,12 +63,10 @@ export function cognitoJwtAuth(
   issuerUrl: string,
   region: string,
 ): MiddlewareHandler {
-  return async (ctx: Context, next: Next): Promise<void> => {
+  return async (ctx: Context, next: Next): Promise<Response | void> => {
     const authHeader = ctx.req.header('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
-      ctx.status(401);
-      await ctx.json({ error: 'Missing or invalid Authorization header' });
-      return;
+      return ctx.json({ error: 'Missing or invalid Authorization header' }, 401);
     }
 
     const token = authHeader.slice(7);
@@ -84,8 +82,7 @@ export function cognitoJwtAuth(
       await next();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Token validation failed';
-      ctx.status(401);
-      await ctx.json({ error: 'Unauthorised', detail: message });
+      return ctx.json({ error: 'Unauthorised', detail: message }, 401);
     }
   };
 }
