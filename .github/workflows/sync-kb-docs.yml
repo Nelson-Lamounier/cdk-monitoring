@@ -69,8 +69,6 @@ jobs:
             ! -path '*/scripts/*')
 
           for f in $KB_FILES; do
-            BASENAME=$(basename "$f")
-
             # --- Check 1: Minimum file size ---
             SIZE=$(wc -c < "$f" | tr -d ' ')
             if [ "$SIZE" -lt 500 ]; then
