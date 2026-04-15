@@ -76,6 +76,64 @@ async function invokeAsync(
 }
 
 /**
+ * Invoke a Lambda function synchronously and return its parsed response body.
+ *
+ * The trigger Lambda is typed as an APIGatewayProxyEventV2 handler and returns
+ * `{ statusCode, headers, body: JSON.stringify({...}) }`. We parse the outer
+ * envelope and surface the inner `body` to the caller.
+ *
+ * Use this for routes that need to return data from the Lambda (e.g. applicationSlug).
+ * The trigger Lambda is fast (<3 s): DynamoDB write + StartExecution — synchronous
+ * invocation is safe.
+ *
+ * @param functionArn - The Lambda ARN to invoke
+ * @param payload - JSON-serialisable event payload
+ * @returns Parsed inner response body
+ * @throws Error if the Lambda returns a non-2xx status or a FunctionError
+ */
+async function invokeSync<T>(
+  functionArn: string,
+  payload: Record<string, unknown>,
+): Promise<T> {
+  const result = await getLambdaClient().send(
+    new InvokeCommand({
+      FunctionName: functionArn,
+      InvocationType: 'RequestResponse',
+      Payload: Buffer.from(JSON.stringify(payload)),
+    }),
+  );
+
+  // FunctionError indicates the Lambda threw an unhandled exception
+  if (result.FunctionError) {
+    let detail = '';
+    try {
+      const raw = result.Payload ? JSON.parse(Buffer.from(result.Payload).toString('utf-8')) : {};
+      detail = (raw as { errorMessage?: string }).errorMessage ?? JSON.stringify(raw);
+    } catch { /* ignore */ }
+    throw new Error(`Lambda function error: ${detail}`);
+  }
+
+  // Parse the API GW envelope the trigger Lambda wraps its response in
+  const envelope = result.Payload
+    ? (JSON.parse(Buffer.from(result.Payload).toString('utf-8')) as {
+        statusCode?: number;
+        body?: string;
+      })
+    : { statusCode: 500, body: '{}' };
+
+  const statusCode = envelope.statusCode ?? 500;
+  const body = envelope.body ? (JSON.parse(envelope.body) as Record<string, unknown>) : {};
+
+  if (statusCode < 200 || statusCode >= 300) {
+    const message = (body['error'] as string | undefined) ?? `Lambda returned ${statusCode}`;
+    const details = body['details'] ? ` — ${body['details'] as string}` : '';
+    throw new Error(`${message}${details}`);
+  }
+
+  return body as unknown as T;
+}
+
+/**
  * Create the pipelines admin router.
  *
  * @param config - Resolved application configuration
@@ -164,9 +222,16 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
   router.post('/strategist', async (ctx) => {
     const body = await ctx.req.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
 
+    const operation = String(body['operation'] ?? 'unknown');
+
     // The Strategist trigger Lambda is an APIGatewayProxyEventV2 handler.
-    // We must wrap the request body in the correct envelope shape so that
-    // the Lambda's Zod schema can parse it from event.body.
+    // We wrap the request body in the correct APIGatewayProxyEventV2 envelope
+    // so the Lambda can parse it from event.body.
+    //
+    // We use synchronous invocation (RequestResponse) for the strategist route
+    // so we can capture the Lambda's response and return `applicationSlug` to the
+    // admin dashboard for real-time progress tracking. The trigger Lambda is fast
+    // (<3 s: DynamoDB write + StartExecution) — blocking is acceptable here.
     const lambdaEvent = {
       requestContext: {
         http: { method: 'POST' },
@@ -174,11 +239,17 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
       body: JSON.stringify(body),
     };
 
-    await invokeAsync(config.strategistTriggerArn, lambdaEvent as Record<string, unknown>);
+    const result = await invokeSync<{
+      pipelineId: string;
+      applicationSlug: string;
+      operation: string;
+      status: string;
+      executionArn?: string;
+    }>(config.strategistTriggerArn, lambdaEvent as Record<string, unknown>);
 
-    console.log(`[pipelines] Strategist trigger queued — operation=${String(body['operation'] ?? 'unknown')}`);
+    console.log(`[pipelines] Strategist trigger complete — operation=${operation} slug=${result.applicationSlug}`);
 
-    return ctx.json({ queued: true, pipeline: 'strategist' }, 202);
+    return ctx.json(result, 200);
   });
 
   return router;
