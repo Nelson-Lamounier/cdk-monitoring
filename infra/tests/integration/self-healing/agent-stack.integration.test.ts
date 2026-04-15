@@ -357,6 +357,7 @@ describe('SelfHealingPipeline — Post-Deploy Smoke Test', () => {
 
         it('should exist and be accessible (if enabled)', async () => {
             // SNS topic is optional — only exists when notification email is configured.
+            // eslint-disable-next-line jest/no-conditional-in-test
             if (!topicArn) return;
 
             const { Attributes } = await sns.send(

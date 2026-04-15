@@ -337,6 +337,7 @@ jobs:
           echo "Syncing k8s-bootstrap helpers..."
           aws s3 sync kubernetes-app/k8s-bootstrap/ \
             "s3://${SCRIPTS_BUCKET}/k8s-bootstrap/" \
+            --exclude ".venv/*" \
             --region "${{ env.AWS_REGION }}"
 
           echo "Syncing admin-api deploy scripts..."
@@ -363,62 +364,11 @@ jobs:
       # always runs the version from this commit.
       # -------------------------------------------------------------------------
       - name: Run admin-api deploy.py via SSM (Secret + ConfigMap + IngressRoute)
-        env:
-          REGION: ${{ env.AWS_REGION }}
         run: |
-          INSTANCE_ID=$(aws ec2 describe-instances \
-            --filters \
-              "Name=tag:k8s:bootstrap-role,Values=control-plane" \
-              "Name=instance-state-name,Values=running" \
-            --query "Reservations[0].Instances[0].InstanceId" \
-            --region "$REGION" --output text 2>/dev/null || echo "")
-
-          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "::error::Control-plane instance not found — cannot run admin-api deploy.py"
-            exit 1
-          fi
-
-          echo "::add-mask::$INSTANCE_ID"
-
-          CMD_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "BUCKET=$(aws ssm get-parameter --name /k8s/development/scripts-bucket --query Parameter.Value --output text --region eu-west-1 2>/dev/null || echo \"\")",
-              "[ -n \"$BUCKET\" ] && aws s3 sync s3://$BUCKET/k8s-bootstrap/ /data/k8s-bootstrap/ --region eu-west-1 2>&1 && aws s3 sync s3://$BUCKET/app-deploy/admin-api/ /data/app-deploy/admin-api/ --region eu-west-1 2>&1 && echo \"[S3] scripts refreshed\" || echo \"[WARN] S3 sync skipped\"",
-              "KUBECONFIG=/etc/kubernetes/admin.conf python3 /data/app-deploy/admin-api/deploy.py 2>&1"
-            ]' \
-            --region "$REGION" \
-            --query "Command.CommandId" --output text)
-
-          echo "SSM command: $CMD_ID"
-
-          for i in $(seq 1 18); do
-            sleep 10
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$CMD_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --region "$REGION" \
-              --query "Status" --output text 2>/dev/null || echo "Pending")
-            echo "  [$i] deploy.py status: $STATUS"
-            if [[ "$STATUS" == "Success" || "$STATUS" == "Failed" || "$STATUS" == "TimedOut" ]]; then
-              break
-            fi
-          done
-
-          OUTPUT=$(aws ssm get-command-invocation \
-            --command-id "$CMD_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --region "$REGION" \
-            --query "StandardOutputContent" --output text 2>/dev/null || echo "(no output)")
-          echo "--- deploy.py output ---"
-          echo "$OUTPUT"
-
-          if [[ "$STATUS" != "Success" ]]; then
-            echo "::error::admin-api deploy.py failed with status: $STATUS"
-            echo "::error::Ensure SSM parameters exist: /nextjs/development/auth/cognito-* and /bedrock-dev/*"
-            exit 1
-          fi
+          npx tsx kubernetes-app/k8s-bootstrap/scripts/ssm-deploy.ts \
+            --app admin-api \
+            --environment "${{ env.ENVIRONMENT }}" \
+            --region "${{ env.AWS_REGION }}"
 
       - name: Force ArgoCD Sync via SSM
         # ArgoCD Image Updater may take up to 2 minutes to poll SSM.
@@ -672,6 +622,7 @@ jobs:
           echo "Syncing k8s-bootstrap helpers..."
           aws s3 sync kubernetes-app/k8s-bootstrap/ \
             "s3://${SCRIPTS_BUCKET}/k8s-bootstrap/" \
+            --exclude ".venv/*" \
             --region "${{ env.AWS_REGION }}"
 
           echo "Syncing public-api deploy scripts..."
@@ -693,62 +644,11 @@ jobs:
       # latest deploy.py from S3 before executing.
       # -------------------------------------------------------------------------
       - name: Run public-api deploy.py via SSM (ConfigMap + IngressRoute)
-        env:
-          REGION: ${{ env.AWS_REGION }}
         run: |
-          INSTANCE_ID=$(aws ec2 describe-instances \
-            --filters \
-              "Name=tag:k8s:bootstrap-role,Values=control-plane" \
-              "Name=instance-state-name,Values=running" \
-            --query "Reservations[0].Instances[0].InstanceId" \
-            --region "$REGION" --output text 2>/dev/null || echo "")
-
-          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "::error::Control-plane instance not found — cannot run public-api deploy.py"
-            exit 1
-          fi
-
-          echo "::add-mask::$INSTANCE_ID"
-
-          CMD_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "BUCKET=$(aws ssm get-parameter --name /k8s/development/scripts-bucket --query Parameter.Value --output text --region eu-west-1 2>/dev/null || echo \"\")",
-              "[ -n \"$BUCKET\" ] && aws s3 sync s3://$BUCKET/k8s-bootstrap/ /data/k8s-bootstrap/ --region eu-west-1 2>&1 && aws s3 sync s3://$BUCKET/app-deploy/public-api/ /data/app-deploy/public-api/ --region eu-west-1 2>&1 && echo \"[S3] scripts refreshed\" || echo \"[WARN] S3 sync skipped\"",
-              "KUBECONFIG=/etc/kubernetes/admin.conf python3 /data/app-deploy/public-api/deploy.py 2>&1"
-            ]' \
-            --region "$REGION" \
-            --query "Command.CommandId" --output text)
-
-          echo "SSM command: $CMD_ID"
-
-          for i in $(seq 1 18); do
-            sleep 10
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$CMD_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --region "$REGION" \
-              --query "Status" --output text 2>/dev/null || echo "Pending")
-            echo "  [$i] deploy.py status: $STATUS"
-            if [[ "$STATUS" == "Success" || "$STATUS" == "Failed" || "$STATUS" == "TimedOut" ]]; then
-              break
-            fi
-          done
-
-          OUTPUT=$(aws ssm get-command-invocation \
-            --command-id "$CMD_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --region "$REGION" \
-            --query "StandardOutputContent" --output text 2>/dev/null || echo "(no output)")
-          echo "--- deploy.py output ---"
-          echo "$OUTPUT"
-
-          if [[ "$STATUS" != "Success" ]]; then
-            echo "::error::public-api deploy.py failed with status: $STATUS"
-            echo "::error::Ensure SSM parameters exist: /bedrock-dev/* and /nextjs/development/*"
-            exit 1
-          fi
+          npx tsx kubernetes-app/k8s-bootstrap/scripts/ssm-deploy.ts \
+            --app public-api \
+            --environment "${{ env.ENVIRONMENT }}" \
+            --region "${{ env.AWS_REGION }}"
 
       - name: Force ArgoCD Sync via SSM
         env:
