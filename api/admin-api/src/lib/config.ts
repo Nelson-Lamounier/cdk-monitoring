@@ -32,6 +32,9 @@ export interface AdminApiConfig {
   /** AWS Lambda ARN for the article trigger pipeline. */
   readonly articleTriggerArn: string;
 
+  /** AWS Lambda ARN for querying article version history. */
+  readonly versionHistoryLambdaArn: string;
+
   /** AWS Lambda ARN for the strategist pipeline. */
   readonly strategistTriggerArn: string;
 
@@ -80,6 +83,7 @@ export function loadConfig(): AdminApiConfig {
     ASSETS_BUCKET_NAME: process.env['ASSETS_BUCKET_NAME'],
     PUBLISH_LAMBDA_ARN: process.env['PUBLISH_LAMBDA_ARN'],
     ARTICLE_TRIGGER_ARN: process.env['ARTICLE_TRIGGER_ARN'],
+    VERSION_HISTORY_LAMBDA_ARN: process.env['VERSION_HISTORY_LAMBDA_ARN'],
     STRATEGIST_TRIGGER_ARN: process.env['STRATEGIST_TRIGGER_ARN'],
     STRATEGIST_TABLE_NAME: process.env['STRATEGIST_TABLE_NAME'],
     COGNITO_USER_POOL_ID: process.env['COGNITO_USER_POOL_ID'],
@@ -106,6 +110,7 @@ export function loadConfig(): AdminApiConfig {
     assetsBucketName: required['ASSETS_BUCKET_NAME']!,
     publishLambdaArn: required['PUBLISH_LAMBDA_ARN']!,
     articleTriggerArn: required['ARTICLE_TRIGGER_ARN']!,
+    versionHistoryLambdaArn: required['VERSION_HISTORY_LAMBDA_ARN']!,
     strategistTriggerArn: required['STRATEGIST_TRIGGER_ARN']!,
     strategistTableName: required['STRATEGIST_TABLE_NAME']!,
     resumesTableName: required['STRATEGIST_TABLE_NAME']!, // Resumes co-located in strategist table

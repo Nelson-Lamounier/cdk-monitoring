@@ -85,6 +85,7 @@ _CONFIG_KEYS: list[str] = [
     "ASSETS_BUCKET_NAME",
     "PUBLISH_LAMBDA_ARN",
     "ARTICLE_TRIGGER_ARN",
+    "VERSION_HISTORY_LAMBDA_ARN",
     "STRATEGIST_TRIGGER_ARN",
     "STRATEGIST_TABLE_NAME",
     "SSM_BEDROCK_PREFIX",
@@ -191,6 +192,7 @@ def resolve_public_api_config(
         "assets-bucket-name": "ASSETS_BUCKET_NAME",
         "pipeline-publish-function-arn": "PUBLISH_LAMBDA_ARN",
         "pipeline-trigger-function-arn": "ARTICLE_TRIGGER_ARN",
+        "pipeline-version-history-function-arn": "VERSION_HISTORY_LAMBDA_ARN",
         "strategist-trigger-function-arn": "STRATEGIST_TRIGGER_ARN",
         "strategist-table-name": "STRATEGIST_TABLE_NAME",
     }

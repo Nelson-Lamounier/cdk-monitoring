@@ -21,6 +21,7 @@ const VALID_ENV: Record<string, string> = {
   ASSETS_BUCKET_NAME: 'test-assets-bucket',
   PUBLISH_LAMBDA_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:publish',
   ARTICLE_TRIGGER_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:trigger',
+  VERSION_HISTORY_LAMBDA_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:version-history',
   STRATEGIST_TRIGGER_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:strategist',
   STRATEGIST_TABLE_NAME: 'test-strategist-table',
   COGNITO_USER_POOL_ID: 'eu-west-1_TestPool',
@@ -63,6 +64,7 @@ describe('loadConfig()', () => {
       expect(config.assetsBucketName).toBe('test-assets-bucket');
       expect(config.publishLambdaArn).toContain('publish');
       expect(config.articleTriggerArn).toContain('trigger');
+      expect(config.versionHistoryLambdaArn).toContain('version-history');
       expect(config.strategistTriggerArn).toContain('strategist');
       expect(config.strategistTableName).toBe('test-strategist-table');
       expect(config.resumesTableName).toBe('test-strategist-table');

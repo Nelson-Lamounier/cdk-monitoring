@@ -8,6 +8,7 @@
  *                                              ?status=all|draft|review|published|rejected
  *                                              Default: all (fan-out across all statuses)
  *   GET    /api/admin/articles/:slug         — Get article by slug (primary key)
+ *   GET    /api/admin/articles/:slug/versions — List pipeline version history for a slug
  *   PUT    /api/admin/articles/:slug         — Update article metadata; syncs gsi1pk on
  *                                              status change so GSI queries stay consistent.
  *   DELETE /api/admin/articles/:slug         — Cascade delete METADATA + CONTENT#<slug>
@@ -81,10 +82,14 @@ export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindi
   // -----------------------------------------------------------------------
 
   /** Valid article statuses queryable via GSI1. */
-  const ALL_STATUSES = ['draft', 'review', 'published', 'rejected'] as const;
+  const ALL_STATUSES = ['draft', 'processing', 'review', 'published', 'rejected', 'flagged'] as const;
 
   /**
    * Query GSI1 for a single status string.
+   *
+   * Filters on BOTH gsi1pk (GSI partition key) AND the status attribute so
+   * that articles whose gsi1pk is stale (e.g. Lambda updated `status` but
+   * forgot to sync `gsi1pk`) never bleed into the wrong tab.
    *
    * @param status - Lowercase status (e.g. 'draft')
    * @returns Raw DynamoDB Items array
@@ -95,7 +100,16 @@ export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindi
         TableName: config.dynamoTableName,
         IndexName: config.dynamoGsi1Name,
         KeyConditionExpression: 'gsi1pk = :gsi1pk',
-        ExpressionAttributeValues: { ':gsi1pk': `STATUS#${status}` },
+        // Exclude VERSION#v<n> records (share gsi1pk with METADATA).
+        // Also filter by status attribute — guards against stale gsi1pk values
+        // where a pipeline Lambda updated `status` but forgot to sync `gsi1pk`.
+        FilterExpression: 'sk = :sk AND #st = :status',
+        ExpressionAttributeNames: { '#st': 'status' },
+        ExpressionAttributeValues: {
+          ':gsi1pk': `STATUS#${status}`,
+          ':sk': 'METADATA',
+          ':status': status,
+        },
         ScanIndexForward: false, // newest first
         Limit: 100,
       }),
@@ -270,6 +284,64 @@ export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindi
     );
 
     return ctx.json({ queued: true, slug });
+  });
+
+  // -----------------------------------------------------------------------
+  // GET /api/admin/articles/:slug/versions
+  // Return the complete pipeline version history for an article slug.
+  //
+  // Invokes the version-history Lambda (bedrock-*-pipeline-version-history)
+  // which queries DynamoDB for all VERSION#v<n> records sorted newest-first.
+  //
+  // Optional query param: ?limit=<n> (default 20, max 50)
+  //
+  // Response: 200 { success, slug, totalVersions, versions[] }
+  //         | 502 { error } — Lambda execution error or invocation failure
+  // -----------------------------------------------------------------------
+  router.get('/:slug/versions', async (ctx) => {
+    const slug = ctx.req.param('slug');
+    const limitParam = ctx.req.query('limit');
+    const limit = limitParam ? Math.min(parseInt(limitParam, 10), 50) : 20;
+
+    let rawPayload: string;
+
+    try {
+      const invokeResult = await getLambdaClient().send(
+        new InvokeCommand({
+          FunctionName: config.versionHistoryLambdaArn,
+          InvocationType: 'RequestResponse', // sync — we need the result
+          Payload: Buffer.from(JSON.stringify({ slug, limit })),
+        }),
+      );
+
+      rawPayload = invokeResult.Payload
+        ? Buffer.from(invokeResult.Payload).toString('utf-8')
+        : '{}';
+
+      if (invokeResult.FunctionError) {
+        console.error(`[articles] Version history Lambda error — slug=${slug} error=${invokeResult.FunctionError}`, rawPayload);
+        return ctx.json({ error: `Version history failed: ${invokeResult.FunctionError}` }, 502);
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[articles] Version history Lambda invocation failed — slug=${slug}`, err);
+      return ctx.json({ error: `Version history invocation failed: ${message}` }, 502);
+    }
+
+    // Parse and proxy the Lambda response directly to the admin dashboard.
+    const result = JSON.parse(rawPayload) as {
+      success: boolean;
+      slug: string;
+      totalVersions: number;
+      versions: unknown[];
+      message?: string;
+    };
+
+    if (!result.success) {
+      return ctx.json({ error: result.message ?? 'Version history query failed' }, 502);
+    }
+
+    return ctx.json(result, 200);
   });
 
   return router;
