@@ -78,7 +78,7 @@ export const PIPELINE_ALLOCATIONS: Record<DeployableEnvironment, PipelineAllocat
         },
         writer: {
             modelId: MODELS.ARTICLE_WRITER,
-            maxTokens: 16384,
+            maxTokens: 65536,
             thinkingBudgetTokens: 4096,
         },
         qa: {
@@ -98,7 +98,7 @@ export const PIPELINE_ALLOCATIONS: Record<DeployableEnvironment, PipelineAllocat
         },
         writer: {
             modelId: MODELS.ARTICLE_WRITER,
-            maxTokens: 16384,
+            maxTokens: 65536,
             thinkingBudgetTokens: 10240,
         },
         qa: {
@@ -118,7 +118,7 @@ export const PIPELINE_ALLOCATIONS: Record<DeployableEnvironment, PipelineAllocat
         },
         writer: {
             modelId: MODELS.ARTICLE_WRITER,
-            maxTokens: 16384,
+            maxTokens: 65536,
             thinkingBudgetTokens: 16000,
         },
         qa: {

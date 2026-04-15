@@ -258,7 +258,12 @@ async function handleAnalyse(body: AnalyseRequest): Promise<APIGatewayProxyResul
  */
 async function handleCoach(body: CoachRequest): Promise<APIGatewayProxyResultV2> {
     const now = new Date().toISOString();
-    const executionName = `coach-${body.applicationSlug}-${body.interviewStage}-${Date.now()}`;
+    // execution name limit is 80 chars. 
+    // coach- (6) + stage (~10) + - (1) + timestamp (13) + - (1) = ~31 chars.
+    // So slug can be max 49 chars.
+    const maxSlugLen = 40;
+    const safeSlug = body.applicationSlug.length > maxSlugLen ? body.applicationSlug.slice(0, maxSlugLen).replace(/-$/, '') : body.applicationSlug;
+    const executionName = `coach-${safeSlug}-${body.interviewStage}-${Date.now()}`;
 
     console.log(
         `[strategist-trigger] Coach — slug="${body.applicationSlug}", ` +

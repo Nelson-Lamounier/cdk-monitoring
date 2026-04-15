@@ -42,7 +42,7 @@ const WRITER_MODEL = process.env.FOUNDATION_MODEL ?? 'eu.anthropic.claude-sonnet
 const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? WRITER_MODEL;
 
 /** Maximum output tokens for Writer Agent response (full MDX articles need substantial headroom) */
-const WRITER_MAX_TOKENS = Number.parseInt(process.env.MAX_TOKENS ?? '32768', 10);
+const WRITER_MAX_TOKENS = Number.parseInt(process.env.MAX_TOKENS ?? '65536', 10);
 
 /** Default thinking budget (overridden by Research Agent complexity tier) */
 const DEFAULT_THINKING_BUDGET = Number.parseInt(process.env.THINKING_BUDGET_TOKENS ?? '16000', 10);

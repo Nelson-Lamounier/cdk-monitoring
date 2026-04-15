@@ -127,7 +127,11 @@ export const handler: S3Handler = async (event: S3Event): Promise<void> => {
         const version = await resolveNextVersion(slug);
 
         // Build pipeline context (now includes version)
-        const executionName = `${slug}-${Date.now()}`;
+        // Step Functions execution name limit is 80 characters.
+        // Date.now() is 13 chars, plus hyphen is 14. 80 - 14 = 66 chars max for slug.
+        const maxSlugLength = 60; // Leave plenty of room
+        const safeSlug = slug.length > maxSlugLength ? slug.slice(0, maxSlugLength).replace(/-$/, '') : slug;
+        const executionName = `${safeSlug}-${Date.now()}`;
 
         const pipelineContext: PipelineContext = {
             pipelineId: executionName,
