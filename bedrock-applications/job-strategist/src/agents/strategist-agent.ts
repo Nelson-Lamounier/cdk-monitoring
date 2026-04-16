@@ -46,7 +46,7 @@ const STRATEGIST_MODEL = process.env.STRATEGIST_MODEL ?? 'eu.anthropic.claude-so
 const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? STRATEGIST_MODEL;
 
 /** Maximum output tokens — large budget for full XML analysis */
-const STRATEGIST_MAX_TOKENS = 16384;
+const STRATEGIST_MAX_TOKENS = 32768;
 
 /** Extended thinking budget for complex document crafting */
 const STRATEGIST_THINKING_BUDGET = 12288;
