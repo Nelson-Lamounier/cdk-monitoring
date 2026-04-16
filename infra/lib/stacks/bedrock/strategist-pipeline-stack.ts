@@ -92,6 +92,10 @@ export interface StrategistPipelineStackProps extends cdk.StackProps {
     readonly knowledgeBaseId?: string;
     /** Bedrock Knowledge Base ARN for IAM permissions (optional) */
     readonly knowledgeBaseArn?: string;
+    /** wiki-mcp base URL for deterministic constraint retrieval (optional) */
+    readonly wikiMcpUrl?: string;
+    /** SSM SecureString path for wiki-mcp BasicAuth header, e.g. /wiki-mcp/basicauth-header (optional) */
+    readonly wikiMcpAuthSsmPath?: string;
     /** Runtime environment name */
     readonly environmentName: string;
     /** Application Inference Profile ARN for Research agent */
@@ -200,6 +204,16 @@ export class StrategistPipelineStack extends cdk.Stack {
                 TABLE_NAME: strategistTable.tableName,
                 ENVIRONMENT: props.environmentName,
                 ...(props.knowledgeBaseId ? { KNOWLEDGE_BASE_ID: props.knowledgeBaseId } : {}),
+                // wiki-mcp — deterministic constraint retrieval (optional; falls back to Pinecone)
+                ...(props.wikiMcpUrl ? { WIKI_MCP_URL: props.wikiMcpUrl } : {}),
+                ...(props.wikiMcpAuthSsmPath
+                    ? {
+                          WIKI_MCP_AUTH: ssm.StringParameter.valueForSecureStringParameter(
+                              this,
+                              props.wikiMcpAuthSsmPath,
+                          ),
+                      }
+                    : {}),
             },
             description: `Strategist Research Agent (${props.researchModel})`,
             logGroup: new logs.LogGroup(this, 'ResearchLogGroup', {

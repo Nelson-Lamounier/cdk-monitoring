@@ -320,6 +320,10 @@ export class BedrockProjectFactory implements IProjectFactory<BedrockFactoryCont
                 strategistProfileArn: dataStack.strategistSonnetProfileArn,
                 resumeBuilderProfileArn: dataStack.strategistHaikuProfileArn,
                 coachProfileArn: dataStack.strategistHaikuProfileArn,
+                // wiki-mcp — deterministic resume constraint retrieval
+                // Falls back to Pinecone when not configured (staging / pre-deploy)
+                wikiMcpUrl: 'https://ops.nelsonlamounier.com/wiki-mcp',
+                wikiMcpAuthSsmPath: '/wiki-mcp/basicauth-header',
                 env,
             }
         );

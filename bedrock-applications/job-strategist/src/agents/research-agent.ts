@@ -58,6 +58,12 @@ const RESEARCH_THINKING_BUDGET = 4096;
 /** Knowledge Base ID for Pinecone retrieval */
 const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID ?? '';
 
+/** wiki-mcp base URL — deterministic constraint retrieval (falls back to Pinecone if unset) */
+const WIKI_MCP_URL = process.env.WIKI_MCP_URL ?? '';
+
+/** wiki-mcp BasicAuth header value ("Basic <base64>") */
+const WIKI_MCP_AUTH = process.env.WIKI_MCP_AUTH ?? '';
+
 /** Maximum KB passages to retrieve */
 const MAX_KB_PASSAGES = 15;
 
@@ -139,6 +145,38 @@ function deduplicatePassages(passages: string[]): string {
     return unique.length > 0 ? unique.join('\n\n---\n\n') : '';
 }
 
+/**
+ * Fetch resume constraints from wiki-mcp `/api/constraints` REST endpoint.
+ *
+ * Returns the combined content of three structured pages:
+ *   - resume/agent-guide   — hard rules, confidence thresholds, ATS rules, banned verbs
+ *   - resume/gap-awareness — what NOT to claim; absent/partial concepts with safe framing
+ *   - resume/voice-library — authentic phrase anchors, banned AI terms, sentence variation
+ *
+ * Single HTTP GET — no MCP protocol overhead (no handshake/session management).
+ * 10 s timeout guards against pod unavailability.
+ *
+ * @returns Combined constraint pages as plain text, or empty string if wiki-mcp is not configured
+ */
+async function getWikiMcpConstraints(): Promise<string> {
+    if (!WIKI_MCP_URL || !WIKI_MCP_AUTH) {
+        return '';
+    }
+    console.log('[strategist-research] Fetching resume constraints from wiki-mcp');
+    const res = await fetch(`${WIKI_MCP_URL}/api/constraints`, {
+        headers: { Authorization: WIKI_MCP_AUTH },
+        signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+        throw new Error(`wiki-mcp /api/constraints → ${res.status}`);
+    }
+    const text = await res.text();
+    console.log(
+        `[strategist-research] wiki-mcp constraints fetched: ${(text.length / 1024).toFixed(1)}KB`,
+    );
+    return text;
+}
+
 // =============================================================================
 // USER MESSAGE BUILDER
 // =============================================================================
@@ -216,7 +254,8 @@ const RESEARCH_CONFIG: AgentConfig = {
  * Execute the Strategist Research Agent.
  *
  * 1. Sanitises the job description input
- * 2. Queries the Pinecone KB in parallel (3 factual + 2 constraint queries)
+ * 2. Queries Pinecone (3 factual) + wiki-mcp (constraints) in parallel
+ *    — falls back to 3 Pinecone constraint queries when wiki-mcp is not configured
  * 3. Reads structured resume data from the pipeline context (fetched by trigger)
  * 4. Runs Haiku 4.5 to produce a structured research brief
  *
@@ -237,43 +276,61 @@ export async function executeResearchAgent(
         console.warn(`[strategist-research] ${warning}`);
     }
 
-    // 2. Query Knowledge Base — 6 parallel queries (3 factual + 3 constraint)
-    //    Factual queries retrieve project evidence and skills
-    //    Constraint queries retrieve mandatory rules, gaps, status thresholds, and voice
+    // 2. Query Knowledge Base + wiki-mcp constraints in parallel
+    //
+    //    Factual (Pinecone): 3 semantic queries for portfolio evidence & skill signals
+    //    Constraints (wiki-mcp): single deterministic GET /api/constraints
+    //      → agent-guide (hard rules) + gap-awareness (what NOT to claim)
+    //        + voice-library (authentic language anchors)
+    //
+    //    Fallback: if wiki-mcp is not configured, run 3 Pinecone constraint queries instead
     let kbContext = '';
     let resumeConstraints = '';
 
-    if (KNOWLEDGE_BASE_ID) {
-        const [factual1, factual2, factual3, agentRules, gapBoundaries, voiceLibrary] = await Promise.all([
-            querySingleKb(sanitised.substring(0, 1000)),
-            querySingleKb('resume professional experience skills qualifications'),
-            querySingleKb('project architecture technical implementation deployment'),
-            querySingleKb(
-                'resume generation agent instructions confidence thresholds STRONG PARTIAL ABSENT hard rules',
-            ),
-            querySingleKb(
-                'resume honest boundaries what not to claim gaps absent overclaim service mesh SLA',
-            ),
-            querySingleKb(
-                'candidate writing voice authentic language personal phrases tone style',
-            ),
+    const hasKb = Boolean(KNOWLEDGE_BASE_ID);
+    const hasWikiMcp = Boolean(WIKI_MCP_URL && WIKI_MCP_AUTH);
+
+    if (hasKb || hasWikiMcp) {
+        // Factual KB queries + wiki-mcp constraint fetch — all in parallel
+        const [factual1, factual2, factual3, wikiConstraints] = await Promise.all([
+            hasKb ? querySingleKb(sanitised.substring(0, 1000)) : Promise.resolve([]),
+            hasKb ? querySingleKb('resume professional experience skills qualifications') : Promise.resolve([]),
+            hasKb ? querySingleKb('project architecture technical implementation deployment') : Promise.resolve([]),
+            getWikiMcpConstraints(),   // '' when WIKI_MCP_URL / WIKI_MCP_AUTH not set
         ]);
 
-        // Factual context — evidence for achievement bullet generation
+        // Factual context — portfolio evidence for achievement bullet verification
         const allFactualPassages = [...factual1, ...factual2, ...factual3];
         kbContext = deduplicatePassages(allFactualPassages);
 
-        // Resume domain constraints — rules, gaps, status thresholds, and voice anchoring (non-negotiable)
-        const allConstraintPassages = [...agentRules, ...gapBoundaries, ...voiceLibrary];
-        resumeConstraints = deduplicatePassages(allConstraintPassages);
+        resumeConstraints = wikiConstraints;
+
+        // Fallback: wiki-mcp not configured → retrieve constraints from Pinecone instead
+        if (!resumeConstraints && hasKb) {
+            console.log('[strategist-research] wiki-mcp not configured — falling back to Pinecone for constraints');
+            const [agentRules, gapBoundaries, voiceLibrary] = await Promise.all([
+                querySingleKb(
+                    'resume generation agent instructions confidence thresholds STRONG PARTIAL ABSENT hard rules',
+                ),
+                querySingleKb(
+                    'resume honest boundaries what not to claim gaps absent overclaim service mesh SLA',
+                ),
+                querySingleKb(
+                    'candidate writing voice authentic language personal phrases tone style',
+                ),
+            ]);
+            const allConstraintPassages = [...agentRules, ...gapBoundaries, ...voiceLibrary];
+            resumeConstraints = deduplicatePassages(allConstraintPassages);
+        }
 
         console.log(
-            `[strategist-research] KB retrieval complete — ` +
+            `[strategist-research] Retrieval complete — ` +
             `factual=${kbContext.length > 0 ? `${(kbContext.length / 1024).toFixed(1)}KB` : 'empty'}, ` +
-            `constraints=${resumeConstraints.length > 0 ? `${(resumeConstraints.length / 1024).toFixed(1)}KB` : 'empty'}`,
+            `constraints=${resumeConstraints.length > 0 ? `${(resumeConstraints.length / 1024).toFixed(1)}KB` : 'empty'} ` +
+            `(source: ${hasWikiMcp ? 'wiki-mcp' : 'pinecone'})`,
         );
     } else {
-        console.log('[strategist-research] KB retrieval skipped — no KNOWLEDGE_BASE_ID configured');
+        console.log('[strategist-research] Retrieval skipped — no KNOWLEDGE_BASE_ID or WIKI_MCP_URL configured');
     }
 
     // 3. Read resume from pipeline context (fetched at trigger time)
