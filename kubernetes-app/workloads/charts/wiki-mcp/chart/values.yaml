@@ -1,0 +1,145 @@
+# @format
+# wiki-mcp — Helm chart default values
+#
+# FastMCP HTTP server exposing the portfolio knowledge base as MCP tools.
+#
+# ─── Credential Model ────────────────────────────────────────────────────────
+#   AWS credentials: EC2 Instance Profile (IMDS) — zero K8s secrets
+#                    Same pattern as admin-api.
+#                    Worker node IAM role MUST have S3:GetObject on kb-docs/*
+#                    (add via CDK: KubernetesWorkerAsgStack IAM inline policy)
+#
+#   BasicAuth secret: K8s Secret "wiki-mcp-basicauth" in wiki-mcp namespace
+#                     Created manually (not by ArgoCD — contains htpasswd hash):
+#                       kubectl create secret generic wiki-mcp-basicauth \
+#                         --from-literal=users="$(htpasswd -nb mcp <password>)" \
+#                         -n wiki-mcp
+#
+# ─── Traffic Path ────────────────────────────────────────────────────────────
+#   Lambda (non-VPC) → HTTPS → Traefik (ops.nelsonlamounier.com/wiki-mcp)
+#     → StripPrefix(/wiki-mcp) → BasicAuth → wiki-mcp ClusterIP:80
+#       → pod:8000 → FastMCP handler → S3 kb-docs/
+#
+# ─── MCP Endpoint ────────────────────────────────────────────────────────────
+#   POST https://ops.nelsonlamounier.com/wiki-mcp/mcp
+#   Lambda env: WIKI_MCP_URL=https://ops.nelsonlamounier.com/wiki-mcp/mcp
+#               WIKI_MCP_AUTH=<Basic base64(mcp:password)>
+# ─────────────────────────────────────────────────────────────────────────────
+
+# =========================================================================
+# Image — set by ArgoCD Image Updater write-back
+# =========================================================================
+image:
+  repository: ""  # REQUIRED: set to ECR URI, e.g. 771826808455.dkr.ecr.eu-west-1.amazonaws.com/wiki-mcp
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# =========================================================================
+# Replica — single pod (stateless S3 reads, in-memory cache is per-pod)
+# =========================================================================
+replicaCount: 1
+
+# =========================================================================
+# Service — ClusterIP, routes to pod port 8000
+# =========================================================================
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+# =========================================================================
+# Resources — light Python service, reads S3 on cache miss only
+# =========================================================================
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# =========================================================================
+# Health Checks — /healthz (our Starlette route, not the MCP /mcp endpoint)
+# =========================================================================
+healthChecks:
+  startup:
+    path: /healthz
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    failureThreshold: 24     # 24 × 5s = 120s max startup (Python import time)
+  readiness:
+    path: /healthz
+    periodSeconds: 10
+    failureThreshold: 3
+  liveness:
+    path: /healthz
+    periodSeconds: 30
+    failureThreshold: 3
+
+# =========================================================================
+# Environment variables injected into the pod
+# =========================================================================
+env:
+  - name: WIKI_S3_BUCKET
+    valueFrom:
+      configMapKeyRef:
+        name: wiki-mcp-config
+        key: WIKI_S3_BUCKET
+  - name: WIKI_KB_PREFIX
+    value: "kb-docs"
+  - name: PORT
+    value: "8000"
+
+# =========================================================================
+# Ingress — Traefik IngressRoute with BasicAuth + StripPrefix
+# =========================================================================
+ingress:
+  enabled: true
+  host: "ops.nelsonlamounier.com"
+  pathPrefix: "/wiki-mcp"
+  priority: 90   # below monitoring routes (100), above default
+
+# =========================================================================
+# NetworkPolicy — allow Traefik + Prometheus only
+# =========================================================================
+networkPolicy:
+  enabled: true
+
+# =========================================================================
+# PodDisruptionBudget
+# =========================================================================
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# =========================================================================
+# Pod scheduling — worker pool only (not monitoring)
+# =========================================================================
+nodeSelector:
+  node-pool: general
+
+tolerations: []
+affinity: {}
+
+terminationGracePeriodSeconds: 30
+
+podLabels: {}
+podAnnotations: {}
+
+# =========================================================================
+# Security context — non-root (uid 1001, same as admin-api)
+# =========================================================================
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+  capabilities:
+    drop:
+      - ALL

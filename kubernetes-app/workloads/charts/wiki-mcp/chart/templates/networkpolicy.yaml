@@ -1,0 +1,59 @@
+{{/*
+@format
+wiki-mcp — NetworkPolicy
+
+Default-deny ingress with explicit allow:
+  - Traefik namespace: serves the IngressRoute → pod traffic
+  - Monitoring namespace: Prometheus ServiceMonitor scraping (if enabled)
+
+Egress is unrestricted — pod needs to reach:
+  - S3 (us-east-1/eu-west-1 HTTPS) for kb-docs/ reads
+  - kube-dns (UDP 53) for name resolution
+  - IMDS (169.254.169.254) for EC2 instance profile credentials
+*/}}
+
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+
+  ingress:
+    # Allow inbound traffic from Traefik ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+
+    # Allow inbound from same namespace (debug, sidecars)
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+
+    # Allow Prometheus scraping from monitoring namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+{{- end }}

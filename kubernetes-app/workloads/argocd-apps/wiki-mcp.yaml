@@ -1,0 +1,98 @@
+# @format
+# ArgoCD Application: wiki-mcp
+#
+# FastMCP HTTP server exposing the portfolio knowledge base as MCP tools.
+# Callable from Bedrock Lambdas via HTTPS through Traefik.
+#
+# ─── Source repos ────────────────────────────────────────────────────────────
+#   Application code + Dockerfile: github.com/Nelson-Lamounier/my-mcp
+#   K8s manifests (this file + chart): github.com/Nelson-Lamounier/cdk-monitoring
+#   CI/CD: my-mcp repo builds image → pushes to ECR → ArgoCD Image Updater syncs
+#
+# ─── Credential Model ────────────────────────────────────────────────────────
+#   IMDS         → AWS SDK credentials for S3 reads (kb-docs/ prefix)
+#   wiki-mcp-config      (K8s ConfigMap — managed by kubectl/deploy.py)
+#     → WIKI_S3_BUCKET   (name of the S3 bucket containing kb-docs/)
+#   wiki-mcp-basicauth   (K8s Secret — created manually, never by ArgoCD)
+#     → users: htpasswd hash — Traefik BasicAuth middleware
+#
+# ─── One-time setup (run before first ArgoCD sync) ───────────────────────────
+#   # 1. Create the wiki-mcp namespace
+#   kubectl create namespace wiki-mcp
+#
+#   # 2. Create the BasicAuth secret
+#   htpasswd -nb mcp <password> | kubectl create secret generic wiki-mcp-basicauth \
+#     --from-file=users=/dev/stdin -n wiki-mcp
+#
+#   # 3. Create the ConfigMap with the S3 bucket name
+#   kubectl create configmap wiki-mcp-config \
+#     --from-literal=WIKI_S3_BUCKET=<your-kb-bucket-name> \
+#     -n wiki-mcp
+#
+#   # 4. Store BasicAuth header in SSM for Lambda access
+#   aws ssm put-parameter \
+#     --name /wiki-mcp/basicauth-header \
+#     --value "Basic $(echo -n 'mcp:<password>' | base64)" \
+#     --type SecureString
+#
+# ─── CDK change required ─────────────────────────────────────────────────────
+#   Add to KubernetesWorkerAsgStack IAM inline policy:
+#     s3:GetObject on arn:aws:s3:::<kb-bucket>/kb-docs/*
+#     s3:ListBucket on arn:aws:s3:::<kb-bucket>
+#   (so IMDS credentials can read wiki pages from S3)
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: wiki-mcp
+  namespace: argocd
+  annotations:
+    kubernetes.io/description: "FastMCP HTTP server — portfolio knowledge base as MCP tools"
+    argocd.argoproj.io/sync-wave: "5"  # Wave 5: Business Apps — same tier as admin-api
+    # -----------------------------------------------------------------------
+    # ArgoCD Image Updater — auto-update on new ECR push from kowledge-base CI
+    # -----------------------------------------------------------------------
+    argocd-image-updater.argoproj.io/image-list: "wiki-mcp=771826808455.dkr.ecr.eu-west-1.amazonaws.com/wiki-mcp"
+    argocd-image-updater.argoproj.io/wiki-mcp.update-strategy: newest-build
+    argocd-image-updater.argoproj.io/wiki-mcp.allow-tags: "regexp:^[0-9a-f]{7,40}(-r[0-9]+)?$"
+    argocd-image-updater.argoproj.io/wiki-mcp.helm.image-name: image.repository
+    argocd-image-updater.argoproj.io/wiki-mcp.helm.image-tag: image.tag
+    argocd-image-updater.argoproj.io/write-back-method: "git:secret:argocd/repo-cdk-monitoring"
+    argocd-image-updater.argoproj.io/git-branch: develop
+  labels:
+    app.kubernetes.io/part-of: argocd
+    platform.engineering/component: wiki-mcp
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+
+spec:
+  project: default
+
+  source:
+    repoURL: git@github.com:Nelson-Lamounier/cdk-monitoring.git
+    targetRevision: develop
+    path: kubernetes-app/workloads/charts/wiki-mcp/chart
+    helm:
+      valueFiles:
+        - ../wiki-mcp-values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: wiki-mcp
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
