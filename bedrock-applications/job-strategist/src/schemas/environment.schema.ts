@@ -35,10 +35,10 @@ export const TriggerEnvSchema = z.object({
     TABLE_NAME: z
         .string()
         .min(1, 'TABLE_NAME is required'),
-    /** S3 assets bucket */
+    /** S3 assets bucket — required for resume data fetching */
     ASSETS_BUCKET: z
         .string()
-        .default(''),
+        .min(1, 'ASSETS_BUCKET is required'),
     /** Runtime environment */
     ENVIRONMENT: z
         .string()
@@ -50,13 +50,60 @@ export const TriggerEnvSchema = z.object({
 });
 
 // =============================================================================
+// AGENT HANDLER ENVIRONMENT
+// =============================================================================
+
+/**
+ * Environment variables required by agent-tier Lambda handlers.
+ *
+ * Used by strategist-handler, coach-handler, resume-builder-handler,
+ * and research-handler. Each handler validates at cold start to
+ * prevent cryptic runtime failures from missing CDK env injection.
+ */
+export const AgentHandlerEnvSchema = z.object({
+    /** DynamoDB table name */
+    TABLE_NAME: z
+        .string()
+        .min(1, 'TABLE_NAME is required'),
+    /** Runtime environment name */
+    ENVIRONMENT: z
+        .string()
+        .default('development'),
+});
+
+// =============================================================================
+// PERSIST HANDLER ENVIRONMENT
+// =============================================================================
+
+/**
+ * Environment variables required by persistence-tier Lambda handlers.
+ *
+ * Used by analysis-persist-handler and any handler that reads/writes
+ * large artefacts from S3.
+ */
+export const PersistHandlerEnvSchema = z.object({
+    /** DynamoDB table name */
+    TABLE_NAME: z
+        .string()
+        .min(1, 'TABLE_NAME is required'),
+    /** S3 assets bucket — required for analysisXml rehydration */
+    ASSETS_BUCKET: z
+        .string()
+        .min(1, 'ASSETS_BUCKET is required'),
+    /** Runtime environment name */
+    ENVIRONMENT: z
+        .string()
+        .default('development'),
+});
+
+// =============================================================================
 // DDB HANDLER ENVIRONMENT
 // =============================================================================
 
 /**
  * Environment variables required by handlers that access DynamoDB.
  *
- * Used by coach-loader-handler, coach-handler, and analysis-persist-handler.
+ * Used by coach-loader-handler and analysis-persist-handler.
  */
 export const DdbHandlerEnvSchema = z.object({
     /** DynamoDB table name */
@@ -72,5 +119,12 @@ export const DdbHandlerEnvSchema = z.object({
 /** Validated trigger handler environment */
 export type TriggerEnv = z.infer<typeof TriggerEnvSchema>;
 
+/** Validated agent handler environment */
+export type AgentHandlerEnv = z.infer<typeof AgentHandlerEnvSchema>;
+
+/** Validated persist handler environment */
+export type PersistHandlerEnv = z.infer<typeof PersistHandlerEnvSchema>;
+
 /** Validated DDB handler environment */
 export type DdbHandlerEnv = z.infer<typeof DdbHandlerEnvSchema>;
+

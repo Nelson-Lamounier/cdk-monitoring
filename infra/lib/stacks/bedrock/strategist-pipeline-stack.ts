@@ -209,6 +209,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             }),
             bundling: bundlingConfig,
             tracing: lambda.Tracing.ACTIVE,
+            deadLetterQueue: this.pipelineDlq,
         });
 
         // =================================================================
@@ -238,6 +239,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             }),
             bundling: bundlingConfig,
             tracing: lambda.Tracing.ACTIVE,
+            deadLetterQueue: this.pipelineDlq,
         });
 
         // =================================================================
@@ -263,6 +265,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             }),
             bundling: bundlingConfig,
             tracing: lambda.Tracing.ACTIVE,
+            deadLetterQueue: this.pipelineDlq,
         });
 
         // =================================================================
@@ -287,6 +290,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             }),
             bundling: bundlingConfig,
             tracing: lambda.Tracing.ACTIVE,
+            deadLetterQueue: this.pipelineDlq,
         });
 
         // =================================================================
@@ -315,6 +319,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             }),
             bundling: bundlingConfig,
             tracing: lambda.Tracing.ACTIVE,
+            deadLetterQueue: this.pipelineDlq,
         });
 
         // =================================================================
@@ -377,6 +382,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             }),
             bundling: bundlingConfig,
             tracing: lambda.Tracing.ACTIVE,
+            deadLetterQueue: this.pipelineDlq,
         });
 
         // Resume Builder: Bedrock InvokeModel, DynamoDB read/write
@@ -435,12 +441,24 @@ export class StrategistPipelineStack extends cdk.Stack {
             resultPath: '$',
             comment: 'Research Agent: KB retrieval, resume parsing, gap analysis',
         });
+        researchTask.addRetry({
+            errors: ['ThrottlingException', 'ServiceUnavailableException', 'States.TaskFailed'],
+            interval: cdk.Duration.seconds(5),
+            maxAttempts: 2,
+            backoffRate: 2,
+        });
 
         const strategistTask = new tasks.LambdaInvoke(this, 'StrategistTask', {
             lambdaFunction: strategistFn,
             outputPath: '$.Payload',
             resultPath: '$',
             comment: 'Strategist Agent: 5-phase XML analysis and document generation',
+        });
+        strategistTask.addRetry({
+            errors: ['ThrottlingException', 'ServiceUnavailableException', 'States.TaskFailed'],
+            interval: cdk.Duration.seconds(10),
+            maxAttempts: 2,
+            backoffRate: 2,
         });
 
         const resumeBuilderTask = new tasks.LambdaInvoke(this, 'ResumeBuilderTask', {
@@ -513,7 +531,23 @@ export class StrategistPipelineStack extends cdk.Stack {
             comment: 'Write status=failed to DynamoDB so frontend can display analysis failure',
         });
 
-        markAnalysisFailed.next(analysisFailed);
+        /** Send structured error context to the DLQ before reaching Fail state */
+        const sendAnalysisErrorToDlq = new tasks.SqsSendMessage(this, 'SendAnalysisErrorToDlq', {
+            queue: this.pipelineDlq,
+            messageBody: sfn.TaskInput.fromObject({
+                pipeline: 'analysis',
+                applicationSlug: JsonPath.stringAt('$.context.applicationSlug'),
+                error: JsonPath.stringAt('$.error.Error'),
+                cause: JsonPath.stringAt('$.error.Cause'),
+                failedAt: JsonPath.stringAt('$$.State.EnteredTime'),
+                stateMachine: JsonPath.stringAt('$$.StateMachine.Name'),
+                executionId: JsonPath.stringAt('$$.Execution.Name'),
+            }),
+            comment: 'Forward structured error context to DLQ for operational visibility',
+            resultPath: sfn.JsonPath.DISCARD,
+        });
+
+        markAnalysisFailed.next(sendAnalysisErrorToDlq).next(analysisFailed);
 
         // Chain: Research → Strategist → ResumeBuilder → Persist (all catch → MarkFailed → Fail)
         const analysisDefinition = researchTask
@@ -573,6 +607,12 @@ export class StrategistPipelineStack extends cdk.Stack {
             resultPath: '$',
             comment: 'Interview Coach: stage-specific interview preparation',
         });
+        coachTask.addRetry({
+            errors: ['ThrottlingException', 'ServiceUnavailableException', 'States.TaskFailed'],
+            interval: cdk.Duration.seconds(5),
+            maxAttempts: 2,
+            backoffRate: 2,
+        });
 
         // =================================================================
         // Error Handling — Coaching SM: DynamoUpdateItem → Fail
@@ -624,7 +664,23 @@ export class StrategistPipelineStack extends cdk.Stack {
             comment: 'Write status=failed to DynamoDB so frontend can display coaching failure',
         });
 
-        markCoachingFailed.next(coachingFailed);
+        /** Send structured error context to the DLQ before reaching Fail state */
+        const sendCoachingErrorToDlq = new tasks.SqsSendMessage(this, 'SendCoachingErrorToDlq', {
+            queue: this.pipelineDlq,
+            messageBody: sfn.TaskInput.fromObject({
+                pipeline: 'coaching',
+                applicationSlug: JsonPath.stringAt('$.context.applicationSlug'),
+                error: JsonPath.stringAt('$.error.Error'),
+                cause: JsonPath.stringAt('$.error.Cause'),
+                failedAt: JsonPath.stringAt('$$.State.EnteredTime'),
+                stateMachine: JsonPath.stringAt('$$.StateMachine.Name'),
+                executionId: JsonPath.stringAt('$$.Execution.Name'),
+            }),
+            comment: 'Forward structured error context to DLQ for operational visibility',
+            resultPath: sfn.JsonPath.DISCARD,
+        });
+
+        markCoachingFailed.next(sendCoachingErrorToDlq).next(coachingFailed);
 
         // Chain: Load → Coach (all catch → MarkFailed → Fail)
         const coachingDefinition = coachLoaderTask
@@ -673,6 +729,8 @@ export class StrategistPipelineStack extends cdk.Stack {
                 ANALYSIS_STATE_MACHINE_ARN: this.analysisStateMachine.stateMachineArn,
                 COACHING_STATE_MACHINE_ARN: this.coachingStateMachine.stateMachineArn,
                 TABLE_NAME: strategistTable.tableName,
+                ASSETS_BUCKET: assetsBucket.bucketName,
+                ALLOWED_ORIGINS: '*',
                 ENVIRONMENT: props.environmentName,
             },
             description: 'Strategist Trigger — API Gateway → Step Functions (analyse/coach)',
@@ -683,6 +741,7 @@ export class StrategistPipelineStack extends cdk.Stack {
             }),
             bundling: bundlingConfig,
             tracing: lambda.Tracing.ACTIVE,
+            deadLetterQueue: this.pipelineDlq,
         });
 
         // Grant trigger Lambda permission to start executions on both state machines

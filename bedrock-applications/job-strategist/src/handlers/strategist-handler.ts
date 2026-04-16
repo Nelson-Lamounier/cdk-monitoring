@@ -19,10 +19,17 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
 import { executeStrategistAgent } from '../agents/strategist-agent.js';
+import { AgentHandlerEnvSchema } from '../schemas/environment.schema.js';
 import type {
     StrategistWriterHandlerInput,
     StrategistAnalysisPersistInput,
 } from '../../../shared/src/index.js';
+
+// =============================================================================
+// ENVIRONMENT VALIDATION (fail-fast at cold start)
+// =============================================================================
+
+const env = AgentHandlerEnvSchema.parse(process.env);
 
 // =============================================================================
 // CLIENTS
@@ -98,6 +105,7 @@ export const handler = async (
         data: {
             ...event.research.data,
             kbContext: '[trimmed]',
+            resumeConstraints: '[trimmed]',
             verifiedMatches: [],
             partialMatches: [],
             gaps: [],

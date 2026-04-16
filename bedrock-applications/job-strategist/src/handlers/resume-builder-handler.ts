@@ -14,6 +14,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 
 import { executeResumeBuilderAgent } from '../agents/resume-builder-agent.js';
+import { AgentHandlerEnvSchema } from '../schemas/environment.schema.js';
 import type {
     AgentResult,
     ResumeBuilderHandlerInput,
@@ -22,11 +23,17 @@ import type {
 } from '../../../shared/src/index.js';
 
 // =============================================================================
+// ENVIRONMENT VALIDATION (fail-fast at cold start)
+// =============================================================================
+
+const env = AgentHandlerEnvSchema.parse(process.env);
+
+// =============================================================================
 // CONFIGURATION
 // =============================================================================
 
 /** DynamoDB table for job application tracking */
-const TABLE_NAME = process.env.TABLE_NAME ?? '';
+const TABLE_NAME = env.TABLE_NAME;
 
 // =============================================================================
 // CLIENTS

@@ -18,20 +18,27 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 
+import { PersistHandlerEnvSchema } from '../schemas/environment.schema.js';
 import type {
     StrategistAnalysisPersistInput,
     StrategistAnalysisPipelineOutput,
 } from '../../../shared/src/index.js';
 
 // =============================================================================
+// ENVIRONMENT VALIDATION (fail-fast at cold start)
+// =============================================================================
+
+const env = PersistHandlerEnvSchema.parse(process.env);
+
+// =============================================================================
 // CONFIGURATION
 // =============================================================================
 
 /** DynamoDB table for job application tracking */
-const TABLE_NAME = process.env.TABLE_NAME ?? '';
+const TABLE_NAME = env.TABLE_NAME;
 
 /** S3 bucket for pipeline artefacts (shared assets bucket) */
-const ASSETS_BUCKET = process.env.ASSETS_BUCKET ?? '';
+const ASSETS_BUCKET = env.ASSETS_BUCKET;
 
 // =============================================================================
 // CLIENTS
@@ -168,6 +175,7 @@ export const handler = async (
             data: {
                 ...research.data,
                 kbContext: '[persisted to DynamoDB]',
+                resumeConstraints: '[persisted to DynamoDB]',
             },
         },
         analysis: {

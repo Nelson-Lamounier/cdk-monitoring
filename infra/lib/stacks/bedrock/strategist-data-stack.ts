@@ -6,17 +6,21 @@
  * Owns the DynamoDB table that stores job application analyses,
  * interview coaching sessions, and pipeline execution history.
  *
- * Entity schema:
- *   pk: JOB#<jobId>
- *   sk: METADATA       — job description, company, target role
- *   sk: RESEARCH#<ts>   — research agent output (gap analysis, match report)
- *   sk: STRATEGY#<ts>   — strategist agent XML analysis
- *   sk: COACH#<stage>#<ts> — interview coaching per stage
- *   sk: STATUS          — pipeline execution status tracking
+ * Entity schema (single-table design):
+ *   pk: APPLICATION#<slug>
+ *   sk: METADATA                    — status, company, target role, fit rating, pipelineId
+ *   sk: ANALYSIS#<pipelineId>       — full XML analysis, suggestions, cover letter
+ *   sk: TAILORED_RESUME#<pipelineId>— tailored StructuredResumeData JSON
+ *   sk: INTERVIEW#<stage>           — coaching data stored as native DynamoDB Map
+ *
+ *   pk: RESUME#<resumeId>           — source resume (read-only, shared with other pipelines)
+ *
+ * Status transitions (METADATA.status):
+ *   analysing → analysis-ready → interviewing → failed
  *
  * GSI: gsi1-status-date
- *   gsi1pk: STATUS#<status>  → groups applications by status
- *   gsi1sk: <date>#<jobId>   → reverse-chronological listing
+ *   gsi1pk: APP_STATUS#<status>     → groups applications by status
+ *   gsi1sk: <date>#<slug>           → reverse-chronological listing (e.g. 2026-04-16#acme-sre)
  *
  * Lifecycle: independent of pipeline Lambda redeployments.
  * Data persists across agent upgrades.
@@ -74,12 +78,12 @@ export class StrategistDataStack extends cdk.Stack {
         // =================================================================
         // DynamoDB — Strategist Table
         //
-        // pk: JOB#<jobId>
-        // sk: METADATA | RESEARCH#<ts> | STRATEGY#<ts> | COACH#<stage>#<ts> | STATUS
+        // pk: APPLICATION#<slug>
+        // sk: METADATA | ANALYSIS#<pipelineId> | TAILORED_RESUME#<pipelineId> | INTERVIEW#<stage>
         //
         // GSI: gsi1-status-date
-        //   gsi1pk: STATUS#<status>  (e.g. STATUS#analysed, STATUS#interview_active)
-        //   gsi1sk: <date>#<jobId>   (e.g. 2026-03-30#abc123)
+        //   gsi1pk: APP_STATUS#<status>  (e.g. APP_STATUS#analysis-ready, APP_STATUS#interviewing)
+        //   gsi1sk: <date>#<slug>         (e.g. 2026-04-16#acme-sre)
         //   Query: all applications by status, newest first (admin listing)
         // =================================================================
         this.strategistTable = new dynamodb.TableV2(this, 'StrategistTable', {
