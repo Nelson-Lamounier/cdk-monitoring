@@ -66,6 +66,10 @@ export interface SharedVpcStackProps extends cdk.StackProps {
     readonly adminApiEcrRepositoryName?: string;
     /** Enable admin-api ECR repository creation @default true */
     readonly createAdminApiEcrRepository?: boolean;
+    /** wiki-mcp MCP server ECR repository name @default 'wiki-mcp' */
+    readonly wikiMcpEcrRepositoryName?: string;
+    /** Enable wiki-mcp ECR repository creation @default false */
+    readonly createWikiMcpEcrRepository?: boolean;
 }
 
 
@@ -100,6 +104,8 @@ export class SharedVpcStack extends cdk.Stack {
     public readonly publicApiEcrRepository?: ecr.Repository;
     /** ECR Repository for the admin-api BFF */
     public readonly adminApiEcrRepository?: ecr.Repository;
+    /** ECR Repository for the wiki-mcp MCP server */
+    public readonly wikiMcpEcrRepository?: ecr.Repository;
 
     constructor(scope: Construct, id: string, props: SharedVpcStackProps) {
         super(scope, id, props);
@@ -403,6 +409,74 @@ export class SharedVpcStack extends cdk.Stack {
             new cdk.CfnOutput(this, 'AdminApiEcrRepositoryArn', {
                 value: this.adminApiEcrRepository.repositoryArn,
                 description: 'admin-api BFF ECR Repository ARN (Cognito-protected)',
+            });
+        }
+
+        // =====================================================================
+        // ECR Repository (wiki-mcp) — FastMCP K8s pod serving portfolio KB
+        // MCP tools + REST endpoints for Lambda constraint retrieval.
+        // SSM params stored under /shared/ecr-wiki-mcp/{env}/ for CI discovery.
+        // Opt-in: createWikiMcpEcrRepository must be explicitly set to true.
+        // =====================================================================
+        if (props.createWikiMcpEcrRepository === true) {
+            const wikiMcpRepoName = props.wikiMcpEcrRepositoryName ?? 'wiki-mcp';
+            const isProduction = props.targetEnvironment === Environment.PRODUCTION;
+
+            this.wikiMcpEcrRepository = new ecr.Repository(this, 'WikiMcpEcrRepository', {
+                repositoryName: wikiMcpRepoName,
+                imageScanOnPush: true,
+                imageTagMutability: ecr.TagMutability.MUTABLE,
+                encryption: ecr.RepositoryEncryption.AES_256,
+                removalPolicy: isProduction ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+                lifecycleRules: [
+                    {
+                        rulePriority: 1,
+                        description: 'Remove untagged images after 30 days',
+                        tagStatus: ecr.TagStatus.UNTAGGED,
+                        maxImageAge: cdk.Duration.days(30),
+                    },
+                    {
+                        rulePriority: 2,
+                        description: 'Keep only 50 most recent tagged images',
+                        tagStatus: ecr.TagStatus.ANY,
+                        maxImageCount: 50,
+                    },
+                ],
+            });
+
+            // SSM Parameters for wiki-mcp ECR discovery
+            const wikiMcpEcrSsmPrefix = `/shared/ecr-wiki-mcp/${props.targetEnvironment}`;
+
+            new ssm.StringParameter(this, 'SsmWikiMcpEcrRepositoryUri', {
+                parameterName: `${wikiMcpEcrSsmPrefix}/repository-uri`,
+                stringValue: this.wikiMcpEcrRepository.repositoryUri,
+                description: `wiki-mcp ECR repository URI for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmWikiMcpEcrRepositoryArn', {
+                parameterName: `${wikiMcpEcrSsmPrefix}/repository-arn`,
+                stringValue: this.wikiMcpEcrRepository.repositoryArn,
+                description: `wiki-mcp ECR repository ARN for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmWikiMcpEcrRepositoryName', {
+                parameterName: `${wikiMcpEcrSsmPrefix}/repository-name`,
+                stringValue: this.wikiMcpEcrRepository.repositoryName,
+                description: `wiki-mcp ECR repository name for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            // wiki-mcp ECR Outputs
+            new cdk.CfnOutput(this, 'WikiMcpEcrRepositoryUri', {
+                value: this.wikiMcpEcrRepository.repositoryUri,
+                description: 'wiki-mcp ECR Repository URI for docker push/pull',
+            });
+
+            new cdk.CfnOutput(this, 'WikiMcpEcrRepositoryArn', {
+                value: this.wikiMcpEcrRepository.repositoryArn,
+                description: 'wiki-mcp ECR Repository ARN',
             });
         }
 

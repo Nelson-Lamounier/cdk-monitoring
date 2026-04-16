@@ -5,11 +5,12 @@
  * Creates shared infrastructure (VPC, Security Baseline, FinOps) used by multiple
  * projects. This project should be deployed first before other projects.
  *
- * Stack 1 (Shared-Infra) provisions four ECR repositories:
+ * Stack 1 (Shared-Infra) provisions five ECR repositories:
  *   - nextjs-frontend  → used by the public-facing Next.js site
  *   - start-admin      → used by the TanStack Start admin panel
  *   - public-api       → BFF for portfolio visitors (read-only)
  *   - admin-api        → BFF for internal ops (write-heavy / authenticated)
+ *   - wiki-mcp         → FastMCP K8s pod serving the portfolio knowledge base
  *
  * All repository URIs, ARNs, and names are published to SSM under:
  *   /shared/ecr-{service}/{env}/{repository-uri|repository-arn|repository-name}
@@ -113,11 +114,12 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
         // =================================================================
         // Stack 1: Infrastructure — VPC + ECR repositories
         //
-        // Creates four ECR repositories (opt-out via `create*EcrRepository: false`):
+        // Creates five ECR repositories:
         //   - nextjs-frontend  (public-facing Next.js site)
         //   - start-admin      (TanStack Start admin panel)
         //   - public-api       (BFF — portfolio visitor read-only API)
         //   - admin-api        (BFF — internal ops write-heavy API)
+        //   - wiki-mcp         (FastMCP K8s pod — portfolio KB, opt-in via createWikiMcpEcrRepository)
         //
         // All repository metadata is published to SSM for CI/CD discovery:
         //   /shared/ecr-{service}/{env}/{repository-uri|repository-arn|repository-name}
@@ -142,6 +144,9 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
             // ── ECR: admin-api BFF (internal ops — write-heavy) ──────
             createAdminApiEcrRepository: true,
             adminApiEcrRepositoryName: 'admin-api',
+            // ── ECR: wiki-mcp (FastMCP K8s pod — portfolio KB) ───────
+            createWikiMcpEcrRepository: true,
+            wikiMcpEcrRepositoryName: 'wiki-mcp',
         });
 
         stacks.push(infraStack);

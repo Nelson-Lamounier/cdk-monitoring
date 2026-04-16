@@ -164,4 +164,80 @@ describe('SharedVpcStack', () => {
             expect(stack.vpc.vpcId).toBeDefined();
         });
     });
+
+    describe('wiki-mcp ECR Repository', () => {
+        it('should NOT create wiki-mcp ECR repository by default (opt-in)', () => {
+            const { stack } = createSharedVpcStack();
+            expect(stack.wikiMcpEcrRepository).toBeUndefined();
+        });
+
+        it('should create wiki-mcp ECR repository when opt-in flag is set', () => {
+            const { stack, template } = createSharedVpcStack({
+                createWikiMcpEcrRepository: true,
+                wikiMcpEcrRepositoryName: 'wiki-mcp',
+            });
+            expect(stack.wikiMcpEcrRepository).toBeDefined();
+            template.hasResourceProperties('AWS::ECR::Repository', {
+                RepositoryName: 'wiki-mcp',
+                ImageScanningConfiguration: { ScanOnPush: true },
+            });
+        });
+
+        it('should use default repository name when wikiMcpEcrRepositoryName omitted', () => {
+            const { template } = createSharedVpcStack({
+                createWikiMcpEcrRepository: true,
+            });
+            template.hasResourceProperties('AWS::ECR::Repository', {
+                RepositoryName: 'wiki-mcp',
+            });
+        });
+
+        it('should publish SSM parameters for wiki-mcp ECR discovery', () => {
+            const { template } = createSharedVpcStack({
+                targetEnvironment: Environment.DEVELOPMENT,
+                createWikiMcpEcrRepository: true,
+            });
+            // SSM prefix: /shared/ecr-wiki-mcp/{targetEnvironment}/
+            // targetEnvironment value is the full string e.g. 'development', not 'dev'
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/shared/ecr-wiki-mcp/development/repository-uri',
+            });
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/shared/ecr-wiki-mcp/development/repository-arn',
+            });
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/shared/ecr-wiki-mcp/development/repository-name',
+            });
+        });
+
+        it('should emit WikiMcpEcrRepositoryUri and WikiMcpEcrRepositoryArn outputs', () => {
+            const { template } = createSharedVpcStack({
+                createWikiMcpEcrRepository: true,
+            });
+            template.hasOutput('WikiMcpEcrRepositoryUri', {});
+            template.hasOutput('WikiMcpEcrRepositoryArn', {});
+        });
+
+        it('should use DESTROY removal policy for non-production', () => {
+            const { template } = createSharedVpcStack({
+                targetEnvironment: Environment.DEVELOPMENT,
+                createWikiMcpEcrRepository: true,
+            });
+            template.hasResource('AWS::ECR::Repository', {
+                UpdateReplacePolicy: 'Delete',
+                DeletionPolicy: 'Delete',
+            });
+        });
+
+        it('should use RETAIN removal policy for production', () => {
+            const { template } = createSharedVpcStack({
+                targetEnvironment: Environment.PRODUCTION,
+                createWikiMcpEcrRepository: true,
+            });
+            template.hasResource('AWS::ECR::Repository', {
+                UpdateReplacePolicy: 'Retain',
+                DeletionPolicy: 'Retain',
+            });
+        });
+    });
 });
