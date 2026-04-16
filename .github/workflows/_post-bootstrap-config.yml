@@ -486,16 +486,6 @@ jobs:
           SMOKE_CMD="just ci-smoke-kubernetes-infra ${{ inputs.cdk-environment }} --region ${{ env.AWS_REGION }}"
           eval $SMOKE_CMD
 
-      - name: "Site Smoke Test (Live Traffic Check)"
-        id: site-smoke
-        continue-on-error: false
-        run: |
-          just ci-smoke-site \
-            --environment ${{ inputs.environment }} \
-            --region ${{ env.AWS_REGION }} \
-            --max-attempts 12 \
-            --initial-delay 10
-
       # -----------------------------------------------------------------------
       # Failure Diagnostics — K8s state + boot logs on failure
       # -----------------------------------------------------------------------

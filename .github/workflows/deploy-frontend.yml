@@ -961,6 +961,35 @@ jobs:
           echo "- Promotion executed via SSM on control-plane node. Green RS is now active." >> $GITHUB_STEP_SUMMARY
 
   # ---------------------------------------------------------------------------
+  # Job: Smoke-test the live site after rollout promotion + asset sync.
+  # Runs here — not in post-bootstrap — because S3 content is only guaranteed
+  # to exist after sync-assets completes. CloudFront+OAC returns 403 (not 404)
+  # for missing objects, so an empty bucket would loop until timeout.
+  # ---------------------------------------------------------------------------
+  smoke-site:
+    name: "[Site] Smoke Test"
+    needs: [resolve-targets, promote-site, sync-assets]
+    if: needs.resolve-targets.outputs.deploy-site == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: development
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+
+      - name: Run Site Smoke Test
+        run: |
+          just ci-smoke-site \
+            --environment ${{ env.ENVIRONMENT }} \
+            --region ${{ env.AWS_REGION }} \
+            --max-attempts 12 \
+            --initial-delay 10
+
+  # ---------------------------------------------------------------------------
   # Job: Invalidate CloudFront cache for /admin/* after promote-admin
   # Required because TanStack Start uses content-hashed assets — stale HTML
   # references old asset hashes after every deploy, causing CSS/JS 404s.
@@ -1062,6 +1091,7 @@ jobs:
       - sync-assets
       - deploy-site
       - promote-site
+      - smoke-site
       - build-admin
       - push-admin
       - deploy-admin
@@ -1085,6 +1115,7 @@ jobs:
             echo "| Site (Next.js)  | Sync Assets       | ${{ needs.sync-assets.result }} |" >> $GITHUB_STEP_SUMMARY
             echo "| Site (Next.js)  | Deploy to K8s     | ${{ needs.deploy-site.result }} |" >> $GITHUB_STEP_SUMMARY
             echo "| Site (Next.js)  | Promote Rollout   | ${{ needs.promote-site.result }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Site (Next.js)  | Smoke Test        | ${{ needs.smoke-site.result }} |" >> $GITHUB_STEP_SUMMARY
           fi
 
           # Admin rows (only shown if deploy-admin was requested)
@@ -1105,6 +1136,7 @@ jobs:
             "${{ needs.push-site.result }}" \
             "${{ needs.deploy-site.result }}" \
             "${{ needs.promote-site.result }}" \
+            "${{ needs.smoke-site.result }}" \
             "${{ needs.build-admin.result }}" \
             "${{ needs.push-admin.result }}" \
             "${{ needs.deploy-admin.result }}" \
