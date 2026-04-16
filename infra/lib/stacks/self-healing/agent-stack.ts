@@ -7,11 +7,14 @@
  *
  * Resources:
  * - NodejsFunction (esbuild-bundled TypeScript handler)
- * - SQS Dead Letter Queue (encrypted, with configurable retention)
+ * - SQS FIFO queue (rate limiter between EventBridge and Lambda)
+ * - SQS Dead Letter Queue (FIFO — captures failed deliveries)
+ * - DynamoDB tables (deduplication + remediation outcome tracking)
  * - IAM policy for Bedrock model invocation
- * - EventBridge rule (scoped CloudWatch Alarm → Lambda trigger)
- * - CloudWatch log group
+ * - EventBridge rule (scoped CloudWatch Alarm → SQS FIFO → Lambda trigger)
+ * - CloudWatch log group + monthly token budget alarm
  * - SSM parameters for cross-stack discovery
+ * - SSM Parameter Store for system prompt (secure storage)
  */
 
 import * as path from 'node:path';
@@ -19,10 +22,13 @@ import * as path from 'node:path';
 import { NagSuppressions } from 'cdk-nag';
 
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -52,8 +58,10 @@ export interface SelfHealingAgentStackProps extends cdk.StackProps {
     readonly foundationModel: string;
     /** Whether agent runs in dry-run mode (propose but do not execute) */
     readonly enableDryRun: boolean;
-    /** System prompt for the agent */
+    /** System prompt content — stored in SSM at deploy time */
     readonly systemPrompt: string;
+    /** SSM path where the system prompt is stored (Lambda reads at cold start) */
+    readonly systemPromptSsmPath: string;
     /** AgentCore Gateway URL (resolved from SSM in factory) */
     readonly gatewayUrl: string;
     /** DLQ message retention in days */
@@ -74,6 +82,8 @@ export interface SelfHealingAgentStackProps extends cdk.StackProps {
     readonly notificationEmail?: string;
     /** Retention in days for S3 session memory objects */
     readonly memoryRetentionDays?: number;
+    /** Monthly token budget for Bedrock cost alarm (default: 500,000) */
+    readonly monthlyTokenBudget?: number;
     /** Application Inference Profile ARN for FinOps cost attribution */
     readonly inferenceProfileArn: string;
 }
@@ -90,6 +100,9 @@ export class SelfHealingAgentStack extends cdk.Stack {
     /** The Self-Healing Agent Lambda function */
     public readonly agentFunction: lambdaNode.NodejsFunction;
 
+    /** SQS FIFO queue for rate-limiting alarm triggers (SH-S6) */
+    public readonly triggerQueue: sqs.Queue;
+
     /** Dead Letter Queue for failed agent invocations */
     public readonly agentDlq: sqs.Queue;
 
@@ -98,6 +111,12 @@ export class SelfHealingAgentStack extends cdk.Stack {
 
     /** S3 bucket for conversation session memory */
     public readonly memoryBucket: s3.Bucket;
+
+    /** DynamoDB table for cross-container deduplication (SH-S4) */
+    public readonly dedupTable: dynamodb.Table;
+
+    /** DynamoDB table for remediation outcome tracking (SH-R5) */
+    public readonly outcomesTable: dynamodb.Table;
 
     constructor(scope: Construct, id: string, props: SelfHealingAgentStackProps) {
         super(scope, id, props);
@@ -114,13 +133,14 @@ export class SelfHealingAgentStack extends cdk.Stack {
         });
 
         // =================================================================
-        // SQS — Dead Letter Queue
+        // SQS — Dead Letter Queue (FIFO)
         //
-        // Captures failed agent invocations (Bedrock throttling, timeout,
-        // MCP Gateway errors) so events are not silently lost.
+        // FIFO DLQ paired with the trigger queue. Captures messages that
+        // exceed the redrive count without successful processing.
         // =================================================================
-        this.agentDlq = new sqs.Queue(this, 'AgentDlq', {
-            queueName: `${namePrefix}-agent-dlq`,
+        this.agentDlq = new sqs.Queue(this, 'AgentTriggerDlq', {
+            queueName: `${namePrefix}-agent-trigger-dlq.fifo`,
+            fifo: true,
             retentionPeriod: cdk.Duration.days(props.dlqRetentionDays),
             enforceSSL: true,
             encryption: sqs.QueueEncryption.SQS_MANAGED,
@@ -128,14 +148,71 @@ export class SelfHealingAgentStack extends cdk.Stack {
         });
 
         // =================================================================
-        // SNS — Remediation Report Notifications
+        // SQS — FIFO Trigger Queue (SH-S6: Rate Limiting)
+        //
+        // Absorbs alarm storms by serialising events for the SAME alarm
+        // (messageGroupId = alarmName) while allowing different alarms to
+        // process in parallel. Content-based dedup provides a 5-minute
+        // deduplication window, replacing in-memory dedup.
+        // =================================================================
+        this.triggerQueue = new sqs.Queue(this, 'AgentTriggerQueue', {
+            queueName: `${namePrefix}-agent-trigger.fifo`,
+            fifo: true,
+            contentBasedDeduplication: true,
+            visibilityTimeout: cdk.Duration.seconds(props.lambdaTimeoutSeconds * 2),
+            deadLetterQueue: {
+                queue: this.agentDlq,
+                maxReceiveCount: 3,
+            },
+            enforceSSL: true,
+            encryption: sqs.QueueEncryption.SQS_MANAGED,
+            removalPolicy: props.removalPolicy,
+        });
+
+        // =================================================================
+        // DynamoDB — Deduplication Table (SH-S4)
+        //
+        // Cross-container deduplication with TTL. Events are de-duped by
+        // alarmName#eventTime key. Falls back gracefully if DDB is slow.
+        // =================================================================
+        this.dedupTable = new dynamodb.Table(this, 'DedupTable', {
+            tableName: `${namePrefix}-agent-dedup`,
+            partitionKey: { name: 'dedupKey', type: dynamodb.AttributeType.STRING },
+            billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+            timeToLiveAttribute: 'expiresAt',
+            removalPolicy: props.removalPolicy,
+            pointInTimeRecovery: false,
+            encryption: dynamodb.TableEncryption.AWS_MANAGED,
+        });
+
+        // =================================================================
+        // DynamoDB — Remediation Outcomes (SH-R5)
+        //
+        // Tracks invocation → resolution correlation. Written at invocation
+        // time, updated when the alarm transitions ALARM → OK.
+        // =================================================================
+        this.outcomesTable = new dynamodb.Table(this, 'OutcomesTable', {
+            tableName: `${namePrefix}-agent-outcomes`,
+            partitionKey: { name: 'alarmName', type: dynamodb.AttributeType.STRING },
+            sortKey: { name: 'correlationId', type: dynamodb.AttributeType.STRING },
+            billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+            timeToLiveAttribute: 'expiresAt',
+            removalPolicy: props.removalPolicy,
+            pointInTimeRecovery: false,
+            encryption: dynamodb.TableEncryption.AWS_MANAGED,
+        });
+
+        // =================================================================
+        // SNS — Remediation Report Notifications (SH-S7: Encrypted)
         //
         // Publishes the agent's remediation report after each invocation
         // so the operator receives immediate email visibility.
+        // Uses AWS-managed SNS key for at-rest encryption.
         // =================================================================
         this.reportsTopic = new sns.Topic(this, 'ReportsTopic', {
             topicName: `${namePrefix}-agent-reports`,
             displayName: `Self-Healing Agent Reports (${namePrefix})`,
+            masterKey: kms.Alias.fromAliasName(this, 'SnsKmsAlias', 'alias/aws/sns'),
         });
 
         if (props.notificationEmail) {
@@ -188,13 +265,15 @@ export class SelfHealingAgentStack extends cdk.Stack {
                 FOUNDATION_MODEL: props.foundationModel,
                 INFERENCE_PROFILE_ARN: props.inferenceProfileArn,
                 DRY_RUN: props.enableDryRun ? 'true' : 'false',
-                SYSTEM_PROMPT: props.systemPrompt,
+                SYSTEM_PROMPT_SSM_PATH: props.systemPromptSsmPath,
                 COGNITO_TOKEN_ENDPOINT: props.cognitoTokenEndpoint,
                 COGNITO_USER_POOL_ID: props.cognitoUserPoolId,
                 COGNITO_CLIENT_ID: props.cognitoClientId,
                 COGNITO_SCOPES: props.cognitoScopes,
                 SNS_TOPIC_ARN: this.reportsTopic.topicArn,
                 MEMORY_BUCKET: this.memoryBucket.bucketName,
+                DEDUP_TABLE_NAME: this.dedupTable.tableName,
+                OUTCOMES_TABLE_NAME: this.outcomesTable.tableName,
             },
             description: `Self-healing remediation agent for ${namePrefix}`,
             bundling: {
@@ -322,15 +401,38 @@ export class SelfHealingAgentStack extends cdk.Stack {
         }
 
         // =================================================================
-        // EventBridge Rule — CloudWatch Alarm → Agent
+        // SSM — System Prompt Storage (SH-S1)
+        //
+        // Stores the system prompt securely in SSM Parameter Store rather
+        // than as a plaintext Lambda environment variable. The Lambda reads
+        // this at cold start and caches in-memory.
+        // =================================================================
+        const systemPromptParam = new ssm.StringParameter(this, 'SystemPromptParam', {
+            parameterName: props.systemPromptSsmPath,
+            stringValue: props.systemPrompt,
+            description: `Self-healing agent system prompt for ${namePrefix}`,
+            tier: ssm.ParameterTier.ADVANCED,
+        });
+
+        systemPromptParam.grantRead(this.agentFunction);
+
+        // Grant Lambda access to DynamoDB tables
+        this.dedupTable.grantReadWriteData(this.agentFunction);
+        this.outcomesTable.grantReadWriteData(this.agentFunction);
+
+        // =================================================================
+        // EventBridge Rule — CloudWatch Alarm → SQS FIFO (SH-S6)
         //
         // Triggers on CloudWatch alarms entering ALARM state, EXCLUDING
         // the agent's own alarms (e.g. token budget) to prevent a
         // self-referential feedback loop.
+        //
+        // Events are routed through the FIFO queue rather than directly
+        // to Lambda, absorbing alarm storms and serialising per-alarm.
         // =================================================================
         const alarmRule = new events.Rule(this, 'AlarmTriggerRule', {
             ruleName: `${namePrefix}-alarm-trigger`,
-            description: `Triggers self-healing agent on CloudWatch Alarm state changes for ${namePrefix}`,
+            description: `Routes CloudWatch Alarm state changes to SQS FIFO for ${namePrefix}`,
             eventPattern: {
                 source: ['aws.cloudwatch'],
                 detailType: ['CloudWatch Alarm State Change'],
@@ -345,9 +447,127 @@ export class SelfHealingAgentStack extends cdk.Stack {
             },
         });
 
-        alarmRule.addTarget(new targets.LambdaFunction(this.agentFunction, {
+        alarmRule.addTarget(new targets.SqsQueue(this.triggerQueue, {
+            messageGroupId: events.EventField.fromPath('$.detail.alarmName'),
+        }));
+
+        // SQS → Lambda event source (batch size 1 for serial processing)
+        this.agentFunction.addEventSource(
+            new lambdaEventSources.SqsEventSource(this.triggerQueue, {
+                batchSize: 1,
+                enabled: true,
+            }),
+        );
+
+        // =================================================================
+        // EventBridge Rule — ALARM → OK (SH-R5: Outcome Tracking)
+        //
+        // When an alarm transitions from ALARM → OK, the outcome tracker
+        // correlates this with recent agent invocations to measure
+        // remediation effectiveness.
+        // =================================================================
+        const outcomeTrackerLogGroup = new logs.LogGroup(this, 'OutcomeTrackerLogGroup', {
+            logGroupName: `/aws/lambda/${namePrefix}-outcome-tracker`,
+            retention: props.logRetention,
+            removalPolicy: props.removalPolicy,
+        });
+
+        const outcomeTracker = new lambdaNode.NodejsFunction(this, 'OutcomeTracker', {
+            functionName: `${namePrefix}-outcome-tracker`,
+            runtime: lambda.Runtime.NODEJS_22_X,
+            entry: path.join(__dirname, '..', '..', '..', '..', 'bedrock-applications', 'self-healing', 'src', 'outcome-tracker.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.seconds(30),
+            logGroup: outcomeTrackerLogGroup,
+            tracing: lambda.Tracing.ACTIVE,
+            environment: {
+                OUTCOMES_TABLE_NAME: this.outcomesTable.tableName,
+                METRIC_NAMESPACE: `${namePrefix}/SelfHealing`,
+            },
+            description: `Tracks remediation outcomes for ${namePrefix}`,
+            bundling: {
+                minify: true,
+                sourceMap: true,
+                externalModules: ['@aws-sdk/*'],
+            },
+        });
+
+        this.outcomesTable.grantReadWriteData(outcomeTracker);
+        outcomeTracker.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'PutRemediationMetrics',
+            effect: iam.Effect.ALLOW,
+            actions: ['cloudwatch:PutMetricData'],
+            resources: ['*'],
+            conditions: {
+                StringEquals: {
+                    'cloudwatch:namespace': `${namePrefix}/SelfHealing`,
+                },
+            },
+        }));
+
+        const okRule = new events.Rule(this, 'AlarmOkRule', {
+            ruleName: `${namePrefix}-alarm-ok-trigger`,
+            description: `Tracks alarm resolution for remediation outcome correlation (${namePrefix})`,
+            eventPattern: {
+                source: ['aws.cloudwatch'],
+                detailType: ['CloudWatch Alarm State Change'],
+                detail: {
+                    state: {
+                        value: ['OK'],
+                    },
+                    alarmName: [{
+                        'anything-but': { prefix: `${namePrefix}-agent` },
+                    }],
+                },
+            },
+        });
+
+        okRule.addTarget(new targets.LambdaFunction(outcomeTracker, {
             retryAttempts: 2,
         }));
+
+        NagSuppressions.addResourceSuppressions(
+            outcomeTracker,
+            [{ id: 'AwsSolutions-L1', reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime' }],
+            true,
+        );
+
+        // =================================================================
+        // Monthly Token Budget Alarm (SH-C3)
+        //
+        // Long-horizon cost alarm: fires if cumulative Bedrock token usage
+        // exceeds the monthly budget. Complements the hourly alarm.
+        // =================================================================
+        const monthlyBudget = props.monthlyTokenBudget ?? 500_000;
+
+        new cloudwatch.Alarm(this, 'MonthlyTokenBudgetAlarm', {
+            alarmName: `${namePrefix}-agent-monthly-token-budget`,
+            alarmDescription:
+                `Self-healing agent consumed >${monthlyBudget} tokens in 30 days. ` +
+                'Review agent invocation frequency and token efficiency.',
+            metric: new cloudwatch.MathExpression({
+                expression: 'inputTokens + outputTokens',
+                usingMetrics: {
+                    inputTokens: new cloudwatch.Metric({
+                        namespace: metricNamespace,
+                        metricName: 'InputTokens',
+                        statistic: 'Sum',
+                        period: cdk.Duration.days(30),
+                    }),
+                    outputTokens: new cloudwatch.Metric({
+                        namespace: metricNamespace,
+                        metricName: 'OutputTokens',
+                        statistic: 'Sum',
+                        period: cdk.Duration.days(30),
+                    }),
+                },
+            }),
+            threshold: monthlyBudget,
+            evaluationPeriods: 1,
+            comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        });
 
         // =================================================================
         // CDK-Nag Suppressions
@@ -364,9 +584,6 @@ export class SelfHealingAgentStack extends cdk.Stack {
         NagSuppressions.addResourceSuppressions(
             this.reportsTopic,
             [{
-                id: 'AwsSolutions-SNS2',
-                reason: 'Remediation report topic — no sensitive data, default encryption sufficient',
-            }, {
                 id: 'AwsSolutions-SNS3',
                 reason: 'Remediation report topic — enforceSSL not required for email-only delivery',
             }],
@@ -412,6 +629,13 @@ export class SelfHealingAgentStack extends cdk.Stack {
             tier: ssm.ParameterTier.STANDARD,
         });
 
+        new ssm.StringParameter(this, 'TriggerQueueUrlParam', {
+            parameterName: `/${namePrefix}/agent-trigger-queue-url`,
+            stringValue: this.triggerQueue.queueUrl,
+            description: `Agent FIFO trigger queue URL for ${namePrefix}`,
+            tier: ssm.ParameterTier.STANDARD,
+        });
+
         // =================================================================
         // Stack Outputs
         // =================================================================
@@ -430,6 +654,11 @@ export class SelfHealingAgentStack extends cdk.Stack {
             description: 'Agent Dead Letter Queue URL',
         });
 
+        new cdk.CfnOutput(this, 'TriggerQueueUrl', {
+            value: this.triggerQueue.queueUrl,
+            description: 'Agent SQS FIFO trigger queue URL',
+        });
+
         new cdk.CfnOutput(this, 'DryRunEnabled', {
             value: props.enableDryRun ? 'true' : 'false',
             description: 'Whether the agent is in dry-run mode',
@@ -443,6 +672,11 @@ export class SelfHealingAgentStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'ReportsTopicArn', {
             value: this.reportsTopic.topicArn,
             description: 'SNS topic ARN for remediation report notifications',
+        });
+
+        new cdk.CfnOutput(this, 'OutcomesTableName', {
+            value: this.outcomesTable.tableName,
+            description: 'DynamoDB table for remediation outcome tracking',
         });
     }
 }

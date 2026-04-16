@@ -58,6 +58,7 @@ function createAgentStack(
             foundationModel: FOUNDATION_MODEL,
             enableDryRun: true,
             systemPrompt: SYSTEM_PROMPT,
+            systemPromptSsmPath: '/self-healing-test/agent-system-prompt',
             gatewayUrl: GATEWAY_URL,
             cognitoTokenEndpoint: 'https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_test/.well-known/openid-configuration',
             cognitoUserPoolId: 'eu-west-1_testPool',

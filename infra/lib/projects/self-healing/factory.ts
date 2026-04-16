@@ -126,6 +126,7 @@ export class SelfHealingProjectFactory implements IProjectFactory<SelfHealingFac
                 foundationModel,
                 enableDryRun: configs.enableDryRun,
                 systemPrompt: configs.systemPrompt,
+                systemPromptSsmPath: configs.systemPromptSsmPath,
                 gatewayUrl: gatewayStack.gatewayUrl,
                 dlqRetentionDays: allocs.dlqRetentionDays,
                 reservedConcurrency: allocs.agentLambda.reservedConcurrency,

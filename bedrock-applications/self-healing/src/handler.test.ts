@@ -150,9 +150,9 @@ describe('isDuplicate', () => {
 // =============================================================================
 
 describe('getDefaultTools', () => {
-    it('should return four default tools', () => {
+    it('should return five default tools', () => {
         const tools = getDefaultTools();
-        expect(tools).toHaveLength(6);
+        expect(tools).toHaveLength(5);
     });
 
     it('should include diagnose_alarm tool', () => {
@@ -163,12 +163,11 @@ describe('getDefaultTools', () => {
         expect(diagnose?.description).toContain('Analyse');
     });
 
-    it('should include ebs_detach tool', () => {
+    it('should not include removed ebs_detach phantom tool', () => {
         const tools = getDefaultTools();
         const ebs = tools.find(t => t.name === 'ebs_detach');
 
-        expect(ebs).toBeDefined();
-        expect(ebs?.description).toContain('EBS volume');
+        expect(ebs).toBeUndefined();
     });
 
     it('should have valid JSON Schema input schemas', () => {
@@ -206,7 +205,7 @@ describe('buildToolConfig', () => {
         const config = buildToolConfig(tools);
 
         expect(config.tools).toBeDefined();
-        expect(config.tools).toHaveLength(6);
+        expect(config.tools).toHaveLength(5);
     });
 
     it('should produce toolSpec entries with correct names', () => {
@@ -217,7 +216,7 @@ describe('buildToolConfig', () => {
         );
 
         expect(names).toContain('diagnose_alarm');
-        expect(names).toContain('ebs_detach');
+        expect(names).not.toContain('ebs_detach');
     });
 
     it('should handle an empty tools array', () => {

@@ -16,10 +16,12 @@
  * 8. Return structured remediation report
  *
  * Environment Variables:
- *   GATEWAY_URL      - AgentCore Gateway MCP endpoint URL
- *   FOUNDATION_MODEL - Bedrock model ID
- *   DRY_RUN          - 'true' to propose only, 'false' to execute
- *   SYSTEM_PROMPT    - Agent behaviour instructions
+ *   GATEWAY_URL           - AgentCore Gateway MCP endpoint URL
+ *   FOUNDATION_MODEL      - Bedrock model ID
+ *   DRY_RUN               - 'true' to propose only, 'false' to execute
+ *   SYSTEM_PROMPT_SSM_PATH- SSM path for agent behaviour instructions
+ *   DEDUP_TABLE_NAME      - DynamoDB table for cross-container dedup
+ *   OUTCOMES_TABLE_NAME   - DynamoDB table for remediation outcome tracking
  */
 
 import {
@@ -41,12 +43,21 @@ import {
     DescribeUserPoolClientCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import {
+    DynamoDBClient,
+    PutItemCommand as DynamoPutItemCommand,
+    GetItemCommand as DynamoGetItemCommand,
+} from '@aws-sdk/client-dynamodb';
+import {
     S3Client,
     GetObjectCommand,
     PutObjectCommand,
     ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
+import {
+    SSMClient,
+    GetParameterCommand,
+} from '@aws-sdk/client-ssm';
 
 // =============================================================================
 // Configuration
@@ -56,7 +67,15 @@ const GATEWAY_URL = process.env.GATEWAY_URL ?? '';
 const FOUNDATION_MODEL = process.env.FOUNDATION_MODEL ?? 'eu.anthropic.claude-sonnet-4-6';
 const EFFECTIVE_MODEL_ID = process.env.INFERENCE_PROFILE_ARN ?? FOUNDATION_MODEL;
 const DRY_RUN = (process.env.DRY_RUN ?? 'true').toLowerCase() === 'true';
-const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ?? 'You are an infrastructure remediation agent.';
+
+/** SSM parameter path for the system prompt (SH-S1) */
+const SYSTEM_PROMPT_SSM_PATH = process.env.SYSTEM_PROMPT_SSM_PATH ?? '';
+
+/** Fallback system prompt if SSM lookup fails */
+const FALLBACK_SYSTEM_PROMPT = 'You are an infrastructure remediation agent.';
+
+/** Cached system prompt — populated from SSM at cold start */
+let cachedSystemPrompt: string | undefined;
 
 /** Cognito OAuth2 configuration for Gateway M2M auth */
 const COGNITO_TOKEN_ENDPOINT = process.env.COGNITO_TOKEN_ENDPOINT ?? '';
@@ -70,11 +89,58 @@ const SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN ?? '';
 /** S3 bucket for conversation session memory */
 const MEMORY_BUCKET = process.env.MEMORY_BUCKET ?? '';
 
+/** DynamoDB table for cross-container deduplication (SH-S4) */
+const DEDUP_TABLE_NAME = process.env.DEDUP_TABLE_NAME ?? '';
+
+/** DynamoDB table for remediation outcome tracking (SH-R5) */
+const OUTCOMES_TABLE_NAME = process.env.OUTCOMES_TABLE_NAME ?? '';
+
 /** Maximum agentic loop iterations to prevent runaway execution */
 const MAX_ITERATIONS = 10;
 
+/** Per-invocation token gate — hard limit on cumulative tokens (SH-C1) */
+const MAX_TOKENS_PER_INVOCATION = 20_000;
+
+/** Maximum conversation messages before sliding window truncation (SH-C2) */
+const MAX_HISTORY_MESSAGES = 12;
+
 /** Timeout for MCP Gateway HTTP calls (milliseconds) */
 const MCP_TIMEOUT_MS = 10_000;
+
+/**
+ * Extended thinking budget tokens (SH-R1).
+ *
+ * When > 0, enables Bedrock Extended Thinking for each Converse iteration.
+ * The budget is consumed PER iteration (not cumulative). A conservative
+ * 4,096 improves reasoning quality for the diagnose→classify→remediate
+ * workflow without excessive token consumption.
+ *
+ * Set to 0 to disable extended thinking.
+ */
+const THINKING_BUDGET = 4_096;
+
+/**
+ * SH-R1/R3: Write (destructive) tool classification set.
+ *
+ * Tools in this set mutate infrastructure state. After invocation,
+ * the agent loop injects a self-reflection prompt (SH-R3) asking the
+ * model to assess the result outcome before proceeding.
+ */
+const WRITE_TOOLS: ReadonlySet<string> = new Set([
+    'remediate_node_bootstrap',
+]);
+
+/**
+ * SH-R4: Verification tool set.
+ *
+ * Tools used to confirm the health of the system after a write operation.
+ * The agent loop enforces at least one verification call after any write
+ * tool invocation before allowing the final response.
+ */
+const VERIFICATION_TOOLS: ReadonlySet<string> = new Set([
+    'check_node_health',
+    'analyse_cluster_health',
+]);
 
 /** Buffer before token expiry to trigger refresh (seconds) */
 const TOKEN_REFRESH_BUFFER_S = 60;
@@ -83,6 +149,8 @@ const bedrock = new BedrockRuntimeClient({});
 const cognito = new CognitoIdentityProviderClient({});
 const snsClient = new SNSClient({});
 const s3Client = new S3Client({});
+const dynamoClient = new DynamoDBClient({});
+const ssmClient = new SSMClient({});
 
 /** Cached OAuth2 access token */
 let cachedToken = '';
@@ -188,6 +256,56 @@ function log(
 }
 
 // =============================================================================
+// SSM — System Prompt Loader (SH-S1)
+// =============================================================================
+
+/**
+ * Load the system prompt from SSM Parameter Store.
+ *
+ * Fetches the prompt at cold start and caches in-memory for warm
+ * invocations. Falls back to a minimal prompt if SSM is unavailable.
+ *
+ * @returns The system prompt string
+ */
+async function loadSystemPrompt(): Promise<string> {
+    if (cachedSystemPrompt) return cachedSystemPrompt;
+
+    if (!SYSTEM_PROMPT_SSM_PATH) {
+        log('WARN', 'No SYSTEM_PROMPT_SSM_PATH configured, using fallback prompt');
+        cachedSystemPrompt = FALLBACK_SYSTEM_PROMPT;
+        return cachedSystemPrompt;
+    }
+
+    try {
+        const result = await ssmClient.send(new GetParameterCommand({
+            Name: SYSTEM_PROMPT_SSM_PATH,
+        }));
+
+        const value = result.Parameter?.Value;
+        if (!value) {
+            log('WARN', 'SSM parameter returned no value, using fallback', { path: SYSTEM_PROMPT_SSM_PATH });
+            cachedSystemPrompt = FALLBACK_SYSTEM_PROMPT;
+            return cachedSystemPrompt;
+        }
+
+        cachedSystemPrompt = value;
+        log('INFO', 'System prompt loaded from SSM', {
+            path: SYSTEM_PROMPT_SSM_PATH,
+            promptLength: value.length,
+        });
+        return cachedSystemPrompt;
+    } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log('ERROR', 'Failed to load system prompt from SSM, using fallback', {
+            path: SYSTEM_PROMPT_SSM_PATH,
+            error,
+        });
+        cachedSystemPrompt = FALLBACK_SYSTEM_PROMPT;
+        return cachedSystemPrompt;
+    }
+}
+
+// =============================================================================
 // Idempotency Guard
 // =============================================================================
 
@@ -207,10 +325,14 @@ const DEDUP_WINDOW_MS = 5 * 60 * 1000;
 /**
  * Check if this event has already been processed within the dedup window.
  *
+ * Uses a two-tier strategy:
+ * 1. In-memory cache (warm container, fast path)
+ * 2. DynamoDB conditional put (cross-container, cold-start safe) (SH-S4)
+ *
  * @param event - The incoming event
  * @returns true if the event is a duplicate and should be skipped
  */
-function isDuplicate(event: AlarmEvent): boolean {
+async function isDuplicate(event: AlarmEvent): Promise<boolean> {
     const alarmName = event.detail?.alarmName ?? '';
     const eventTime = event.time ?? '';
     if (!alarmName) return false;
@@ -235,6 +357,32 @@ function isDuplicate(event: AlarmEvent): boolean {
     }
 
     deduplicationCache.set(key, now);
+
+    // SH-S4: DynamoDB dedup (cross-container, survives cold starts)
+    if (DEDUP_TABLE_NAME) {
+        try {
+            const expiresAt = Math.floor((now + DEDUP_WINDOW_MS) / 1000);
+            await dynamoClient.send(new DynamoPutItemCommand({
+                TableName: DEDUP_TABLE_NAME,
+                Item: {
+                    dedupKey: { S: key },
+                    expiresAt: { N: expiresAt.toString() },
+                    firstSeen: { N: now.toString() },
+                },
+                ConditionExpression: 'attribute_not_exists(dedupKey)',
+            }));
+        } catch (ddbErr) {
+            // ConditionalCheckFailedException means this key already exists
+            if (ddbErr instanceof Error && ddbErr.name === 'ConditionalCheckFailedException') {
+                log('INFO', 'DynamoDB dedup: duplicate detected (cross-container)', { key });
+                return true;
+            }
+            // Other DDB errors are non-fatal — in-memory dedup still applies
+            const ddbError = ddbErr instanceof Error ? ddbErr.message : String(ddbErr);
+            log('WARN', 'DynamoDB dedup check failed, relying on in-memory only', { key, error: ddbError });
+        }
+    }
+
     return false;
 }
 
@@ -243,10 +391,54 @@ function isDuplicate(event: AlarmEvent): boolean {
 // =============================================================================
 
 /**
+ * Sanitise event payload fields to mitigate prompt injection attacks (SH-S5).
+ *
+ * Strips control characters, truncates overly long values, and removes
+ * common injection patterns from alarm names and state reasons.
+ *
+ * @param value - Raw string from the event payload
+ * @param maxLength - Maximum allowed length
+ * @returns Sanitised string
+ */
+function sanitiseEventField(value: string, maxLength: number): string {
+    // Strip control characters and null bytes
+    let sanitised = value.replaceAll(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+
+    // Truncate
+    if (sanitised.length > maxLength) {
+        sanitised = sanitised.slice(0, maxLength) + '... [truncated]';
+    }
+
+    // Remove common prompt injection patterns
+    const injectionPatterns = [
+        /ignore previous instructions/gi,
+        /ignore all previous/gi,
+        /system:\s/gi,
+        /<\|/g,
+        /\|>/g,
+        /\[INST\]/gi,
+        /\[\/INST\]/gi,
+    ];
+
+    for (const pattern of injectionPatterns) {
+        if (pattern.test(sanitised)) {
+            log('WARN', 'Prompt injection pattern detected and removed', {
+                pattern: pattern.source,
+                field: sanitised.slice(0, 50),
+            });
+            sanitised = sanitised.replaceAll(pattern, '[REDACTED]');
+        }
+    }
+
+    return sanitised;
+}
+
+/**
  * Build a natural language prompt from the incoming event payload.
  *
  * Extracts key information from CloudWatch Alarm state changes or
  * generic EventBridge events and formats them for the agent.
+ * All user-controlled fields are sanitised before interpolation (SH-S5).
  *
  * @param event - The incoming EventBridge event
  * @returns A structured natural language prompt
@@ -262,9 +454,9 @@ function buildPrompt(event: AlarmEvent): string {
 
     // CloudWatch Alarm state change
     if (source === 'aws.cloudwatch') {
-        const alarmName = detail.alarmName ?? 'unknown';
-        const newState = detail.state?.value ?? 'unknown';
-        const reason = detail.state?.reason ?? 'no reason provided';
+        const alarmName = sanitiseEventField(String(detail.alarmName ?? 'unknown'), 256);
+        const newState = sanitiseEventField(String(detail.state?.value ?? 'unknown'), 64);
+        const reason = sanitiseEventField(String(detail.state?.reason ?? 'no reason provided'), 1024);
 
         // SSM Bootstrap failure — inject diagnostic workflow guidance
         const bootstrapGuidance = isBootstrapAlarm(alarmName)
@@ -545,17 +737,7 @@ function getDefaultTools(): AgentTool[] {
                 required: ['alarmName'],
             },
         },
-        {
-            name: 'ebs_detach',
-            description: 'Detach an EBS volume from a terminated or unhealthy instance',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    volumeId: { type: 'string', description: 'The EBS volume ID to detach' },
-                },
-                required: ['volumeId'],
-            },
-        },
+        // SH-S3: ebs_detach phantom tool removed — no corresponding Lambda exists
         {
             name: 'check_node_health',
             description: 'Check whether Kubernetes worker nodes have joined the cluster and are in Ready state via SSM on the control plane',
@@ -706,9 +888,13 @@ function buildToolConfig(tools: AgentTool[]): ToolConfiguration {
  * @param tools - Discovered or default tool definitions
  * @returns Object with the agent's final text response and tools called
  */
-async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<{ text: string; toolsCalled: string[] }> {
+async function runAgentLoop(
+    prompt: string,
+    tools: AgentTool[],
+    systemPromptText: string,
+): Promise<{ text: string; toolsCalled: string[] }> {
     const toolConfig = buildToolConfig(tools);
-    const systemPrompt: SystemContentBlock[] = [{ text: SYSTEM_PROMPT }];
+    const systemPrompt: SystemContentBlock[] = [{ text: systemPromptText }];
 
     const messages: Message[] = [
         {
@@ -718,7 +904,14 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<{ text:
     ];
 
     let totalToolCalls = 0;
+    let cumulativeTokens = 0;
     const toolNamesCalled: string[] = [];
+    /** SH-R4: Tracks whether a write tool was invoked this session */
+    let writeToolInvoked = false;
+    /** SH-R4: Tracks whether a verification tool was invoked after write */
+    let verificationPerformed = false;
+    /** SH-R4: Guard — only inject verification prompt once */
+    let verificationEnforced = false;
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
         const iterationStart = Date.now();
@@ -728,24 +921,77 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<{ text:
             system: systemPrompt,
             messages,
             toolConfig,
+            inferenceConfig: {
+                maxTokens: MAX_TOKENS_PER_INVOCATION,
+            },
+            // SH-R1: Extended Thinking — improves multi-step reasoning
+            ...(THINKING_BUDGET > 0
+                ? {
+                      additionalModelRequestFields: {
+                          thinking: {
+                              type: 'enabled',
+                              budget_tokens: THINKING_BUDGET,
+                          },
+                      },
+                  }
+                : {}),
         }));
 
         const iterationMs = Date.now() - iterationStart;
-        const assistantContent = response.output?.message?.content ?? [];
+        // SH-R1: Filter thinking blocks from assistant content to prevent
+        // them from polluting the multi-turn conversation history.
+        const assistantContent = (response.output?.message?.content ?? []).filter(
+            (block) => !('thinking' in block),
+        );
+
+        const inputTokens = response.usage?.inputTokens ?? 0;
+        const outputTokens = response.usage?.outputTokens ?? 0;
+        cumulativeTokens += inputTokens + outputTokens;
 
         log('INFO', `Iteration ${iteration} completed`, {
             iteration,
             stopReason: response.stopReason,
             durationMs: iterationMs,
-            inputTokens: response.usage?.inputTokens,
-            outputTokens: response.usage?.outputTokens,
+            inputTokens,
+            outputTokens,
+            cumulativeTokens,
         });
+
+        // SH-C1: Per-invocation token gate
+        if (cumulativeTokens > MAX_TOKENS_PER_INVOCATION) {
+            log('WARN', 'Token gate exceeded — terminating agent loop', {
+                cumulativeTokens,
+                maxTokens: MAX_TOKENS_PER_INVOCATION,
+                iteration,
+            });
+            const partialText = assistantContent
+                .filter((block): block is ContentBlock.TextMember => 'text' in block)
+                .map(b => b.text)
+                .join('\n');
+            return {
+                text: `[TOKEN GATE] Agent terminated after ${cumulativeTokens} tokens (limit: ${MAX_TOKENS_PER_INVOCATION}).\n${partialText}`,
+                toolsCalled: [...new Set(toolNamesCalled)],
+            };
+        }
 
         // Add assistant response to conversation
         messages.push({
             role: 'assistant' as ConversationRole,
             content: assistantContent,
         });
+
+        // SH-C2: Sliding window history truncation
+        // Keep the first user message (original prompt) and trim from the middle
+        if (messages.length > MAX_HISTORY_MESSAGES) {
+            const originalPrompt = messages[0];
+            const recentMessages = messages.slice(-(MAX_HISTORY_MESSAGES - 1));
+            messages.length = 0;
+            messages.push(originalPrompt, ...recentMessages);
+            log('INFO', 'Conversation history truncated (sliding window)', {
+                retained: messages.length,
+                maxHistoryMessages: MAX_HISTORY_MESSAGES,
+            });
+        }
 
         // Check if model wants to use tools
         if (response.stopReason === 'tool_use') {
@@ -763,6 +1009,21 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<{ text:
                 totalToolCalls++;
                 toolNamesCalled.push(toolName);
                 const toolStart = Date.now();
+
+                // SH-R1: Flag write tools for post-invocation reflection
+                const isWriteTool = WRITE_TOOLS.has(toolName);
+                if (isWriteTool) {
+                    writeToolInvoked = true;
+                    log('INFO', `Write tool detected: ${toolName} — reflection will be injected`, {
+                        iteration,
+                        toolName,
+                    });
+                }
+
+                // SH-R4: Track verification tool usage
+                if (VERIFICATION_TOOLS.has(toolName)) {
+                    verificationPerformed = true;
+                }
 
                 log('INFO', `Invoking tool: ${toolName}`, {
                     iteration,
@@ -787,6 +1048,13 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<{ text:
                 };
 
                 toolResults.push({ toolResult } as ContentBlock);
+
+                // SH-R3: Inject compact self-reflection prompt after write tool results
+                if (isWriteTool) {
+                    toolResults.push({
+                        text: `[REFLECT] '${toolName}' completed. Assess the result: if failure → report (do NOT retry); if success → verify with check_node_health or analyse_cluster_health.`,
+                    } as ContentBlock);
+                }
             }
 
             // Feed tool results back to the model
@@ -803,9 +1071,38 @@ async function runAgentLoop(prompt: string, tools: AgentTool[]): Promise<{ text:
             (block): block is ContentBlock.TextMember => 'text' in block,
         );
 
+        // SH-R4: Verification enforcement — if a write tool was invoked but
+        // no verification tool was called, force the model to verify before
+        // producing its final response. Only attempt once to avoid infinite loops.
+        if (writeToolInvoked && !verificationPerformed && !verificationEnforced && iteration < MAX_ITERATIONS - 1) {
+            verificationEnforced = true;
+            log('INFO', 'SH-R4: Write tool used without verification — injecting verification prompt', {
+                iteration,
+                writeToolInvoked,
+                verificationPerformed,
+            });
+
+            messages.push({
+                role: 'user' as ConversationRole,
+                content: [{
+                    text: [
+                        '[VERIFICATION REQUIRED]',
+                        'You performed a remediation action but did not verify the outcome.',
+                        'Before producing your final report, you MUST call at least one verification tool:',
+                        '  - `check_node_health` — to confirm nodes are in Ready state',
+                        '  - `analyse_cluster_health` — to confirm workloads are healthy',
+                        'Produce your final report ONLY after verification completes.',
+                    ].join('\n'),
+                }],
+            });
+            continue;
+        }
+
         log('INFO', 'Agent loop completed', {
             totalIterations: iteration + 1,
             totalToolCalls,
+            writeToolInvoked,
+            verificationPerformed,
         });
 
         return { text: textBlocks.map(b => b.text).join('\n'), toolsCalled: [...new Set(toolNamesCalled)] };
@@ -1053,8 +1350,11 @@ export async function handler(event: AlarmEvent): Promise<AgentResult> {
         foundationModel: FOUNDATION_MODEL,
     });
 
-    // Idempotency check
-    if (isDuplicate(event)) {
+    // SH-S1: Load system prompt from SSM (cached after cold start)
+    const systemPromptText = await loadSystemPrompt();
+
+    // Idempotency check (SH-S4: now async with DynamoDB layer)
+    if (await isDuplicate(event)) {
         log('INFO', 'Duplicate event detected, skipping', { alarmName });
         return {
             statusCode: 200,
@@ -1082,7 +1382,7 @@ export async function handler(event: AlarmEvent): Promise<AgentResult> {
         }
         log('INFO', 'Prompt built', { promptLength: prompt.length, hasPreviousSession: !!previousSession });
 
-        const loopResult = await runAgentLoop(prompt, tools);
+        const loopResult = await runAgentLoop(prompt, tools, systemPromptText);
         const durationMs = Date.now() - handlerStart;
 
         log('INFO', 'Agent completed successfully', { durationMs, alarmName, toolsCalled: loopResult.toolsCalled });
@@ -1107,6 +1407,27 @@ export async function handler(event: AlarmEvent): Promise<AgentResult> {
             correlationId,
             report: loopResult.text,
         });
+
+        // SH-R5: Write outcome record for correlation tracking
+        if (OUTCOMES_TABLE_NAME) {
+            try {
+                await dynamoClient.send(new DynamoPutItemCommand({
+                    TableName: OUTCOMES_TABLE_NAME,
+                    Item: {
+                        alarmName: { S: alarmName },
+                        correlationId: { S: correlationId },
+                        invokedAt: { S: new Date().toISOString() },
+                        dryRun: { BOOL: DRY_RUN },
+                        toolsCalled: { SS: loopResult.toolsCalled.length > 0 ? loopResult.toolsCalled : ['none'] },
+                        status: { S: 'PENDING' },
+                    },
+                }));
+                log('INFO', 'Outcome record written', { alarmName, correlationId });
+            } catch (outErr) {
+                const outError = outErr instanceof Error ? outErr.message : String(outErr);
+                log('WARN', 'Failed to write outcome record', { alarmName, correlationId, error: outError });
+            }
+        }
 
         return {
             statusCode: 200,
@@ -1152,5 +1473,5 @@ export async function handler(event: AlarmEvent): Promise<AgentResult> {
 // Exported for testing
 // =============================================================================
 
-export { buildPrompt, isDuplicate, getDefaultTools, buildToolConfig, sanitiseAlarmKey, buildPreviousSessionContext };
+export { buildPrompt, isDuplicate, getDefaultTools, buildToolConfig, sanitiseAlarmKey, buildPreviousSessionContext, sanitiseEventField, loadSystemPrompt };
 export type { AlarmEvent, AgentTool, AgentResult, SessionRecord };

@@ -10,13 +10,12 @@
  * Resources:
  * - AgentCore Gateway (L2 construct — CloudFormation-managed lifecycle)
  * - Default Cognito authoriser for M2M (machine-to-machine) JWT auth
- * - 6 Lambda tool functions registered as MCP targets:
+ * - 5 Lambda tool functions registered as MCP targets:
  *   1. diagnose-alarm
- *   2. ebs-detach
- *   3. check-node-health
- *   4. analyse-cluster-health
- *   5. get-node-diagnostic-json
- *   6. remediate-node-bootstrap
+ *   2. check-node-health
+ *   3. analyse-cluster-health
+ *   4. get-node-diagnostic-json
+ *   5. remediate-node-bootstrap
  * - SSM parameters for cross-stack discovery
  * - CloudWatch log group for Gateway invocations
  *
@@ -233,11 +232,27 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         }));
 
         // Grant SSM SendCommand + GetCommandInvocation (run kubectl on CP node)
+        // SH-S2: Scoped with tag-based condition — only targets k8s-tagged instances
         checkNodeHealthFn.addToRolePolicy(new iam.PolicyStatement({
             sid: 'SsmSendCommand',
             effect: iam.Effect.ALLOW,
             actions: [
                 'ssm:SendCommand',
+            ],
+            resources: [
+                `arn:aws:ssm:${this.region}::document/AWS-RunShellScript`,
+                `arn:aws:ec2:${this.region}:${this.account}:instance/*`,
+            ],
+            conditions: {
+                StringEquals: {
+                    'ssm:resourceTag/Project': 'kubernetes',
+                },
+            },
+        }));
+        checkNodeHealthFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SsmGetCommandInvocation',
+            effect: iam.Effect.ALLOW,
+            actions: [
                 'ssm:GetCommandInvocation',
             ],
             resources: ['*'],
@@ -280,11 +295,27 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         }));
 
         // Grant SSM SendCommand + GetCommandInvocation (run k8sgpt/kubectl on CP node)
+        // SH-S2: Scoped with tag-based condition — only targets k8s-tagged instances
         analyseClusterHealthFn.addToRolePolicy(new iam.PolicyStatement({
             sid: 'SsmSendCommand',
             effect: iam.Effect.ALLOW,
             actions: [
                 'ssm:SendCommand',
+            ],
+            resources: [
+                `arn:aws:ssm:${this.region}::document/AWS-RunShellScript`,
+                `arn:aws:ec2:${this.region}:${this.account}:instance/*`,
+            ],
+            conditions: {
+                StringEquals: {
+                    'ssm:resourceTag/Project': 'kubernetes',
+                },
+            },
+        }));
+        analyseClusterHealthFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SsmGetCommandInvocation',
+            effect: iam.Effect.ALLOW,
+            actions: [
                 'ssm:GetCommandInvocation',
             ],
             resources: ['*'],
@@ -319,11 +350,27 @@ export class SelfHealingGatewayStack extends cdk.Stack {
         });
 
         // Grant SSM SendCommand + GetCommandInvocation to read diagnostic file
+        // SH-S2: Scoped with tag-based condition — only targets k8s-tagged instances
         getNodeDiagnosticFn.addToRolePolicy(new iam.PolicyStatement({
             sid: 'SsmSendCommand',
             effect: iam.Effect.ALLOW,
             actions: [
                 'ssm:SendCommand',
+            ],
+            resources: [
+                `arn:aws:ssm:${this.region}::document/AWS-RunShellScript`,
+                `arn:aws:ec2:${this.region}:${this.account}:instance/*`,
+            ],
+            conditions: {
+                StringEquals: {
+                    'ssm:resourceTag/Project': 'kubernetes',
+                },
+            },
+        }));
+        getNodeDiagnosticFn.addToRolePolicy(new iam.PolicyStatement({
+            sid: 'SsmGetCommandInvocation',
+            effect: iam.Effect.ALLOW,
+            actions: [
                 'ssm:GetCommandInvocation',
             ],
             resources: ['*'],
@@ -602,7 +649,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             checkNodeHealthFn,
             [{
                 id: 'AwsSolutions-IAM5',
-                reason: 'EC2 DescribeInstances and SSM SendCommand require wildcard — instance IDs are dynamic (resolved by tag at runtime)',
+                reason: 'EC2 DescribeInstances requires wildcard (dynamic instance IDs). SSM SendCommand is tag-scoped (Project=kubernetes). ssm:GetCommandInvocation requires wildcard (no resource-level filtering)',
             }, {
                 id: 'AwsSolutions-L1',
                 reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
@@ -614,7 +661,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             analyseClusterHealthFn,
             [{
                 id: 'AwsSolutions-IAM5',
-                reason: 'EC2 DescribeInstances and SSM SendCommand require wildcard — instance IDs are dynamic (resolved by tag at runtime)',
+                reason: 'EC2 DescribeInstances requires wildcard (dynamic instance IDs). SSM SendCommand is tag-scoped (Project=kubernetes). ssm:GetCommandInvocation requires wildcard (no resource-level filtering)',
             }, {
                 id: 'AwsSolutions-L1',
                 reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',
@@ -626,7 +673,7 @@ export class SelfHealingGatewayStack extends cdk.Stack {
             getNodeDiagnosticFn,
             [{
                 id: 'AwsSolutions-IAM5',
-                reason: 'SSM SendCommand requires wildcard — instance IDs are dynamic (resolved at runtime)',
+                reason: 'SSM SendCommand is tag-scoped (Project=kubernetes). ssm:GetCommandInvocation requires wildcard (no resource-level filtering)',
             }, {
                 id: 'AwsSolutions-L1',
                 reason: 'Using NODEJS_22_X which is the latest Node.js LTS runtime',

@@ -38,8 +38,17 @@ export interface SelfHealingConfigs {
      * Strongly recommended for development environments.
      */
     readonly enableDryRun: boolean;
-    /** System prompt describing the agent's role and guardrails */
+    /**
+     * System prompt content for the agent.
+     * Stored in SSM Parameter Store at deploy time — the Lambda reads
+     * from SSM at cold start rather than receiving it as a plaintext env var.
+     */
     readonly systemPrompt: string;
+    /**
+     * SSM Parameter Store path where the system prompt will be stored.
+     * The Agent Lambda reads from this path at cold start.
+     */
+    readonly systemPromptSsmPath: string;
 }
 
 // =============================================================================
@@ -56,12 +65,25 @@ const DEFAULT_SYSTEM_PROMPT = [
     '4. Verify the remediation was successful by checking resource state.',
     '5. Return a structured summary of actions taken and outcomes.',
     '',
+    'MANDATORY REASONING PROTOCOL (Chain-of-Thought):',
+    'Before calling any write/remediation tool, you MUST explicitly state:',
+    '  1. What failure class you identified (TRANSIENT vs PERMANENT).',
+    '  2. Why you chose this classification — cite the specific evidence.',
+    '  3. What diagnostic data supports this decision (e.g. failure code, metric value).',
+    '  4. Whether a previous session already attempted this remediation.',
+    'Only after completing this reasoning may you invoke a remediation tool.',
+    '',
     'Guardrails:',
     '- Never terminate EC2 instances or delete S3 buckets.',
     '- Never modify IAM policies or security groups.',
     '- If DRY_RUN is enabled, only describe what you would do — do not execute.',
     '- If uncertain, log the situation and exit without action.',
+    '- After calling any remediation tool, you MUST call check_node_health or',
+    '  analyse_cluster_health to verify the outcome before producing your final report.',
 ].join('\n');
+
+/** SSM parameter path template for system prompt storage */
+const SYSTEM_PROMPT_SSM_PATH_TEMPLATE = '/self-healing-{env}/agent-system-prompt';
 
 // =============================================================================
 // CONFIGURATIONS BY ENVIRONMENT
@@ -77,6 +99,7 @@ export const SELF_HEALING_CONFIGS: Record<DeployableEnvironment, SelfHealingConf
         foundationModel: MODELS.SELF_HEALING_AGENT,
         enableDryRun: true,     // Safe — agent proposes but does not act
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
+        systemPromptSsmPath: SYSTEM_PROMPT_SSM_PATH_TEMPLATE.replace('{env}', Environment.DEVELOPMENT),
     },
 
     [Environment.STAGING]: {
@@ -85,6 +108,7 @@ export const SELF_HEALING_CONFIGS: Record<DeployableEnvironment, SelfHealingConf
         foundationModel: MODELS.SELF_HEALING_AGENT,
         enableDryRun: true,     // Still cautious in staging
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
+        systemPromptSsmPath: SYSTEM_PROMPT_SSM_PATH_TEMPLATE.replace('{env}', Environment.STAGING),
     },
 
     [Environment.PRODUCTION]: {
@@ -93,6 +117,7 @@ export const SELF_HEALING_CONFIGS: Record<DeployableEnvironment, SelfHealingConf
         foundationModel: MODELS.SELF_HEALING_AGENT,
         enableDryRun: false,    // Agent is trusted to act in production
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
+        systemPromptSsmPath: SYSTEM_PROMPT_SSM_PATH_TEMPLATE.replace('{env}', Environment.PRODUCTION),
     },
 };
 
