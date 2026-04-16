@@ -126,7 +126,7 @@ describe('SelfHealingAgentStack', () => {
                         GATEWAY_URL: GATEWAY_URL,
                         FOUNDATION_MODEL: FOUNDATION_MODEL,
                         DRY_RUN: 'true',
-                        SYSTEM_PROMPT: SYSTEM_PROMPT,
+                        SYSTEM_PROMPT_SSM_PATH: '/self-healing-test/agent-system-prompt',
                     }),
                 },
             });
@@ -152,7 +152,7 @@ describe('SelfHealingAgentStack', () => {
 
         it('should create an SQS DLQ', () => {
             template.hasResourceProperties('AWS::SQS::Queue', {
-                QueueName: `${NAME_PREFIX}-agent-dlq`,
+                QueueName: `${NAME_PREFIX}-agent-lambda-dlq`,
             });
         });
 
