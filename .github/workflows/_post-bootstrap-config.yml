@@ -7,13 +7,14 @@
 #
 # ─── Architecture ──────────────────────────────────────────────────
 # This workflow triggers the Config Orchestrator (SM-B) which runs all
-# five deploy.py scripts sequentially on the control-plane node:
+# six deploy.py scripts sequentially on the control-plane node:
 #
 #   Step 1: nextjs/deploy.py      — nextjs-secrets + IngressRoute originSecret
 #   Step 2: monitoring/deploy.py  — Grafana + GitHub K8s Secrets + Helm chart
 #   Step 3: start-admin/deploy.py — Cognito / DynamoDB / Bedrock Secret
 #   Step 4: admin-api/deploy.py   — admin-api ConfigMap + Secret + IngressRoute
 #   Step 5: public-api/deploy.py  — public-api ConfigMap + Secret + IngressRoute
+#   Step 6: wiki-mcp/deploy.py    — wiki-mcp-config ConfigMap + wiki-mcp-basicauth Secret
 #
 # SM-B reads the control-plane instance ID directly from SSM
 # ({ssmPrefix}/bootstrap/control-plane-instance-id), written by SM-A,
