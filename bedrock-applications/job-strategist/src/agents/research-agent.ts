@@ -193,20 +193,30 @@ async function getWikiMcpConstraints(): Promise<string> {
     console.log('[strategist-research] Fetching resume constraints from wiki-mcp REST API');
     const base = WIKI_MCP_URL.endsWith('/') ? WIKI_MCP_URL : `${WIKI_MCP_URL}/`;
     const url = new URL('api/constraints', base);
-    const response = await fetch(url.toString(), {
-        headers: { Authorization: authHeader },
-        signal: AbortSignal.timeout(15_000),
-    });
-    if (!response.ok) {
-        throw new Error(`wiki-mcp /api/constraints returned HTTP ${response.status}`);
+    try {
+        const response = await fetch(url.toString(), {
+            headers: { Authorization: authHeader },
+            signal: AbortSignal.timeout(15_000),
+        });
+        if (!response.ok) {
+            console.warn(
+                `[strategist-research] wiki-mcp /api/constraints returned HTTP ${response.status} — continuing without constraints`,
+            );
+            return '';
+        }
+        // TypeScript wiki-mcp returns JSON { content: string } — extract the content field
+        const json = await response.json() as { content?: string };
+        const text = json.content ?? '';
+        console.log(
+            `[strategist-research] wiki-mcp constraints fetched: ${(text.length / 1024).toFixed(1)}KB`,
+        );
+        return text;
+    } catch (err) {
+        console.warn(
+            `[strategist-research] wiki-mcp fetch failed (${(err as Error).message}) — continuing without constraints`,
+        );
+        return '';
     }
-    // TypeScript wiki-mcp returns JSON { content: string } — extract the content field
-    const json = await response.json() as { content?: string };
-    const text = json.content ?? '';
-    console.log(
-        `[strategist-research] wiki-mcp constraints fetched: ${(text.length / 1024).toFixed(1)}KB`,
-    );
-    return text;
 }
 
 // =============================================================================
