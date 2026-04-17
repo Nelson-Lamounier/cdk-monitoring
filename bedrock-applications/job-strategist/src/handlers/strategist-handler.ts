@@ -19,7 +19,7 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
 import { executeStrategistAgent } from '../agents/strategist-agent.js';
-import { AgentHandlerEnvSchema } from '../schemas/environment.schema.js';
+import { PersistHandlerEnvSchema } from '../schemas/environment.schema.js';
 import type {
     StrategistWriterHandlerInput,
     StrategistAnalysisPersistInput,
@@ -29,7 +29,7 @@ import type {
 // ENVIRONMENT VALIDATION (fail-fast at cold start)
 // =============================================================================
 
-const env = AgentHandlerEnvSchema.parse(process.env);
+const env = PersistHandlerEnvSchema.parse(process.env);
 
 // =============================================================================
 // CLIENTS
@@ -38,7 +38,7 @@ const env = AgentHandlerEnvSchema.parse(process.env);
 const s3 = new S3Client({});
 
 /** S3 bucket for pipeline artefacts (shared assets bucket) */
-const ASSETS_BUCKET = process.env.ASSETS_BUCKET ?? '';
+const ASSETS_BUCKET = env.ASSETS_BUCKET;
 
 /**
  * Lambda handler for the Strategist Agent.
@@ -49,6 +49,13 @@ const ASSETS_BUCKET = process.env.ASSETS_BUCKET ?? '';
 export const handler = async (
     event: StrategistWriterHandlerInput,
 ): Promise<StrategistAnalysisPersistInput> => {
+    if (!event?.context?.pipelineId) {
+        throw new Error(
+            '[strategist-writer-handler] Invalid Step Functions event: "context.pipelineId" is missing. ' +
+            'This handler must be invoked by the Analysis State Machine, not directly.',
+        );
+    }
+
     console.log(
         `[strategist-writer-handler] Pipeline ${event.context.pipelineId} ` +
         `— generating analysis for "${event.context.targetRole}"`,

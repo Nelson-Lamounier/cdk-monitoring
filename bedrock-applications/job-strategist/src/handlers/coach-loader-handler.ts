@@ -62,6 +62,13 @@ const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 export const handler = async (
     event: StrategistCoachLoaderInput,
 ): Promise<StrategistCoachHandlerInput> => {
+    if (!event?.context?.pipelineId) {
+        throw new Error(
+            '[coach-loader] Invalid Step Functions event: "context.pipelineId" is missing. ' +
+            'This handler must be invoked by the Coaching State Machine, not directly.',
+        );
+    }
+
     const { context } = event;
 
     console.log(

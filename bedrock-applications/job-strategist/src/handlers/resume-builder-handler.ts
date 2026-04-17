@@ -58,6 +58,13 @@ const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 export const handler = async (
     event: ResumeBuilderHandlerInput,
 ): Promise<ResumeBuilderHandlerOutput> => {
+    if (!event?.context?.pipelineId) {
+        throw new Error(
+            '[resume-builder] Invalid Step Functions event: "context.pipelineId" is missing. ' +
+            'This handler must be invoked by the Analysis State Machine, not directly.',
+        );
+    }
+
     const { context, research, analysis } = event;
     const now = new Date().toISOString();
 

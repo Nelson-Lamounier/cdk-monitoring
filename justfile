@@ -90,6 +90,21 @@ list project environment *ARGS:
       --profile $(just _profile {{environment}}) \
       {{ARGS}}
 
+# List all CDK stacks across every project for a given environment
+# Usage: just list-all-stacks development
+[group('cdk')]
+list-all-stacks environment="development":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PROFILE=$(just _profile {{environment}})
+    for PROJECT in shared org kubernetes bedrock self-healing; do
+      echo "── ${PROJECT} ──────────────────────────────────"
+      cd infra && npx cdk list \
+        -c project="${PROJECT}" -c environment={{environment}} \
+        --profile "${PROFILE}" 2>/dev/null || echo "  (no stacks)"
+      cd - > /dev/null
+    done
+
 # Bootstrap CDK in an AWS account
 [group('cdk')]
 bootstrap account profile *ARGS:
@@ -707,6 +722,12 @@ helm-verify-selectors:
       --namespace nextjs-app | grep -c "workload: frontend" | \
       xargs -I{} echo "  nodeSelector entries: {} (expected 1)"
     echo "Done."
+
+# Port-forward admin-api service to localhost:3002
+# Usage: just pf-admin-api
+[group('k8s')]
+pf-admin-api:
+    kubectl port-forward svc/admin-api 3002:3002 -n admin-api
 
 # Check SourceDestCheck status on all K8s compute instances
 # Filters by Stack tag to show only K8s nodes (control-plane, app-worker, mon-worker).

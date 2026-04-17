@@ -26,6 +26,13 @@ import type {
 export const handler = async (
     event: StrategistResearchHandlerInput,
 ): Promise<StrategistWriterHandlerInput> => {
+    if (!event?.context?.pipelineId) {
+        throw new Error(
+            '[strategist-research-handler] Invalid Step Functions event: "context.pipelineId" is missing. ' +
+            'This handler must be invoked by the Analysis State Machine, not directly.',
+        );
+    }
+
     console.log(
         `[strategist-research-handler] Pipeline ${event.context.pipelineId} ` +
         `— role: ${event.context.targetRole}`,

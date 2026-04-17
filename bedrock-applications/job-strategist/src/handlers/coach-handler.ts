@@ -64,6 +64,13 @@ const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 export const handler = async (
     event: StrategistCoachHandlerInput,
 ): Promise<StrategistCoachPipelineOutput> => {
+    if (!event?.context?.pipelineId) {
+        throw new Error(
+            '[strategist-coach-handler] Invalid Step Functions event: "context.pipelineId" is missing. ' +
+            'This handler must be invoked by the Coaching State Machine, not directly.',
+        );
+    }
+
     const { context, analysis } = event;
     const now = new Date().toISOString();
     const datePrefix = now.slice(0, 10);

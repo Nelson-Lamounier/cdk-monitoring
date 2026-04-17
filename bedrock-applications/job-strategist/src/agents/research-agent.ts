@@ -19,7 +19,7 @@ import {
 } from '@aws-sdk/client-bedrock-agent-runtime';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 
-import { runAgent, parseJsonResponse, callMcpTool } from '../../../shared/src/index.js';
+import { runAgent, parseJsonResponse } from '../../../shared/src/index.js';
 import { formatResumeForPrompt } from '../services/resume-service.js';
 import { RESEARCH_PERSONA_SYSTEM_PROMPT } from '../prompts/research-persona.js';
 import { sanitiseInput } from '../security/input-sanitiser.js';
@@ -172,12 +172,15 @@ async function resolveWikiMcpAuth(): Promise<string> {
 }
 
 /**
- * Fetch resume constraints from the wiki-mcp MCP server via Streamable HTTP.
+ * Fetch resume constraints from the wiki-mcp REST API.
  *
- * Calls the `get_resume_constraints` tool which returns the combined content of:
+ * Calls GET /api/constraints which returns combined content from:
  *   - resume/agent-guide   — hard rules, confidence thresholds, ATS rules, banned verbs
  *   - resume/gap-awareness — what NOT to claim; absent/partial concepts with safe framing
  *   - resume/voice-library — authentic phrase anchors, banned AI terms, sentence variation
+ *
+ * Uses the REST endpoint (not MCP Streamable HTTP) as the server was designed for Lambda
+ * to call /api/constraints directly — the /mcp SSE stream is for Claude Desktop/Code.
  *
  * @returns Combined constraint pages as plain text, or empty string if wiki-mcp is not configured
  */
@@ -186,8 +189,19 @@ async function getWikiMcpConstraints(): Promise<string> {
     if (!WIKI_MCP_URL || !authHeader) {
         return '';
     }
-    console.log('[strategist-research] Fetching resume constraints from wiki-mcp via MCP');
-    const text = await callMcpTool(WIKI_MCP_URL, authHeader, 'get_resume_constraints', {});
+    console.log('[strategist-research] Fetching resume constraints from wiki-mcp REST API');
+    const base = WIKI_MCP_URL.endsWith('/') ? WIKI_MCP_URL : `${WIKI_MCP_URL}/`;
+    const url = new URL('api/constraints', base);
+    const response = await fetch(url.toString(), {
+        headers: { Authorization: authHeader },
+        signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+        throw new Error(`wiki-mcp /api/constraints returned HTTP ${response.status}`);
+    }
+    // TypeScript wiki-mcp returns JSON { content: string } — extract the content field
+    const json = await response.json() as { content?: string };
+    const text = json.content ?? '';
     console.log(
         `[strategist-research] wiki-mcp constraints fetched: ${(text.length / 1024).toFixed(1)}KB`,
     );
