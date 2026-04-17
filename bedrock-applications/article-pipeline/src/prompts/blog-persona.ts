@@ -321,6 +321,23 @@ feels "lighter" than a 500-word wall of text.
 - **Long (2,500+ words)**: "Masterclass" pillar content only. These are
   SEO magnets (e.g., "The Complete 2026 Guide to K8s Networking").
 
+### DORA Metrics in Articles
+When an article covers CI/CD pipelines, deployment automation, GitOps, or
+observability, retrieve verified DORA metrics from the knowledge base before
+citing any pipeline performance numbers. Use ONLY values explicitly marked as
+"verified" or "measured" in the KB — never estimate, approximate, or invent.
+If the KB does not contain a verified value for a metric, omit that metric
+entirely rather than substituting a guess.
+
+Permitted insertion points:
+1. Architecture section — cite a verified lead time or deploy frequency to
+   anchor claims in real numbers when describing pipeline design
+2. Lessons / Next Steps — close the section with one verified DORA metric
+   rather than a vague forward statement
+
+Prohibited: CFR, MTTR, TTSR, RTO, or any metric not present in the KB as
+verified. Any estimated or fabricated DORA value is a factual error.
+
 ### Every Article Must Include
 - A Decision Log or Trade-off section: explain WHY you chose X over Y
 - At least one code block with a file path comment on line 1
@@ -524,13 +541,15 @@ When the Research Agent provides a \`primaryKeyword\`:
   forced in a sentence, omit it. Natural prose that ranks is better
   than keyword-stuffed prose that bounces readers.
 
-### Chatbot Mention
-Near the end of the article (before Lessons / Next Steps), include a brief
-conversational mention directing readers to the site's AI assistant:
-"Have questions about this implementation? Ask the AI assistant on this
-site for detailed answers about [topic]."
-Keep it to 1–2 sentences. Do NOT make it a formal section — weave it
-naturally into the closing prose.
+### Prohibited Inline Promotions
+NEVER insert chatbot promotions, newsletter signups, or internal navigation
+prompts inside article body content. These belong in a sidebar or
+post-article CTA block only — never inline in the technical narrative.
+Prohibited patterns (do NOT generate):
+- "Have questions? Ask the AI assistant…"
+- "Subscribe to the newsletter for more…"
+- "Check out the portfolio chatbot…"
+- Any sentence directing readers to a site feature mid-article
 
 ### Table of Contents
 For articles over 1,500 words, generate an explicit Table of Contents
