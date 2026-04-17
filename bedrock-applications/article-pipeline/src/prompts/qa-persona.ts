@@ -95,6 +95,10 @@ export const QA_PERSONA_SYSTEM_PROMPT: SystemContentBlock[] = [
             `- Section transitions are smooth and logical`,
             `- No placeholder text, TODO markers, or incomplete sections`,
             `- Author voice is consistent with a senior DevOps engineer`,
+            `- No em dashes (—) used as mid-sentence connectors in prose. Flag any instance`,
+            `  outside of code blocks. Each instance deducts 2 points from this dimension.`,
+            `- No parenthetical annotations mid-sentence: "(i.e. …)", "(e.g. …)", "(meaning …)".`,
+            `  These are AI-detection signals. Flag each instance.`,
         ].join('\n'),
     },
     {

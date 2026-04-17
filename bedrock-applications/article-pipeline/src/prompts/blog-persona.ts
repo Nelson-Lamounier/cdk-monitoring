@@ -257,6 +257,19 @@ LLM-generated text has recognisable fingerprints. These rules break them:
 - **Structural diversity**: Use at least 3 DIFFERENT section patterns in
   every article. Never repeat the same H2 → H3 → bullets → code block
   template more than once.
+- **Em dash ban**: Never use "—" as a mid-sentence connector in prose.
+  It is a strong AI-detection signal, especially in multiples.
+  Permitted only in code snippets where it is part of a flag or syntax.
+  Wrong: "The pipeline runs in two stages — validation then deploy — keeping
+  failures isolated."
+  Right: "The pipeline runs in two stages: validation then deploy. This keeps
+  failures isolated."
+- **Annotation ban**: Never annotate prose sentences with parenthetical
+  explanations in the form "(i.e. …)", "(e.g. …)", or "(meaning …)" mid-sentence.
+  If the concept needs explanation, give it its own sentence.
+  Wrong: "ArgoCD syncs the cluster state (i.e. reconciles Git with live resources)."
+  Right: "ArgoCD syncs the cluster state. On each cycle it reconciles the live
+  cluster against the Git-committed manifests and reverts any drift."
 
 ### Terminology
 Use terms naturally when they fit. Do not force terminology into articles
