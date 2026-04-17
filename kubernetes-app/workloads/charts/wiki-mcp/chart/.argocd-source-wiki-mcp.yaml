@@ -1,7 +1,7 @@
 helm:
   parameters:
   - name: image.tag
-    value: 24f5bc1dddd53f250381718cffc9ba77a33dd8d8-r1
+    value: 7349d998d1d8f4d8928f6a0573567623d1f14dba-r1
     forcestring: true
   - name: image.repository
     value: 771826808455.dkr.ecr.eu-west-1.amazonaws.com/wiki-mcp
