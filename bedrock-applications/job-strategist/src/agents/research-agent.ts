@@ -324,15 +324,22 @@ export async function executeResearchAgent(
 
     if (hasKb || hasWikiMcp) {
         // Factual KB queries + wiki-mcp constraint fetch — all in parallel
-        const [factual1, factual2, factual3, wikiConstraints] = await Promise.all([
+        const [factual1, factual2, factual3, factual4, wikiConstraints] = await Promise.all([
+            // Query 1 — full JD text: surfaces skill/tech matches from across the KB
             hasKb ? querySingleKb(sanitised.substring(0, 1000)) : Promise.resolve([]),
-            hasKb ? querySingleKb('resume professional experience skills qualifications') : Promise.resolve([]),
-            hasKb ? querySingleKb('project architecture technical implementation deployment') : Promise.resolve([]),
+            // Query 2 — JD tail + experience signal: surfaces role-relevant work history
+            hasKb ? querySingleKb(`professional experience skills qualifications ${sanitised.substring(500, 1000)}`) : Promise.resolve([]),
+            // Query 3 — JD-aware project query: surfaces project templates matching this role
+            hasKb ? querySingleKb(`portfolio project implementation achievements ${sanitised.substring(0, 500)}`) : Promise.resolve([]),
+            // Query 4 — DORA metrics and outcome measurements: ensures every bullet can be
+            // grounded in a concrete outcome (lead time, MTTR, CFR, deployment frequency).
+            // Without this query the agent sees technical inventory but no outcome numbers.
+            hasKb ? querySingleKb('DORA metrics lead time MTTR change failure rate deployment frequency outcome measurement pipeline performance') : Promise.resolve([]),
             getWikiMcpConstraints(),   // '' when WIKI_MCP_URL / WIKI_MCP_AUTH not set
         ]);
 
         // Factual context — portfolio evidence for achievement bullet verification
-        const allFactualPassages = [...factual1, ...factual2, ...factual3];
+        const allFactualPassages = [...factual1, ...factual2, ...factual3, ...factual4];
         kbContext = deduplicatePassages(allFactualPassages);
 
         resumeConstraints = wikiConstraints;
