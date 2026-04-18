@@ -384,51 +384,67 @@ async function handleUpdate(
     return handleCreate(event, context);
   }
 
-  // ── Full certificate mode ─────────────────────────────────────────────────
+  // ── Full certificate mode ─────────────────────────────────────────────
   const domainChanged =
     oldProps?.DomainName !== newProps.DomainName ||
     JSON.stringify(oldProps?.SubjectAlternativeNames ?? []) !==
       JSON.stringify(newProps.SubjectAlternativeNames ?? []);
 
   if (!domainChanged && oldPhysicalId?.startsWith("arn:aws:acm:")) {
-    // Domain is unchanged — the existing cert is still valid.
-    // Reuse its ARN so CloudFront is never asked to switch certificates.
-    console.log(
-      `Domain unchanged (${newProps.DomainName}). ` +
-      `Reusing existing certificate: ${oldPhysicalId}`,
+    // Domain is unchanged — check whether the existing cert is still alive
+    // before reusing it. A previous failed deploy may have deleted it, leaving
+    // CloudFormation's stored physical ID pointing to a ghost ARN.
+    const certIsValid = await isCertificateValid(oldPhysicalId);
+
+    if (certIsValid) {
+      // Cert exists and is ISSUED — safe to reuse. Returning the same ARN
+      // means CloudFormation does not update the CloudFront distribution's
+      // ViewerCertificate, avoiding the 5–15 min propagation window entirely.
+      console.log(
+        `Domain unchanged (${newProps.DomainName}) and cert is ISSUED. ` +
+        `Reusing existing certificate: ${oldPhysicalId}`,
+      );
+      return {
+        PhysicalResourceId: oldPhysicalId,
+        Data: {
+          CertificateArn: oldPhysicalId,
+          DomainName: newProps.DomainName,
+          ValidationStatus: "REUSED",
+          HostedZoneId: newProps.HostedZoneId,
+          Environment: newProps.Environment,
+          CloudFrontAliasCreated: newProps.CloudFrontDomainName ? "true" : "false",
+        },
+      };
+    }
+
+    // Cert is gone (deleted by a previous failed deploy). Fall through to
+    // create a fresh certificate. This is the recovery path.
+    console.warn(
+      `Certificate ${oldPhysicalId} no longer exists in ACM (deleted by a ` +
+      "previous failed deploy). Creating a new certificate for the same domain.",
     );
-    return {
-      PhysicalResourceId: oldPhysicalId,
-      Data: {
-        CertificateArn: oldPhysicalId,
-        DomainName: newProps.DomainName,
-        ValidationStatus: "REUSED",
-        HostedZoneId: newProps.HostedZoneId,
-        Environment: newProps.Environment,
-        CloudFrontAliasCreated: newProps.CloudFrontDomainName ? "true" : "false",
-      },
-    };
   }
 
-  // Domain changed — we must request a new certificate.
+  // A new certificate is needed — either because the domain changed, or because
+  // the existing cert was deleted by a previous failed deploy (recovery path).
   // IMPORTANT: Do NOT delete the old certificate here.
-  // CloudFront distributions take 5–15 min to update; the old cert must
-  // remain valid for the entire duration of that update. Deleting it
-  // immediately causes CloudFront to return a 400 "SSL certificate doesn't
-  // exist" error, putting the distribution into UPDATE_FAILED.
+  // CloudFront distributions take 5–15 min to update; any surviving old cert
+  // must remain valid for the entire duration. Deleting it immediately causes
+  // CloudFront to return a 400 "SSL certificate doesn't exist" error, putting
+  // the distribution into UPDATE_FAILED.
   //
-  // The old certificate will be cleaned up by the Delete handler when the
-  // stack is torn down, or can be removed manually from the ACM console
-  // once the CloudFront update is confirmed complete.
-  console.log(
-    `Domain changed from "${oldProps?.DomainName ?? "unknown"}" ` +
-    `to "${newProps.DomainName}". Requesting new certificate.`,
-  );
-  console.log(
-    `Old certificate ARN "${oldPhysicalId}" will NOT be deleted immediately — ` +
-    "it must remain valid until CloudFront finishes its distribution update " +
-    "(typically 5–15 min). Clean it up manually once the update is confirmed complete.",
-  );
+  // Old certificates will be cleaned up by the Delete handler on stack teardown,
+  // or can be removed manually from the ACM console once CloudFront confirms
+  // the update is complete.
+  const reason = domainChanged
+    ? `domain changed from "${oldProps?.DomainName ?? "unknown"}" to "${newProps.DomainName}"`
+    : `existing certificate ${oldPhysicalId} is no longer valid in ACM (recovery path)`;
+  console.log(`Requesting new certificate: ${reason}.`);
+  if (oldPhysicalId && !domainChanged) {
+    console.log(
+      "Old cert was deleted by a previous failed deploy — creating fresh cert for the same domain.",
+    );
+  }
 
   const createResponse = await handleCreate(event, context);
   return createResponse;
@@ -702,6 +718,41 @@ async function deleteCertificate(certificateArn: string): Promise<void> {
   });
 
   await acmClient.send(command);
+}
+
+/**
+ * Check whether an ACM certificate exists and is in ISSUED state.
+ *
+ * Returns `true`  — cert exists and is ISSUED (safe to reuse for CloudFront).
+ * Returns `false` — cert is missing, deleted, FAILED, or EXPIRED.
+ *
+ * Used by handleUpdate to detect certificates that were deleted by a previous
+ * failed deploy before blindly reusing the stored physical resource ID.
+ *
+ * @param certificateArn - Full ACM certificate ARN to validate.
+ * @returns Whether the certificate is valid and usable.
+ */
+async function isCertificateValid(certificateArn: string): Promise<boolean> {
+  if (!certificateArn.startsWith("arn:aws:acm:")) {
+    return false;
+  }
+
+  try {
+    const command = new DescribeCertificateCommand({
+      CertificateArn: certificateArn,
+    });
+    const response = await acmClient.send(command);
+    const status = response.Certificate?.Status;
+
+    const isValid = status === CertificateStatus.ISSUED;
+    console.log(`Certificate ${certificateArn} status: ${status ?? "unknown"} → ${isValid ? "valid" : "invalid"}`);
+    return isValid;
+  } catch (error: unknown) {
+    // ResourceNotFoundException → cert was deleted; any other error → treat as invalid.
+    const errName = (error as { name?: string })?.name ?? "Unknown";
+    console.warn(`isCertificateValid check failed (${errName}) for ${certificateArn} → treating as invalid`);
+    return false;
+  }
 }
 
 /**
