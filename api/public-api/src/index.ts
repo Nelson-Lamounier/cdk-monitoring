@@ -49,7 +49,7 @@ app.use(
   '*',
   cors({
     origin: ['https://nelsonlamounier.com', 'http://localhost:3000'],
-    // POST added for /api/chatbot/invoke (BFF proxy — Gap S2)
+    // POST added for /api/chat and /api/chatbot/invoke (BFF proxy — Gap S2)
     allowMethods: ['GET', 'HEAD', 'OPTIONS', 'POST'],
     allowHeaders: ['Content-Type', 'Accept'],
     credentials: false,

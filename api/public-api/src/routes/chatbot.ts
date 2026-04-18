@@ -79,31 +79,25 @@ async function getApiKey(secretArn: string): Promise<string> {
 }
 
 // =============================================================================
-// Route
+// Shared proxy helper
 // =============================================================================
 
-const chatbot = new Hono();
+interface ProxyResult {
+  readonly status: number;
+  readonly data: Record<string, unknown>;
+}
 
-/**
- * POST /api/chatbot/invoke
- *
- * Proxies the request body to the Bedrock chatbot API Gateway.
- * Accepts the same payload as the upstream Lambda:
- *   { prompt: string, sessionId?: string, callerRole?: string }
- *
- * Returns the upstream response body and status code unchanged.
- */
-chatbot.post('/api/chatbot/invoke', async (c) => {
+async function proxyToBedrock(body: ReadableStream<Uint8Array> | null): Promise<ProxyResult> {
   const cfg = loadConfig();
 
   if (!cfg.bedrockApiUrl || !cfg.bedrockApiKeySecretArn) {
     console.error(
       '[chatbot-bff] BEDROCK_API_URL or BEDROCK_API_KEY_SECRET_ARN not configured',
     );
-    return c.json(
-      { error: 'ChatbotUnavailable', message: 'Chatbot service is not configured' },
-      503,
-    );
+    return {
+      status: 503,
+      data: { error: 'ChatbotUnavailable', message: 'Chatbot service is not configured' },
+    };
   }
 
   let apiKey: string;
@@ -111,13 +105,12 @@ chatbot.post('/api/chatbot/invoke', async (c) => {
     apiKey = await getApiKey(cfg.bedrockApiKeySecretArn);
   } catch (err) {
     console.error('[chatbot-bff] Failed to retrieve API key from Secrets Manager:', err);
-    return c.json(
-      { error: 'InternalError', message: 'Failed to initialise chatbot service' },
-      500,
-    );
+    return {
+      status: 500,
+      data: { error: 'InternalError', message: 'Failed to initialise chatbot service' },
+    };
   }
 
-  // Ensure the upstream URL ends with a slash before appending 'invoke'
   const upstreamUrl = cfg.bedrockApiUrl.endsWith('/')
     ? `${cfg.bedrockApiUrl}invoke`
     : `${cfg.bedrockApiUrl}/invoke`;
@@ -128,21 +121,63 @@ chatbot.post('/api/chatbot/invoke', async (c) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // API key stays server-side — the browser only talks to /api/chatbot/invoke
         'x-api-key': apiKey,
       },
-      body: c.req.raw.body,
+      body,
     });
   } catch (err) {
     console.error('[chatbot-bff] Upstream fetch failed:', err);
-    return c.json(
-      { error: 'UpstreamError', message: 'Failed to reach chatbot upstream' },
-      502,
-    );
+    return { status: 502, data: { error: 'UpstreamError', message: 'Failed to reach chatbot upstream' } };
   }
 
-  const data: unknown = await upstream.json();
-  return c.json(data, upstream.status as Parameters<typeof c.json>[1]);
+  const data = (await upstream.json()) as Record<string, unknown>;
+  return { status: upstream.status, data };
+}
+
+// =============================================================================
+// Routes
+// =============================================================================
+
+const chatbot = new Hono();
+
+/**
+ * POST /api/chatbot/invoke
+ *
+ * Proxies the request body to the Bedrock chatbot API Gateway.
+ * Accepts: { prompt: string, sessionId?: string, callerRole?: string }
+ * Returns the upstream response body and status code unchanged.
+ */
+chatbot.post('/api/chatbot/invoke', async (c) => {
+  const { status, data } = await proxyToBedrock(c.req.raw.body);
+  return c.json(data, status as Parameters<typeof c.json>[1]);
+});
+
+/**
+ * POST /api/chat
+ *
+ * Alias for /api/chatbot/invoke that normalises the upstream response shape
+ * to { message, sessionId } — matching the ChatResponse contract expected by
+ * the frontend chat-service. Traefik routes all /api/* to this service, so
+ * the Next.js /api/chat handler is unreachable in production; this route
+ * bridges that gap without frontend changes.
+ */
+chatbot.post('/api/chat', async (c) => {
+  const { status, data } = await proxyToBedrock(c.req.raw.body);
+
+  if (status >= 400) {
+    return c.json(data, status as Parameters<typeof c.json>[1]);
+  }
+
+  // Upstream Lambda returns { response, sessionId }; frontend expects { message, sessionId }.
+  const normalized = {
+    message:
+      typeof data.message === 'string' ? data.message :
+      typeof data.response === 'string' ? data.response :
+      'Received a response but could not parse it.',
+    sessionId: typeof data.sessionId === 'string' ? data.sessionId : '',
+  };
+
+  return c.json(normalized, status as Parameters<typeof c.json>[1]);
 });
 
 export default chatbot;
