@@ -86,6 +86,26 @@ export interface AcmCertificateDnsValidationConstructProps {
      * @default 'acm'
      */
     readonly namePrefix?: string;
+
+    /**
+     * Opaque string that changes on every deploy to force CloudFormation to
+     * send an Update event to the custom resource, even when all other
+     * properties are unchanged.
+     *
+     * Without this, CloudFormation caches the custom resource outputs and
+     * never re-invokes the Lambda — meaning a stale (deleted) certificate ARN
+     * remains in CloudFormation state and every CloudFront update fails with
+     * a 400 InvalidRequest error.
+     *
+     * Pass the validation Lambda's `currentVersion.functionArn` from the stack.
+     * CDK generates a new version on every code change, guaranteeing the value
+     * changes whenever the Lambda bundle changes.
+     *
+     * @example
+     * // In edge-stack.ts:
+     * forceUpdate: validationLambda.function.currentVersion.functionArn,
+     */
+    readonly forceUpdate?: string;
 }
 
 /**
@@ -238,6 +258,10 @@ export class AcmCertificateDnsValidationConstruct extends Construct {
                 Environment: environment,
                 Region: region,
                 CloudFrontDomainName: props.cloudFrontDomainName,
+                // Changing this value forces CloudFormation to send an Update
+                // event to the Lambda on every deploy, preventing stale cert
+                // ARN from being cached in CloudFormation state.
+                ForceUpdate: props.forceUpdate,
             },
             removalPolicy: environmentRemovalPolicy(environment),
         });
