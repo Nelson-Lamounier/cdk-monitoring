@@ -363,9 +363,18 @@ jobs:
       # latest deploy.py from S3 before executing, ensuring the instance
       # always runs the version from this commit.
       # -------------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+
+      - name: Install workspace dependencies
+        run: yarn install --immutable
+
       - name: Run admin-api deploy.py via SSM (Secret + ConfigMap + IngressRoute)
         run: |
-          npx tsx kubernetes-app/k8s-bootstrap/scripts/ssm-deploy.ts \
+          yarn tsx kubernetes-app/k8s-bootstrap/scripts/ssm-deploy.ts \
             --app admin-api \
             --environment "${{ env.ENVIRONMENT }}" \
             --region "${{ env.AWS_REGION }}"
@@ -643,9 +652,18 @@ jobs:
       # The SSM command fetches the scripts bucket from SSM and syncs the
       # latest deploy.py from S3 before executing.
       # -------------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+
+      - name: Install workspace dependencies
+        run: yarn install --immutable
+
       - name: Run public-api deploy.py via SSM (ConfigMap + IngressRoute)
         run: |
-          npx tsx kubernetes-app/k8s-bootstrap/scripts/ssm-deploy.ts \
+          yarn tsx kubernetes-app/k8s-bootstrap/scripts/ssm-deploy.ts \
             --app public-api \
             --environment "${{ env.ENVIRONMENT }}" \
             --region "${{ env.AWS_REGION }}"
