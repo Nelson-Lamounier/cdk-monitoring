@@ -363,17 +363,8 @@ jobs:
       # latest deploy.py from S3 before executing, ensuring the instance
       # always runs the version from this commit.
       # -------------------------------------------------------------------------
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'yarn'
-
-      - name: Enable Corepack (Yarn 4)
-        run: corepack enable
-
-      - name: Install workspace dependencies
-        run: yarn install --immutable
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
 
       - name: Run admin-api deploy.py via SSM (Secret + ConfigMap + IngressRoute)
         run: |
@@ -655,17 +646,8 @@ jobs:
       # The SSM command fetches the scripts bucket from SSM and syncs the
       # latest deploy.py from S3 before executing.
       # -------------------------------------------------------------------------
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'yarn'
-
-      - name: Enable Corepack (Yarn 4)
-        run: corepack enable
-
-      - name: Install workspace dependencies
-        run: yarn install --immutable
+      - name: Setup Node.js and Yarn
+        uses: ./.github/actions/setup-node-yarn
 
       - name: Run public-api deploy.py via SSM (ConfigMap + IngressRoute)
         run: |
