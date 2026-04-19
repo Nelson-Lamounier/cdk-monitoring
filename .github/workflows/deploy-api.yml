@@ -362,6 +362,7 @@ jobs:
         env:
           KUBECONFIG: /tmp/kubeconfig
           AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+          PYTHONPATH: kubernetes-app/k8s-bootstrap
         run: |
           python3 -m venv /tmp/deploy-venv
           /tmp/deploy-venv/bin/pip install -q -r kubernetes-app/k8s-bootstrap/deploy_helpers/requirements.txt
@@ -591,6 +592,7 @@ jobs:
         env:
           KUBECONFIG: /tmp/kubeconfig
           AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+          PYTHONPATH: kubernetes-app/k8s-bootstrap
         run: |
           python3 -m venv /tmp/deploy-venv
           /tmp/deploy-venv/bin/pip install -q -r kubernetes-app/k8s-bootstrap/deploy_helpers/requirements.txt
