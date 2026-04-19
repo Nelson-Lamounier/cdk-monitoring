@@ -970,7 +970,7 @@ jobs:
     name: "[Site] Smoke Test"
     needs: [resolve-targets, promote-site, sync-assets]
     if: needs.resolve-targets.outputs.deploy-site == 'true'
-    runs-on: ubuntu-latest
+    runs-on: k8s-runner
     timeout-minutes: 30
     environment: development
 
