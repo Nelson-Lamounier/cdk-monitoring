@@ -42,3 +42,5 @@ RUN KUBECTL_VERSION=$(curl -sL https://dl.k8s.io/release/stable.txt) \
     && kubectl version --client
 
 USER runner
+
+ENTRYPOINT ["/home/runner/run.sh"]
