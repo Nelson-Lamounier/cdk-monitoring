@@ -962,32 +962,142 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Job: Smoke-test the live site after rollout promotion + asset sync.
-  # Runs here — not in post-bootstrap — because S3 content is only guaranteed
-  # to exist after sync-assets completes. CloudFront+OAC returns 403 (not 404)
-  # for missing objects, so an empty bucket would loop until timeout.
+  # Verifies the blue/green cycle completed: new image active on stable RS,
+  # all new pods Running, old RS scaled down. Runs on k8s-runner (in-cluster)
+  # so kubectl can reach the API server directly without SSM hop.
   # ---------------------------------------------------------------------------
   smoke-site:
     name: "[Site] Smoke Test"
     needs: [resolve-targets, promote-site, sync-assets]
     if: needs.resolve-targets.outputs.deploy-site == 'true'
     runs-on: k8s-runner
-    timeout-minutes: 30
+    timeout-minutes: 15
     environment: development
+
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Setup Environment and Dependencies
-        uses: ./.github/actions/setup-node-yarn
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Run Site Smoke Test
+      - name: Set up in-cluster kubeconfig
         run: |
-          just ci-smoke-site \
-            --environment ${{ env.ENVIRONMENT }} \
-            --region ${{ env.AWS_REGION }} \
-            --max-attempts 12 \
-            --initial-delay 10
+          aws ssm get-parameter \
+            --name "/k8s/${{ env.ENVIRONMENT }}/kubeconfig" \
+            --with-decryption \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'Parameter.Value' \
+            --output text \
+            | sed 's|https://127.0.0.1:6443|https://kubernetes.default.svc:443|g' \
+            > /tmp/kubeconfig
+          chmod 600 /tmp/kubeconfig
+
+      - name: Verify Blue/Green Rollout — Image + Pod Readiness
+        env:
+          KUBECONFIG: /tmp/kubeconfig
+        run: |
+          ROLLOUT="nextjs"
+          NAMESPACE="nextjs-app"
+          IMAGE_TAG="${{ env.IMAGE_TAG }}"
+
+          echo "=== Rollout: $ROLLOUT | Namespace: $NAMESPACE | Tag: $IMAGE_TAG ==="
+
+          # 1. Phase check — must be Healthy (promotion completed, old RS scaled down)
+          PHASE=$(kubectl get rollout "$ROLLOUT" -n "$NAMESPACE" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
+          echo "[1/4] Rollout phase: $PHASE"
+          if [[ "$PHASE" != "Healthy" ]]; then
+            echo "::error::Rollout phase is '$PHASE' — expected Healthy. Blue/green cycle incomplete."
+            kubectl describe rollout "$ROLLOUT" -n "$NAMESPACE" 2>/dev/null || true
+            exit 1
+          fi
+
+          # 2. Image check — rollout spec must reference the new IMAGE_TAG
+          CURRENT_IMAGE=$(kubectl get rollout "$ROLLOUT" -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+          echo "[2/4] Active image: $CURRENT_IMAGE"
+          if [[ "$CURRENT_IMAGE" != *"$IMAGE_TAG"* ]]; then
+            echo "::error::Rollout image ($CURRENT_IMAGE) does not match expected tag ($IMAGE_TAG)"
+            echo "  ArgoCD may not have synced yet or IMAGE_TAG mismatch."
+            exit 1
+          fi
+          echo "[PASS] Image tag confirmed in rollout spec"
+
+          # 3. Stable RS pods — wait up to 60s for all pods Running
+          STABLE_HASH=$(kubectl get rollout "$ROLLOUT" -n "$NAMESPACE" \
+            -o jsonpath='{.status.stableRS}' 2>/dev/null || echo "")
+          echo "[3/4] Stable RS hash: ${STABLE_HASH:-unknown}"
+          if [[ -z "$STABLE_HASH" ]]; then
+            echo "::error::Could not determine stable ReplicaSet hash for rollout $ROLLOUT"
+            exit 1
+          fi
+
+          for i in $(seq 1 12); do
+            TOTAL=$(kubectl get pods -n "$NAMESPACE" \
+              -l "rollouts-pod-template-hash=$STABLE_HASH" \
+              --no-headers 2>/dev/null | wc -l | tr -d ' ')
+            RUNNING=$(kubectl get pods -n "$NAMESPACE" \
+              -l "rollouts-pod-template-hash=$STABLE_HASH" \
+              --field-selector=status.phase=Running \
+              --no-headers 2>/dev/null | wc -l | tr -d ' ')
+            echo "  [$i/12] New pods: $RUNNING/$TOTAL Running (stable RS)"
+            if [[ "$TOTAL" -gt 0 && "$RUNNING" -eq "$TOTAL" ]]; then
+              echo "[PASS] All $TOTAL new pod(s) Running"
+              break
+            fi
+            if [[ "$i" -eq 12 ]]; then
+              echo "::error::New pods not fully Running after 60s ($RUNNING/$TOTAL)"
+              kubectl get pods -n "$NAMESPACE" -l "rollouts-pod-template-hash=$STABLE_HASH" || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+          # 4. Old RS check — pods NOT on the stable hash should be Terminating or gone
+          echo "[4/4] Checking old pods are draining..."
+          ALL_PODS=$(kubectl get pods -n "$NAMESPACE" -l "app=$ROLLOUT" \
+            --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          NEW_PODS=$(kubectl get pods -n "$NAMESPACE" \
+            -l "rollouts-pod-template-hash=$STABLE_HASH" \
+            --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          OLD_PODS=$(( ALL_PODS - NEW_PODS ))
+          echo "  Total pods: $ALL_PODS | New (stable): $NEW_PODS | Old (draining): $OLD_PODS"
+          if [[ "$OLD_PODS" -gt 0 ]]; then
+            echo "::warning::$OLD_PODS old pod(s) still present (scaleDownDelay may still be active — expected within 30s)"
+            kubectl get pods -n "$NAMESPACE" -l "app=$ROLLOUT" || true
+          else
+            echo "[PASS] Old pods fully drained"
+          fi
+
+      - name: Smoke Summary
+        if: always()
+        env:
+          KUBECONFIG: /tmp/kubeconfig
+        run: |
+          echo "## [Site] Smoke Test" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: \`${{ env.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          PHASE=$(kubectl get rollout nextjs -n nextjs-app \
+            -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
+          ICON=$( [[ "$PHASE" == "Healthy" ]] && echo "✅" || echo "❌" )
+          echo "- **Rollout Phase**: $ICON $PHASE" >> $GITHUB_STEP_SUMMARY
+          STABLE_HASH=$(kubectl get rollout nextjs -n nextjs-app \
+            -o jsonpath='{.status.stableRS}' 2>/dev/null || echo "")
+          if [[ -n "$STABLE_HASH" ]]; then
+            TOTAL=$(kubectl get pods -n nextjs-app -l "rollouts-pod-template-hash=$STABLE_HASH" \
+              --no-headers 2>/dev/null | wc -l | tr -d ' ')
+            RUNNING=$(kubectl get pods -n nextjs-app -l "rollouts-pod-template-hash=$STABLE_HASH" \
+              --field-selector=status.phase=Running \
+              --no-headers 2>/dev/null | wc -l | tr -d ' ')
+            echo "- **Active Pods (stable RS \`$STABLE_HASH\`)**: $RUNNING/$TOTAL Running" >> $GITHUB_STEP_SUMMARY
+          fi
 
   # ---------------------------------------------------------------------------
   # Job: Invalidate CloudFront cache for /admin/* after promote-admin
