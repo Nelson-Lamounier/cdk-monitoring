@@ -52,6 +52,32 @@ import type {
 /** Maximum prompt length (validated by API Gateway, belt-and-braces check) */
 const MAX_PROMPT_LENGTH = 10_000;
 
+// =============================================================================
+// Response Normalisation
+// =============================================================================
+
+/**
+ * Strip markdown code fences and model preamble from agent responses.
+ *
+ * The Bedrock Agent occasionally wraps its JSON output in ```json...```
+ * fences and prepends a narration sentence. This normaliser extracts the
+ * bare JSON block so downstream consumers always receive consistent output.
+ *
+ * Behaviour:
+ * - If a ```json...``` or ```...``` block is found, return only its content.
+ * - If no fence is found, return the original text trimmed.
+ *
+ * @param text - Raw agent response text
+ * @returns Normalised response with code fences and preamble stripped
+ */
+function stripCodeFence(text: string): string {
+    const match = text.match(/```(?:json)?\s*\r?\n?([\s\S]*?)\r?\n?```/);
+    if (match?.[1]) {
+        return match[1].trim();
+    }
+    return text.trim();
+}
+
 /** UUID v4 format regex for session ID validation */
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -378,8 +404,9 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // =====================================================================
         // Output sanitisation (Layer 5: Sensitive pattern redaction)
         // =====================================================================
-        const sanitisedResponse = sanitiseOutput(result.response);
-        const wasRedacted = sanitisedResponse !== result.response;
+        const normalised = stripCodeFence(result.response);
+        const sanitisedResponse = sanitiseOutput(normalised);
+        const wasRedacted = sanitisedResponse !== normalised;
 
         const durationMs = Date.now() - startTime;
 
