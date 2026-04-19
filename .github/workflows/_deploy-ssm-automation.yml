@@ -343,33 +343,32 @@ jobs:
 
 
   # ===========================================================================
-  # Phase 5: Verify SSM Automation — Instance Targeting & Health
+  # Phase 5: Verify Bootstrap — Node Readiness & Cluster Health (k8s-runner)
   #
-  # Focused integration tests that validate two concerns per bootstrap role:
-  #   1. Instance Targeting: SSM Automation ran on the correct EC2 instance
-  #      (matched by k8s:bootstrap-role tag)
-  #   2. Instance Health: EC2 running, status checks passing, SSM Agent online
+  # Verifies that SM-A produced a healthy cluster by checking node and
+  # core system pod state directly via kubectl from the k8s-runner pod.
   #
-  # Uses: ssm-automation-runtime.integration.test.ts
-  # Recipe: just ci-integration-test kubernetes/ssm-automation-runtime
+  # Checks:
+  #   1. All nodes are Ready (kubectl wait --for=condition=Ready)
+  #   2. kube-system pods are Running (coredns, calico, etc.)
+  #   3. Failure diagnostics: node describe + recent events
   #
-  # All assertions pass vacuously when no instances/executions exist yet.
+  # Runs on k8s-runner (in-cluster kubectl — no SSM send-command hop).
+  # Kubeconfig fetched from SSM; server URL rewritten from 127.0.0.1:6443
+  # to kubernetes.default.svc:443 (same pattern as _post-bootstrap-config.yml).
+  #
+  # Passes vacuously when trigger-bootstrap was skipped (S3-sync-only runs).
   # ===========================================================================
-  verify-ssm-automation:
-    name: "Phase 5 — Verify SSM Automation"
+  verify-bootstrap:
+    name: "Phase 5 — Verify Bootstrap (k8s-runner)"
     needs: [trigger-bootstrap]
-    # Run on success, skipped, OR failure — the integration test reports
-    # execution status diagnostics (TimedOut, Failed, etc.) that are
-    # critical for post-mortem analysis when Automation times out.
     if: >-
       always()
       && (needs.trigger-bootstrap.result == 'success'
        || needs.trigger-bootstrap.result == 'skipped'
        || needs.trigger-bootstrap.result == 'failure')
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 10
+    runs-on: k8s-runner
+    timeout-minutes: 15
     environment: ${{ inputs.environment }}
 
     steps:
@@ -382,27 +381,111 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
 
-      - name: Setup Environment and Dependencies
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Install Dependencies
-        run: yarn install --immutable
-        working-directory: infra
-
       # -----------------------------------------------------------------------
-      # SSM Automation Runtime Integration Tests
+      # Set up in-cluster kubeconfig
       #
-      # Validates per bootstrap role (CP, app-worker, mon-worker, argocd-worker):
-      #   - Instance Targeting: latest execution targeted the correct tagged instance
-      #   - Instance Health: EC2 running + status checks + SSM Agent online
+      # Fetched from SSM; server URL rewritten from 127.0.0.1:6443
+      # (control-plane localhost) to kubernetes.default.svc:443 (in-cluster DNS).
+      # Same pattern as _post-bootstrap-config.yml and deploy-api.yml.
+      # Step exits 0 with a warning on Day-0 when the kubeconfig SSM param
+      # does not yet exist (bootstrap has never completed).
       # -----------------------------------------------------------------------
-      - name: Run SSM Automation Integration Tests
+      - name: Set up in-cluster kubeconfig
+        id: kubeconfig
+        run: |
+          PARAM="/k8s/${{ inputs.cdk-environment }}/kubeconfig"
+          VALUE=$(aws ssm get-parameter \
+            --name "$PARAM" \
+            --with-decryption \
+            --region "${{ vars.AWS_REGION || 'eu-west-1' }}" \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -z "$VALUE" ]; then
+            echo "[SKIP] Kubeconfig SSM parameter not found — Day-0 or bootstrap never completed"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "$VALUE" \
+            | sed 's|https://127.0.0.1:6443|https://kubernetes.default.svc:443|g' \
+            > /tmp/kubeconfig
+          chmod 600 /tmp/kubeconfig
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Node Readiness
+      #
+      # Waits up to 5 minutes for all nodes to reach Ready condition.
+      # SM-A bootstraps the control plane first, then workers re-join;
+      # on a fresh bootstrap, workers may take 1–3 min to appear.
+      # -----------------------------------------------------------------------
+      - name: Wait for all nodes Ready
+        if: steps.kubeconfig.outputs.available == 'true'
         env:
-          CDK_ENV: ${{ inputs.cdk-environment }}
-          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes/ssm-automation-runtime $CDK_ENV --verbose
+          KUBECONFIG: /tmp/kubeconfig
+        run: |
+          echo "=== Node state at verify time ==="
+          kubectl get nodes -o wide
+
+          echo ""
+          echo "=== Waiting up to 5 min for all nodes to be Ready ==="
+          kubectl wait --for=condition=Ready nodes --all --timeout=300s
+
+          TOTAL=$(kubectl get nodes --no-headers | wc -l)
+          READY=$(kubectl get nodes --no-headers | grep -c ' Ready')
+          echo ""
+          echo "[OK] ${READY}/${TOTAL} nodes Ready"
+
+      # -----------------------------------------------------------------------
+      # Core System Pod Health
+      #
+      # Confirms kube-system pods (coredns, calico-node, kube-proxy, etc.)
+      # are Running or Completed. A CrashLoopBackOff here indicates a failed
+      # bootstrap step (CNI misconfiguration, etcd issue, etc.).
+      # -----------------------------------------------------------------------
+      - name: Verify kube-system pods
+        if: steps.kubeconfig.outputs.available == 'true'
+        env:
+          KUBECONFIG: /tmp/kubeconfig
+        run: |
+          echo "=== kube-system pods ==="
+          kubectl get pods -n kube-system -o wide
+
+          NOT_OK=$(kubectl get pods -n kube-system --no-headers \
+            | grep -v -E 'Running|Completed' | wc -l)
+
+          if [ "$NOT_OK" -gt 0 ]; then
+            echo ""
+            echo "ERROR: $NOT_OK kube-system pod(s) not Running/Completed:"
+            kubectl get pods -n kube-system --no-headers | grep -v -E 'Running|Completed'
+            exit 1
+          fi
+          echo ""
+          echo "[OK] All kube-system pods Running or Completed"
+
+      # -----------------------------------------------------------------------
+      # Failure Diagnostics
+      #
+      # Only runs when a previous step fails — surfaces node conditions and
+      # recent events for post-mortem without requiring CloudWatch access.
+      # -----------------------------------------------------------------------
+      - name: Diagnostics on failure
+        if: failure() && steps.kubeconfig.outputs.available == 'true'
+        env:
+          KUBECONFIG: /tmp/kubeconfig
+        run: |
+          echo "=== Node describe ==="
+          kubectl describe nodes || true
+
+          echo ""
+          echo "=== Non-running pods (all namespaces) ==="
+          kubectl get pods -A --field-selector=status.phase!=Running \
+            --field-selector=status.phase!=Succeeded 2>/dev/null || true
+
+          echo ""
+          echo "=== Recent cluster events ==="
+          kubectl get events -A --sort-by='.lastTimestamp' 2>/dev/null | tail -40 || true
 
   # ===========================================================================
   # NOTE: SM-B (Config Orchestrator) is intentionally NOT called here.
