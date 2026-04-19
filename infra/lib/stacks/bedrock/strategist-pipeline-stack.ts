@@ -489,6 +489,12 @@ export class StrategistPipelineStack extends cdk.Stack {
             resultPath: '$',
             comment: 'Resume Builder Agent: apply suggestions to produce tailored resume',
         });
+        resumeBuilderTask.addRetry({
+            errors: ['ThrottlingException', 'ServiceUnavailableException', 'States.TaskFailed'],
+            interval: cdk.Duration.seconds(10),
+            maxAttempts: 2,
+            backoffRate: 2,
+        });
 
         const analysisPersistTask = new tasks.LambdaInvoke(this, 'AnalysisPersistTask', {
             lambdaFunction: analysisPersistFn,
