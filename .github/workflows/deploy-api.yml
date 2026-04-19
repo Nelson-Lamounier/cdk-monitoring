@@ -372,9 +372,9 @@ jobs:
           KUBECONFIG: /tmp/kubeconfig
           AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
         run: |
-          curl -sS https://bootstrap.pypa.io/get-pip.py | python3
-          python3 -m pip install -q -r kubernetes-app/k8s-bootstrap/deploy_helpers/requirements.txt
-          python3 kubernetes-app/workloads/charts/admin-api/deploy.py
+          python3 -m venv /tmp/deploy-venv
+          /tmp/deploy-venv/bin/pip install -q -r kubernetes-app/k8s-bootstrap/deploy_helpers/requirements.txt
+          /tmp/deploy-venv/bin/python3 kubernetes-app/workloads/charts/admin-api/deploy.py
 
       - name: Trigger ArgoCD Sync
         run: |
@@ -616,9 +616,9 @@ jobs:
           KUBECONFIG: /tmp/kubeconfig
           AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
         run: |
-          curl -sS https://bootstrap.pypa.io/get-pip.py | python3
-          python3 -m pip install -q -r kubernetes-app/k8s-bootstrap/deploy_helpers/requirements.txt
-          python3 kubernetes-app/workloads/charts/public-api/deploy.py
+          python3 -m venv /tmp/deploy-venv
+          /tmp/deploy-venv/bin/pip install -q -r kubernetes-app/k8s-bootstrap/deploy_helpers/requirements.txt
+          /tmp/deploy-venv/bin/python3 kubernetes-app/workloads/charts/public-api/deploy.py
 
       - name: Trigger ArgoCD Sync
         run: |
