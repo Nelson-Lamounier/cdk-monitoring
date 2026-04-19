@@ -115,6 +115,10 @@ async function proxyToBedrock(body: string | null): Promise<ProxyResult> {
     ? `${cfg.bedrockApiUrl}invoke`
     : `${cfg.bedrockApiUrl}/invoke`;
 
+  // 27 s — safely under API Gateway's 29 s hard limit, leaving ~2 s for the
+  // error response to clear Traefik and CloudFront before their own timeouts fire.
+  const controller = AbortSignal.timeout(27_000);
+
   let upstream: Response;
   try {
     upstream = await fetch(upstreamUrl, {
@@ -124,8 +128,20 @@ async function proxyToBedrock(body: string | null): Promise<ProxyResult> {
         'x-api-key': apiKey,
       },
       body,
+      signal: controller,
     });
   } catch (err) {
+    const isTimeout = err instanceof Error && err.name === 'TimeoutError';
+    if (isTimeout) {
+      console.error('[chatbot-bff] Upstream timed out after 27 s');
+      return {
+        status: 503,
+        data: {
+          error: 'ChatbotTimeout',
+          message: 'The chatbot is taking too long to respond. Try a shorter message or start a new conversation.',
+        },
+      };
+    }
     console.error('[chatbot-bff] Upstream fetch failed:', err);
     return { status: 502, data: { error: 'UpstreamError', message: 'Failed to reach chatbot upstream' } };
   }
