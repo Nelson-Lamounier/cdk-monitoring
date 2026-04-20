@@ -50,16 +50,6 @@ export const STACK_REGISTRY = {
     org: {
         dnsRole: 'DnsRole',
     },
-    bedrock: {
-        data: 'Data',
-        kb: 'Kb',
-        agent: 'Agent',
-        api: 'Api',
-        content: 'Content',
-        pipeline: 'Pipeline',
-        strategistData: 'Strategist-Data',
-        strategistPipeline: 'Strategist-Pipeline',
-    },
     selfHealing: {
         gateway: 'Gateway',
         agent: 'Agent',
@@ -113,7 +103,6 @@ const PROJECT_TO_REGISTRY: Record<Project, RegistryProject> = {
     [Project.SHARED]: 'shared',
     [Project.KUBERNETES]: 'kubernetes',
     [Project.ORG]: 'org',
-    [Project.BEDROCK]: 'bedrock',
     [Project.SELF_HEALING]: 'selfHealing',
 };
 

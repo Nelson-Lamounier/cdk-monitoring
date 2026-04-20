@@ -53,12 +53,6 @@ describe('Naming Utilities', () => {
             expect(getStackId(Project.ORG, 'dnsRole', 'production')).toBe('Org-DnsRole-production');
         });
 
-        it('should resolve Bedrock project stacks', () => {
-            expect(getStackId(Project.BEDROCK, 'data', 'development')).toBe('Bedrock-Data-development');
-            expect(getStackId(Project.BEDROCK, 'agent', 'development')).toBe('Bedrock-Agent-development');
-            expect(getStackId(Project.BEDROCK, 'api', 'production')).toBe('Bedrock-Api-production');
-        });
-
         it('should throw on invalid stack key', () => {
             expect(() => getStackId(Project.KUBERNETES, 'nonexistent', 'development')).toThrow(
                 /Unknown stack key 'nonexistent'/
@@ -72,16 +66,12 @@ describe('Naming Utilities', () => {
     describe('STACK_REGISTRY', () => {
         it('should contain all project entries', () => {
             expect(Object.keys(STACK_REGISTRY)).toStrictEqual(
-                expect.arrayContaining(['shared', 'kubernetes', 'org', 'bedrock'])
+                expect.arrayContaining(['shared', 'kubernetes', 'org', 'selfHealing'])
             );
         });
 
         it('should have expected k8s stack keys', () => {
             expect(Object.keys(STACK_REGISTRY.kubernetes)).toStrictEqual(['data', 'base', 'goldenAmi', 'ssmAutomation', 'controlPlane', 'appWorker', 'monitoringWorker', 'argocdWorker', 'generalPool', 'monitoringPool', 'appIam', 'api', 'edge', 'observability']);
-        });
-
-        it('should have expected bedrock stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.bedrock)).toStrictEqual(['data', 'kb', 'agent', 'api', 'content', 'pipeline', 'strategistData', 'strategistPipeline']);
         });
     });
 
@@ -115,7 +105,7 @@ describe('Naming Utilities', () => {
         });
 
         it('should handle empty component', () => {
-            expect(flatName('bedrock', '', 'staging')).toBe('bedrock-stg');
+            expect(flatName('kubernetes', '', 'staging')).toBe('kubernetes-stg');
         });
 
         it('should produce short names for all environments', () => {

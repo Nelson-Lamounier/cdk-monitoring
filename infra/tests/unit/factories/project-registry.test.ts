@@ -51,7 +51,7 @@ describe('Project Registry', () => {
     describe('hasProjectFactory', () => {
         it('should return true for registered projects', () => {
             expect(hasProjectFactory(Project.KUBERNETES)).toBe(true);
-            expect(hasProjectFactory(Project.BEDROCK)).toBe(true);
+            expect(hasProjectFactory(Project.SELF_HEALING)).toBe(true);
         });
     });
 });
