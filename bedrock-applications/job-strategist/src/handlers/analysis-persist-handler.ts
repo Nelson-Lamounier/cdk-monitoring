@@ -24,6 +24,8 @@ import type {
     StrategistAnalysisPipelineOutput,
 } from '../../../shared/src/index.js';
 
+import { log } from '../../../shared/src/index.js';
+
 // =============================================================================
 // ENVIRONMENT VALIDATION (fail-fast at cold start)
 // =============================================================================
@@ -69,9 +71,9 @@ async function rehydrateAnalysisXml(analysisXml: string): Promise<string> {
     const bucket = uri.slice(0, slashIndex);
     const key = uri.slice(slashIndex + 1);
 
-    console.log(
-        `[analysis-persist] Rehydrating analysisXml from S3: s3://${bucket}/${key}`,
-    );
+    log('INFO', 'Rehydrating analysisXml from S3', {
+        handler: 'analysis-persist', bucket, key,
+    });
 
     const response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
     const xml = await response.Body?.transformToString('utf-8');
@@ -80,7 +82,7 @@ async function rehydrateAnalysisXml(analysisXml: string): Promise<string> {
         throw new Error(`Failed to read analysisXml from S3: s3://${bucket}/${key}`);
     }
 
-    console.log(`[analysis-persist] Rehydrated analysisXml: ${(xml.length / 1024).toFixed(1)}KB`);
+    log('INFO', 'Rehydrated analysisXml', { handler: 'analysis-persist', sizeKb: (xml.length / 1024).toFixed(1) });
     return xml;
 }
 
@@ -105,26 +107,27 @@ export const handler = async (
     const now = new Date().toISOString();
     const datePrefix = now.slice(0, 10);
 
-    console.log(
-        `[analysis-persist] Pipeline ${context.pipelineId} ` +
-        `— persisting analysis for "${context.targetRole}"`,
-    );
+    log('INFO', 'Persisting analysis', {
+        handler: 'analysis-persist', pipelineId: context.pipelineId,
+        targetRole: context.targetRole,
+    });
 
     // Rehydrate analysisXml from S3 if it was offloaded
     const analysisXml = await rehydrateAnalysisXml(analysis.data.analysisXml);
 
     if (TABLE_NAME) {
         // 1. Update METADATA record
-        console.log(`[analysis-persist] Updating APPLICATION#${context.applicationSlug} METADATA`);
+        log('INFO', 'Updating METADATA', { handler: 'analysis-persist', applicationSlug: context.applicationSlug });
         await ddbClient.send(new UpdateCommand({
             TableName: TABLE_NAME,
             Key: {
                 pk: `APPLICATION#${context.applicationSlug}`,
                 sk: 'METADATA',
             },
-            UpdateExpression: `SET #status = :status, fitRating = :fitRating, 
+            UpdateExpression: `SET #status = :status, fitRating = :fitRating,
                 recommendation = :recommendation, updatedAt = :now,
-                pipelineId = :pipelineId, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk,
+                pipelineId = :pipelineId, latestPipelineId = :pipelineId,
+                gsi1pk = :gsi1pk, gsi1sk = :gsi1sk,
                 totalCostUsd = :cost, totalTokens = :tokens`,
             ExpressionAttributeNames: { '#status': 'status' },
             ExpressionAttributeValues: {
@@ -141,7 +144,7 @@ export const handler = async (
         }));
 
         // 2. Store full analysis — versioned by pipelineId
-        console.log(`[analysis-persist] Storing ANALYSIS#${context.pipelineId}`);
+        log('INFO', 'Storing ANALYSIS record', { handler: 'analysis-persist', pipelineId: context.pipelineId });
         await ddbClient.send(new PutCommand({
             TableName: TABLE_NAME,
             Item: {
@@ -191,11 +194,11 @@ export const handler = async (
         applicationStatus: 'analysis-ready',
     };
 
-    console.log(
-        `[analysis-persist] Pipeline complete — ` +
-        `fit="${analysis.data.metadata.overallFitRating}", ` +
-        `cost=$${context.cumulativeCostUsd.toFixed(4)}`,
-    );
+    log('INFO', 'Pipeline complete', {
+        handler: 'analysis-persist',
+        fitRating: analysis.data.metadata.overallFitRating,
+        costUsd: context.cumulativeCostUsd.toFixed(4),
+    });
 
     return output;
 };

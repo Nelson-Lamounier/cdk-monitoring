@@ -21,7 +21,7 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ZodError } from 'zod';
 
 import type {
@@ -29,6 +29,8 @@ import type {
     StrategistResearchHandlerInput,
     StrategistCoachLoaderInput,
 } from '../../../shared/src/index.js';
+
+import { log } from '../../../shared/src/index.js';
 
 import {
     TriggerRequestSchema,
@@ -142,14 +144,14 @@ async function handleAnalyse(body: AnalyseRequest): Promise<APIGatewayProxyResul
     const datePrefix = now.slice(0, 10);
     const executionName = `${slug}-${Date.now()}`;
 
-    console.log(`[strategist-trigger] Analyse — slug="${slug}", role="${body.targetRole}", resumeId="${body.resumeId || 'none'}"`);
+    log('INFO', 'Analyse triggered', { handler: 'strategist-trigger', slug, targetRole: body.targetRole, resumeId: body.resumeId || 'none' });
 
     // Fetch structured resume from DynamoDB — Zod-validated.
     // Skipped when resumeId is empty (build-from-scratch mode).
     let resumeData: ReturnType<typeof StructuredResumeDataSchema.parse> | null = null;
 
     if (body.resumeId) {
-        console.log(`[strategist-trigger] Fetching resume: RESUME#${body.resumeId}`);
+        log('INFO', 'Fetching resume', { handler: 'strategist-trigger', resumeId: body.resumeId });
         const resumeResult = await ddbClient.send(new GetCommand({
             TableName: TABLE_NAME,
             Key: {
@@ -164,18 +166,17 @@ async function handleAnalyse(body: AnalyseRequest): Promise<APIGatewayProxyResul
 
             if (parseResult.success) {
                 resumeData = parseResult.data;
-                console.log(`[strategist-trigger] Resume loaded: ${resumeData.profile.name}`);
+                log('INFO', 'Resume loaded', { handler: 'strategist-trigger', profileName: resumeData.profile.name });
             } else {
-                console.warn(
-                    `[strategist-trigger] Resume data failed validation: ${formatZodError(parseResult.error)}. ` +
-                    'Pipeline will run without resume baseline.',
-                );
+                log('WARN', 'Resume data failed validation — pipeline will run without resume baseline', {
+                    handler: 'strategist-trigger', error: formatZodError(parseResult.error),
+                });
             }
         } else {
-            console.warn(`[strategist-trigger] Resume not found: RESUME#${body.resumeId} — pipeline will run without resume baseline`);
+            log('WARN', 'Resume not found — pipeline will run without resume baseline', { handler: 'strategist-trigger', resumeId: body.resumeId });
         }
     } else {
-        console.log('[strategist-trigger] No resume ID provided — pipeline will build resume from scratch using KB');
+        log('INFO', 'No resume ID provided — build-from-scratch mode', { handler: 'strategist-trigger' });
     }
 
     // Build pipeline context
@@ -198,7 +199,7 @@ async function handleAnalyse(body: AnalyseRequest): Promise<APIGatewayProxyResul
     };
 
     // Start Analysis State Machine first so we have the executionArn to store
-    console.log(`[strategist-trigger] Starting analysis execution: ${executionName}`);
+    log('INFO', 'Starting analysis execution', { handler: 'strategist-trigger', executionName });
 
     const sfnInput: StrategistResearchHandlerInput = {
         context: pipelineContext,
@@ -210,31 +211,63 @@ async function handleAnalyse(body: AnalyseRequest): Promise<APIGatewayProxyResul
         input: JSON.stringify(sfnInput),
     }));
 
-    console.log(`[strategist-trigger] Analysis execution started — arn=${result.executionArn ?? 'unknown'}`);
+    log('INFO', 'Analysis execution started', { handler: 'strategist-trigger', executionArn: result.executionArn ?? 'unknown' });
 
-    // Write initial 'analysing' record to DynamoDB — after SFN start so executionArn is available
-    console.log(`[strategist-trigger] Writing analysing record: APPLICATION#${slug}`);
-    await ddbClient.send(new PutCommand({
+    // Upsert the METADATA record — UpdateCommand preserves existing fields on re-analysis.
+    // PutCommand would wipe analysisCount, latestPipelineId, and latestResumeId set by
+    // previous pipeline runs. analysisCount uses if_not_exists to safely initialise on
+    // first write and atomically increment on subsequent runs.
+    // createdAt is also preserved via if_not_exists — it reflects when the application
+    // record was first created, not when the latest analysis was triggered.
+    log('INFO', 'Upserting METADATA', { handler: 'strategist-trigger', applicationSlug: slug });
+    await ddbClient.send(new UpdateCommand({
         TableName: TABLE_NAME,
-        Item: {
+        Key: {
             pk: `APPLICATION#${slug}`,
             sk: 'METADATA',
-            status: 'analysing',
-            pipelineId: executionName,
-            executionArn: result.executionArn ?? '',
-            applicationSlug: slug,
-            targetCompany: body.targetCompany,
-            targetRole: body.targetRole,
-            interviewStage: 'applied',
-            startedAt: now,
-            updatedAt: now,
-            environment: ENVIRONMENT,
-            // GSI1 — status index
-            gsi1pk: 'APP_STATUS#analysing',
-            gsi1sk: `${datePrefix}#${slug}`,
-            // GSI2 — company index
-            gsi2pk: `COMPANY#${body.targetCompany.toLowerCase().replaceAll(/\s+/g, '-')}`,
-            gsi2sk: `${datePrefix}#${slug}`,
+        },
+        UpdateExpression: `SET
+            #status = :status,
+            pipelineId = :pipelineId,
+            executionArn = :arn,
+            applicationSlug = :slug,
+            targetCompany = :company,
+            targetRole = :role,
+            jobDescription = :jd,
+            resumeId = :resumeId,
+            interviewStage = :stage,
+            startedAt = :started,
+            updatedAt = :now,
+            #env = :env,
+            gsi1pk = :gsi1pk,
+            gsi1sk = :gsi1sk,
+            gsi2pk = :gsi2pk,
+            gsi2sk = :gsi2sk,
+            createdAt = if_not_exists(createdAt, :now),
+            analysisCount = if_not_exists(analysisCount, :zero) + :one`,
+        ExpressionAttributeNames: {
+            '#status': 'status',
+            '#env': 'environment',
+        },
+        ExpressionAttributeValues: {
+            ':status': 'analysing',
+            ':pipelineId': executionName,
+            ':arn': result.executionArn ?? '',
+            ':slug': slug,
+            ':company': body.targetCompany,
+            ':role': body.targetRole,
+            ':jd': body.jobDescription,
+            ':resumeId': body.resumeId ?? '',
+            ':stage': 'applied',
+            ':started': now,
+            ':now': now,
+            ':env': ENVIRONMENT,
+            ':gsi1pk': 'APP_STATUS#analysing',
+            ':gsi1sk': `${datePrefix}#${slug}`,
+            ':gsi2pk': `COMPANY#${body.targetCompany.toLowerCase().replaceAll(/\s+/g, '-')}`,
+            ':gsi2sk': `${datePrefix}#${slug}`,
+            ':zero': 0,
+            ':one': 1,
         },
     }));
 
@@ -271,10 +304,11 @@ async function handleCoach(body: CoachRequest): Promise<APIGatewayProxyResultV2>
     const safeSlug = body.applicationSlug.length > maxSlugLen ? body.applicationSlug.slice(0, maxSlugLen).replace(/-$/, '') : body.applicationSlug;
     const executionName = `coach-${safeSlug}-${body.interviewStage}-${Date.now()}`;
 
-    console.log(
-        `[strategist-trigger] Coach — slug="${body.applicationSlug}", ` +
-        `stage="${body.interviewStage}"`,
-    );
+    log('INFO', 'Coach triggered', {
+        handler: 'strategist-trigger',
+        applicationSlug: body.applicationSlug,
+        interviewStage: body.interviewStage,
+    });
 
     // Verify the application exists
     const appResult = await ddbClient.send(new GetCommand({
@@ -313,7 +347,7 @@ async function handleCoach(body: CoachRequest): Promise<APIGatewayProxyResultV2>
     };
 
     // Start Coaching State Machine
-    console.log(`[strategist-trigger] Starting coaching execution: ${executionName}`);
+    log('INFO', 'Starting coaching execution', { handler: 'strategist-trigger', executionName });
 
     const sfnInput: StrategistCoachLoaderInput = {
         context: pipelineContext,
@@ -325,7 +359,7 @@ async function handleCoach(body: CoachRequest): Promise<APIGatewayProxyResultV2>
         input: JSON.stringify(sfnInput),
     }));
 
-    console.log(`[strategist-trigger] Coaching execution started — arn=${result.executionArn ?? 'unknown'}`);
+    log('INFO', 'Coaching execution started', { handler: 'strategist-trigger', executionArn: result.executionArn ?? 'unknown' });
 
     return buildResponse(200, {
         pipelineId: executionName,
@@ -385,7 +419,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     } catch (error) {
         // Zod validation errors → 400 with field-level detail
         if (error instanceof ZodError) {
-            console.warn(`[strategist-trigger] Validation error: ${formatZodError(error)}`);
+            log('WARN', 'Validation error', { handler: 'strategist-trigger', error: formatZodError(error) });
             return buildResponse(400, {
                 error: 'Request validation failed',
                 details: formatZodError(error),
@@ -393,7 +427,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         }
 
         const message = error instanceof Error ? error.message : 'Unknown error';
-        console.error(`[strategist-trigger] Error: ${message}`);
+        log('ERROR', 'Unhandled error', { handler: 'strategist-trigger', error: message });
         return buildResponse(500, { error: 'Internal server error', details: message });
     }
 };

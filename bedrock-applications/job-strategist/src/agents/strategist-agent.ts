@@ -12,10 +12,12 @@
  * Pipeline position: API → Research → **Strategist** → Coach → DynamoDB
  */
 
-import { runAgent, parseJsonResponse } from '../../../shared/src/index.js';
+import { BaseAgent, parseJsonResponse, OutputSanitiser, log } from '../../../shared/src/index.js';
 import { formatResumeForPrompt } from '../services/resume-service.js';
 import { STRATEGIST_PERSONA_SYSTEM_PROMPT } from '../prompts/strategist-persona.js';
-import { sanitiseOutput } from '../security/output-sanitiser.js';
+
+/** Module-scoped output sanitiser (default patterns — superset of all redaction rules) */
+const outputSanitiser = new OutputSanitiser();
 import {
     FitRatingSchema,
     ApplicationRecommendationSchema,
@@ -34,6 +36,21 @@ import type {
     StrategistAnalysisResult,
     StructuredResumeData,
 } from '../../../shared/src/index.js';
+
+// =============================================================================
+// INPUT TYPE
+// =============================================================================
+
+/**
+ * Typed input for the Strategist Agent.
+ *
+ * Contains the Research Agent's structured brief with
+ * requirements analysis, skills inventory, and gap assessment.
+ */
+export interface StrategistAgentInput {
+    /** Research Agent's structured output */
+    readonly research: StrategistResearchResult;
+}
 
 // =============================================================================
 // CONFIGURATION
@@ -433,13 +450,13 @@ function extractTailoredResumeJson(xml: string): StructuredResumeData | null {
     try {
         return parseJsonResponse<StructuredResumeData>(raw, 'strategist-tailored-resume');
     } catch (err) {
-        console.warn(`[strategist-writer] Failed to parse tailored_resume_json: ${(err as Error).message}`);
+        log('WARN', 'Failed to parse tailored_resume_json', { agent: 'strategist-writer', error: (err as Error).message });
         return null;
     }
 }
 
 // =============================================================================
-// AGENT EXECUTION
+// STRATEGIST AGENT CLASS
 // =============================================================================
 
 /**
@@ -454,10 +471,154 @@ const STRATEGIST_CONFIG: AgentConfig = {
 };
 
 /**
+ * Strategist Agent — 5-Phase analysis and document generation.
+ *
+ * Extends {@link BaseAgent} to encapsulate the Strategist lifecycle:
+ * - Receives Research Agent's structured brief
+ * - Produces full XML analysis (Phases 1–4)
+ * - Extracts metadata, cover letter, archetype selection,
+ *   resume suggestions, and tailored resume JSON
+ * - Output sanitisation via {@link OutputSanitiser}
+ *
+ * Uses `ctx.includeCoverLetter` in parseResponse — previously
+ * achieved via a closure, now cleanly accessed through the
+ * BaseAgent's context-aware parsing contract.
+ *
+ * @example
+ * ```typescript
+ * const result = await strategistAgent.execute({ research }, ctx);
+ * ```
+ */
+class StrategistAgent extends BaseAgent<StrategistAgentInput, StrategistAnalysisResult, StrategistPipelineContext> {
+    protected readonly agentName = 'strategist-writer' as const;
+
+    /**
+     * Build strategist configuration.
+     *
+     * @returns Static strategist agent configuration
+     */
+    protected getConfig(): AgentConfig {
+        return STRATEGIST_CONFIG;
+    }
+
+    /**
+     * Build the user message from the research brief.
+     *
+     * @param input - Strategist input with research result
+     * @param ctx   - Pipeline context for interview stage and cover letter flag
+     * @returns Formatted user message for Bedrock
+     */
+    protected buildUserMessage(input: StrategistAgentInput, ctx: StrategistPipelineContext): string {
+        return buildStrategistMessage(input.research, ctx);
+    }
+
+    /**
+     * Parse the raw XML response into a typed StrategistAnalysisResult.
+     *
+     * Uses `ctx.includeCoverLetter` to conditionally extract the cover
+     * letter section. Sanitises output to redact infrastructure identifiers.
+     *
+     * @param responseText - Raw text response from Bedrock
+     * @param _input       - Unused (strategist doesn't need input in parser)
+     * @param ctx          - Pipeline context for cover letter flag
+     * @returns Validated strategist analysis result
+     */
+    protected parseResponse(
+        responseText: string,
+        _input: StrategistAgentInput,
+        ctx: StrategistPipelineContext,
+    ): StrategistAnalysisResult {
+        // Sanitise output to redact any infrastructure identifiers
+        const sanitisedXml = outputSanitiser.sanitise(responseText);
+
+        // Extract metadata from XML for quick DynamoDB queries
+        const metadata = extractMetadataFromXml(sanitisedXml);
+        const shouldIncludeCoverLetter = ctx.includeCoverLetter ?? true;
+        const coverLetter = shouldIncludeCoverLetter
+            ? extractCoverLetter(sanitisedXml)
+            : null;
+        const resumeSuggestions = buildResumeSuggestions(sanitisedXml);
+
+        // Phase 0 — archetype selection (explicit, auditable)
+        const archetypeSelection = extractArchetypeSelection(sanitisedXml);
+        if (archetypeSelection) {
+            log('INFO', 'Phase 0 — archetype selected', {
+                agent: 'strategist-writer',
+                archetype: archetypeSelection.selectedArchetype,
+                archetypeId: archetypeSelection.archetypeId,
+                confidence: archetypeSelection.confidenceScore.toFixed(2),
+                gapDetected: archetypeSelection.archetypeGapDetected,
+            });
+        } else {
+            log('WARN', 'Phase 0 section absent — legacy or build-from-scratch run', { agent: 'strategist-writer' });
+        }
+
+        // Phase 4 — extract complete tailored resume JSON (Option A architecture)
+        const tailoredResumeData = extractTailoredResumeJson(sanitisedXml);
+        if (tailoredResumeData) {
+            log('INFO', 'Tailored resume JSON extracted — Resume Builder will persist directly', { agent: 'strategist-writer' });
+        } else {
+            log('WARN', 'No tailored_resume_json section found — Resume Builder will skip', { agent: 'strategist-writer' });
+        }
+
+        return {
+            analysisXml: sanitisedXml,
+            metadata,
+            coverLetter,
+            archetypeSelection,
+            tailoredResumeData,
+            resumeSuggestions,
+            resumeAdditions: resumeSuggestions.additions.length,
+            resumeReframes: resumeSuggestions.reframes.length,
+            eslCorrections: resumeSuggestions.eslCorrections.length,
+        };
+    }
+
+    /**
+     * Pre-execution hook — logs analysis context.
+     *
+     * @param input - Strategist input
+     * @param ctx   - Pipeline context
+     */
+    protected override beforeExecute(input: StrategistAgentInput, ctx: StrategistPipelineContext): void {
+        log('INFO', 'Generating analysis', {
+            agent: 'strategist-writer',
+            pipelineId: ctx.pipelineId,
+            targetRole: input.research.targetRole,
+            targetCompany: input.research.targetCompany,
+        });
+    }
+
+    /**
+     * Post-execution hook — logs analysis output.
+     *
+     * @param result - Strategist agent result
+     */
+    protected override afterExecute(result: AgentResult<StrategistAnalysisResult>): void {
+        log('INFO', 'Analysis generated', {
+            agent: 'strategist-writer',
+            fitRating: result.data.metadata.overallFitRating,
+            recommendation: result.data.metadata.applicationRecommendation,
+            archetype: result.data.archetypeSelection?.selectedArchetype ?? 'unknown',
+            tailoredResume: result.data.tailoredResumeData !== null,
+            additions: result.data.resumeAdditions,
+            reframes: result.data.resumeReframes,
+            esl: result.data.eslCorrections,
+        });
+    }
+}
+
+/** Module-level singleton — re-used across Lambda invocations. */
+const strategistAgent = new StrategistAgent();
+
+/** Export the agent instance for direct usage. */
+export { strategistAgent, StrategistAgent };
+
+/**
  * Execute the Strategist Agent.
  *
- * Receives the Research Agent's structured brief and produces
- * the full 5-phase XML analysis with document generation.
+ * Backward-compatible wrapper that delegates to the
+ * {@link StrategistAgent} class instance.
  *
  * @param ctx - Pipeline context
  * @param research - Research Agent's structured output
@@ -467,82 +628,5 @@ export async function executeStrategistAgent(
     ctx: StrategistPipelineContext,
     research: StrategistResearchResult,
 ): Promise<AgentResult<StrategistAnalysisResult>> {
-    console.log(
-        `[strategist-writer] Pipeline ${ctx.pipelineId} — generating analysis for ` +
-        `"${research.targetRole}" at "${research.targetCompany}"`,
-    );
-
-    const userMessage = buildStrategistMessage(research, ctx);
-
-    const result = await runAgent<StrategistAnalysisResult>({
-        config: STRATEGIST_CONFIG,
-        userMessage,
-        parseResponse: (text) => {
-            // Sanitise output to redact any infrastructure identifiers
-            const sanitisedXml = sanitiseOutput(text);
-
-            // Extract metadata from XML for quick DynamoDB queries
-            const metadata = extractMetadataFromXml(sanitisedXml);
-            const shouldIncludeCoverLetter = ctx.includeCoverLetter ?? true;
-            const coverLetter = shouldIncludeCoverLetter
-                ? extractCoverLetter(sanitisedXml)
-                : null;
-            const resumeSuggestions = buildResumeSuggestions(sanitisedXml);
-
-            // Phase 0 — archetype selection (explicit, auditable)
-            const archetypeSelection = extractArchetypeSelection(sanitisedXml);
-            if (archetypeSelection) {
-                console.log(
-                    `[strategist-writer] Phase 0 — archetype="${archetypeSelection.selectedArchetype}" ` +
-                    `(id=${archetypeSelection.archetypeId}, confidence=${archetypeSelection.confidenceScore.toFixed(2)}, ` +
-                    `gap=${archetypeSelection.archetypeGapDetected})`,
-                );
-            } else {
-                console.warn(`[strategist-writer] Phase 0 section absent — legacy or build-from-scratch run`);
-            }
-
-            // Phase 4 — extract complete tailored resume JSON (Option A architecture)
-            const tailoredResumeData = extractTailoredResumeJson(sanitisedXml);
-            if (tailoredResumeData) {
-                console.log(`[strategist-writer] Tailored resume JSON extracted — Resume Builder will persist directly`);
-            } else {
-                console.warn(`[strategist-writer] No tailored_resume_json section found — Resume Builder will skip`);
-            }
-
-            return {
-                analysisXml: sanitisedXml,
-                metadata,
-                coverLetter,
-                archetypeSelection,
-                tailoredResumeData,
-                resumeSuggestions,
-                resumeAdditions: resumeSuggestions.additions.length,
-                resumeReframes: resumeSuggestions.reframes.length,
-                eslCorrections: resumeSuggestions.eslCorrections.length,
-            };
-        },
-        pipelineContext: {
-            pipelineId: ctx.pipelineId,
-            slug: ctx.applicationSlug,
-            sourceKey: '',
-            bucket: ctx.bucket,
-            environment: ctx.environment,
-            version: 0, // Strategist pipeline — not versioned
-            cumulativeTokens: ctx.cumulativeTokens,
-            cumulativeCostUsd: ctx.cumulativeCostUsd,
-            retryAttempt: 0,
-            startedAt: ctx.startedAt,
-        },
-    });
-
-    console.log(
-        `[strategist-writer] Analysis generated — fit="${result.data.metadata.overallFitRating}", ` +
-        `recommendation="${result.data.metadata.applicationRecommendation}", ` +
-        `archetype="${result.data.archetypeSelection?.selectedArchetype ?? 'unknown'}", ` +
-        `tailoredResume=${result.data.tailoredResumeData !== null}, ` +
-        `additions=${result.data.resumeAdditions}, reframes=${result.data.resumeReframes}, ` +
-        `esl=${result.data.eslCorrections}`,
-    );
-
-    return result;
+    return strategistAgent.execute({ research }, ctx);
 }

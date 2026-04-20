@@ -288,7 +288,7 @@ jobs:
 
       - name: Push Site Image to ECR
         run: |
-          npx tsx frontend-ops/push-to-ecr.ts \
+          npx tsx scripts/push-to-ecr.ts \
             --env "${{ env.ENVIRONMENT }}" \
             --tag "${{ env.IMAGE_TAG }}" \
             --ecr-url "${{ steps.resolve-ecr.outputs.ecr-url }}" \

@@ -207,26 +207,58 @@ export function createApplicationsRouter(config: AdminApiConfig): Hono {
     }
 
     let metadata: DynamoRecord | null = null;
-    let analysis: DynamoRecord | null = null;
-    let interview: DynamoRecord | null = null;
-    let tailoredResume: DynamoRecord | null = null;
+    let latestAnalysis: DynamoRecord | null = null;
+    let latestInterview: DynamoRecord | null = null;
+    let latestResume: DynamoRecord | null = null;
+
+    // Collect versioned records for history
+    const analysisHistory: DynamoRecord[] = [];
+    const tailoredResumeMap = new Map<string, DynamoRecord>(); // sk → item
 
     for (const item of items) {
       const sk = String(item['sk'] ?? '');
       if (sk === 'METADATA') {
         metadata = item;
       } else if (sk.startsWith('ANALYSIS#')) {
-        analysis = selectLatest(analysis, item);
+        latestAnalysis = selectLatest(latestAnalysis, item);
+        analysisHistory.push(item);
       } else if (sk.startsWith('INTERVIEW#')) {
-        interview = selectLatest(interview, item);
+        latestInterview = selectLatest(latestInterview, item);
       } else if (sk.startsWith('TAILORED_RESUME#')) {
-        tailoredResume = selectLatest(tailoredResume, item);
+        latestResume = selectLatest(latestResume, item);
+        tailoredResumeMap.set(sk, item);
       }
     }
 
     if (!metadata) {
       return ctx.json({ error: `Metadata record not found for: ${slug}` }, 404);
     }
+
+    // Prefer explicit version pointers written by pipeline handlers.
+    // latestPipelineId → set by analysis-persist-handler on successful completion.
+    // latestResumeId   → set by resume-builder-handler on successful persistence.
+    // Falls back to selectLatest for records that predate the pointer fields.
+    const latestPipelineId = String(metadata['latestPipelineId'] ?? '');
+    const latestResumeId = String(metadata['latestResumeId'] ?? '');
+
+    if (latestPipelineId) {
+      const pointed = analysisHistory.find((i) => String(i['sk']) === `ANALYSIS#${latestPipelineId}`);
+      if (pointed) latestAnalysis = pointed;
+    }
+    if (latestResumeId) {
+      const pointed = tailoredResumeMap.get(latestResumeId);
+      if (pointed) latestResume = pointed;
+    }
+
+    // Build analysis version history for the UI (newest first, metadata only).
+    const versions = analysisHistory
+      .map((a) => ({
+        pipelineId: String(a['sk']).replace('ANALYSIS#', ''),
+        createdAt: String(a['createdAt'] ?? ''),
+        fitRating: (a['analysisMetadata'] as DynamoRecord | undefined)?.['overallFitRating'] ?? null,
+        hasResume: tailoredResumeMap.has(String(a['sk']).replace('ANALYSIS#', 'TAILORED_RESUME#')),
+      }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
     const detail = {
       slug,
@@ -236,6 +268,10 @@ export function createApplicationsRouter(config: AdminApiConfig): Hono {
       interviewStage: String(metadata['interviewStage'] ?? 'applied'),
       createdAt: String(metadata['createdAt'] ?? ''),
       updatedAt: String(metadata['updatedAt'] ?? ''),
+      // analysisCount tracks how many times this role has been re-analysed.
+      // Incremented atomically by trigger-handler on each new pipeline run.
+      analysisCount: Number(metadata['analysisCount'] ?? 1),
+      versions,
       context: {
         pipelineId: String(metadata['pipelineId'] ?? ''),
         cumulativeInputTokens: Number(metadata['cumulativeInputTokens'] ?? 0),
@@ -243,25 +279,25 @@ export function createApplicationsRouter(config: AdminApiConfig): Hono {
         cumulativeThinkingTokens: Number(metadata['cumulativeThinkingTokens'] ?? 0),
         cumulativeCostUsd: Number(metadata['cumulativeCostUsd'] ?? 0),
       },
-      research: analysis?.['research'] ?? null,
-      analysis: analysis
+      research: latestAnalysis?.['research'] ?? null,
+      analysis: latestAnalysis
         ? {
-            analysisXml: String(analysis['analysisXml'] ?? ''),
-            coverLetter: analysis['coverLetter'] ? String(analysis['coverLetter']) : null,
-            metadata: analysis['analysisMetadata'] ?? {
+            analysisXml: String(latestAnalysis['analysisXml'] ?? ''),
+            coverLetter: latestAnalysis['coverLetter'] ? String(latestAnalysis['coverLetter']) : null,
+            metadata: latestAnalysis['analysisMetadata'] ?? {
               overallFitRating: 'STRETCH',
               applicationRecommendation: 'APPLY_WITH_CAVEATS',
             },
-            resumeSuggestions: analysis['resumeSuggestions'] ?? {
+            resumeSuggestions: latestAnalysis['resumeSuggestions'] ?? {
               additions: 0,
               reframes: 0,
               eslCorrections: 0,
               summary: '',
             },
-            tailoredResume: tailoredResume?.['tailoredResume'] ?? undefined,
+            tailoredResume: latestResume?.['tailoredResume'] ?? undefined,
           }
         : null,
-      interviewPrep: interview?.['coaching'] ?? null,
+      interviewPrep: latestInterview?.['coaching'] ?? null,
     };
 
     return ctx.json({ application: detail });

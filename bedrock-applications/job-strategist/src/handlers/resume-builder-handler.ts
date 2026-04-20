@@ -24,6 +24,8 @@ import type {
     TailoredResumeResult,
 } from '../../../shared/src/index.js';
 
+import { log } from '../../../shared/src/index.js';
+
 // =============================================================================
 // ENVIRONMENT VALIDATION (fail-fast at cold start)
 // =============================================================================
@@ -77,10 +79,9 @@ export const handler = async (
     const tailoredResumeData = analysis.data.tailoredResumeData ?? null;
 
     if (!tailoredResumeData) {
-        console.warn(
-            `[resume-builder] Pipeline ${context.pipelineId} — ` +
-            `no tailored_resume_json from Strategist (build-from-scratch or legacy run). Skipping.`,
-        );
+        log('WARN', 'No tailored_resume_json from Strategist — skipping', {
+            handler: 'resume-builder', pipelineId: context.pipelineId,
+        });
         return {
             context: { ...context, resumeData: null },
             research,
@@ -93,11 +94,10 @@ export const handler = async (
     // This catches schema drift between Strategist output and the Zod contract.
     const validated = StructuredResumeDataSchema.safeParse(tailoredResumeData);
     if (!validated.success) {
-        console.error(
-            `[resume-builder] Pipeline ${context.pipelineId} — ` +
-            `tailored_resume_json failed schema validation: ${validated.error.message}. ` +
-            `Skipping persistence to prevent corrupt data.`,
-        );
+        log('ERROR', 'tailored_resume_json failed schema validation — skipping persistence', {
+            handler: 'resume-builder', pipelineId: context.pipelineId,
+            error: validated.error.message,
+        });
         return {
             context: { ...context, resumeData: null },
             research,
@@ -109,10 +109,10 @@ export const handler = async (
     const archetype = analysis.data.archetypeSelection?.selectedArchetype ?? 'unknown archetype';
     const changesSummary = `Strategist (${archetype}) produced complete tailored resume — no patch step`;
 
-    console.log(
-        `[resume-builder] Pipeline ${context.pipelineId} ` +
-        `— persisting Strategist-authored resume for "${context.targetRole}" (${archetype})`,
-    );
+    log('INFO', 'Persisting Strategist-authored resume', {
+        handler: 'resume-builder', pipelineId: context.pipelineId,
+        targetRole: context.targetRole, archetype,
+    });
 
     const tailoredResumeResult: TailoredResumeResult = {
         tailoredResume: validated.data,
@@ -124,7 +124,7 @@ export const handler = async (
 
     if (TABLE_NAME) {
         // 1. Store tailored resume — versioned by pipelineId
-        console.log(`[resume-builder] Storing TAILORED_RESUME#${context.pipelineId}`);
+        log('INFO', 'Storing TAILORED_RESUME record', { handler: 'resume-builder', pipelineId: context.pipelineId });
         await ddbClient.send(new PutCommand({
             TableName: TABLE_NAME,
             Item: {
@@ -140,18 +140,22 @@ export const handler = async (
             },
         }));
 
-        // 2. Update METADATA with tailored resume availability flag
-        console.log(`[resume-builder] Updating METADATA — tailoredResumeAvailable=true`);
+        // 2. Update METADATA with tailored resume availability flag and explicit version pointer.
+        // latestResumeId is a deterministic pointer — applications.ts uses it to fetch the
+        // correct TAILORED_RESUME# record for this pipeline run, avoiding selectLatest
+        // ambiguity when a prior run's record exists but the current run failed schema validation.
+        log('INFO', 'Updating METADATA — tailoredResumeAvailable', { handler: 'resume-builder', pipelineId: context.pipelineId });
         await ddbClient.send(new UpdateCommand({
             TableName: TABLE_NAME,
             Key: {
                 pk: `APPLICATION#${context.applicationSlug}`,
                 sk: 'METADATA',
             },
-            UpdateExpression: 'SET tailoredResumeAvailable = :available, updatedAt = :now',
+            UpdateExpression: 'SET tailoredResumeAvailable = :available, updatedAt = :now, latestResumeId = :rid',
             ExpressionAttributeValues: {
                 ':available': true,
                 ':now': now,
+                ':rid': `TAILORED_RESUME#${context.pipelineId}`,
             },
         }));
     }
@@ -161,10 +165,9 @@ export const handler = async (
     // tailoredResume already persisted to DDB — no need to carry in SF payload.
     // ──────────────────────────────────────────────────────────────
 
-    console.log(
-        `[resume-builder] Pipeline ${context.pipelineId} — tailored resume persisted. ` +
-        `resumeData stripped from Step Functions payload.`,
-    );
+    log('INFO', 'Tailored resume persisted — resumeData stripped from payload', {
+        handler: 'resume-builder', pipelineId: context.pipelineId,
+    });
 
     return {
         context: { ...context, resumeData: null },
