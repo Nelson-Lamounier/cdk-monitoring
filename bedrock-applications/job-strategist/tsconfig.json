@@ -5,8 +5,6 @@
     "rootDir": "..",
     "types": ["node", "jest"]
   },
-  "include": ["src/**/*.ts"],
-  "references": [
-    { "path": "../shared" }
-  ]
+  "include": ["src/**/*.ts", "../shared/src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
 }

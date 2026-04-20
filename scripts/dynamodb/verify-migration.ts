@@ -24,12 +24,12 @@ import {
   ScanCommand,
   QueryCommand,
 } from '@aws-sdk/lib-dynamodb'
-import * as log from '../lib/logger.js'
+import logger from '@repo/script-utils/logger.js'
 import {
   parseArgs,
   buildAwsConfig,
   getSSMParameterWithFallbacks,
-} from '../lib/aws-helpers.js'
+} from '@repo/script-utils/aws.js'
 
 // ========================================
 // CLI Arguments
@@ -51,8 +51,8 @@ const args = parseArgs(
 async function main(): Promise<void> {
   const config = buildAwsConfig(args)
 
-  log.header('🔍 Post-Migration & SDK Verification')
-  log.config('Configuration', {
+  logger.header('🔍 Post-Migration & SDK Verification')
+  logger.config('Configuration', {
     'AWS Region': config.region,
     'Environment': config.environment,
   })
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   const totalSteps = 5
 
   // Step 1: Resolve table name and GSI names from SSM
-  log.step(1, totalSteps, 'Discovering DynamoDB table from SSM...')
+  logger.step(1, totalSteps, 'Discovering DynamoDB table from SSM...')
 
   let tableName = process.env.DYNAMODB_TABLE_NAME
   if (!tableName) {
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
     if (tableResult) {
       tableName = tableResult.value
     } else {
-      log.fatal(
+      logger.fatal(
         `DynamoDB table name not found in SSM.\n` +
         `   Searched paths:\n` +
         `     /nextjs/${config.environment}/dynamodb-table-name\n` +
@@ -86,7 +86,7 @@ async function main(): Promise<void> {
   const gsi1Name = process.env.DYNAMODB_GSI1_NAME || 'gsi1-status-date'
   const gsi2Name = process.env.DYNAMODB_GSI2_NAME || 'gsi2-tag-date'
 
-  log.success(`Table: ${tableName}`)
+  logger.success(`Table: ${tableName}`)
   console.log(`   GSI1: ${gsi1Name}`)
   console.log(`   GSI2: ${gsi2Name}`)
 
@@ -98,7 +98,7 @@ async function main(): Promise<void> {
   const docClient = DynamoDBDocumentClient.from(dynamoClient)
 
   // Step 2: Describe table to check status
-  log.step(2, totalSteps, 'Checking table status...')
+  logger.step(2, totalSteps, 'Checking table status...')
 
   const describeResult = await dynamoClient.send(
     new DescribeTableCommand({ TableName: tableName }),
@@ -111,11 +111,11 @@ async function main(): Promise<void> {
   console.log(`   Approximate item count: ${approxItemCount}`)
 
   if (tableStatus !== 'ACTIVE') {
-    log.fatal(`Table is not ACTIVE (status: ${tableStatus}). Migration may have failed.`)
+    logger.fatal(`Table is not ACTIVE (status: ${tableStatus}). Migration may have failed.`)
   }
 
   // Step 3: Scan for article metadata items
-  log.step(3, totalSteps, 'Verifying article data exists (Scan)...')
+  logger.step(3, totalSteps, 'Verifying article data exists (Scan)...')
 
   const scanResult = await docClient.send(
     new ScanCommand({
@@ -131,7 +131,7 @@ async function main(): Promise<void> {
   const articleCount = scanResult.Count ?? 0
 
   if (articleCount === 0) {
-    log.fatal(
+    logger.fatal(
       `No articles found in DynamoDB table '${tableName}'.\n` +
       `   The migration step may have failed silently or used the wrong table.\n` +
       `   Table item count from DescribeTable: ${approxItemCount}\n` +
@@ -139,10 +139,10 @@ async function main(): Promise<void> {
     )
   }
 
-  log.success(`Scan found ${articleCount} articles`)
+  logger.success(`Scan found ${articleCount} articles`)
 
   // Step 4: Verify GSI1 query (STATUS#published) — this is how the Next.js app reads articles
-  log.step(4, totalSteps, 'Verifying GSI1 query (STATUS#published)...')
+  logger.step(4, totalSteps, 'Verifying GSI1 query (STATUS#published)...')
 
   try {
     const gsi1Result = await docClient.send(
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
     const gsi1Count = gsi1Result.Items?.length ?? 0
 
     if (gsi1Count === 0) {
-      log.fatal(
+      logger.fatal(
         `GSI1 query returned 0 results.\n` +
         `   Index: ${gsi1Name}\n` +
         `   Query: gsi1pk = STATUS#published\n` +
@@ -169,7 +169,7 @@ async function main(): Promise<void> {
       )
     }
 
-    log.success(`GSI1 query returned ${gsi1Count} published articles`)
+    logger.success(`GSI1 query returned ${gsi1Count} published articles`)
 
     // Show sample articles in date order (as the app displays them)
     if (gsi1Result.Items && gsi1Result.Items.length > 0) {
@@ -185,7 +185,7 @@ async function main(): Promise<void> {
       console.log(`      Some articles may not have status=published or gsi1pk set.`)
     }
   } catch (error: any) {
-    log.fatal(
+    logger.fatal(
       `GSI1 query failed.\n` +
       `   Index: ${gsi1Name}\n` +
       `   Error: ${error.message}\n` +
@@ -194,7 +194,7 @@ async function main(): Promise<void> {
   }
 
   // Step 5: Verify GSI2 query (TAG# lookup) — spot check
-  log.step(5, totalSteps, 'Verifying GSI2 tag index (spot check)...')
+  logger.step(5, totalSteps, 'Verifying GSI2 tag index (spot check)...')
 
   try {
     // First find a tag to query by scanning TAG_INDEX items
@@ -225,7 +225,7 @@ async function main(): Promise<void> {
       )
 
       const tagCount = gsi2Result.Items?.length ?? 0
-      log.success(`GSI2 query for tag "${sampleTag}" returned ${tagCount} articles`)
+      logger.success(`GSI2 query for tag "${sampleTag}" returned ${tagCount} articles`)
     } else {
       console.log('   ⚠️  No TAG_INDEX items found, skipping GSI2 verification')
     }
@@ -236,7 +236,7 @@ async function main(): Promise<void> {
   }
 
   // Summary
-  log.summary('Verification Passed', {
+  logger.summary('Verification Passed', {
     'Table': tableName!,
     'Status': tableStatus!,
     'Articles (Scan)': String(articleCount),
@@ -246,5 +246,5 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  log.fatal(`Verification failed: ${error.message}`)
+  logger.fatal(`Verification failed: ${error.message}`)
 })

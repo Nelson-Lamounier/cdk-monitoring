@@ -1,5 +1,6 @@
 # ── Compiled Output ──────────────────────────────────────────────────────────
 dist/
+tsconfig.tsbuildinfo
 *.js
 !jest.config.js
 !jest.integration.config.js

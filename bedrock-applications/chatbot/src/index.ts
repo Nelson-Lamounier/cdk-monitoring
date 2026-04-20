@@ -33,10 +33,12 @@ import type {
     APIGatewayProxyResult,
 } from 'aws-lambda';
 
-import { log, emitEmfMetric } from '../../shared/src/index.js';
+import { log, emitEmfMetric, InputSanitiser, OutputSanitiser } from '../../shared/src/index.js';
 import { invokeChatbotAgent } from './agents/chatbot-agent.js';
-import { sanitiseInput } from './security/input-sanitiser.js';
-import { sanitiseOutput } from './security/output-sanitiser.js';
+
+// Module-scoped sanitiser instances (default patterns — no domain-specific overrides)
+const inputSanitiser = new InputSanitiser();
+const outputSanitiser = new OutputSanitiser();
 import type {
     InvokeRequestBody,
     InvokeResponseBody,
@@ -350,7 +352,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // =====================================================================
         // Input sanitisation (Layer 2: Injection pattern blocking)
         // =====================================================================
-        const inputCheck = sanitiseInput(body.prompt);
+        const inputCheck = inputSanitiser.sanitise(body.prompt);
         if (inputCheck.blocked) {
             log('WARN', 'Input blocked by security filter', {
                 sessionId,
@@ -405,8 +407,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // Output sanitisation (Layer 5: Sensitive pattern redaction)
         // =====================================================================
         const normalised = stripCodeFence(result.response);
-        const sanitisedResponse = sanitiseOutput(normalised);
-        const wasRedacted = sanitisedResponse !== normalised;
+        const { sanitised: sanitisedResponse, wasRedacted } = outputSanitiser.sanitiseWithReport(normalised);
 
         const durationMs = Date.now() - startTime;
 
@@ -465,5 +466,4 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
 // Re-exports for testing
 // =============================================================================
 
-export { sanitiseInput } from './security/input-sanitiser.js';
-export { sanitiseOutput } from './security/output-sanitiser.js';
+export { inputSanitiser, outputSanitiser };

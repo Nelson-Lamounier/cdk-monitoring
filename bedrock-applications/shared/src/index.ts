@@ -24,6 +24,11 @@ export {
 
 export type { RunAgentOptions } from './agent-runner.js';
 
+// ─── Base Agent Class ────────────────────────────────────────────────────────
+export { BaseAgent } from './base-agent.js';
+
+export type { BasePipelineContext } from './base-agent.js';
+
 // ─── Metrics & Cost Estimation ───────────────────────────────────────────────
 export {
     estimateInvocationCost,
@@ -173,3 +178,16 @@ export type {
     // Union output
     StrategistPipelineOutput,
 } from './strategist-types.js';
+
+// ─── Security (Input/Output Sanitisation) ────────────────────────────────────
+export { InputSanitiser, InputSanitisationError } from './security/input-sanitiser.js';
+export type { InputSanitiserConfig } from './security/input-sanitiser.js';
+export { OutputSanitiser } from './security/output-sanitiser.js';
+export type { OutputSanitiserConfig } from './security/output-sanitiser.js';
+export type {
+    InputPattern,
+    OutputRedactionRule,
+    PiiPattern,
+    SanitiseInputResult,
+    SanitisationResult,
+} from './security/types.js';

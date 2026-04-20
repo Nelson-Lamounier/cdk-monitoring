@@ -34,7 +34,8 @@ import {
 
 import { estimateInvocationCost } from './metrics.js';
 import type { TokenUsage } from './metrics.js';
-import type { AgentConfig, AgentResult, PipelineContext } from './types.js';
+import type { AgentConfig, AgentResult } from './types.js';
+import type { BasePipelineContext } from './base-agent.js';
 
 // =============================================================================
 // CONSTANTS
@@ -69,7 +70,7 @@ export interface RunAgentOptions<T> {
     readonly parseResponse: (responseText: string) => T;
 
     /** Pipeline context for token/cost accumulation */
-    readonly pipelineContext: PipelineContext;
+    readonly pipelineContext: BasePipelineContext;
 }
 
 /**
@@ -154,7 +155,7 @@ function extractTokenUsage(usage?: { inputTokens?: number; outputTokens?: number
  * @param costUsd - Estimated cost from this invocation
  */
 function accumulateContext(
-    ctx: PipelineContext,
+    ctx: BasePipelineContext,
     tokenUsage: TokenUsage,
     costUsd: number,
 ): void {
