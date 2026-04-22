@@ -97,7 +97,7 @@ list-all-stacks environment="development":
     #!/usr/bin/env bash
     set -euo pipefail
     PROFILE=$(just _profile {{environment}})
-    for PROJECT in shared org kubernetes bedrock self-healing; do
+    for PROJECT in shared org kubernetes; do
       echo "── ${PROJECT} ──────────────────────────────────"
       cd infra && npx cdk list \
         -c project="${PROJECT}" -c environment={{environment}} \
@@ -242,11 +242,54 @@ cloud-init-log instance-id environment="development" region="eu-west-1" tail="20
 ebs-lifecycle volume environment="development" *EXTRA_ARGS:
     npx tsx scripts/local/ebs-lifecycle-audit.ts --volume {{volume}} --env {{environment}} --profile $(just _profile {{environment}}) {{EXTRA_ARGS}}
 
-# Validate Golden AMI build component YAML for known anti-patterns (no AWS calls)
-# Usage: just test-ami-build
+# Audit ASG health — inventory all Auto Scaling Groups with CW dashboards, SSM parameters, EBS volumes, and ALB state
+# Usage: just asg-audit development
 [group('cdk')]
-test-ami-build:
-    yarn jest tests/unit/constructs/compute/build-golden-ami-component.test.ts --verbose
+asg-audit environment="development" region="eu-west-1":
+    npx tsx scripts/local/asg-audit.ts --env {{environment}} --profile $(just _profile {{environment}}) --region {{region}}
+
+# Troubleshoot SSM Automation executions — inspect step-level outputs, failure reasons, and CloudWatch logs
+# Usage: just ssm-automation development
+#        just ssm-automation development --status Failed,TimedOut --last 5
+[group('k8s')]
+ssm-automation environment="development" *EXTRA_ARGS:
+    npx tsx scripts/local/ssm-automation.ts --profile $(just _profile {{environment}}) {{EXTRA_ARGS}}
+
+# Explore CloudWatch log streams interactively — list groups, select stream, tail events
+# Usage: just cw-logs development
+#        just cw-logs development --log-group /ssm/k8s/development/bootstrap --streams 10
+[group('cdk')]
+cw-logs environment="development" *EXTRA_ARGS:
+    npx tsx scripts/local/cloudwatch-logs.ts --profile $(just _profile {{environment}}) {{EXTRA_ARGS}}
+
+# Auto-fix known control plane bootstrap failures — watches SSM Automation and repairs Calico/kubeadm issues
+# Usage: just cp-autofix development
+#        just cp-autofix development --dry-run
+[group('k8s')]
+cp-autofix environment="development" *EXTRA_ARGS:
+    npx tsx scripts/local/control-plane-autofix.ts --env {{environment}} --profile $(just _profile {{environment}}) {{EXTRA_ARGS}}
+
+# Diagnose control plane failures — infrastructure, SSM Automation history, and kubeadm state
+# Usage: just cp-troubleshoot development
+#        just cp-troubleshoot development --fix
+[group('k8s')]
+cp-troubleshoot environment="development" *EXTRA_ARGS:
+    npx tsx scripts/local/control-plane-troubleshoot.ts --profile $(just _profile {{environment}}) {{EXTRA_ARGS}}
+
+# DORA metrics snapshot — compute lead time, deployment frequency, and CFR from GitHub Actions history
+# Requires: gh CLI authenticated, jq
+# Usage: just dora-metrics
+[group('cdk')]
+dora-metrics:
+    ./scripts/local/dora-metrics-snapshot.sh
+
+# etcd restore RTO test — time the full restore sequence from snapshot pull to healthy cluster
+# Run on the control plane node; measures real recovery time objective
+# Usage: just etcd-restore-rto
+[group('k8s')]
+etcd-restore-rto:
+    ./scripts/local/etcd-restore-rto-test.sh
+
 
 # =============================================================================
 # CI SCRIPTS (Non-interactive — used by GitHub Actions)
@@ -259,7 +302,7 @@ test-ami-build:
 # CI synth-validate: synthesize all projects for CI validation
 # Validates that all CDK stacks synthesize correctly without AWS API calls.
 # Uses --no-lookups to rely on cached cdk.context.json instead of live AWS lookups.
-# Covers: k8s (8 stacks), bedrock (4 stacks), shared (1 stack).
+# Covers: k8s (9 stacks), shared (1 stack).
 # Called by: .github/workflows/ci.yml → validate-cdk job
 [group('ci')]
 ci-synth-validate:
@@ -276,17 +319,6 @@ ci-synth-validate:
     else
       echo "✗ K8s synth FAILED"
       FAILURES=$((FAILURES + 1))
-    fi
-
-    echo ""
-    echo "==========================================="
-    echo "Validating Bedrock Project (dev)"
-    echo "==========================================="
-    if npx cdk synth -c project=bedrock -c environment=dev --no-lookups --quiet; then
-      echo "✓ Bedrock synth passed"
-    else
-      echo "⚠ Bedrock synth failed (expected in container — no Docker daemon)"
-      # Not counted as failure: Bedrock constructs require Docker for asset bundling
     fi
 
     echo ""
@@ -505,12 +537,6 @@ test-integration project environment *ARGS:
 test-integration-file path environment *ARGS:
     cd infra && NODE_OPTIONS='--experimental-vm-modules' AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js {{path}} {{ARGS}}
 
-# Run Golden AMI integration test locally
-# Verifies AMI properties, security posture, tags, and pipeline freshness.
-# Usage: just test-golden-ami development
-[group('test')]
-test-golden-ami environment *ARGS:
-    cd infra && NODE_OPTIONS='--experimental-vm-modules' AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPattern="tests/integration/kubernetes/golden-ami-stack" --verbose {{ARGS}}
 
 # Run frontend-ops tests (sync script + workflow validation)
 # Usage: just test-frontend-ops
@@ -611,10 +637,6 @@ security-scan *ARGS:
 
 
 
-# Trigger Golden AMI build (Image Builder)
-[group('k8s')]
-k8s-build-golden-ami env="development" region="eu-west-1":
-    npx tsx kubernetes-app/infra-ami/scripts/build-golden-ami.ts {{env}} --region {{region}}
 
 # Validate Grafana dashboard JSON files (syntax, schema, unique UIDs)
 # Catches broken dashboards BEFORE Helm render or ArgoCD sync.
@@ -2321,23 +2343,19 @@ ssm-preamble-test:
       echo "=== Preamble OK — no \$HOME error ==="
     '
 
-# Build the unified MCP infrastructure server (K8s + AWS diagnostics → dist/)
-[group('mcp')]
-mcp-build:
-    cd mcp-servers/mcp-infra-server && yarn build
-
-# Build all MCP server Docker images (multi-stage Alpine builds)
+# Build all MCP server Docker images (multi-stage Alpine builds) — run from my-mcp repo
 [group('mcp')]
 mcp-docker-build:
-    docker compose -f docker-compose.mcp.yml build
+    docker compose -f ../my-mcp/docker-compose.yml build
 
-# Build a single MCP server Docker image
+# Build a single MCP server Docker image — run from my-mcp repo
 # Usage: just mcp-docker-build-one infra
 #        just mcp-docker-build-one docs
 #        just mcp-docker-build-one diagram
+#        just mcp-docker-build-one wiki
 [group('mcp')]
 mcp-docker-build-one name:
-    docker compose -f docker-compose.mcp.yml build {{name}}
+    docker compose -f ../my-mcp/docker-compose.yml build {{name}}
 
 # Verify MCP handshake on all Docker images (initialize → response check)
 [group('mcp')]
@@ -2346,7 +2364,7 @@ mcp-docker-test:
     set -euo pipefail
     INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.0.1"}}}'
     ERRORS=0
-    for IMAGE in mcp-infra-server mcp-portfolio-docs mcp-infra-diagram; do
+    for IMAGE in wiki-mcp mcp-infra-server mcp-portfolio-docs mcp-infra-diagram; do
       echo "--- Testing ${IMAGE} ---"
       RESPONSE=$(echo "${INIT}" | docker run -i --rm "${IMAGE}:latest" 2>/dev/null | head -1)
       if echo "${RESPONSE}" | grep -q '"serverInfo"'; then

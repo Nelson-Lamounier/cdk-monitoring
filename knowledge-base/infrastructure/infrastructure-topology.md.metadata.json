@@ -1,8 +1,0 @@
-{
-  "metadataAttributes": {
-    "doc_type": "live-infra",
-    "domain": "infrastructure",
-    "tags": "topology,vpc,kubernetes,cloudfront,nlb,traefik,data-flow",
-    "status": "accepted"
-  }
-}

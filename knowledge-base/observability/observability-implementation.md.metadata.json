@@ -1,8 +1,0 @@
-{
-  "metadataAttributes": {
-    "doc_type": "code-analysis",
-    "domain": "observability",
-    "title": "Observability Stack Implementation",
-    "tags": "prometheus, grafana, loki, tempo, alloy, faro, alerting, monitoring, opencost, finops, bedrock, emf"
-  }
-}

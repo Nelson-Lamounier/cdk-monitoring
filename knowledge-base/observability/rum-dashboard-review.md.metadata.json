@@ -1,8 +1,0 @@
-{
-  "metadataAttributes": {
-    "doc_type": "implementation",
-    "domain": "observability",
-    "tags": "rum,faro,grafana,loki,tempo,web-vitals,frontend-observability",
-    "status": "accepted"
-  }
-}

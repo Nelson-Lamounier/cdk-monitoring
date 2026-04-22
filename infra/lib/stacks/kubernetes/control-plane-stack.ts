@@ -227,15 +227,6 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
 
 
         // =====================================================================
-        // Golden AMI Pipeline — MOVED to dedicated GoldenAmiStack
-        //
-        // The Image Builder pipeline was decoupled into its own stack to
-        // eliminate the Day-1 chicken-and-egg: the pipeline must exist before
-        // the AMI build job runs, but both used to live in this stack.
-        // See: golden-ami-stack.ts
-        // =====================================================================
-
-        // =====================================================================
         // SSM State Manager (Layer 3 — post-boot configuration)
         //
         // Creates associations that auto-configure k8s after boot:
@@ -579,8 +570,6 @@ echo "SSM Automation will be triggered by the CI pipeline"
             value: scriptsBucketName,
             description: 'S3 bucket containing k8s scripts and manifests',
         });
-
-        // Golden AMI outputs are now in GoldenAmiStack
 
         new cdk.CfnOutput(this, 'SsmDocumentName', {
             value: stateManager.document.ref,

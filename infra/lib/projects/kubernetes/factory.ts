@@ -8,7 +8,6 @@
  * Stack Architecture (9 stacks, plus API + Edge + Observability):
  *   1.  Kubernetes-Data:          DynamoDB, S3 Assets, SSM parameters
  *   2.  Kubernetes-Base:          VPC, Security Group, KMS, EBS, Elastic IP
- *   2b. Kubernetes-GoldenAmi:     EC2 Image Builder pipeline (bakes Golden AMI)
  *   2c. Kubernetes-SsmAutomation: SSM Automation bootstrap documents
  *   3.  Kubernetes-ControlPlane:  Control plane EC2 (t3.medium), ASG, IAM
  *   3b. Kubernetes-GeneralPool:   Kubernetes-native worker ASG (Next.js, ArgoCD)
@@ -47,10 +46,8 @@ import {
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import {
-    K8sSsmAutomationStack,
     KubernetesAppIamStack,
     KubernetesBaseStack,
-    GoldenAmiStack,
     KubernetesControlPlaneStack,
     KubernetesDataStack,
     KubernetesEdgeStack,
@@ -235,59 +232,6 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // Security Group ID is NOT passed — each consumer stack resolves it from SSM at deploy time
         // to avoid Fn::ImportValue cross-stack exports.
         const sharedVpcId = baseStack.vpc.vpcId;
-
-        // =================================================================
-        // Stack 2b: GOLDEN AMI STACK (Image Builder Pipeline)
-        //
-        // Dedicated stack for the EC2 Image Builder pipeline.
-        // Deployed before ControlPlane so the AMI can be baked before
-        // any ASG launches EC2 instances.
-        // Gated by imageConfig.enableImageBuilder flag.
-        // =================================================================
-        let goldenAmiStack: GoldenAmiStack | undefined;
-        if (configs.image.enableImageBuilder) {
-            goldenAmiStack = new GoldenAmiStack(
-                scope,
-                stackId(this.namespace, 'GoldenAmi', environment),
-                {
-                    env,
-                    description: `Golden AMI Image Builder pipeline - ${environment}`,
-                    targetEnvironment: environment,
-                    vpcId: sharedVpcId,
-                    configs,
-                    namePrefix,
-                    ssmPrefix,
-                },
-            );
-            goldenAmiStack.addDependency(baseStack);
-            stacks.push(goldenAmiStack);
-            stackMap.goldenAmi = goldenAmiStack;
-        }
-
-        // =================================================================
-        // Stack 2c: SSM AUTOMATION STACK (Bootstrap Documents)
-        //
-        // SSM Automation documents for control plane and worker bootstrap.
-        // Deployed independently so bootstrap scripts can be updated
-        // without redeploying EC2 instances.
-        // =================================================================
-        const ssmAutomationStack = new K8sSsmAutomationStack(
-            scope,
-            stackId(this.namespace, 'SsmAutomation', environment),
-            {
-                env,
-                description: `SSM Automation documents for K8s bootstrap - ${environment}`,
-                targetEnvironment: environment,
-                configs,
-                namePrefix,
-                ssmPrefix,
-                scriptsBucketName: `${namePrefix}-k8s-scripts-${env.account}`,
-                notificationEmail: emailConfig.notificationEmail,
-            },
-        );
-        ssmAutomationStack.addDependency(baseStack);
-        stacks.push(ssmAutomationStack);
-        stackMap.ssmAutomation = ssmAutomationStack;
 
         // =================================================================
         // Stack 3: CONTROL PLANE STACK (ASG + Launch Template + Runtime)

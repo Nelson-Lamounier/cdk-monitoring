@@ -7,7 +7,6 @@
  * - S3 Buckets (scripts + access logs via S3BucketConstruct)
  * - S3 Bucket Deployment (k8s manifests sync)
  * - SSM Run Command Documents (monitoring + application manifest deployment)
- * - Golden AMI Pipeline (conditional — gated by imageConfig.enableImageBuilder)
  * - SSM State Manager (conditional — gated by ssmConfig.enableStateManager)
  * - User Data (slim bootstrap stub)
  * - IAM Grants (monitoring + application tiers)
@@ -292,79 +291,6 @@ describe('KubernetesControlPlaneStack', () => {
         it.todo('should accept ManifestsDir parameter for path-agnostic deployment');
 
         it.todo('should accept DeployScript parameter for path-agnostic deployment');
-    });
-
-    // =========================================================================
-    // Golden AMI Pipeline — MOVED to GoldenAmiStack
-    //
-    // The Image Builder pipeline construct was moved to a dedicated
-    // GoldenAmiStack (golden-ami-stack.ts) to eliminate the Day-1
-    // chicken-and-egg. These tests now verify that the ControlPlane
-    // stack does NOT create any Image Builder resources.
-    //
-    // NOTE: The SSM parameter (dataType 'aws:ec2:image') has been moved to
-    // the Data stack to avoid a Day-0 circular dependency. See data-stack.test.ts.
-    // =========================================================================
-    describe('Golden AMI Pipeline (moved to GoldenAmiStack)', () => {
-        // Default TEST_CONFIGS has enableImageBuilder: true
-        const { template } = createComputeStack();
-
-        it('should NOT create an Image Builder pipeline in the ControlPlane stack', () => {
-            template.resourceCountIs('AWS::ImageBuilder::ImagePipeline', 0);
-        });
-
-        it('should NOT create an Image Builder recipe in the ControlPlane stack', () => {
-            template.resourceCountIs('AWS::ImageBuilder::ImageRecipe', 0);
-        });
-
-        it('should NOT create an Image Builder infrastructure configuration in the ControlPlane stack', () => {
-            template.resourceCountIs('AWS::ImageBuilder::InfrastructureConfiguration', 0);
-        });
-
-        it('should NOT create an Image Builder distribution in the ControlPlane stack', () => {
-            template.resourceCountIs('AWS::ImageBuilder::DistributionConfiguration', 0);
-        });
-
-        // -----------------------------------------------------------------
-        // REGRESSION GUARD — SSM parameter moved to Data stack
-        //
-        // The Compute stack must NOT create the Golden AMI SSM parameter.
-        // It's seeded by the Data stack (deployed first) to avoid Day-0
-        // ValidationError when CloudFormation resolves {{resolve:ssm:...}}.
-        // -----------------------------------------------------------------
-        describe('Golden AMI SSM Parameter (moved to Data stack)', () => {
-            it('should NOT create the Golden AMI SSM parameter in the Compute stack', () => {
-                type SsmResource = { Properties?: { DataType?: string; Value?: unknown } };
-                const ssmParameters = template.findResources('AWS::SSM::Parameter');
-                const goldenAmiParam = Object.entries(ssmParameters).find(([, resource]) => {
-                    const props = (resource as SsmResource).Properties;
-                    return props?.DataType === 'aws:ec2:image';
-                });
-
-                expect(goldenAmiParam).toBeUndefined();
-            });
-        });
-
-        // -----------------------------------------------------------------
-        // Conditional: disabled (should still produce 0 Image Builder resources)
-        // -----------------------------------------------------------------
-        describe('when enableImageBuilder is false', () => {
-            const disabledConfigs = {
-                ...TEST_CONFIGS,
-                image: { ...TEST_CONFIGS.image, enableImageBuilder: false },
-            };
-            const { template: disabledTemplate } = createComputeStack({
-                configs: disabledConfigs,
-            });
-
-            it('should NOT create an Image Builder pipeline', () => {
-                disabledTemplate.resourceCountIs('AWS::ImageBuilder::ImagePipeline', 0);
-            });
-
-            it('should NOT create an Image Builder recipe', () => {
-                disabledTemplate.resourceCountIs('AWS::ImageBuilder::ImageRecipe', 0);
-            });
-        });
     });
 
     // =========================================================================

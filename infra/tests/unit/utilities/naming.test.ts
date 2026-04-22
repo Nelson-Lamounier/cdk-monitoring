@@ -41,7 +41,6 @@ describe('Naming Utilities', () => {
         it('should resolve K8s project stacks', () => {
             // K8s project namespace is empty — stack names use component only
             expect(getStackId(Project.KUBERNETES, 'controlPlane', 'development')).toBe('ControlPlane-development');
-            expect(getStackId(Project.KUBERNETES, 'goldenAmi', 'development')).toBe('GoldenAmi-development');
             expect(getStackId(Project.KUBERNETES, 'edge', 'production')).toBe('Edge-production');
         });
 
@@ -66,12 +65,12 @@ describe('Naming Utilities', () => {
     describe('STACK_REGISTRY', () => {
         it('should contain all project entries', () => {
             expect(Object.keys(STACK_REGISTRY)).toStrictEqual(
-                expect.arrayContaining(['shared', 'kubernetes', 'org', 'selfHealing'])
+                expect.arrayContaining(['shared', 'kubernetes', 'org'])
             );
         });
 
         it('should have expected k8s stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.kubernetes)).toStrictEqual(['data', 'base', 'goldenAmi', 'ssmAutomation', 'controlPlane', 'appWorker', 'monitoringWorker', 'argocdWorker', 'generalPool', 'monitoringPool', 'appIam', 'api', 'edge', 'observability']);
+            expect(Object.keys(STACK_REGISTRY.kubernetes)).toStrictEqual(['data', 'base', 'controlPlane', 'generalPool', 'monitoringPool', 'appIam', 'api', 'edge', 'observability']);
         });
     });
 

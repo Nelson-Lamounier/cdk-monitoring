@@ -17,8 +17,6 @@ export enum Project {
 
     /** Kubernetes cluster for unified workloads */
     KUBERNETES = 'kubernetes',
-    /** Agentic self-healing pipeline using AgentCore Gateway and Strands Agents */
-    SELF_HEALING = 'self-healing',
 }
 
 /**
@@ -57,12 +55,6 @@ export const PROJECT_CONFIGS: Record<Project, ProjectConfig> = {
         description: 'Kubernetes cluster for unified workloads',
         namespace: '',
         requiresSharedVpc: true,
-    },
-    [Project.SELF_HEALING]: {
-        displayName: 'Self-Healing',
-        description: 'Agentic self-healing pipeline using AgentCore Gateway and Strands Agents',
-        namespace: 'SelfHealing',
-        requiresSharedVpc: false, // Fully managed serverless
     },
 } as const;
 

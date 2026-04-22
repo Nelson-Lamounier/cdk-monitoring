@@ -113,7 +113,6 @@ export class KubernetesObservabilityStack extends cdk.Stack {
         const controlPlaneAsgName = `${namePrefix}-asg`;
         const appWorkerAsgName = `${namePrefix}-worker-asg`;
         const monitoringWorkerAsgName = `${namePrefix}-mon-worker-asg`;
-        const argoCdWorkerAsgName = `${namePrefix}-argocd-worker-asg`;
 
         // =================================================================
         // Resolve NLB full name from SSM (deploy-time resolution)
@@ -142,9 +141,8 @@ export class KubernetesObservabilityStack extends cdk.Stack {
             region: this.region,
             ec2: {
                 controlPlaneAsgName,
-                appWorkerAsgName,
+                generalWorkerAsgName: appWorkerAsgName,
                 monitoringWorkerAsgName,
-                argoCdWorkerAsgName,
             },
             nlb: {
                 loadBalancerFullName: nlbName,

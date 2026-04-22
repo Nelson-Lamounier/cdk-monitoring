@@ -110,8 +110,8 @@ registerProject({
 });
 
 // =============================================================================
-// K8S PROJECT (kubeadm Kubernetes Cluster — 11-Stack Architecture)
-// Synth outputs all 11 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→
+// K8S PROJECT (kubeadm Kubernetes Cluster — 9-Stack Architecture)
+// Synth outputs all 9 stacks. Infra pipeline deploys Data→Base→
 // Compute→GeneralPool→MonitoringPool→AppIam→Edge→Observability.
 // API stack is deployed separately from core infrastructure.
 // Bootstrap/app manifests synced by independent S3 sync pipelines.
@@ -137,30 +137,13 @@ const k8sStacks: StackConfig[] = [
     dependsOn: ['data'],
   },
   {
-    id: 'goldenAmi',
-    name: 'Golden AMI Stack',
-    getStackName: (env) => getStackId(Project.KUBERNETES, 'goldenAmi', env),
-    description:
-      'EC2 Image Builder pipeline for baking Kubernetes Golden AMI',
-    dependsOn: ['base'],
-  },
-  {
-    id: 'ssmAutomation',
-    name: 'SSM Automation Stack',
-    getStackName: (env) =>
-      getStackId(Project.KUBERNETES, 'ssmAutomation', env),
-    description:
-      'SSM Automation documents for K8s bootstrap orchestration (control plane + worker)',
-    dependsOn: ['base'],
-  },
-  {
     id: 'controlPlane',
     name: 'Control Plane Stack',
     getStackName: (env) =>
       getStackId(Project.KUBERNETES, 'controlPlane', env),
     description:
       'kubeadm Kubernetes control plane: EC2 + ASG + SSM documents + S3 scripts bucket',
-    dependsOn: ['base', 'ssmAutomation'],
+    dependsOn: ['base'],
   },
   {
     id: 'generalPool',

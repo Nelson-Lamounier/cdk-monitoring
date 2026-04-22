@@ -13,7 +13,6 @@ graph TB
 
     subgraph "Foundation"
         BASE["base-stack<br/>VPC, SGs ×4, NLB, KMS, EIP, S3 scripts, Route53"]
-        GOLDEN["golden-ami-stack<br/>EC2 Image Builder pipeline"]
         SSM["ssm-automation-stack<br/>SSM Automation docs,<br/>Step Functions orchestrator,<br/>EventBridge trigger"]
     end
 
@@ -40,7 +39,6 @@ graph TB
     end
 
     DATA --> BASE
-    BASE --> GOLDEN
     BASE --> SSM
     BASE --> CP
     BASE --> GENERAL
@@ -65,7 +63,6 @@ graph TB
 |---|-------|------|------:|-------|---------|
 | 1 | **Data** | `data-stack.ts` | 427 | `KubernetesDataStack` | S3 static-assets bucket (CloudFront OAC), S3 access-logs bucket, SSM parameters; DynamoDB removed — consolidated into `AiContentStack` |
 | 2 | **Base** | `base-stack.ts` | 561 | `KubernetesBaseStack` | VPC lookup via `Vpc.fromLookup`, Security Groups ×4 (`clusterBase`, `controlPlane`, `ingress`, `monitoring`), NLB (TCP 80/443 → Traefik), KMS key (auto-rotation), Elastic IP, Private Route 53 hosted zone (`k8s.internal`), S3 scripts bucket, publishes 12 SSM parameters |
-| 2b | **Golden AMI** | `golden-ami-stack.ts` | 154 | `GoldenAmiStack` | EC2 Image Builder pipeline — bakes Docker, `kubeadm`, AWS CLI, `ecr-credential-provider`, Calico manifests into a Golden AMI; AMI ID published to SSM |
 | 2c | **SSM Automation** | `ssm-automation-stack.ts` | 726 | `K8sSsmAutomationStack` | 6 SSM Automation Documents (CP, general-pool, monitoring-pool, secrets), Step Functions bootstrap orchestrator, Lambda tag router, EventBridge rule (ASG launch → Step Functions), CloudWatch alarm + SNS |
 | 3 | **Control Plane** | `control-plane-stack.ts` | 763 | `KubernetesControlPlaneStack` | Launch Template (Golden AMI from SSM, IMDSv2, GP3), ASG min=1/max=1, IAM role (SSM + EBS + S3 + Route53 + KMS + CloudWatch), EIP failover Lambda, CloudWatch log group (KMS-encrypted) |
 | 3b | **Worker ASG — general** | `worker-asg-stack.ts` | 791 | `KubernetesWorkerAsgStack` | `poolType: 'general'` — t3.small Spot, min=2/max=4, no taint; hosts Next.js, start-admin, ArgoCD, public-api, admin-api |
@@ -84,7 +81,6 @@ The `KubernetesProjectFactory` creates all stacks in this sequence during `cdk d
 ```
 1. deploy-data         # S3 assets + SSM refs (no AWS VPC dependency)
 2. deploy-base         # VPC lookup, SGs, NLB, KMS, EIP → publishes 12 SSM params
-   deploy-goldenami    # Image Builder pipeline (reads SSM: VPC, SG, scripts bucket)
    deploy-ssmautomation# Bootstrap docs + Step Functions (reads SSM: scripts bucket)
 3. deploy-controlplane # ASG + IAM role → publishes role ARN to SSM
    deploy-workers      # general-pool ASG (reads SSM: SG, NLB TGs, golden AMI)
@@ -156,9 +152,6 @@ control-plane-stack publishes:
 
 worker-asg-stack (general) publishes:
   /k8s/{env}/general-instance-role-arn
-
-golden-ami-stack publishes:
-  /k8s/{env}/golden-ami/latest
 
 edge-stack publishes:
   /nextjs/{env}/cloudfront/distribution-id
@@ -261,7 +254,6 @@ plane node only carries `clusterBase` + `controlPlane`.
 lib/stacks/kubernetes/
 ├── index.ts                   # Re-exports all stack classes and prop types
 ├── base-stack.ts              # Long-lived foundation (VPC, SGs, NLB, KMS, EIP)
-├── golden-ami-stack.ts        # Image Builder pipeline for node AMI
 ├── ssm-automation-stack.ts    # Step Functions + SSM Automation bootstrap orchestrator
 ├── control-plane-stack.ts     # kubeadm control-plane ASG (single-node, self-healing)
 ├── worker-asg-stack.ts        # Parameterised worker pool (general + monitoring)

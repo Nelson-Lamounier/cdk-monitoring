@@ -9,9 +9,6 @@
 // Compute constructs (EC2, Lambda, ASG, etc.)
 export * from './compute';
 
-// Events constructs (EventBridge)
-export * from './events';
-
 // Networking constructs (VPC, Endpoints, etc.)
 export * from './networking';
 

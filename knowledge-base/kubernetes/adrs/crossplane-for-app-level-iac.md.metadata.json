@@ -1,8 +1,0 @@
-{
-  "metadataAttributes": {
-    "doc_type": "adr",
-    "domain": "kubernetes",
-    "tags": "crossplane,xrd,platform-engineering,golden-path,s3,sqs,gitops",
-    "status": "accepted"
-  }
-}

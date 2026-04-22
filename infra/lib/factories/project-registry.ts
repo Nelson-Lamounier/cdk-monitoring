@@ -10,7 +10,6 @@ import { Environment, isValidEnvironment, resolveEnvironment } from '../config/e
 import { Project, isValidProject, getAvailableProjects } from '../config/projects';
 import { KubernetesProjectFactory } from '../projects/kubernetes';
 import { OrgProjectFactory } from '../projects/org';
-import { SelfHealingProjectFactory } from '../projects/self-healing';
 import { SharedProjectFactory } from '../projects/shared';
 
 import { IProjectFactory, ProjectFactoryConstructor } from './project-interfaces';
@@ -23,7 +22,6 @@ const projectFactoryRegistry: Record<Project, ProjectFactoryConstructor> = {
     [Project.ORG]: OrgProjectFactory,
 
     [Project.KUBERNETES]: KubernetesProjectFactory,
-    [Project.SELF_HEALING]: SelfHealingProjectFactory,
 };
 
 /**

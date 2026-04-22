@@ -14,4 +14,3 @@ export * from './ssm-paths';
 
 // Project-specific configuration
 export * as nextjsConfig from './nextjs';
-export * as monitoringConfig from './monitoring';

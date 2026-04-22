@@ -16,8 +16,8 @@
  *     region: 'eu-west-1',
  *     ec2: {
  *         controlPlaneAsgName: 'k8s-dev-control-plane',
- *         appWorkerAsgName: 'k8s-dev-app-worker',
- *         monitoringWorkerAsgName: 'k8s-dev-mon-worker',
+ *         generalWorkerAsgName: 'k8s-dev-general-worker',
+ *         monitoringWorkerAsgName: 'k8s-dev-monitoring-worker',
  *     },
  *     nlb: { loadBalancerFullName: 'net/k8s-dev-nlb/abc123' },
  * });
@@ -39,12 +39,10 @@ import { Construct } from 'constructs';
 export interface DashboardEc2Config {
     /** Control plane ASG name */
     readonly controlPlaneAsgName: string;
-    /** Application worker ASG name */
-    readonly appWorkerAsgName: string;
-    /** Monitoring worker ASG name */
+    /** General pool ASG name */
+    readonly generalWorkerAsgName: string;
+    /** Monitoring pool ASG name */
     readonly monitoringWorkerAsgName: string;
-    /** ArgoCD worker ASG name */
-    readonly argoCdWorkerAsgName: string;
 }
 
 /**
@@ -148,9 +146,8 @@ export class InfrastructureDashboard extends Construct {
 
         const asgEntries: Array<{ name: string; label: string }> = [
             { name: props.ec2.controlPlaneAsgName, label: 'Control Plane' },
-            { name: props.ec2.appWorkerAsgName, label: 'App Worker' },
-            { name: props.ec2.monitoringWorkerAsgName, label: 'Mon Worker' },
-            { name: props.ec2.argoCdWorkerAsgName, label: 'ArgoCD Worker' },
+            { name: props.ec2.generalWorkerAsgName, label: 'General Pool' },
+            { name: props.ec2.monitoringWorkerAsgName, label: 'Mon Pool' },
         ];
 
         // CPU Utilisation (all 3 ASGs side-by-side)
