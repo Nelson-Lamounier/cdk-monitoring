@@ -331,34 +331,6 @@ jobs:
         run: just test-stacks
 
   # ============================================================================
-  # Frontend Ops Tests
-  # ============================================================================
-  test-frontend-ops:
-    name: Test Frontend Ops
-    needs: [setup, detect-changes]
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 10
-    if: |
-      needs.detect-changes.outputs.scripts-ops == 'true' ||
-      needs.detect-changes.outputs.run-all == 'true'
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Environment and Dependencies
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      # Runs sync-static-to-s3 unit tests and deploy-frontend workflow validation.
-      # Recipe: justfile → test-frontend-ops → npx jest --config scripts/jest.config.js
-      - name: Run Frontend Ops Tests
-        run: just test-frontend-ops
-
-  # ============================================================================
   # NOTE: Snapshot Tests
   # ============================================================================
   # Snapshot tests are run LOCALLY, not in CI.
@@ -478,7 +450,6 @@ jobs:
       - deps-check
       - typecheck
       - test-stacks
-      - test-frontend-ops
       - build
       - validate-cdk
     runs-on: ubuntu-latest
@@ -507,7 +478,6 @@ jobs:
 
           echo "### Tests" >> $GITHUB_STEP_SUMMARY
           echo "- Stack Tests: ${{ needs.test-stacks.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Frontend Ops Tests: ${{ needs.test-frontend-ops.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Security" >> $GITHUB_STEP_SUMMARY
@@ -528,7 +498,6 @@ jobs:
             "deps-check:${{ needs.deps-check.result }}" \
             "typecheck:${{ needs.typecheck.result }}" \
             "test-stacks:${{ needs.test-stacks.result }}" \
-            "test-frontend-ops:${{ needs.test-frontend-ops.result }}" \
             "iac-security-scan:${{ needs.iac-security-scan.result }}" \
             "build:${{ needs.build.result }}" \
             "validate-cdk:${{ needs.validate-cdk.result }}"; do

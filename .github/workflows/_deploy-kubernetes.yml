@@ -2,46 +2,18 @@
 # @description Reusable Kubernetes Infrastructure Deployment Workflow
 #
 # ─── Purpose ───────────────────────────────────────────────────────
-# Deploys ALL K8s (kubeadm) infrastructure stacks via CDK, including
-# the SSM Automation stack. This pipeline provisions AWS resources
-# but does NOT bootstrap Kubernetes or trigger SSM Automation.
+# Deploys the 9-stack K8s (kubeadm) infrastructure via CDK.
+# Provisions AWS resources; does NOT bootstrap Kubernetes.
 #
-# ─── Two-Pipeline Architecture ─────────────────────────────────────
-# Kubernetes deployment is split across two independent pipelines:
-#
-#   Pipeline 1: _deploy-kubernetes.yml (this file)
-#     - Deploys ALL CDK stacks: networking, compute, IAM, API, edge,
-#       AND SSM Automation (documents + IAM role)
-#     - EC2 user data exports env vars, publishes instance IDs to SSM,
-#       and sends cfn-signal to confirm infrastructure readiness
-#     - Does NOT download scripts from S3 or trigger SSM Automation
-#
-#   Pipeline 2: _deploy-ssm-automation.yml
-#     - Bootstrap-only: syncs scripts to S3, triggers SSM Automation,
-#       observes progress, deploys secrets, and verifies ArgoCD
-#     - Does NOT deploy any CDK stacks (that's handled here)
-#
-# ─── Day-1 Deployment ──────────────────────────────────────────────
-# For a fresh cluster, run both pipelines in sequence:
-#   1. deploy-kubernetes.yml  → provisions all infrastructure + SSM docs
-#   2. deploy-ssm-automation.yml → syncs scripts + triggers bootstrap
-#
-# ─── Day-2+ Updates ───────────────────────────────────────────────
-# - Infrastructure changes: push to trigger deploy-kubernetes.yml
-# - Bootstrap script changes: push to trigger deploy-ssm-automation.yml
-#   (syncs scripts, re-triggers bootstrap — no CDK deploy needed)
-#
-# ─── Stack Deployment Order ────────────────────────────────────────
-#   0.  ✅ Verify BFF ECR  (pre-flight: confirm public-api + admin-api ECR repos exist
+# ─── Stack Deployment Order (9 stacks) ─────────────────────────────
+#   0.  ✅ Verify BFF ECR  (pre-flight: confirm admin-api ECR repo exists
 #                           in Shared-Infra before any container push job)
 #   1.  Data             (DynamoDB + S3 + SSM Parameters)
 #   1b. ✅ Verify Data    (Integration test — DynamoDB, S3, SSM, CFn outputs)
-#   2.  Base             (VPC networking + SG + KMS + EBS + EIP + S3 Scripts)
+#   2.  Base             (VPC networking + SG + KMS + EBS + EIP)
 #   2b. ✅ Verify Base    (Integration test — VPC, SGs, KMS, EBS, EIP, Route53)
-#   2c. Golden AMI       (Bake containerd + kubeadm into AMI)
-#   2d. SSM Automation   (SSM Automation documents + IAM role) [parallel with 2c]
-#   2e. API              (API Gateway + Lambda) [parallel with 2, depends on 1]
-#   2f. Observability    (CloudWatch dashboard) [parallel with 2c/2d, depends on 2b]
+#   2c. API              (API Gateway + Lambda) [parallel with 2, depends on 1]
+#   2d. Observability    (CloudWatch dashboard) [parallel with 2c, depends on 2b]
 #   3.  Compute          (Control Plane EC2 + ASG)
 #   3b. General Pool ASG (Kubernetes-native worker nodes — general purpose)
 #   3c. Monitoring Pool  (Kubernetes-native worker nodes — observability taint)
@@ -49,11 +21,9 @@
 #   5.  Edge             (CloudFront + ACM + WAF in us-east-1)
 #   5b. ✅ Verify Edge    (Integration test — behaviour order, auth cookies, Set-Cookie)
 #
-# ─── Post-Deploy (manifests managed by ArgoCD GitOps) ──────────────
-#   6.  ArgoCD Health Gate          (wait for GitOps sync)
-#   7.  Verify & Smoke Tests
-#   8.  Deployment Failure Alert    (halt + preserve + alert)
-#   9.  Summary
+# ─── Post-Deploy ────────────────────────────────────────────────────
+#   6.  Deployment Failure Alert    (halt + preserve + alert)
+#   7.  Summary
 #
 # ─── Concurrency ───────────────────────────────────────────────────
 #   This is a workflow_call (reusable) workflow — concurrency MUST be set
@@ -135,12 +105,10 @@ jobs:
       commit-sha: ${{ github.sha }}
       commit-short-sha: ${{ steps.pipeline-setup.outputs.short-sha }}
       node-version: ${{ steps.setup-tools.outputs.node-version }}
-      # Stack names from synthesize-ci.ts (14-stack architecture)
+      # Stack names from synthesize-ci.ts (9-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
-      goldenami-stack: ${{ steps.synth.outputs.goldenAmi }}
       controlplane-stack: ${{ steps.synth.outputs.controlPlane }}
-      ssmautomation-stack: ${{ steps.synth.outputs.ssmAutomation }}
       # ASG pool stacks — Kubernetes-native worker nodes
       general-pool-stack: ${{ steps.synth.outputs.generalPool }}
       monitoring-pool-stack: ${{ steps.synth.outputs.monitoringPool }}
@@ -441,52 +409,7 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Verify Golden AMI (post-deploy) — AMI metadata + package verification
-  #
-  # Runs after deploy-goldenami completes. Verifies the AMI exists, has
-  # correct tags, and all expected packages are present in build logs.
-  # Replaces the previous golden-ami-observer.ts streaming script.
-  # ===========================================================================
-  verify-goldenami:
-    name: Verify Golden AMI
-    needs: [setup, deploy-goldenami]
-    if: >-
-      always()
-      && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 10
-    environment: ${{ inputs.environment }}
-    continue-on-error: true
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Configure AWS Credentials
-        uses: ./.github/actions/configure-aws
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup Environment and Dependencies
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        run: yarn install --immutable
-        working-directory: infra
-
-      - name: Run Golden AMI Integration Tests
-        env:
-          CDK_ENV: ${{ inputs.cdk-environment }}
-          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes/golden-ami-stack $CDK_ENV --verbose
-
-  # ===========================================================================
-  # Deploy Base Stack (2/6) — VPC networking + SG + KMS + EBS + EIP
+  # Deploy Base Stack (2) — VPC networking + SG + KMS + EBS + EIP
   # ===========================================================================
   deploy-base:
     name: Deploy Base
@@ -547,70 +470,15 @@ jobs:
         run: just ci-integration-test kubernetes/base-stack $CDK_ENV --verbose
 
   # ===========================================================================
-  # Deploy Golden AMI Stack (Image Builder Pipeline)
-  #
-  # Creates the CfnImage resource that builds the Golden AMI inline.
-  # CloudFormation triggers Image Builder and waits for the AMI to be
-  # built (~15-25 min). The AMI ID is stored in SSM by CloudFormation.
-  # ===========================================================================
-  deploy-goldenami:
-    name: Deploy Golden AMI
-    needs: [setup, deploy-base, verify-base-stack]
-    if: >-
-      always()
-      && needs.deploy-base.result == 'success'
-      && needs.verify-base-stack.result == 'success'
-    uses: ./.github/workflows/_deploy-stack.yml
-    with:
-      stack-name: ${{ needs.setup.outputs.goldenami-stack }}
-      project: kubernetes
-      environment: ${{ inputs.environment }}
-
-      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-      require-approval: ${{ inputs.require-approval }}
-      timeout-minutes: 35
-      outputs-directory: "deployment-outputs"
-    secrets: inherit
-
-  # ===========================================================================
-  # Deploy SSM Automation Stack (2d) — SSM Documents + IAM Role
-  #
-  # Runs in parallel with Golden AMI bake. Deploys the SSM Automation
-  # documents and IAM role that the bootstrap-only pipeline uses.
-  # ===========================================================================
-  deploy-ssm:
-    name: Deploy SSM Automation
-    needs: [setup, deploy-base, verify-base-stack]
-    if: >-
-      always()
-      && needs.deploy-base.result == 'success'
-      && needs.verify-base-stack.result == 'success'
-    uses: ./.github/workflows/_deploy-stack.yml
-    with:
-      stack-name: ${{ needs.setup.outputs.ssmautomation-stack }}
-      project: kubernetes
-      environment: ${{ inputs.environment }}
-
-      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
-      require-approval: ${{ inputs.require-approval }}
-      outputs-directory: "deployment-outputs"
-    secrets: inherit
-
-
-  # ===========================================================================
   # Deploy Compute Stack — Control Plane EC2 + ASG
-  #
-  # Waits for Golden AMI bake (or skip) so the Launch Template
-  # resolves to the latest baked AMI.
   # ===========================================================================
   deploy-controlplane:
     name: Deploy Control Plane
-    needs: [setup, deploy-base, verify-base-stack, deploy-goldenami]
+    needs: [setup, deploy-base, verify-base-stack]
     if: >-
       always()
       && needs.deploy-base.result == 'success'
       && needs.verify-base-stack.result == 'success'
-      && (needs.deploy-goldenami.result == 'success' || needs.deploy-goldenami.result == 'skipped')
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.controlplane-stack }}
@@ -826,10 +694,9 @@ jobs:
   # Origin: Elastic IP → Traefik
   #
   # PREREQUISITE: /k8s/{env}/cloudfront-origin-secret must exist in
-  # eu-west-1 SSM before this job runs.  The secret is seeded (once) by
-  # the "Phase 1b — Seed CloudFront Origin Secret" step in the SSM
-  # automation pipeline (_deploy-ssm-automation.yml).  Run that pipeline
-  # first on any new environment.
+  # eu-west-1 SSM before this job runs. Seed it manually on new environments:
+  #   aws ssm put-parameter --name /k8s/{env}/cloudfront-origin-secret \
+  #     --value "$(openssl rand -hex 32)" --type SecureString
   # ===========================================================================
   deploy-edge:
     name: Deploy Edge
@@ -990,7 +857,6 @@ jobs:
       [
         setup,
         verify-bff-ecr,
-        deploy-ssm,
         deploy-controlplane,
         deploy-general-pool,
         deploy-monitoring-pool,
@@ -1007,7 +873,6 @@ jobs:
       always()
       && (
         needs.verify-bff-ecr.result == 'failure'
-        || needs.deploy-ssm.result == 'failure'
         || needs.deploy-controlplane.result == 'failure'
         || needs.deploy-general-pool.result == 'failure'
         || needs.deploy-monitoring-pool.result == 'failure'
@@ -1066,12 +931,9 @@ jobs:
     name: Deployment Summary
     needs:
       - setup
-      # - drift-detection  # disabled — uncomment when re-enabling
       - verify-bff-ecr
       - deploy-data
-      - deploy-ssm
       - deploy-controlplane
-      - deploy-goldenami
       - deploy-general-pool
       - deploy-monitoring-pool
       - deploy-api

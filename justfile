@@ -538,12 +538,6 @@ test-integration-file path environment *ARGS:
     cd infra && NODE_OPTIONS='--experimental-vm-modules' AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js {{path}} {{ARGS}}
 
 
-# Run frontend-ops tests (sync script + workflow validation)
-# Usage: just test-frontend-ops
-[group('test')]
-test-frontend-ops *ARGS:
-    npx jest --config scripts/jest.config.js {{ARGS}}
-
 # =============================================================================
 # CODE QUALITY
 # =============================================================================
