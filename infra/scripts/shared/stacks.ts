@@ -28,14 +28,14 @@ export {
   isCloudFrontStack,
   profileMap,
   projectsMap,
-} from '@nelson-lamounier/cdk-deploy-scripts/stacks.js';
+} from '@nelsonlamounier/cdk-deploy-scripts/stacks.js';
 
 import {
   registerProject,
   type Environment,
   type ExtraContext,
   type StackConfig,
-} from '@nelson-lamounier/cdk-deploy-scripts/stacks.js';
+} from '@nelsonlamounier/cdk-deploy-scripts/stacks.js';
 
 import { Project } from '../../lib/config/projects.js';
 import { getStackId } from '../../lib/utilities/naming.js';
