@@ -7,6 +7,8 @@
  * returns a fully-typed AdminApiConfig object when all vars are present.
  */
 
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+
 import { loadConfig } from '../../src/lib/config.js';
 
 // ---------------------------------------------------------------------------
@@ -28,6 +30,11 @@ const VALID_ENV: Record<string, string> = {
   COGNITO_CLIENT_ID: 'testClientId',
   COGNITO_ISSUER_URL: 'https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_TestPool',
   AWS_DEFAULT_REGION: 'eu-west-1',
+  PG_HOST: 'pgbouncer.platform.svc.cluster.local',
+  PG_PORT: '5432',
+  PG_DATABASE: 'tucaken',
+  PG_USER: 'postgres',
+  PG_PASSWORD: 'secret',
 };
 
 // ---------------------------------------------------------------------------
@@ -106,5 +113,50 @@ describe('loadConfig()', () => {
       unsetEnv(Object.keys(VALID_ENV));
       expect(() => loadConfig()).toThrow('[admin-api] Missing required environment variables');
     });
+  });
+});
+
+describe('PG config', () => {
+  const PG_ENV: Record<string, string> = {
+    PG_HOST: 'pgbouncer.platform.svc.cluster.local',
+    PG_PORT: '5432',
+    PG_DATABASE: 'tucaken',
+    PG_USER: 'postgres',
+    PG_PASSWORD: 'secret',
+  };
+
+  beforeEach(() => {
+    setEnv(VALID_ENV);
+    setEnv(PG_ENV);
+  });
+
+  afterEach(() => {
+    unsetEnv(Object.keys(VALID_ENV));
+    unsetEnv(Object.keys(PG_ENV));
+  });
+
+  it('should include pgHost in resolved config when PG env vars are present', async () => {
+    // Reload module to pick up new env
+    jest.resetModules();
+    const { loadConfig } = await import('../../src/lib/config.js');
+    const cfg = loadConfig();
+
+    expect(cfg.pgHost).toBe('pgbouncer.platform.svc.cluster.local');
+    expect(cfg.pgPort).toBe(5432);
+    expect(cfg.pgDatabase).toBe('tucaken');
+    expect(cfg.pgUser).toBe('postgres');
+    expect(cfg.pgPassword).toBe('secret');
+
+    jest.resetModules();
+  });
+
+  it('should throw when PG env vars are missing', async () => {
+    delete process.env['PG_HOST'];
+
+    jest.resetModules();
+    const { loadConfig } = await import('../../src/lib/config.js');
+    expect(() => loadConfig()).toThrow(/PG_HOST/);
+
+    jest.resetModules();
   });
 });

@@ -84,6 +84,11 @@ const testConfig = {
   cognitoIssuerUrl: 'https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_TestPool',
   awsRegion: 'eu-west-1',
   port: 3002,
+  pgHost: 'pgbouncer.platform.svc.cluster.local',
+  pgPort: 5432,
+  pgDatabase: 'tucaken',
+  pgUser: 'postgres',
+  pgPassword: 'secret',
 } as const;
 
 // ---------------------------------------------------------------------------

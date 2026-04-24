@@ -64,6 +64,17 @@ export interface AdminApiConfig {
 
   /** HTTP port the server binds on. */
   readonly port: number;
+
+  /** PgBouncer host — cluster-internal DNS. */
+  readonly pgHost: string;
+  /** PgBouncer port. */
+  readonly pgPort: number;
+  /** PostgreSQL database name. */
+  readonly pgDatabase: string;
+  /** PostgreSQL user. */
+  readonly pgUser: string;
+  /** PostgreSQL password (from Secrets Manager via ESO). */
+  readonly pgPassword: string;
 }
 
 /**
@@ -90,6 +101,11 @@ export function loadConfig(): AdminApiConfig {
     COGNITO_CLIENT_ID: process.env['COGNITO_CLIENT_ID'],
     COGNITO_ISSUER_URL: process.env['COGNITO_ISSUER_URL'],
     AWS_DEFAULT_REGION: process.env['AWS_DEFAULT_REGION'],
+    PG_HOST: process.env['PG_HOST'],
+    PG_PORT: process.env['PG_PORT'],
+    PG_DATABASE: process.env['PG_DATABASE'],
+    PG_USER: process.env['PG_USER'],
+    PG_PASSWORD: process.env['PG_PASSWORD'],
   };
 
   const missing = Object.entries(required)
@@ -119,5 +135,10 @@ export function loadConfig(): AdminApiConfig {
     cognitoIssuerUrl: required['COGNITO_ISSUER_URL']!,
     awsRegion: required['AWS_DEFAULT_REGION']!,
     port: parseInt(process.env['PORT'] ?? '3002', 10),
+    pgHost: required['PG_HOST']!,
+    pgPort: parseInt(required['PG_PORT']!, 10),
+    pgDatabase: required['PG_DATABASE']!,
+    pgUser: required['PG_USER']!,
+    pgPassword: required['PG_PASSWORD']!,
   };
 }

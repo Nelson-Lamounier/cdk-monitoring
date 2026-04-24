@@ -78,6 +78,11 @@ const testConfig = {
   ssmBedrockPrefix: '/bedrock/dev',
   awsRegion: 'eu-west-1',
   port: 3002,
+  pgHost: 'pgbouncer.platform.svc.cluster.local',
+  pgPort: 5432,
+  pgDatabase: 'tucaken',
+  pgUser: 'postgres',
+  pgPassword: 'secret',
 };
 
 // ---------------------------------------------------------------------------
