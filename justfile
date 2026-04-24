@@ -1811,6 +1811,53 @@ update-oidc-policy region profile role-name policy-name policy-file:
       --region "{{region}}"
     echo "✓ Inline policy '{{policy-name}}' updated on role '{{role-name}}'."
 
+# Update the CDKCloudFormationEx managed policy used by the CDK CloudFormation execution role.
+# Creates a new policy version (pruning oldest if at the 5-version limit) and sets it as default.
+# Run this whenever infra/scripts/bootstrap/policies/CDKCloudFormationEx.json changes.
+#
+# Usage:  just update-cfn-exec-policy                          # development, eu-west-1
+#         just update-cfn-exec-policy staging eu-west-1
+[group('ops')]
+update-cfn-exec-policy environment="development" region="eu-west-1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PROFILE=$(just _profile {{environment}})
+    POLICY_FILE="infra/scripts/bootstrap/policies/CDKCloudFormationEx.json"
+    POLICY_NAME="CDKCloudFormationEx"
+
+    ACCOUNT_ID=$(aws sts get-caller-identity --profile "${PROFILE}" --query Account --output text)
+    POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
+
+    echo "→ Updating managed policy ${POLICY_ARN}"
+    echo "  Source: ${POLICY_FILE}"
+
+    # AWS caps managed policy versions at 5 — prune the oldest non-default version
+    VERSION_COUNT=$(aws iam list-policy-versions \
+      --policy-arn "${POLICY_ARN}" \
+      --profile "${PROFILE}" \
+      --query 'length(Versions)' --output text)
+
+    if [ "${VERSION_COUNT}" -ge 5 ]; then
+        OLDEST=$(aws iam list-policy-versions \
+          --policy-arn "${POLICY_ARN}" \
+          --profile "${PROFILE}" \
+          --query 'Versions[?!IsDefaultVersion] | sort_by(@, &CreateDate) | [0].VersionId' \
+          --output text)
+        echo "  Pruning oldest non-default version: ${OLDEST}"
+        aws iam delete-policy-version \
+          --policy-arn "${POLICY_ARN}" \
+          --version-id "${OLDEST}" \
+          --profile "${PROFILE}"
+    fi
+
+    NEW_VERSION=$(aws iam create-policy-version \
+      --policy-arn "${POLICY_ARN}" \
+      --policy-document "file://${POLICY_FILE}" \
+      --set-as-default \
+      --profile "${PROFILE}" \
+      --query 'PolicyVersion.VersionId' --output text)
+
+    echo "✓ ${POLICY_NAME} updated to ${NEW_VERSION} (set as default)."
 
 
 # ---------------------------------------------------------------------------
