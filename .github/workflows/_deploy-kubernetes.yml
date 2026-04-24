@@ -149,6 +149,20 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Clear stale Golden AMI context (force fresh SSM lookup at synth)
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = 'infra/cdk.context.json';
+            const ctx = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const before = Object.keys(ctx).length;
+            const cleaned = Object.fromEntries(
+              Object.entries(ctx).filter(([k]) => !k.includes('golden-ami'))
+            );
+            fs.writeFileSync(path, JSON.stringify(cleaned, null, 2) + '\n');
+            console.log('Cleared', before - Object.keys(cleaned).length, 'stale AMI context entries');
+          "
+
       - name: Synthesize & Determine Stack Names
         id: synth
         env:
@@ -656,10 +670,66 @@ jobs:
         run: just ci-integration-test kubernetes/worker-asg-stack $CDK_ENV --testNamePattern="monitoring-pool" --verbose
 
   # ===========================================================================
+  # Verify Launch Template AMI Consistency
+  #
+  # Confirms that every compute Launch Template (control-plane, general-pool,
+  # monitoring-pool) references the same AMI ID currently published to SSM
+  # by the kubernetes-bootstrap Golden AMI pipeline.
+  #
+  # A mismatch means the compute stack was not redeployed after the last AMI
+  # bake — any future ASG replacement would launch the stale image. This job
+  # runs in parallel with the individual pool verify jobs and gates AppIam.
+  #
+  # Vacuous pass when the SSM parameter does not yet exist (Day-0).
+  # ===========================================================================
+  verify-launch-template-ami:
+    name: Verify Launch Template AMI
+    needs:
+      - setup
+      - deploy-controlplane
+      - deploy-general-pool
+      - deploy-monitoring-pool
+    if: >-
+      always()
+      && needs.deploy-controlplane.result == 'success'
+      && needs.deploy-general-pool.result == 'success'
+      && needs.deploy-monitoring-pool.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run Launch Template AMI Integration Tests
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: just ci-integration-test kubernetes/launch-template-ami $CDK_ENV --verbose
+
+  # ===========================================================================
   # Deploy AppIam Stack (4/8) — Application-tier IAM grants
   #
-  # Hard-gated on both ASG pool verify jobs. If either pool stack fails,
-  # IAM grants must not proceed.
+  # Hard-gated on both ASG pool verify jobs and the LT AMI check. If any pool
+  # stack fails or a stale AMI is detected, IAM grants must not proceed.
   # ===========================================================================
   deploy-appiam:
     name: Deploy App IAM
@@ -670,6 +740,7 @@ jobs:
       - deploy-monitoring-pool
       - verify-general-pool-stack
       - verify-monitoring-pool-stack
+      - verify-launch-template-ami
     if: >-
       always()
       && needs.verify-bff-ecr.result == 'success'
@@ -677,6 +748,7 @@ jobs:
       && needs.deploy-monitoring-pool.result == 'success'
       && needs.verify-general-pool-stack.result == 'success'
       && needs.verify-monitoring-pool-stack.result == 'success'
+      && needs.verify-launch-template-ami.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.appiam-stack }}
@@ -786,62 +858,6 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Verify Bootstrap Orchestrator — Step Function Health Gate
-  #
-  # When compute stacks deploy and the ASG replaces an EC2 instance,
-  # EventBridge triggers the bootstrap orchestrator Step Function.
-  # This job polls for recent executions and waits for completion,
-  # failing the pipeline if any bootstrap execution fails.
-  #
-  # If no compute stacks changed (no ASG replacement), the job
-  # succeeds immediately with "no executions found".
-  # ===========================================================================
-  verify-bootstrap:
-    name: Verify Bootstrap Orchestrator
-    needs:
-      - setup
-      - deploy-controlplane
-      - deploy-general-pool
-      - deploy-monitoring-pool
-    if: >-
-      always()
-      && (
-        needs.deploy-controlplane.result == 'success'
-        || needs.deploy-general-pool.result == 'success'
-        || needs.deploy-monitoring-pool.result == 'success'
-      )
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
-    timeout-minutes: 30
-    environment: ${{ inputs.environment }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Configure AWS Credentials
-        uses: ./.github/actions/configure-aws
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup Environment and Dependencies
-        uses: ./.github/actions/setup-node-yarn
-        with:
-          node-version: ${{ needs.setup.outputs.node-version }}
-
-      - name: Install Dependencies
-        run: yarn install --immutable
-        working-directory: infra
-
-      - name: Run Bootstrap Orchestrator Integration Tests
-        env:
-          CDK_ENV: ${{ inputs.cdk-environment }}
-          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-        run: just ci-integration-test kubernetes/bootstrap-orchestrator $CDK_ENV --verbose
-
-  # ===========================================================================
   # Deployment Failure Alert (staging/production only)
   #
   # For K8s/GitOps environments, automated CFn rollbacks on stateful infra
@@ -864,7 +880,7 @@ jobs:
         deploy-edge,
         verify-edge-stack,
         deploy-observability,
-        verify-bootstrap,
+        verify-launch-template-ami,
       ]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -880,7 +896,7 @@ jobs:
         || needs.deploy-edge.result == 'failure'
         || needs.verify-edge-stack.result == 'failure'
         || needs.deploy-observability.result == 'failure'
-        || needs.verify-bootstrap.result == 'failure'
+        || needs.verify-launch-template-ami.result == 'failure'
       )
       && inputs.cdk-environment != 'development'
 
@@ -940,7 +956,7 @@ jobs:
       - deploy-edge
       - verify-edge-stack
       - deploy-observability
-      - verify-bootstrap
+      - verify-launch-template-ami
       - deployment-failure-alert
     runs-on: ubuntu-latest
     timeout-minutes: 5
