@@ -174,10 +174,13 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             userData,
             namePrefix,
             logGroupKmsKey,
-            // Resolve AMI from SSM parameter written by Image Builder pipeline.
-            // On Day-0, this points to the parent AL2023 AMI (boot script handles
-            // missing software). On Day-1+, it resolves to the baked Golden AMI.
-            machineImage: ec2.MachineImage.fromSsmParameter(configs.image.amiSsmPath),
+            // Resolve AMI at synth time (not deploy time) so CloudFormation detects
+            // a template diff whenever the Golden AMI rotates and creates a new LT
+            // version. fromSsmParameter() used UsePreviousValue=true and silently
+            // kept the old AMI even after a new bake updated the SSM path.
+            machineImage: ec2.MachineImage.genericLinux({
+                [this.region]: ssm.StringParameter.valueFromLookup(this, configs.image.amiSsmPath),
+            }),
             // Required: Kubernetes pod overlay networking (Calico) uses pod IPs
             // that don't match ENI IPs — AWS drops this traffic unless disabled.
             disableSourceDestCheck: true,

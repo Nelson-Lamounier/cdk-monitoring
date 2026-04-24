@@ -541,6 +541,15 @@ test-integration project environment *ARGS:
 test-integration-file path environment *ARGS:
     cd infra && NODE_OPTIONS='--experimental-vm-modules' AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js {{path}} {{ARGS}}
 
+# Verify every compute Launch Template (control-plane, general-pool, monitoring-pool)
+# references the current Golden AMI published to SSM by kubernetes-bootstrap.
+# Fails if any LT has a stale AMI — redeploy the compute stack to fix.
+# Usage: just test-launch-template-ami
+#        just test-launch-template-ami staging
+[group('test')]
+test-launch-template-ami environment="development" *ARGS:
+    cd infra && NODE_OPTIONS='--experimental-vm-modules' AWS_PROFILE=$(just _profile {{environment}}) CDK_ENV={{environment}} npx jest --config jest.integration.config.js --testPathPattern="tests/integration/kubernetes/launch-template-ami" --verbose {{ARGS}}
+
 
 # =============================================================================
 # CODE QUALITY

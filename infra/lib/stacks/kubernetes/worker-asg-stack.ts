@@ -285,9 +285,12 @@ export class KubernetesWorkerAsgStack extends cdk.Stack {
             userData,
             namePrefix: poolId,
             logGroupKmsKey,
-            machineImage: ec2.MachineImage.fromSsmParameter(
-                `${ssmPrefix}/golden-ami/latest`,
-            ),
+            // Resolve at synth time — same reasoning as control-plane-stack.
+            machineImage: ec2.MachineImage.genericLinux({
+                [this.region]: ssm.StringParameter.valueFromLookup(
+                    this, `${ssmPrefix}/golden-ami/latest`,
+                ),
+            }),
             // Required: Kubernetes pod overlay networking (Calico) uses pod IPs
             // that don't match ENI IPs — AWS drops this traffic unless disabled.
             disableSourceDestCheck: true,

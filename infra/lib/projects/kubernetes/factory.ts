@@ -5,10 +5,9 @@
  * Creates shared Kubernetes infrastructure hosting both monitoring and
  * application workloads on a kubeadm Kubernetes cluster.
  *
- * Stack Architecture (9 stacks, plus API + Edge + Observability):
+ * Stack Architecture (8 stacks):
  *   1.  Kubernetes-Data:          DynamoDB, S3 Assets, SSM parameters
  *   2.  Kubernetes-Base:          VPC, Security Group, KMS, EBS, Elastic IP
- *   2c. Kubernetes-SsmAutomation: SSM Automation bootstrap documents
  *   3.  Kubernetes-ControlPlane:  Control plane EC2 (t3.medium), ASG, IAM
  *   3b. Kubernetes-GeneralPool:   Kubernetes-native worker ASG (Next.js, ArgoCD)
  *   3c. Kubernetes-MonitoringPool: Kubernetes-native worker ASG (Prometheus, Grafana)
