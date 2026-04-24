@@ -15,7 +15,7 @@
 
 # CDK project root (infra/ contains cdk.json) — used by @nelson-lamounier/cdk-deploy-scripts
 export CDK_PROJECT_ROOT := "infra"
-export CDK_STACKS_CONFIG := justfile_directory() + "/infra/scripts/shared/stacks.js"
+export CDK_STACKS_CONFIG := justfile_directory() + "/infra/dist/scripts/shared/stacks.js"
 
 # Default recipe — show help
 default:
