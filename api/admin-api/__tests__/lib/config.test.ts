@@ -133,6 +133,7 @@ describe('PG config', () => {
   afterEach(() => {
     unsetEnv(Object.keys(VALID_ENV));
     unsetEnv(Object.keys(PG_ENV));
+    jest.resetModules();
   });
 
   it('should include pgHost in resolved config when PG env vars are present', async () => {
@@ -146,8 +147,6 @@ describe('PG config', () => {
     expect(cfg.pgDatabase).toBe('tucaken');
     expect(cfg.pgUser).toBe('postgres');
     expect(cfg.pgPassword).toBe('secret');
-
-    jest.resetModules();
   });
 
   it('should throw when PG env vars are missing', async () => {
@@ -156,7 +155,5 @@ describe('PG config', () => {
     jest.resetModules();
     const { loadConfig } = await import('../../src/lib/config.js');
     expect(() => loadConfig()).toThrow(/PG_HOST/);
-
-    jest.resetModules();
   });
 });
