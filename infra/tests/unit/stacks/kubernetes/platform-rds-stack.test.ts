@@ -68,6 +68,7 @@ describe('PlatformRdsStack', () => {
                         IpProtocol: 'tcp',
                         FromPort: 5432,
                         ToPort: 5432,
+                        CidrIp: Match.not(Match.exact('0.0.0.0/0')),
                     }),
                 ]),
             });

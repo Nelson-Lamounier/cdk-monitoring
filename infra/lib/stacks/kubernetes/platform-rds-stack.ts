@@ -16,10 +16,11 @@
 import * as cdk from 'aws-cdk-lib/core';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as rds from 'aws-cdk-lib/aws-rds';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 import { Construct } from 'constructs';
 import { NagSuppressions } from 'cdk-nag';
+
+import { SsmParameterStoreConstruct } from '../../constructs/ssm';
 
 import {
     Environment,
@@ -103,21 +104,15 @@ export class PlatformRdsStack extends cdk.Stack {
         });
 
         // SSM parameters — consumed by pods via ESO
-        const ssmParams: Record<string, string> = {
-            host:           this.instance.dbInstanceEndpointAddress,
-            port:           this.instance.dbInstanceEndpointPort,
-            database:       databaseName,
-            user:           'postgres',
-            'secret-arn':   this.instance.secret!.secretArn,
-            'sg-id':        dbSg.securityGroupId,
-        };
-
-        Object.entries(ssmParams).forEach(([key, value]) => {
-            new ssm.StringParameter(this, `Ssm-${key}`, {
-                parameterName: `${ssmBase}/${key}`,
-                stringValue: value,
-                tier: ssm.ParameterTier.STANDARD,
-            });
+        new SsmParameterStoreConstruct(this, 'SsmParams', {
+            parameters: {
+                [`${ssmBase}/host`]:       this.instance.dbInstanceEndpointAddress,
+                [`${ssmBase}/port`]:       this.instance.dbInstanceEndpointPort,
+                [`${ssmBase}/database`]:   databaseName,
+                [`${ssmBase}/user`]:       'postgres',
+                [`${ssmBase}/secret-arn`]: this.instance.secret!.secretArn,
+                [`${ssmBase}/sg-id`]:      dbSg.securityGroupId,
+            },
         });
 
         // CDK-Nag suppressions
