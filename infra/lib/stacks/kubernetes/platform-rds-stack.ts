@@ -59,7 +59,7 @@ export class PlatformRdsStack extends cdk.Stack {
         const dbSg = new ec2.SecurityGroup(this, 'PlatformRdsSg', {
             vpc,
             securityGroupName: `${namePrefix}-platform-rds`,
-            description: 'Platform RDS — allow PostgreSQL from within VPC',
+            description: 'Platform RDS - allow PostgreSQL from within VPC',
             allowAllOutbound: false,
         });
 
