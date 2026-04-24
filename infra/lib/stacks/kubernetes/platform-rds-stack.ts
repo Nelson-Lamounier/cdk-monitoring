@@ -75,7 +75,7 @@ export class PlatformRdsStack extends cdk.Stack {
         // SubnetType.PUBLIC — SharedVpc has no private subnets (natGateways: 0).
         // publiclyAccessible: false — security group is the access boundary.
         const credentials = rds.Credentials.fromGeneratedSecret('postgres', {
-            secretName: `${namePrefix}/platform-rds/credentials`,
+            secretName: `k8s-${targetEnvironment}/platform-rds/credentials`,
         });
 
         this.instance = new rds.DatabaseInstance(this, 'Instance', {

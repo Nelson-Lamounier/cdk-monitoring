@@ -3,9 +3,9 @@
  * KubernetesProjectFactory Unit Tests
  *
  * Tests for the factory that creates shared kubeadm Kubernetes infrastructure.
- * Current architecture (9 stacks, cattle-model ASG pools):
+ * Current architecture (10 stacks, cattle-model ASG pools):
  *   Data, Base, ControlPlane,
- *   GeneralPool (ASG), MonitoringPool (ASG), AppIam, Api, Edge, Observability.
+ *   GeneralPool (ASG), MonitoringPool (ASG), AppIam, PlatformRds, Api, Edge, Observability.
  *
  * The legacy named worker stacks (Worker, MonitoringWorker) have been fully
  * decommissioned and replaced by the Kubernetes-native ASG pool model.
@@ -71,20 +71,21 @@ describe('KubernetesProjectFactory', () => {
             app = new cdk.App();
         });
 
-        it('should create 9 stacks: Data, Base, ControlPlane, GeneralPool, MonitoringPool, AppIam, Api, Edge, Observability', () => {
+        it('should create 10 stacks: Data, Base, ControlPlane, GeneralPool, MonitoringPool, AppIam, PlatformRds, Api, Edge, Observability', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
             const { stacks, stackMap } = factory.createAllStacks(app, context);
 
-            // 9 stacks: ssm-automation migrated to kubernetes-bootstrap repo; ASG pools replaced legacy workers.
-            expect(stacks).toHaveLength(9);
+            // 10 stacks: ssm-automation migrated to kubernetes-bootstrap repo; ASG pools replaced legacy workers.
+            expect(stacks).toHaveLength(10);
 
             // Core infrastructure stacks
             expect(stackMap).toHaveProperty('data');
             expect(stackMap).toHaveProperty('base');
             expect(stackMap).toHaveProperty('controlPlane');
             expect(stackMap).toHaveProperty('appIam');
+            expect(stackMap).toHaveProperty('platformRds');
             expect(stackMap).toHaveProperty('api');
             expect(stackMap).toHaveProperty('edge');
             expect(stackMap).toHaveProperty('observability');
@@ -98,7 +99,7 @@ describe('KubernetesProjectFactory', () => {
             expect(stackMap).not.toHaveProperty('monitoringWorker');
         });
 
-        it('should order stacks: Data → Base → ControlPlane → GeneralPool → MonitoringPool → AppIam → Api → Edge → Observability', () => {
+        it('should order stacks: Data → Base → ControlPlane → GeneralPool → MonitoringPool → AppIam → PlatformRds → Api → Edge → Observability', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
@@ -112,9 +113,10 @@ describe('KubernetesProjectFactory', () => {
             expect(stackNames[3]).toContain('GeneralPool');
             expect(stackNames[4]).toContain('MonitoringPool');
             expect(stackNames[5]).toContain('AppIam');
-            expect(stackNames[6]).toContain('Api');
-            expect(stackNames[7]).toContain('Edge');
-            expect(stackNames[8]).toContain('Observability');
+            expect(stackNames[6]).toContain('PlatformRds');
+            expect(stackNames[7]).toContain('Api');
+            expect(stackNames[8]).toContain('Edge');
+            expect(stackNames[9]).toContain('Observability');
         });
 
         it('should name stacks correctly with environment suffix', () => {

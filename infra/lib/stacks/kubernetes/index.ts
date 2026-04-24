@@ -19,3 +19,5 @@ export type { KubernetesObservabilityStackProps } from './observability-stack';
 // New generic parameterised worker pool (replaces AppWorker, MonitoringWorker, ArgocdWorker)
 export { KubernetesWorkerAsgStack } from './worker-asg-stack';
 export type { KubernetesWorkerAsgStackProps, WorkerPoolType } from './worker-asg-stack';
+export { PlatformRdsStack } from './platform-rds-stack';
+export type { PlatformRdsStackProps } from './platform-rds-stack';

@@ -133,6 +133,14 @@ export interface KubernetesAppIamStackProps extends cdk.StackProps {
      * @example ['arn:aws:lambda:eu-west-1:123:function:bedrock-dev-publish']
      */
     readonly lambdaInvokeArns?: string[];
+
+    /**
+     * Additional Secrets Manager ARN path patterns to grant GetSecretValue on.
+     * Use for secrets that don't fit the existing path patterns.
+     *
+     * @example ['k8s-development/platform-rds/credentials-??????']
+     */
+    readonly additionalSecretArns?: string[];
 }
 
 // =============================================================================
@@ -179,6 +187,7 @@ export class KubernetesAppIamStack extends cdk.Stack {
             secretsManagerPathPattern: props.secretsManagerPathPattern,
             bedrockSecretsManagerPath: props.bedrockSecretsManagerPath,
             lambdaInvokeArns: props.lambdaInvokeArns,
+            additionalSecretArns: props.additionalSecretArns,
         };
 
         // =====================================================================
@@ -228,6 +237,7 @@ interface ApplicationIamGrantsProps {
     readonly bedrockSecretsManagerPath?: string;
     /** Lambda ARNs granted invocation access (admin-api BFF pipeline triggers). */
     readonly lambdaInvokeArns?: string[];
+    readonly additionalSecretArns?: string[];
 }
 
 /**
@@ -396,6 +406,17 @@ function grantApplicationPermissions(
                 'lambda:InvokeAsync',
             ],
             resources: props.lambdaInvokeArns,
+        }));
+    }
+
+    if (props.additionalSecretArns && props.additionalSecretArns.length > 0) {
+        role.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'AdditionalSecretsManagerRead',
+            effect: iam.Effect.ALLOW,
+            actions: ['secretsmanager:GetSecretValue'],
+            resources: props.additionalSecretArns.map(
+                arn => `arn:aws:secretsmanager:${region}:${account}:secret:${arn}`,
+            ),
         }));
     }
 }

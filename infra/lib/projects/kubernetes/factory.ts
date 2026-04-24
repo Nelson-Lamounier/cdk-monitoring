@@ -52,6 +52,7 @@ import {
     KubernetesEdgeStack,
     KubernetesObservabilityStack,
     KubernetesWorkerAsgStack,
+    PlatformRdsStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId, flatName } from '../../utilities/naming';
@@ -403,11 +404,41 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                     `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-pipeline-trigger`,
                     `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-strategist-trigger`,
                 ],
+                // Platform RDS credentials — ESO aws-secretsmanager store reads this
+                // via the EC2 instance profile. The '?' suffix covers Secrets Manager's
+                // 6-char random suffix appended to the ARN.
+                additionalSecretArns: [
+                    `k8s-${environment}/platform-rds/credentials-??????`,
+                ],
             },
         );
         appIamStack.addDependency(controlPlaneStack);
         stacks.push(appIamStack);
         stackMap.appIam = appIamStack;
+
+        // =================================================================
+        // Stack 4b: PLATFORM RDS STACK
+        //
+        // Single PostgreSQL 16 + pgvector instance in SharedVpc.
+        // All AI pipeline Jobs, admin-api, and public-api connect via
+        // PgBouncer (pgbouncer.platform.svc.cluster.local:5432).
+        // Deployed as sibling to AppIamStack — same dependency (BaseStack).
+        // =================================================================
+        const platformRdsStack = new PlatformRdsStack(
+            scope,
+            stackId(this.namespace, 'PlatformRds', environment),
+            {
+                targetEnvironment: environment,
+                vpc: baseStack.vpc,
+                namePrefix,
+                databaseName: 'tucaken',
+                env,
+                description: `Platform PostgreSQL 16 + pgvector — Tucaken unified data store - ${environment}`,
+            },
+        );
+        platformRdsStack.addDependency(baseStack);
+        stacks.push(platformRdsStack);
+        stackMap.platformRds = platformRdsStack;
 
         // =================================================================
         // Stack 5: API STACK (API Gateway + Lambda)
