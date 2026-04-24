@@ -1,0 +1,104 @@
+/**
+ * @format
+ * PlatformRdsStack Unit Tests
+ */
+import { Template, Match } from 'aws-cdk-lib/assertions';
+import * as cdk from 'aws-cdk-lib/core';
+
+import { Environment } from '../../../../lib/config';
+import { PlatformRdsStack } from '../../../../lib/stacks/kubernetes/platform-rds-stack';
+import {
+    TEST_ENV_EU,
+    createTestApp,
+    createMockVpc,
+} from '../../../fixtures';
+
+const TEST_ENV = Environment.DEVELOPMENT;
+
+function createStack(overrides?: Partial<ConstructorParameters<typeof PlatformRdsStack>[2]>) {
+    const app = createTestApp();
+    const helperStack = new cdk.Stack(app, 'Helper', { env: TEST_ENV_EU });
+    const vpc = createMockVpc(helperStack);
+
+    const stack = new PlatformRdsStack(app, 'TestPlatformRdsStack', {
+        targetEnvironment: TEST_ENV,
+        vpc,
+        namePrefix: 'k8s-development',
+        databaseName: 'tucaken',
+        env: TEST_ENV_EU,
+        ...overrides,
+    });
+    return { stack, template: Template.fromStack(stack), app };
+}
+
+describe('PlatformRdsStack', () => {
+    describe('RDS instance', () => {
+        it('creates a PostgreSQL 16 instance', () => {
+            const { template } = createStack();
+            template.hasResourceProperties('AWS::RDS::DBInstance', {
+                Engine: 'postgres',
+                EngineVersion: Match.stringLikeRegexp('^16\\.'),
+                DBInstanceClass: 'db.t4g.micro',
+                DBName: 'tucaken',
+                StorageEncrypted: true,
+            });
+        });
+
+        it('is NOT publicly accessible', () => {
+            const { template } = createStack();
+            template.hasResourceProperties('AWS::RDS::DBInstance', {
+                PubliclyAccessible: false,
+            });
+        });
+
+        it('has deletion protection disabled in development', () => {
+            const { template } = createStack();
+            template.hasResourceProperties('AWS::RDS::DBInstance', {
+                DeletionProtection: false,
+            });
+        });
+    });
+
+    describe('Security group', () => {
+        it('allows TCP 5432 inbound from VPC CIDR', () => {
+            const { template } = createStack();
+            template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+                SecurityGroupIngress: Match.arrayWith([
+                    Match.objectLike({
+                        IpProtocol: 'tcp',
+                        FromPort: 5432,
+                        ToPort: 5432,
+                    }),
+                ]),
+            });
+        });
+    });
+
+    describe('SSM parameters', () => {
+        const ssmPaths = [
+            '/k8s/development/platform-rds/host',
+            '/k8s/development/platform-rds/port',
+            '/k8s/development/platform-rds/database',
+            '/k8s/development/platform-rds/user',
+            '/k8s/development/platform-rds/secret-arn',
+            '/k8s/development/platform-rds/sg-id',
+        ];
+
+        it.each(ssmPaths)('publishes SSM parameter %s', (path) => {
+            const { template } = createStack();
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: path,
+                Type: 'String',
+            });
+        });
+    });
+
+    describe('Secrets Manager', () => {
+        it('creates a generated secret for the RDS credentials', () => {
+            const { template } = createStack();
+            template.hasResourceProperties('AWS::SecretsManager::Secret', {
+                Name: 'k8s-development/platform-rds/credentials',
+            });
+        });
+    });
+});
