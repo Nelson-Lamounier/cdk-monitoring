@@ -22,9 +22,9 @@
 
 import https from 'https';
 
-import { parseArgs } from '@repo/script-utils/aws.js';
-import { emitAnnotation, writeSummary } from '@repo/script-utils/github.js';
-import logger from '@repo/script-utils/logger.js';
+import { parseArgs } from '@nelsonlamounier/cdk-deploy-scripts/aws.js';
+import { emitAnnotation, writeSummary } from '@nelsonlamounier/cdk-deploy-scripts/github.js';
+import logger from '@nelsonlamounier/cdk-deploy-scripts/logger.js';
 
 // =============================================================================
 // CLI argument parsing

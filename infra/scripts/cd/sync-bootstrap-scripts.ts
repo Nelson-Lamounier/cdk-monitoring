@@ -25,10 +25,10 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { parseArgs, buildAwsConfig, getSSMParameter } from '@repo/script-utils/aws.js';
-import { runCommand } from '@repo/script-utils/exec.js';
-import { writeSummary, emitAnnotation } from '@repo/script-utils/github.js';
-import logger from '@repo/script-utils/logger.js';
+import { parseArgs, buildAwsConfig, getSSMParameter } from '@nelsonlamounier/cdk-deploy-scripts/aws.js';
+import { runCommand } from '@nelsonlamounier/cdk-deploy-scripts/exec.js';
+import { writeSummary, emitAnnotation } from '@nelsonlamounier/cdk-deploy-scripts/github.js';
+import logger from '@nelsonlamounier/cdk-deploy-scripts/logger.js';
 
 // =============================================================================
 // CLI argument parsing

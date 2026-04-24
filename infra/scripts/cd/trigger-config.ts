@@ -45,9 +45,9 @@ import {
     GetParameterCommand,
     SSMClient,
 } from '@aws-sdk/client-ssm';
-import { parseArgs, buildAwsConfig } from '@repo/script-utils/aws.js';
-import { setOutput, writeSummary, emitAnnotation } from '@repo/script-utils/github.js';
-import logger from '@repo/script-utils/logger.js';
+import { parseArgs, buildAwsConfig } from '@nelsonlamounier/cdk-deploy-scripts/aws.js';
+import { setOutput, writeSummary, emitAnnotation } from '@nelsonlamounier/cdk-deploy-scripts/github.js';
+import logger from '@nelsonlamounier/cdk-deploy-scripts/logger.js';
 
 // =============================================================================
 // CLI argument parsing

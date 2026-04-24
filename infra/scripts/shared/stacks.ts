@@ -3,9 +3,9 @@
  *
  * Defines actual stack arrays with `getStackName` lambdas that call into
  * `getStackId()` from CDK's naming utility. Registers each project into
- * the shared `@repo/script-utils/stacks.js` registry at import time.
+ * the shared `@nelsonlamounier/cdk-deploy-scripts/stacks.js` registry at import time.
  *
- * Consumer scripts import from this file (or from `@repo/script-utils/stacks.js`
+ * Consumer scripts import from this file (or from `@nelsonlamounier/cdk-deploy-scripts/stacks.js`
  * for pure types). This file re-exports everything from the shared module
  * so existing `./stacks.js` imports continue to work unchanged.
  */
