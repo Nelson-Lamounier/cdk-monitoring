@@ -5,7 +5,7 @@
 # Deploys the 9-stack K8s (kubeadm) infrastructure via CDK.
 # Provisions AWS resources; does NOT bootstrap Kubernetes.
 #
-# ─── Stack Deployment Order (9 stacks) ─────────────────────────────
+# ─── Stack Deployment Order (10 stacks) ────────────────────────────
 #   0.  ✅ Verify BFF ECR  (pre-flight: confirm admin-api ECR repo exists
 #                           in Shared-Infra before any container push job)
 #   1.  Data             (DynamoDB + S3 + SSM Parameters)
@@ -14,6 +14,7 @@
 #   2b. ✅ Verify Base    (Integration test — VPC, SGs, KMS, EBS, EIP, Route53)
 #   2c. API              (API Gateway + Lambda) [parallel with 2, depends on 1]
 #   2d. Observability    (CloudWatch dashboard) [parallel with 2c, depends on 2b]
+#   2e. PlatformRds      (PostgreSQL 16 + SM secret + SSM params) [parallel, depends on 2b]
 #   3.  Compute          (Control Plane EC2 + ASG)
 #   3b. General Pool ASG (Kubernetes-native worker nodes — general purpose)
 #   3c. Monitoring Pool  (Kubernetes-native worker nodes — observability taint)
@@ -105,7 +106,7 @@ jobs:
       commit-sha: ${{ github.sha }}
       commit-short-sha: ${{ steps.pipeline-setup.outputs.short-sha }}
       node-version: ${{ steps.setup-tools.outputs.node-version }}
-      # Stack names from synthesize-ci.ts (9-stack architecture)
+      # Stack names from synthesize-ci.ts (10-stack architecture)
       data-stack: ${{ steps.synth.outputs.data }}
       base-stack: ${{ steps.synth.outputs.base }}
       controlplane-stack: ${{ steps.synth.outputs.controlPlane }}
@@ -116,6 +117,7 @@ jobs:
       api-stack: ${{ steps.synth.outputs.api }}
       edge-stack: ${{ steps.synth.outputs.edge }}
       observability-stack: ${{ steps.synth.outputs.observability }}
+      platform-rds-stack: ${{ steps.synth.outputs.platformRds }}
 
 
     steps:
@@ -858,6 +860,31 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
+  # Deploy Platform RDS Stack (2e) — PostgreSQL 16 + Secrets Manager + SSM
+  #
+  # Runs in parallel with ControlPlane, Observability, and API stacks.
+  # Depends only on Base stack (SharedVpc subnets must exist).
+  # RDS first-creation can take up to 15 minutes — timeout set to 25 min.
+  # K8s pods connect via PgBouncer (ArgoCD wave 2/3 in kubernetes-platform).
+  # ===========================================================================
+  deploy-platform-rds:
+    name: Deploy Platform RDS
+    needs: [setup, deploy-base, verify-base-stack]
+    if: >-
+      always()
+      && needs.deploy-base.result == 'success'
+      && needs.verify-base-stack.result == 'success'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.platform-rds-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+    secrets: inherit
+
+  # ===========================================================================
   # Deployment Failure Alert (staging/production only)
   #
   # For K8s/GitOps environments, automated CFn rollbacks on stateful infra
@@ -880,6 +907,7 @@ jobs:
         deploy-edge,
         verify-edge-stack,
         deploy-observability,
+        deploy-platform-rds,
         verify-launch-template-ami,
       ]
     runs-on: ubuntu-latest
@@ -896,6 +924,7 @@ jobs:
         || needs.deploy-edge.result == 'failure'
         || needs.verify-edge-stack.result == 'failure'
         || needs.deploy-observability.result == 'failure'
+        || needs.deploy-platform-rds.result == 'failure'
         || needs.verify-launch-template-ami.result == 'failure'
       )
       && inputs.cdk-environment != 'development'
@@ -956,6 +985,7 @@ jobs:
       - deploy-edge
       - verify-edge-stack
       - deploy-observability
+      - deploy-platform-rds
       - verify-launch-template-ami
       - deployment-failure-alert
     runs-on: ubuntu-latest
@@ -1026,6 +1056,7 @@ jobs:
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           VERIFY_EDGE_RESULT: ${{ needs.verify-edge-stack.result || 'skipped' }}
           DEPLOY_OBSERVABILITY_RESULT: ${{ needs.deploy-observability.result || 'skipped' }}
+          DEPLOY_PLATFORM_RDS_RESULT: ${{ needs.deploy-platform-rds.result || 'skipped' }}
           VERIFY_RESULT: "moved-to-ssm-pipeline"
           SMOKE_TESTS_RESULT: "moved-to-ssm-pipeline"
           ALERT_RESULT: ${{ needs.deployment-failure-alert.result || 'skipped' }}

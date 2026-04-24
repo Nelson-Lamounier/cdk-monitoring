@@ -110,9 +110,9 @@ registerProject({
 });
 
 // =============================================================================
-// K8S PROJECT (kubeadm Kubernetes Cluster — 9-Stack Architecture)
-// Synth outputs all 9 stacks. Infra pipeline deploys Data→Base→
-// Compute→GeneralPool→MonitoringPool→AppIam→Edge→Observability.
+// K8S PROJECT (kubeadm Kubernetes Cluster — 10-Stack Architecture)
+// Synth outputs all 10 stacks. Infra pipeline deploys Data→Base→
+// Compute→GeneralPool→MonitoringPool→AppIam→Edge→Observability→PlatformRds.
 // API stack is deployed separately from core infrastructure.
 // Bootstrap/app manifests synced by independent S3 sync pipelines.
 //
@@ -195,6 +195,14 @@ const k8sStacks: StackConfig[] = [
     getStackName: (env) => getStackId(Project.KUBERNETES, 'observability', env),
     description:
       'CloudWatch pre-deployment dashboard for infrastructure monitoring',
+    dependsOn: ['base'],
+  },
+  {
+    id: 'platformRds',
+    name: 'Platform RDS Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'platformRds', env),
+    description:
+      'PostgreSQL 16 RDS instance for platform data (articles, identity, career) with PgBouncer via K8s',
     dependsOn: ['base'],
   },
 ];

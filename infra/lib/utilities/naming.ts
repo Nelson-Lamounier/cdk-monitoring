@@ -41,6 +41,7 @@ export const STACK_REGISTRY = {
         api: 'Api',
         edge: 'Edge',
         observability: 'Observability',
+        platformRds: 'PlatformRds',
     },
     org: {
         dnsRole: 'DnsRole',
