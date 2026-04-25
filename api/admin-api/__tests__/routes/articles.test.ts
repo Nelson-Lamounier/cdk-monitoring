@@ -159,16 +159,16 @@ const ARTICLE_ITEM = {
 describe('GET / — list articles', () => {
   beforeEach(() => { sendMock.mockReset(); });
 
-  it('fans out across all four statuses when ?status=all (default)', async () => {
+  it('fans out across all six statuses when ?status=all (default)', async () => {
     sendMock.mockResolvedValue({ Items: [ARTICLE_ITEM] });
 
     const res = await buildApp().request('/');
     const body = (await res.json()) as { articles: unknown[]; count: number };
 
     expect(res.status).toBe(200);
-    expect(body.articles).toHaveLength(4); // 4 statuses × 1 item each
-    expect(body.count).toBe(4);
-    expect(sendMock).toHaveBeenCalledTimes(4);
+    expect(body.articles).toHaveLength(6); // 6 statuses × 1 item each
+    expect(body.count).toBe(6);
+    expect(sendMock).toHaveBeenCalledTimes(6);
   });
 
   it('queries a single status bucket when ?status=draft', async () => {
@@ -251,7 +251,8 @@ describe('PUT /:slug — update article', () => {
   beforeEach(() => {
     sendMock.mockReset();
     sendMock.mockResolvedValue({});
-    pgUpsertMock.mockClear();
+    pgUpsertMock.mockReset();
+    pgUpsertMock.mockResolvedValue(undefined);
   });
 
   it('returns 200 with updated: true on success', async () => {
@@ -318,7 +319,7 @@ describe('PUT /:slug — update article', () => {
     const res = await app.request('/api/admin/articles/test-slug', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Updated' }),
+        body: JSON.stringify({ title: 'Updated', contentMd: '# Content' }),
     });
     expect(res.status).toBe(200);
     expect(pgUpsertMock).toHaveBeenCalledTimes(1);
@@ -330,7 +331,7 @@ describe('PUT /:slug — update article', () => {
     const res = await app.request('/api/admin/articles/test-slug', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Updated' }),
+        body: JSON.stringify({ title: 'Updated', contentMd: '# Content' }),
     });
     expect(res.status).toBe(200);
   });

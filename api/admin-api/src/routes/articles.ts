@@ -226,22 +226,28 @@ export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindi
     );
 
     // Shadow write to PG — non-fatal during dual-write period
-    try {
-        const pool = getPool(config);
-        await upsertArticle(pool, {
-            slug,
-            title:       (updates['title']       as string) ?? '',
-            excerpt:     (updates['excerpt']      as string | null) ?? null,
-            contentMd:   (updates['contentMd']    as string) ?? '',
-            tags:        (updates['tags']         as string[]) ?? [],
-            status:      (updates['status']       as string) ?? 'draft',
-            aiGenerated: (updates['aiGenerated']  as boolean) ?? false,
-            aiModel:     (updates['aiModel']      as string | null) ?? null,
-            publishedAt: updates['publishedAt']   ? new Date(updates['publishedAt'] as string) : null,
-            coverImage:  (updates['coverImage']   as string | null) ?? null,
-        });
-    } catch (pgErr: unknown) {
-        console.error(`[articles] PG shadow write failed — slug=${slug}`, pgErr);
+    // Only write when we have a complete record (title + contentMd present).
+    // Partial updates (status/tag changes) are synced via the migration job.
+    // NOTE: contentMd is not in allowedFields (not a DynamoDB field), so we
+    // read it from the raw body rather than from the filtered `updates` map.
+    if ('title' in updates && 'contentMd' in body) {
+        try {
+            const pool = getPool(config);
+            await upsertArticle(pool, {
+                slug,
+                title:       (updates['title']       as string) ?? '',
+                excerpt:     (updates['excerpt']      as string | null) ?? null,
+                contentMd:   (body['contentMd']       as string) ?? '',
+                tags:        (updates['tags']         as string[]) ?? [],
+                status:      (updates['status']       as string) ?? 'draft',
+                aiGenerated: (body['aiGenerated']     as boolean) ?? false,
+                aiModel:     (body['aiModel']         as string | null) ?? null,
+                publishedAt: updates['publishedAt']   ? new Date(updates['publishedAt'] as string) : null,
+                coverImage:  (updates['coverImage']   as string | null) ?? null,
+            });
+        } catch (pgErr: unknown) {
+            console.error(`[articles] PG shadow write failed — slug=${slug}`, pgErr);
+        }
     }
 
     return ctx.json({ updated: true, slug });
