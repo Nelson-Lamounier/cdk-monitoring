@@ -127,7 +127,21 @@ export function createApplicationsRouter(config: AdminApiConfig): Hono {
   app.get('/', async (ctx) => {
     const rawStatus = ctx.req.query('status');
     const apps = await listApplications(getPool(config), rawStatus ?? undefined);
-    return ctx.json({ applications: apps, count: apps.length });
+    const summaries = apps.map((a) => ({
+        slug:           a.id,
+        targetCompany:  a.company,
+        targetRole:     a.role,
+        status:         a.kanbanStatus,
+        jobUrl:         a.jobUrl ?? null,
+        fitRating:      null,
+        recommendation: null,
+        interviewStage: 'applied',
+        costUsd:        null,
+        appliedAt:      a.appliedAt ?? null,
+        createdAt:      a.createdAt ?? null,
+        updatedAt:      a.updatedAt ?? null,
+    }));
+    return ctx.json({ applications: summaries, count: summaries.length });
   });
 
   // ── GET /:slug — application detail ──────────────────────────────────────

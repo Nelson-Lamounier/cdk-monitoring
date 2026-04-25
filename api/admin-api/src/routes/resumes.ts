@@ -45,6 +45,7 @@ import {
     upsertResume,
     getResume as pgGetResume,
     listResumes,
+    getActiveResume,
     deleteResume as pgDeleteResume,
     setActiveResume,
 } from '../lib/repositories/resumes.js';
@@ -171,10 +172,9 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
   // Must be defined BEFORE /:id to take route precedence.
   // -------------------------------------------------------------------------
   router.get('/active', async (ctx) => {
-    const all = await listResumes(getPool(config));
-    const active = all.find(r => r.isActive) ?? null;
-    if (!active) return ctx.json({ error: 'No active resume configured' }, 404);
-    return ctx.json({ resume: active });
+    const resume = await getActiveResume(getPool(config));
+    if (!resume) return ctx.json({ error: 'No active resume configured' }, 404);
+    return ctx.json({ resume });
   });
 
   // -------------------------------------------------------------------------

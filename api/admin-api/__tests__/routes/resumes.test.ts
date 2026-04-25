@@ -47,11 +47,13 @@ jest.unstable_mockModule('../../src/lib/dynamo.js', () => ({
 // PG repository mocks
 const pgListResumesMock = jest.fn<() => Promise<never[]>>().mockResolvedValue([]);
 const pgGetResumeMock = jest.fn<() => Promise<null>>().mockResolvedValue(null);
+const pgGetActiveResumeMock = jest.fn<() => Promise<null>>().mockResolvedValue(null);
 
 jest.unstable_mockModule('../../src/lib/repositories/resumes.js', () => ({
   upsertResume: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
   getResume: pgGetResumeMock,
   listResumes: pgListResumesMock,
+  getActiveResume: pgGetActiveResumeMock,
   deleteResume: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
   setActiveResume: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
 }));
@@ -200,11 +202,11 @@ describe('GET / — list all resume summaries', () => {
 describe('GET /active — get active resume', () => {
   beforeEach(() => {
     sendMock.mockReset();
-    pgListResumesMock.mockReset();
+    pgGetActiveResumeMock.mockReset();
   });
 
   it('returns 200 with the active resume when one exists', async () => {
-    pgListResumesMock.mockResolvedValue([PG_RESUME, PG_ACTIVE_RESUME] as never[]);
+    pgGetActiveResumeMock.mockResolvedValue(PG_ACTIVE_RESUME as never);
     const res = await buildApp().request('/active');
     const body = (await res.json()) as { resume: Record<string, unknown> };
     expect(res.status).toBe(200);
@@ -214,14 +216,14 @@ describe('GET /active — get active resume', () => {
   });
 
   it('includes the full contentJson payload in the active resume response', async () => {
-    pgListResumesMock.mockResolvedValue([PG_ACTIVE_RESUME] as never[]);
+    pgGetActiveResumeMock.mockResolvedValue(PG_ACTIVE_RESUME as never);
     const res = await buildApp().request('/active');
     const body = (await res.json()) as { resume: Record<string, unknown> };
     expect(body.resume['contentJson']).toEqual({ basics: { name: 'Nelson Lamounier' } });
   });
 
   it('returns 404 when no active resume exists', async () => {
-    pgListResumesMock.mockResolvedValue([PG_RESUME] as never[]); // only inactive
+    pgGetActiveResumeMock.mockResolvedValue(null);
     const res = await buildApp().request('/active');
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: string };

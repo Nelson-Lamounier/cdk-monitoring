@@ -77,6 +77,17 @@ export async function listResumes(pool: Pool): Promise<Resume[]> {
     return (result.rows as Record<string, unknown>[]).map(rowToResume);
 }
 
+export async function getActiveResume(pool: Pool): Promise<Resume | null> {
+    const result = await pool.query(
+        `SELECT id, user_id, job_application_id, content_json, rendered_html, generated_at
+         FROM resumes
+         WHERE content_json->>'is_active' = 'true'
+         LIMIT 1`,
+    );
+    if (result.rows.length === 0) return null;
+    return rowToResume(result.rows[0] as Record<string, unknown>);
+}
+
 export async function deleteResume(pool: Pool, id: string): Promise<void> {
     await pool.query(`DELETE FROM resumes WHERE id = $1`, [id]);
 }
