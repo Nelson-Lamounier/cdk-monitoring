@@ -34,7 +34,6 @@ import {
   DeleteCommand,
   GetCommand,
   PutCommand,
-  QueryCommand,
   ScanCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -43,10 +42,11 @@ import type { AdminApiConfig } from '../lib/config.js';
 import { docClient } from '../lib/dynamo.js';
 import { getPool } from '../lib/pg.js';
 import {
-  upsertResume,
-  getResume as pgGetResume,
-  deleteResume as pgDeleteResume,
-  setActiveResume,
+    upsertResume,
+    getResume as pgGetResume,
+    listResumes,
+    deleteResume as pgDeleteResume,
+    setActiveResume,
 } from '../lib/repositories/resumes.js';
 
 /** Hono context variable bindings for authenticated routes. */
@@ -121,47 +121,6 @@ function toFull(entity: ResumeEntity): ResumeWithData {
 }
 
 /**
- * Fetch all resume summaries from DynamoDB.
- * Tries GSI1 (gsi1pk = 'RESUME') first; falls back to Scan if GSI is unavailable.
- *
- * @param config - Resolved application configuration
- * @returns Array of resume summaries sorted newest-first
- */
-async function listAll(config: AdminApiConfig): Promise<ResumeSummary[]> {
-  try {
-    const result = await docClient.send(
-      new QueryCommand({
-        TableName: config.resumesTableName,
-        IndexName: config.dynamoGsi1Name,
-        KeyConditionExpression: 'gsi1pk = :pk',
-        ExpressionAttributeValues: { ':pk': 'RESUME' },
-        ScanIndexForward: false, // newest first via gsi1sk sort
-      }),
-    );
-    if (result.Items && result.Items.length > 0) {
-      return result.Items.map((i) => toSummary(i as ResumeEntity));
-    }
-  } catch {
-    console.warn('[admin-api/resumes] GSI1 unavailable, falling back to Scan');
-  }
-
-  // Fallback: Scan filtered by entity type
-  const scan = await docClient.send(
-    new ScanCommand({
-      TableName: config.resumesTableName,
-      FilterExpression: 'entityType = :type AND sk = :sk',
-      ExpressionAttributeValues: { ':type': 'RESUME', ':sk': 'METADATA' },
-    }),
-  );
-
-  return (scan.Items ?? [])
-    .map((i) => toSummary(i as ResumeEntity))
-    .sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
-}
-
-/**
  * Look up the currently active resume (isActive = true).
  * Uses a Scan — acceptable for small tables (< 20 items).
  *
@@ -202,7 +161,7 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
   // List all resume summaries (no data payload to keep response lean).
   // -------------------------------------------------------------------------
   router.get('/', async (ctx) => {
-    const resumes = await listAll(config);
+    const resumes = await listResumes(getPool(config));
     return ctx.json({ resumes, count: resumes.length });
   });
 
@@ -212,11 +171,10 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
   // Must be defined BEFORE /:id to take route precedence.
   // -------------------------------------------------------------------------
   router.get('/active', async (ctx) => {
-    const resume = await findActive(config);
-    if (!resume) {
-      return ctx.json({ error: 'No active resume configured' }, 404);
-    }
-    return ctx.json({ resume });
+    const all = await listResumes(getPool(config));
+    const active = all.find(r => r.isActive) ?? null;
+    if (!active) return ctx.json({ error: 'No active resume configured' }, 404);
+    return ctx.json({ resume: active });
   });
 
   // -------------------------------------------------------------------------
@@ -225,19 +183,9 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
   // -------------------------------------------------------------------------
   router.get('/:id', async (ctx) => {
     const id = ctx.req.param('id');
-
-    const result = await docClient.send(
-      new GetCommand({
-        TableName: config.resumesTableName,
-        Key: { pk: `RESUME#${id}`, sk: 'METADATA' },
-      }),
-    );
-
-    if (!result.Item) {
-      return ctx.json({ error: `Resume not found: ${id}` }, 404);
-    }
-
-    return ctx.json({ resume: toFull(result.Item as ResumeEntity) });
+    const resume = await pgGetResume(getPool(config), id);
+    if (!resume) return ctx.json({ error: `Resume not found: ${id}` }, 404);
+    return ctx.json({ resume });
   });
 
   // -------------------------------------------------------------------------

@@ -27,8 +27,6 @@
 
 import { Hono } from 'hono';
 import {
-  GetCommand,
-  QueryCommand,
   UpdateCommand,
   DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -37,7 +35,13 @@ import type { JWTPayload } from 'jose';
 import type { AdminApiConfig } from '../lib/config.js';
 import { docClient } from '../lib/dynamo.js';
 import { getPool } from '../lib/pg.js';
-import { upsertArticle, deleteArticle as pgDeleteArticle } from '../lib/repositories/articles.js';
+import {
+    upsertArticle,
+    deleteArticle as pgDeleteArticle,
+    getArticleBySlug,
+    listArticlesByStatus,
+    listAllArticles,
+} from '../lib/repositories/articles.js';
 
 /** Hono context variable bindings for admin-api authenticated routes. */
 type AdminApiBindings = {
@@ -86,58 +90,21 @@ export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindi
   /** Valid article statuses queryable via GSI1. */
   const ALL_STATUSES = ['draft', 'processing', 'review', 'published', 'rejected', 'flagged'] as const;
 
-  /**
-   * Query GSI1 for a single status string.
-   *
-   * Filters on BOTH gsi1pk (GSI partition key) AND the status attribute so
-   * that articles whose gsi1pk is stale (e.g. Lambda updated `status` but
-   * forgot to sync `gsi1pk`) never bleed into the wrong tab.
-   *
-   * @param status - Lowercase status (e.g. 'draft')
-   * @returns Raw DynamoDB Items array
-   */
-  async function queryByStatus(status: string): Promise<Record<string, unknown>[]> {
-    const result = await docClient.send(
-      new QueryCommand({
-        TableName: config.dynamoTableName,
-        IndexName: config.dynamoGsi1Name,
-        KeyConditionExpression: 'gsi1pk = :gsi1pk',
-        // Exclude VERSION#v<n> records (share gsi1pk with METADATA).
-        // Also filter by status attribute — guards against stale gsi1pk values
-        // where a pipeline Lambda updated `status` but forgot to sync `gsi1pk`.
-        FilterExpression: 'sk = :sk AND #st = :status',
-        ExpressionAttributeNames: { '#st': 'status' },
-        ExpressionAttributeValues: {
-          ':gsi1pk': `STATUS#${status}`,
-          ':sk': 'METADATA',
-          ':status': status,
-        },
-        ScanIndexForward: false, // newest first
-        Limit: 100,
-      }),
-    );
-    return (result.Items ?? []) as Record<string, unknown>[];
-  }
-
   router.get('/', async (ctx) => {
     const rawStatus = (ctx.req.query('status') ?? 'all').toLowerCase();
+    const pool = getPool(config);
 
-    let items: Record<string, unknown>[];
+    let articles: import('../lib/repositories/articles.js').Article[];
 
     if (rawStatus === 'all') {
-      // Fan-out: query all four status buckets concurrently
-      const results = await Promise.all(ALL_STATUSES.map(queryByStatus));
-      items = results.flat();
+        articles = await listAllArticles(pool);
     } else if ((ALL_STATUSES as readonly string[]).includes(rawStatus)) {
-      items = await queryByStatus(rawStatus);
+        articles = await listArticlesByStatus(pool, rawStatus);
     } else {
-      return ctx.json({ error: `Invalid status "${rawStatus}". Must be one of: all, ${ALL_STATUSES.join(', ')}` }, 400);
+        return ctx.json({ error: `Invalid status "${rawStatus}". Must be one of: all, ${ALL_STATUSES.join(', ')}` }, 400);
     }
 
-    return ctx.json({
-      articles: items,
-      count: items.length,
-    });
+    return ctx.json({ articles, count: articles.length });
   });
 
   // -----------------------------------------------------------------------
@@ -146,19 +113,9 @@ export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindi
   // -----------------------------------------------------------------------
   router.get('/:slug', async (ctx) => {
     const slug = ctx.req.param('slug');
-
-    const result = await docClient.send(
-      new GetCommand({
-        TableName: config.dynamoTableName,
-        Key: { pk: `ARTICLE#${slug}`, sk: 'METADATA' },
-      }),
-    );
-
-    if (!result.Item) {
-      return ctx.json({ error: 'Article not found' }, 404);
-    }
-
-    return ctx.json({ article: result.Item });
+    const article = await getArticleBySlug(getPool(config), slug);
+    if (!article) return ctx.json({ error: 'Article not found' }, 404);
+    return ctx.json({ article });
   });
 
   // -----------------------------------------------------------------------

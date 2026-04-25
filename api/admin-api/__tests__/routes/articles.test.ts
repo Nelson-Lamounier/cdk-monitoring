@@ -58,13 +58,16 @@ jest.unstable_mockModule('@aws-sdk/client-lambda', () => {
 });
 
 const pgUpsertMock = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
+const pgGetArticleBySlugMock = jest.fn<() => Promise<null>>().mockResolvedValue(null);
+const pgListArticlesByStatusMock = jest.fn<() => Promise<never[]>>().mockResolvedValue([]);
+const pgListAllArticlesMock = jest.fn<() => Promise<never[]>>().mockResolvedValue([]);
 
 jest.unstable_mockModule('../../src/lib/repositories/articles.js', () => ({
     upsertArticle: pgUpsertMock,
     deleteArticle: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
-    getArticleBySlug: jest.fn<() => Promise<null>>().mockResolvedValue(null),
-    listArticlesByStatus: jest.fn<() => Promise<never[]>>().mockResolvedValue([]),
-    listAllArticles: jest.fn<() => Promise<never[]>>().mockResolvedValue([]),
+    getArticleBySlug: pgGetArticleBySlugMock,
+    listArticlesByStatus: pgListArticlesByStatusMock,
+    listAllArticles: pgListAllArticlesMock,
 }));
 
 jest.unstable_mockModule('../../src/lib/pg.js', () => ({
@@ -157,34 +160,36 @@ const ARTICLE_ITEM = {
 // ---------------------------------------------------------------------------
 
 describe('GET / — list articles', () => {
-  beforeEach(() => { sendMock.mockReset(); });
+  beforeEach(() => {
+    sendMock.mockReset();
+    pgListAllArticlesMock.mockReset();
+    pgListArticlesByStatusMock.mockReset();
+  });
 
-  it('fans out across all six statuses when ?status=all (default)', async () => {
-    sendMock.mockResolvedValue({ Items: [ARTICLE_ITEM] });
+  it('calls listAllArticles when ?status=all (default)', async () => {
+    pgListAllArticlesMock.mockResolvedValue([ARTICLE_ITEM] as never[]);
 
     const res = await buildApp().request('/');
     const body = (await res.json()) as { articles: unknown[]; count: number };
 
     expect(res.status).toBe(200);
-    expect(body.articles).toHaveLength(6); // 6 statuses × 1 item each
-    expect(body.count).toBe(6);
-    expect(sendMock).toHaveBeenCalledTimes(6);
+    expect(body.articles).toHaveLength(1);
+    expect(body.count).toBe(1);
+    expect(pgListAllArticlesMock).toHaveBeenCalledTimes(1);
+    expect(sendMock).not.toHaveBeenCalled();
   });
 
-  it('queries a single status bucket when ?status=draft', async () => {
-    sendMock.mockResolvedValue({ Items: [ARTICLE_ITEM] });
+  it('calls listArticlesByStatus when ?status=draft', async () => {
+    pgListArticlesByStatusMock.mockResolvedValue([ARTICLE_ITEM] as never[]);
 
     const res = await buildApp().request('/?status=draft');
     const body = (await res.json()) as { articles: unknown[]; count: number };
 
     expect(res.status).toBe(200);
     expect(body.articles).toHaveLength(1);
-    expect(sendMock).toHaveBeenCalledTimes(1);
-
-    const callArg = sendMock.mock.calls[0]?.[0] as {
-      input: { ExpressionAttributeValues: Record<string, string> };
-    };
-    expect(callArg.input.ExpressionAttributeValues[':gsi1pk']).toBe('STATUS#draft');
+    expect(pgListArticlesByStatusMock).toHaveBeenCalledTimes(1);
+    expect(pgListArticlesByStatusMock).toHaveBeenCalledWith(expect.anything(), 'draft');
+    expect(sendMock).not.toHaveBeenCalled();
   });
 
   it('returns 400 for an unknown status value', async () => {
@@ -194,8 +199,8 @@ describe('GET / — list articles', () => {
     expect(body.error).toMatch(/Invalid status/);
   });
 
-  it('returns empty articles array when DynamoDB has no items', async () => {
-    sendMock.mockResolvedValue({ Items: [] });
+  it('returns empty articles array when PG returns no items', async () => {
+    pgListArticlesByStatusMock.mockResolvedValue([] as never[]);
     const res = await buildApp().request('/?status=published');
     const body = (await res.json()) as { articles: unknown[]; count: number };
     expect(body.articles).toHaveLength(0);
@@ -208,10 +213,13 @@ describe('GET / — list articles', () => {
 // ---------------------------------------------------------------------------
 
 describe('GET /:slug — get article by slug', () => {
-  beforeEach(() => { sendMock.mockReset(); });
+  beforeEach(() => {
+    sendMock.mockReset();
+    pgGetArticleBySlugMock.mockReset();
+  });
 
   it('returns the article when found', async () => {
-    sendMock.mockResolvedValue({ Item: ARTICLE_ITEM });
+    pgGetArticleBySlugMock.mockResolvedValue(ARTICLE_ITEM as never);
 
     const res = await buildApp().request('/my-slug');
     const body = (await res.json()) as { article: typeof ARTICLE_ITEM };
@@ -219,22 +227,20 @@ describe('GET /:slug — get article by slug', () => {
     expect(res.status).toBe(200);
     expect(body.article.slug).toBe('my-slug');
     expect(body.article.title).toBe('My Test Article');
+    expect(sendMock).not.toHaveBeenCalled();
   });
 
-  it('queries DynamoDB with the correct composite key', async () => {
-    sendMock.mockResolvedValue({ Item: ARTICLE_ITEM });
+  it('calls getArticleBySlug with the correct slug', async () => {
+    pgGetArticleBySlugMock.mockResolvedValue(ARTICLE_ITEM as never);
 
     await buildApp().request('/my-slug');
 
-    const callArg = sendMock.mock.calls[0]?.[0] as {
-      input: { Key: Record<string, string> };
-    };
-    expect(callArg.input.Key['pk']).toBe('ARTICLE#my-slug');
-    expect(callArg.input.Key['sk']).toBe('METADATA');
+    expect(pgGetArticleBySlugMock).toHaveBeenCalledTimes(1);
+    expect(pgGetArticleBySlugMock).toHaveBeenCalledWith(expect.anything(), 'my-slug');
   });
 
   it('returns 404 when article is not found', async () => {
-    sendMock.mockResolvedValue({ Item: undefined });
+    pgGetArticleBySlugMock.mockResolvedValue(null);
 
     const res = await buildApp().request('/nonexistent-slug');
     expect(res.status).toBe(404);

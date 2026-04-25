@@ -44,6 +44,22 @@ jest.unstable_mockModule('../../src/lib/dynamo.js', () => ({
   docClient: { send: sendMock },
 }));
 
+// PG repository mocks
+const pgListResumesMock = jest.fn<() => Promise<never[]>>().mockResolvedValue([]);
+const pgGetResumeMock = jest.fn<() => Promise<null>>().mockResolvedValue(null);
+
+jest.unstable_mockModule('../../src/lib/repositories/resumes.js', () => ({
+  upsertResume: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
+  getResume: pgGetResumeMock,
+  listResumes: pgListResumesMock,
+  deleteResume: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
+  setActiveResume: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
+}));
+
+jest.unstable_mockModule('../../src/lib/pg.js', () => ({
+  getPool: jest.fn(() => ({})),
+}));
+
 // ---------------------------------------------------------------------------
 // Dynamic imports — resolved AFTER mocks are registered
 // ---------------------------------------------------------------------------
@@ -119,36 +135,57 @@ const ACTIVE_RESUME_ENTITY = {
   label: 'Active CV',
 };
 
+// PG-shaped resume records (from repositories/resumes.ts Resume interface)
+const PG_RESUME = {
+  id: 'resume-uuid-1',
+  userId: null,
+  jobApplicationId: null,
+  label: 'Senior Engineer 2026',
+  isActive: false,
+  contentJson: { basics: { name: 'Nelson Lamounier' } },
+  renderedHtml: null,
+};
+
+const PG_ACTIVE_RESUME = {
+  ...PG_RESUME,
+  id: 'active-uuid',
+  label: 'Active CV',
+  isActive: true,
+};
+
 // ---------------------------------------------------------------------------
 // GET / — list resumes
 // ---------------------------------------------------------------------------
 
 describe('GET / — list all resume summaries', () => {
-  beforeEach(() => { sendMock.mockReset(); });
+  beforeEach(() => {
+    sendMock.mockReset();
+    pgListResumesMock.mockReset();
+  });
 
-  it('returns 200 with a list of summaries', async () => {
-    sendMock.mockResolvedValue({ Items: [RESUME_ENTITY] });
+  it('returns 200 with a list of resumes from PG', async () => {
+    pgListResumesMock.mockResolvedValue([PG_RESUME] as never[]);
     const res = await buildApp().request('/');
     const body = (await res.json()) as { resumes: unknown[]; count: number };
     expect(res.status).toBe(200);
     expect(body.resumes).toHaveLength(1);
     expect(body.count).toBe(1);
+    expect(sendMock).not.toHaveBeenCalled();
   });
 
-  it('summary strips DynamoDB-internal keys (pk, sk, gsi1pk, data)', async () => {
-    sendMock.mockResolvedValue({ Items: [RESUME_ENTITY] });
+  it('PG resume has id and label fields (no DynamoDB keys)', async () => {
+    pgListResumesMock.mockResolvedValue([PG_RESUME] as never[]);
     const res = await buildApp().request('/');
     const body = (await res.json()) as { resumes: Record<string, unknown>[] };
-    const summary = body.resumes[0] as Record<string, unknown>;
-    expect(summary['pk']).toBeUndefined();
-    expect(summary['sk']).toBeUndefined();
-    expect(summary['data']).toBeUndefined();
-    expect(summary['resumeId']).toBe('resume-uuid-1');
-    expect(summary['label']).toBe('Senior Engineer 2026');
+    const resume = body.resumes[0] as Record<string, unknown>;
+    expect(resume['pk']).toBeUndefined();
+    expect(resume['sk']).toBeUndefined();
+    expect(resume['id']).toBe('resume-uuid-1');
+    expect(resume['label']).toBe('Senior Engineer 2026');
   });
 
-  it('returns empty list when DynamoDB returns no items', async () => {
-    sendMock.mockResolvedValue({ Items: [] });
+  it('returns empty list when PG returns no items', async () => {
+    pgListResumesMock.mockResolvedValue([] as never[]);
     const res = await buildApp().request('/');
     const body = (await res.json()) as { resumes: unknown[]; count: number };
     expect(body.resumes).toHaveLength(0);
@@ -161,26 +198,30 @@ describe('GET / — list all resume summaries', () => {
 // ---------------------------------------------------------------------------
 
 describe('GET /active — get active resume', () => {
-  beforeEach(() => { sendMock.mockReset(); });
+  beforeEach(() => {
+    sendMock.mockReset();
+    pgListResumesMock.mockReset();
+  });
 
   it('returns 200 with the active resume when one exists', async () => {
-    sendMock.mockResolvedValue({ Items: [ACTIVE_RESUME_ENTITY] });
+    pgListResumesMock.mockResolvedValue([PG_RESUME, PG_ACTIVE_RESUME] as never[]);
     const res = await buildApp().request('/active');
     const body = (await res.json()) as { resume: Record<string, unknown> };
     expect(res.status).toBe(200);
-    expect(body.resume['resumeId']).toBe('active-uuid');
+    expect(body.resume['id']).toBe('active-uuid');
     expect(body.resume['isActive']).toBe(true);
+    expect(sendMock).not.toHaveBeenCalled();
   });
 
-  it('includes the full data payload in the active resume response', async () => {
-    sendMock.mockResolvedValue({ Items: [ACTIVE_RESUME_ENTITY] });
+  it('includes the full contentJson payload in the active resume response', async () => {
+    pgListResumesMock.mockResolvedValue([PG_ACTIVE_RESUME] as never[]);
     const res = await buildApp().request('/active');
     const body = (await res.json()) as { resume: Record<string, unknown> };
-    expect(body.resume['data']).toEqual({ basics: { name: 'Nelson Lamounier' } });
+    expect(body.resume['contentJson']).toEqual({ basics: { name: 'Nelson Lamounier' } });
   });
 
   it('returns 404 when no active resume exists', async () => {
-    sendMock.mockResolvedValue({ Items: [] });
+    pgListResumesMock.mockResolvedValue([PG_RESUME] as never[]); // only inactive
     const res = await buildApp().request('/active');
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: string };
@@ -193,29 +234,30 @@ describe('GET /active — get active resume', () => {
 // ---------------------------------------------------------------------------
 
 describe('GET /:id — get resume by ID', () => {
-  beforeEach(() => { sendMock.mockReset(); });
+  beforeEach(() => {
+    sendMock.mockReset();
+    pgGetResumeMock.mockReset();
+  });
 
-  it('returns 200 with full resume including data', async () => {
-    sendMock.mockResolvedValue({ Item: RESUME_ENTITY });
+  it('returns 200 with full resume including contentJson', async () => {
+    pgGetResumeMock.mockResolvedValue(PG_RESUME as never);
     const res = await buildApp().request('/resume-uuid-1');
     const body = (await res.json()) as { resume: Record<string, unknown> };
     expect(res.status).toBe(200);
-    expect(body.resume['resumeId']).toBe('resume-uuid-1');
-    expect(body.resume['data']).toEqual({ basics: { name: 'Nelson Lamounier' } });
+    expect(body.resume['id']).toBe('resume-uuid-1');
+    expect(body.resume['contentJson']).toEqual({ basics: { name: 'Nelson Lamounier' } });
+    expect(sendMock).not.toHaveBeenCalled();
   });
 
-  it('queries with the correct RESUME# composite key', async () => {
-    sendMock.mockResolvedValue({ Item: RESUME_ENTITY });
+  it('calls getResume with the correct id', async () => {
+    pgGetResumeMock.mockResolvedValue(PG_RESUME as never);
     await buildApp().request('/resume-uuid-1');
-    const callArg = sendMock.mock.calls[0]?.[0] as {
-      input: { Key: Record<string, string> };
-    };
-    expect(callArg.input.Key['pk']).toBe('RESUME#resume-uuid-1');
-    expect(callArg.input.Key['sk']).toBe('METADATA');
+    expect(pgGetResumeMock).toHaveBeenCalledTimes(1);
+    expect(pgGetResumeMock).toHaveBeenCalledWith(expect.anything(), 'resume-uuid-1');
   });
 
   it('returns 404 when resume does not exist', async () => {
-    sendMock.mockResolvedValue({ Item: undefined });
+    pgGetResumeMock.mockResolvedValue(null);
     const res = await buildApp().request('/nonexistent-id');
     expect(res.status).toBe(404);
   });

@@ -30,6 +30,7 @@ import {
 import type { AdminApiConfig } from '../lib/config.js';
 import { getPool } from '../lib/pg.js';
 import {
+  listApplications,
   updateApplicationStatus as pgUpdateStatus,
   deleteApplication as pgDeleteApplication,
 } from '../lib/repositories/applications.js';
@@ -91,31 +92,6 @@ const SFN_STATE_TO_STAGE: Record<string, string> = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
- * Query application summaries from GSI1 by status.
- *
- * @param client - DynamoDB Document Client
- * @param tableName - STRATEGIST_TABLE_NAME
- * @param status - Application status to query
- * @returns Array of application summary records
- */
-async function queryByStatus(
-  client: DynamoDBDocumentClient,
-  tableName: string,
-  status: string,
-): Promise<DynamoRecord[]> {
-  const result = await client.send(
-    new QueryCommand({
-      TableName: tableName,
-      IndexName: 'gsi1-status-date',
-      KeyConditionExpression: 'gsi1pk = :pk',
-      ExpressionAttributeValues: { ':pk': `APP_STATUS#${status}` },
-      ScanIndexForward: false,
-    }),
-  );
-  return result.Items ?? [];
-}
-
-/**
  * Select the most recently created record (createdAt ISO string comparison).
  *
  * @param current - Currently selected record (or null)
@@ -144,45 +120,14 @@ export function createApplicationsRouter(config: AdminApiConfig): Hono {
   // ── GET / — list applications ─────────────────────────────────────────────
   /**
    * Lists job applications, optionally filtered by status.
-   * Querying `status=all` fans out across all valid status keys and merges results.
    *
-   * @query status - Application status or 'all' (default: 'all')
-   * @returns Array of application summaries sorted by updatedAt desc
+   * @query status - Application kanban status (optional; omit for all)
+   * @returns Array of application records sorted by createdAt desc
    */
   app.get('/', async (ctx) => {
-    const client = getDocClient(config.awsRegion);
-    const status = ctx.req.query('status') ?? 'all';
-
-    let items: DynamoRecord[];
-
-    if (status === 'all') {
-      const results = await Promise.all(
-        [...VALID_STATUSES].map((s) => queryByStatus(client, TABLE, s)),
-      );
-      items = results.flat();
-    } else {
-      if (!VALID_STATUSES.has(status)) {
-        return ctx.json({ error: `Invalid status: ${status}` }, 400);
-      }
-      items = await queryByStatus(client, TABLE, status);
-    }
-
-    const summaries = items
-      .map((item) => ({
-        slug: String(item['applicationSlug'] ?? item['slug'] ?? ''),
-        targetCompany: String(item['targetCompany'] ?? ''),
-        targetRole: String(item['targetRole'] ?? ''),
-        status: String(item['status'] ?? 'analysing'),
-        fitRating: item['fitRating'],
-        recommendation: item['recommendation'],
-        interviewStage: String(item['interviewStage'] ?? 'applied'),
-        costUsd: item['costUsd'],
-        createdAt: String(item['createdAt'] ?? ''),
-        updatedAt: String(item['updatedAt'] ?? ''),
-      }))
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-
-    return ctx.json({ applications: summaries, count: summaries.length });
+    const rawStatus = ctx.req.query('status');
+    const apps = await listApplications(getPool(config), rawStatus ?? undefined);
+    return ctx.json({ applications: apps, count: apps.length });
   });
 
   // ── GET /:slug — application detail ──────────────────────────────────────
