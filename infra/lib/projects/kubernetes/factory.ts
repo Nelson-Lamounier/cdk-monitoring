@@ -54,6 +54,7 @@ import {
     KubernetesWorkerAsgStack,
     PlatformRdsStack,
 } from '../../stacks/kubernetes';
+import { AmiRefreshConstruct } from '../../constructs/events/ami-refresh/ami-refresh-construct';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId, flatName } from '../../utilities/naming';
 
@@ -556,6 +557,28 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         observabilityStack.addDependency(baseStack);
         stacks.push(observabilityStack);
         stackMap.observability = observabilityStack;
+
+        // =================================================================
+        // AMI REFRESH CONSTRUCT (EventBridge → Step Functions)
+        //
+        // Watches /k8s/${environment}/golden-ami/latest SSM parameter for
+        // updates and automatically rolls worker ASGs (phase 1) then the
+        // control plane ASG (phase 2) — no cdk deploy required after bake.
+        // Scoped to controlPlaneStack so resources are co-located with compute.
+        // =================================================================
+        new AmiRefreshConstruct(controlPlaneStack, 'AmiRefresh', {
+            ssmPrefix,
+            workerLtIds: [
+                generalPoolStack.launchTemplateId,
+                monitoringPoolStack.launchTemplateId,
+            ],
+            workerAsgNames: [
+                generalPoolStack.autoScalingGroup.autoScalingGroupName,
+                monitoringPoolStack.autoScalingGroup.autoScalingGroupName,
+            ],
+            controlPlaneLtId: controlPlaneStack.launchTemplateId,
+            controlPlaneAsgName: controlPlaneStack.autoScalingGroup.autoScalingGroupName,
+        });
 
         cdk.Annotations.of(scope).addInfo(
             `K8s factory created ${stacks.length} stacks for ${environment}: ` +
