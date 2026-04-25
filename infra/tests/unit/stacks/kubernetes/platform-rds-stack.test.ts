@@ -33,11 +33,11 @@ function createStack(overrides?: Partial<ConstructorParameters<typeof PlatformRd
 
 describe('PlatformRdsStack', () => {
     describe('RDS instance', () => {
-        it('should create a PostgreSQL 16 instance', () => {
+        it('should create a PostgreSQL 18 instance', () => {
             const { template } = createStack();
             template.hasResourceProperties('AWS::RDS::DBInstance', {
                 Engine: 'postgres',
-                EngineVersion: Match.stringLikeRegexp('^16\\.'),
+                EngineVersion: Match.stringLikeRegexp('^18\\.'),
                 DBInstanceClass: 'db.t4g.micro',
                 DBName: 'tucaken',
                 StorageEncrypted: true,

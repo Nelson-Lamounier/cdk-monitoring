@@ -14,8 +14,8 @@
 #   2b. ✅ Verify Base    (Integration test — VPC, SGs, KMS, EBS, EIP, Route53)
 #   2c. API              (API Gateway + Lambda) [parallel with 2, depends on 1]
 #   2d. Observability    (CloudWatch dashboard) [parallel with 2c, depends on 2b]
-#   2e. PlatformRds      (PostgreSQL 16 + SM secret + SSM params) [parallel, depends on 2b]
-#   3.  Compute          (Control Plane EC2 + ASG)
+#   2e. PlatformRds      (PostgreSQL 18 + SM secret + SSM params) [parallel, depends on 2b]
+#   3.  Compute          (Control Plane EC2 + ASG + AMI-refresh EventBridge/SFN)
 #   3b. General Pool ASG (Kubernetes-native worker nodes — general purpose)
 #   3c. Monitoring Pool  (Kubernetes-native worker nodes — observability taint)
 #   4.  AppIam           (Application-tier IAM grants)
@@ -860,7 +860,7 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Deploy Platform RDS Stack (2e) — PostgreSQL 16 + Secrets Manager + SSM
+  # Deploy Platform RDS Stack (2e) — PostgreSQL 18 + Secrets Manager + SSM
   #
   # Runs in parallel with ControlPlane, Observability, and API stacks.
   # Depends only on Base stack (SharedVpc subnets must exist).
