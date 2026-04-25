@@ -215,6 +215,7 @@ export class AmiRefreshConstruct extends Construct {
     });
 
     this.stateMachine = new sfn.StateMachine(this, 'StateMachine', {
+      stateMachineType: sfn.StateMachineType.STANDARD,
       stateMachineName: `${props.ssmPrefix.replace(/\//g, '-').replace(/^-/, '')}-ami-refresh`,
       definitionBody: sfn.DefinitionBody.fromChainable(definition),
       timeout: cdk.Duration.hours(2),
