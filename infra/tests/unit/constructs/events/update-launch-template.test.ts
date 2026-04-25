@@ -30,6 +30,11 @@ describe('update-launch-template', () => {
     expect(result.amiId).toBe('ami-0newimage123');
     expect(result.env).toBe('development');
     expect(result.role).toBe('workers');
+    expect(mockSsmSend).toHaveBeenCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({
+        Name: '/k8s/development/ami-refresh/workers/lt-ids',
+      })}),
+    );
   });
 
   it('creates a new LT version with the new AMI ID', async () => {
