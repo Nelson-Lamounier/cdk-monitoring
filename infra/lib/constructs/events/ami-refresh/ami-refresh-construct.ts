@@ -14,9 +14,11 @@ import { Construct } from 'constructs';
 
 export interface AmiRefreshProps {
   readonly ssmPrefix: string;
-  readonly workerLtIds: string[];
+  /** Concrete Launch Template names (not IDs) for all worker pools */
+  readonly workerLtNames: string[];
   readonly workerAsgNames: string[];
-  readonly controlPlaneLtId: string;
+  /** Concrete Launch Template name (not ID) for the control plane */
+  readonly controlPlaneLtName: string;
   readonly controlPlaneAsgName: string;
   readonly pollInterval?: cdk.Duration;
 }
@@ -31,17 +33,17 @@ export class AmiRefreshConstruct extends Construct {
     const poll = props.pollInterval ?? cdk.Duration.seconds(60);
 
     // SSM config parameters — read by Lambdas at runtime
-    new ssm.StringParameter(this, 'WorkerLtIds', {
-      parameterName: `${props.ssmPrefix}/ami-refresh/workers/lt-ids`,
-      stringValue: JSON.stringify(props.workerLtIds),
+    new ssm.StringParameter(this, 'WorkerLtNames', {
+      parameterName: `${props.ssmPrefix}/ami-refresh/workers/lt-names`,
+      stringValue: JSON.stringify(props.workerLtNames),
     });
     new ssm.StringParameter(this, 'WorkerAsgNames', {
       parameterName: `${props.ssmPrefix}/ami-refresh/workers/asg-names`,
       stringValue: JSON.stringify(props.workerAsgNames),
     });
-    new ssm.StringParameter(this, 'ControlPlaneLtId', {
-      parameterName: `${props.ssmPrefix}/ami-refresh/control-plane/lt-id`,
-      stringValue: props.controlPlaneLtId,
+    new ssm.StringParameter(this, 'ControlPlaneLtName', {
+      parameterName: `${props.ssmPrefix}/ami-refresh/control-plane/lt-name`,
+      stringValue: props.controlPlaneLtName,
     });
     new ssm.StringParameter(this, 'ControlPlaneAsgName', {
       parameterName: `${props.ssmPrefix}/ami-refresh/control-plane/asg-name`,
@@ -57,7 +59,11 @@ export class AmiRefreshConstruct extends Construct {
     });
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       sid: 'Ec2LaunchTemplate',
-      actions: ['ec2:CreateLaunchTemplateVersion', 'ec2:ModifyLaunchTemplate'],
+      actions: [
+        'ec2:CreateLaunchTemplateVersion',
+        'ec2:ModifyLaunchTemplate',
+        'ec2:DescribeLaunchTemplateVersions',
+      ],
       resources: [`arn:aws:ec2:${stack.region}:${stack.account}:launch-template/*`],
     }));
     lambdaRole.addToPolicy(new iam.PolicyStatement({

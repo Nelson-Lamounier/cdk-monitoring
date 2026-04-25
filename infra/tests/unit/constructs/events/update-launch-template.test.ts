@@ -18,7 +18,7 @@ describe('update-launch-template', () => {
   it('reads AMI ID from the paramName SSM parameter', async () => {
     // SSM call 1: GetParameter(paramName) → amiId
     mockSsmSend.mockResolvedValueOnce({ Parameter: { Value: 'ami-0newimage123' } });
-    // SSM call 2: GetParameter(lt-ids)
+    // SSM call 2: GetParameter(lt-names)
     mockSsmSend.mockResolvedValueOnce({ Parameter: { Value: JSON.stringify(['lt-abc123']) } });
     // EC2 call 1: CreateLaunchTemplateVersion
     mockEc2Send.mockResolvedValueOnce({ LaunchTemplateVersion: { VersionNumber: 5 } });
@@ -32,7 +32,7 @@ describe('update-launch-template', () => {
     expect(result.role).toBe('workers');
     expect(mockSsmSend).toHaveBeenCalledWith(
       expect.objectContaining({ input: expect.objectContaining({
-        Name: '/k8s/development/ami-refresh/workers/lt-ids',
+        Name: '/k8s/development/ami-refresh/workers/lt-names',
       })}),
     );
   });
@@ -100,7 +100,7 @@ describe('update-launch-template', () => {
     ]);
   });
 
-  it('reads control-plane/lt-id (not array) when role is control-plane', async () => {
+  it('reads control-plane/lt-name (not array) when role is control-plane', async () => {
     const cpEvent = { paramName: '/k8s/development/golden-ami/latest', role: 'control-plane' as const };
     mockSsmSend
       .mockResolvedValueOnce({ Parameter: { Value: 'ami-0newimage123' } })
@@ -113,7 +113,7 @@ describe('update-launch-template', () => {
 
     expect(mockSsmSend).toHaveBeenCalledWith(
       expect.objectContaining({ input: expect.objectContaining({
-        Name: '/k8s/development/ami-refresh/control-plane/lt-id',
+        Name: '/k8s/development/ami-refresh/control-plane/lt-name',
       })}),
     );
   });

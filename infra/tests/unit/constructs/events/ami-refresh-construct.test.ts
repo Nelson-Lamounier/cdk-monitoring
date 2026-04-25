@@ -11,9 +11,9 @@ function buildTemplate(): Template {
   });
   new AmiRefreshConstruct(stack, 'AmiRefresh', {
     ssmPrefix: '/k8s/development',
-    workerLtIds: ['lt-worker-111', 'lt-worker-222'],
+    workerLtNames: ['k8s-dev-general-lt', 'k8s-dev-monitoring-lt'],
     workerAsgNames: ['k8s-dev-general-asg', 'k8s-dev-monitoring-asg'],
-    controlPlaneLtId: 'lt-cp-999',
+    controlPlaneLtName: 'k8s-dev-control-plane-lt',
     controlPlaneAsgName: 'k8s-dev-control-plane-asg',
   });
   return Template.fromStack(stack);
@@ -47,10 +47,10 @@ describe('AmiRefreshConstruct', () => {
     });
   });
 
-  it('writes worker lt-ids SSM parameter', () => {
+  it('writes worker lt-names SSM parameter', () => {
     template.hasResourceProperties('AWS::SSM::Parameter', {
-      Name: '/k8s/development/ami-refresh/workers/lt-ids',
-      Value: JSON.stringify(['lt-worker-111', 'lt-worker-222']),
+      Name: '/k8s/development/ami-refresh/workers/lt-names',
+      Value: JSON.stringify(['k8s-dev-general-lt', 'k8s-dev-monitoring-lt']),
     });
   });
 
@@ -61,10 +61,10 @@ describe('AmiRefreshConstruct', () => {
     });
   });
 
-  it('writes control-plane lt-id SSM parameter', () => {
+  it('writes control-plane lt-name SSM parameter', () => {
     template.hasResourceProperties('AWS::SSM::Parameter', {
-      Name: '/k8s/development/ami-refresh/control-plane/lt-id',
-      Value: 'lt-cp-999',
+      Name: '/k8s/development/ami-refresh/control-plane/lt-name',
+      Value: 'k8s-dev-control-plane-lt',
     });
   });
 

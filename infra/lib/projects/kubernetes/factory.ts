@@ -566,18 +566,25 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // control plane ASG (phase 2) — no cdk deploy required after bake.
         // Scoped to controlPlaneStack so resources are co-located with compute.
         // =================================================================
+        // AmiRefreshConstruct is scoped to controlPlaneStack but needs Launch Template
+        // identifiers from the worker stacks, which already depend on controlPlaneStack
+        // via addDependency(). Passing CDK tokens (launchTemplateId) across this boundary
+        // would force CloudFormation Fn::ImportValue cross-stack exports and create a cycle.
+        //
+        // Fix: use launchTemplateName (a concrete string at synth time — `${poolId}-lt`)
+        // rather than launchTemplateId (a CloudFormation Ref / CDK token assigned at deploy).
         new AmiRefreshConstruct(controlPlaneStack, 'AmiRefresh', {
             ssmPrefix,
-            workerLtIds: [
-                generalPoolStack.launchTemplateId,
-                monitoringPoolStack.launchTemplateId,
+            workerLtNames: [
+                generalPoolStack.launchTemplateName,
+                monitoringPoolStack.launchTemplateName,
             ],
             workerAsgNames: [
-                generalPoolStack.autoScalingGroup.autoScalingGroupName,
-                monitoringPoolStack.autoScalingGroup.autoScalingGroupName,
+                generalPoolStack.concreteAsgName,
+                monitoringPoolStack.concreteAsgName,
             ],
-            controlPlaneLtId: controlPlaneStack.launchTemplateId,
-            controlPlaneAsgName: controlPlaneStack.autoScalingGroup.autoScalingGroupName,
+            controlPlaneLtName: controlPlaneStack.launchTemplateName,
+            controlPlaneAsgName: controlPlaneStack.concreteAsgName,
         });
 
         cdk.Annotations.of(scope).addInfo(
