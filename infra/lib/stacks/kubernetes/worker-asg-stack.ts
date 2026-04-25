@@ -184,6 +184,9 @@ export class KubernetesWorkerAsgStack extends cdk.Stack {
     /** The Auto Scaling Group */
     public readonly autoScalingGroup: autoscaling.AutoScalingGroup;
 
+    /** The Launch Template ID */
+    public readonly launchTemplateId: string;
+
     /** The IAM instance role */
     public readonly instanceRole: iam.IRole;
 
@@ -757,6 +760,7 @@ echo "SSM Automation will be triggered by the CI pipeline"
         // Expose public properties
         // =====================================================================
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
+        this.launchTemplateId = launchTemplateConstruct.launchTemplate.launchTemplateId!;
         this.instanceRole = launchTemplateConstruct.instanceRole;
         this.logGroup = launchTemplateConstruct.logGroup;
 

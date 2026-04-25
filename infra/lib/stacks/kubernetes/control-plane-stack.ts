@@ -118,6 +118,9 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
     /** The Auto Scaling Group */
     public readonly autoScalingGroup: autoscaling.AutoScalingGroup;
 
+    /** The Launch Template ID */
+    public readonly launchTemplateId: string;
+
     /** The IAM role for the Kubernetes nodes */
     public readonly instanceRole: iam.IRole;
 
@@ -342,6 +345,7 @@ echo "SSM Automation will be triggered by the CI pipeline"
 `);
 
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
+        this.launchTemplateId = launchTemplateConstruct.launchTemplate.launchTemplateId!;
         this.instanceRole = launchTemplateConstruct.instanceRole;
         this.logGroup = launchTemplateConstruct.logGroup;
 
