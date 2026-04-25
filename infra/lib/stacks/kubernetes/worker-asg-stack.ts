@@ -184,8 +184,22 @@ export class KubernetesWorkerAsgStack extends cdk.Stack {
     /** The Auto Scaling Group */
     public readonly autoScalingGroup: autoscaling.AutoScalingGroup;
 
-    /** The Launch Template ID */
-    public readonly launchTemplateId: string;
+    /**
+     * The Launch Template name (concrete string — not a CDK token).
+     * Using the name instead of the ID avoids a cross-stack CloudFormation
+     * Fn::ImportValue, which would create a circular dependency because
+     * worker stacks already depend on controlPlaneStack via addDependency().
+     */
+    public readonly launchTemplateName: string;
+
+    /**
+     * The ASG name (concrete string — not a CDK token).
+     * CDK's autoScalingGroup.autoScalingGroupName resolves as this.physicalName,
+     * a CloudFormation Ref token even when an explicit name is set. Passing it
+     * across stack boundaries forces Fn::ImportValue cross-stack exports, causing
+     * a dependency cycle with addDependency(controlPlaneStack).
+     */
+    public readonly concreteAsgName: string;
 
     /** The IAM instance role */
     public readonly instanceRole: iam.IRole;
@@ -760,7 +774,13 @@ echo "SSM Automation will be triggered by the CI pipeline"
         // Expose public properties
         // =====================================================================
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
-        this.launchTemplateId = launchTemplateConstruct.launchTemplate.launchTemplateId!;
+        // Use concreteTemplateName / concreteAsgName (synth-time strings) rather than
+        // launchTemplateId / autoScalingGroupName (CDK tokens / CloudFormation Refs only
+        // known at deploy time). Passing tokens across stack boundaries forces CDK to emit
+        // Fn::ImportValue cross-stack exports — creating a cycle with addDependency(controlPlaneStack).
+        // The EC2 API accepts LaunchTemplateName wherever LaunchTemplateId is accepted.
+        this.launchTemplateName = launchTemplateConstruct.concreteTemplateName;
+        this.concreteAsgName = asgConstruct.concreteAsgName;
         this.instanceRole = launchTemplateConstruct.instanceRole;
         this.logGroup = launchTemplateConstruct.logGroup;
 
