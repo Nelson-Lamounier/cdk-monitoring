@@ -93,6 +93,7 @@ export class PlatformRdsStack extends cdk.Stack {
             vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
             securityGroups: [dbSg],
             publiclyAccessible: false,
+            allowMajorVersionUpgrade: true,
             storageEncrypted: true,
             multiAz: false,
             allocatedStorage: 20,
