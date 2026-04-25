@@ -70,7 +70,7 @@ export class AmiRefreshConstruct extends Construct {
     }));
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       sid: 'AsgRefresh',
-      actions: ['autoscaling:StartInstanceRefresh', 'autoscaling:DescribeInstanceRefreshes'],
+      actions: ['autoscaling:StartInstanceRefresh', 'autoscaling:DescribeInstanceRefreshes', 'autoscaling:UpdateAutoScalingGroup'],
       resources: ['*'],
     }));
     lambdaRole.addToPolicy(new iam.PolicyStatement({

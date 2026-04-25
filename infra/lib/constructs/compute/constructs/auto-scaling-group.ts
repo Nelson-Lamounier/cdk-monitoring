@@ -319,14 +319,9 @@ export class AutoScalingGroupConstruct extends Construct {
         // which becomes a CloudFormation Ref at synth even when an explicit name is set.
         // Build the string directly to avoid cross-stack Fn::ImportValue exports.
         this.concreteAsgName = `${namePrefix}-asg`;
-
-        // CDK escape hatch: override the pinned LT version CDK writes at synth time.
-        // The L2 AutoScalingGroup always resolves the LT version to a specific number,
-        // which means Lambda-created versions (from the AMI refresh workflow) are never
-        // picked up without a CDK redeploy. Setting $Latest here ensures new instances
-        // always launch with the most recent LT version — no CDK redeploy needed.
-        const cfnAsg = this.autoScalingGroup.node.defaultChild as autoscaling.CfnAutoScalingGroup;
-        cfnAsg.addPropertyOverride('LaunchTemplate.Version', '$Latest');
+        // Note: CloudFormation rejects $Latest/$Default as LT version in ASG resources.
+        // The AMI refresh Lambda updates the ASG version via UpdateAutoScalingGroup API
+        // (which does allow $Default), so no override is needed here.
 
         // Configure scaling policy (unless disabled)
         if (!props.disableScalingPolicy) {

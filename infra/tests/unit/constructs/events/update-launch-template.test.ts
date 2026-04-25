@@ -1,120 +1,135 @@
+import type { AutoScalingClient } from '@aws-sdk/client-auto-scaling';
 import type { EC2Client } from '@aws-sdk/client-ec2';
 import type { SSMClient } from '@aws-sdk/client-ssm';
+
 import { handler } from '../../../../lib/constructs/events/ami-refresh/handlers/update-launch-template';
 
 const mockEc2Send = jest.fn();
 const mockSsmSend = jest.fn();
+const mockAsgSend = jest.fn();
 const mockEc2 = { send: mockEc2Send } as unknown as EC2Client;
 const mockSsm = { send: mockSsmSend } as unknown as SSMClient;
+const mockAsg = { send: mockAsgSend } as unknown as AutoScalingClient;
 
 beforeEach(() => {
-  mockEc2Send.mockReset();
-  mockSsmSend.mockReset();
+    mockEc2Send.mockReset();
+    mockSsmSend.mockReset();
+    mockAsgSend.mockReset();
 });
 
-describe('update-launch-template', () => {
-  const event = { paramName: '/k8s/development/golden-ami/latest', role: 'workers' as const };
-
-  it('reads AMI ID from the paramName SSM parameter', async () => {
-    // SSM call 1: GetParameter(paramName) → amiId
+// Helper: set up mocks for a workers event with N LT/ASG pairs
+function setupWorkerMocks(ltNames: string[], asgNames: string[], versions: number[]): void {
+    // 1. amiId lookup
     mockSsmSend.mockResolvedValueOnce({ Parameter: { Value: 'ami-0newimage123' } });
-    // SSM call 2: GetParameter(lt-names)
-    mockSsmSend.mockResolvedValueOnce({ Parameter: { Value: JSON.stringify(['lt-abc123']) } });
-    // EC2 call 1: CreateLaunchTemplateVersion
-    mockEc2Send.mockResolvedValueOnce({ LaunchTemplateVersion: { VersionNumber: 5 } });
-    // EC2 call 2: ModifyLaunchTemplate
-    mockEc2Send.mockResolvedValueOnce({});
+    // 2+3. lt-names + asg-names (fetched in parallel via Promise.all)
+    mockSsmSend.mockResolvedValueOnce({ Parameter: { Value: JSON.stringify(ltNames) } });
+    mockSsmSend.mockResolvedValueOnce({ Parameter: { Value: JSON.stringify(asgNames) } });
+    // Per LT: CreateVersion → ModifyLaunchTemplate (EC2), UpdateAutoScalingGroup (ASG)
+    versions.forEach(v => {
+        mockEc2Send.mockResolvedValueOnce({ LaunchTemplateVersion: { VersionNumber: v } });
+        mockEc2Send.mockResolvedValueOnce({});
+        mockAsgSend.mockResolvedValueOnce({});
+    });
+}
 
-    const result = await handler(event, mockEc2, mockSsm);
+describe('update-launch-template', () => {
+    const event = { paramName: '/k8s/development/golden-ami/latest', role: 'workers' as const };
 
-    expect(result.amiId).toBe('ami-0newimage123');
-    expect(result.env).toBe('development');
-    expect(result.role).toBe('workers');
-    expect(mockSsmSend).toHaveBeenCalledWith(
-      expect.objectContaining({ input: expect.objectContaining({
-        Name: '/k8s/development/ami-refresh/workers/lt-names',
-      })}),
-    );
-  });
+    it('reads AMI ID from the paramName SSM parameter', async () => {
+        setupWorkerMocks(['lt-abc123'], ['asg-abc123'], [5]);
 
-  it('creates a new LT version with the new AMI ID', async () => {
-    mockSsmSend
-      .mockResolvedValueOnce({ Parameter: { Value: 'ami-0newimage123' } })
-      .mockResolvedValueOnce({ Parameter: { Value: JSON.stringify(['lt-abc123']) } });
-    mockEc2Send
-      .mockResolvedValueOnce({ LaunchTemplateVersion: { VersionNumber: 7 } })
-      .mockResolvedValueOnce({});
+        const result = await handler(event, mockEc2, mockSsm, mockAsg);
 
-    await handler(event, mockEc2, mockSsm);
+        expect(result.amiId).toBe('ami-0newimage123');
+        expect(result.env).toBe('development');
+        expect(result.role).toBe('workers');
+        expect(mockSsmSend).toHaveBeenCalledWith(
+            expect.objectContaining({ input: expect.objectContaining({
+                Name: '/k8s/development/ami-refresh/workers/lt-names',
+            })}),
+        );
+    });
 
-    expect(mockEc2Send).toHaveBeenCalledWith(
-      expect.objectContaining({ input: expect.objectContaining({
-        LaunchTemplateName: 'lt-abc123',
-        SourceVersion: '$Latest',
-        LaunchTemplateData: { ImageId: 'ami-0newimage123' },
-      })}),
-    );
-  });
+    it('creates a new LT version with the new AMI ID', async () => {
+        setupWorkerMocks(['lt-abc123'], ['asg-abc123'], [7]);
 
-  it('sets the new version as the LT default', async () => {
-    mockSsmSend
-      .mockResolvedValueOnce({ Parameter: { Value: 'ami-0newimage123' } })
-      .mockResolvedValueOnce({ Parameter: { Value: JSON.stringify(['lt-abc123']) } });
-    mockEc2Send
-      .mockResolvedValueOnce({ LaunchTemplateVersion: { VersionNumber: 7 } })
-      .mockResolvedValueOnce({});
+        await handler(event, mockEc2, mockSsm, mockAsg);
 
-    await handler(event, mockEc2, mockSsm);
+        expect(mockEc2Send).toHaveBeenCalledWith(
+            expect.objectContaining({ input: expect.objectContaining({
+                LaunchTemplateName: 'lt-abc123',
+                SourceVersion: '$Latest',
+                LaunchTemplateData: { ImageId: 'ami-0newimage123' },
+            })}),
+        );
+    });
 
-    expect(mockEc2Send).toHaveBeenCalledWith(
-      expect.objectContaining({ input: expect.objectContaining({
-        LaunchTemplateName: 'lt-abc123',
-        DefaultVersion: '7',
-      })}),
-    );
-  });
+    it('sets the new version as the LT default', async () => {
+        setupWorkerMocks(['lt-abc123'], ['asg-abc123'], [7]);
 
-  it('updates all LTs in the worker pool', async () => {
-    const ltIds = ['lt-111', 'lt-222'];
-    mockSsmSend
-      .mockResolvedValueOnce({ Parameter: { Value: 'ami-0newimage123' } })
-      .mockResolvedValueOnce({ Parameter: { Value: JSON.stringify(ltIds) } });
-    mockEc2Send
-      .mockResolvedValueOnce({ LaunchTemplateVersion: { VersionNumber: 3 } })
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ LaunchTemplateVersion: { VersionNumber: 3 } })
-      .mockResolvedValueOnce({});
+        await handler(event, mockEc2, mockSsm, mockAsg);
 
-    await handler(event, mockEc2, mockSsm);
+        expect(mockEc2Send).toHaveBeenCalledWith(
+            expect.objectContaining({ input: expect.objectContaining({
+                LaunchTemplateName: 'lt-abc123',
+                DefaultVersion: '7',
+            })}),
+        );
+    });
 
-    const createCalls = mockEc2Send.mock.calls.filter(([cmd]) =>
-      cmd.constructor?.name === 'CreateLaunchTemplateVersionCommand',
-    );
-    expect(createCalls).toHaveLength(2);
-    const callOrder = mockEc2Send.mock.calls.map(([cmd]) => cmd.constructor?.name);
-    expect(callOrder).toEqual([
-      'CreateLaunchTemplateVersionCommand',
-      'ModifyLaunchTemplateCommand',
-      'CreateLaunchTemplateVersionCommand',
-      'ModifyLaunchTemplateCommand',
-    ]);
-  });
+    it('updates ASG to $Default after setting new LT default', async () => {
+        setupWorkerMocks(['lt-abc123'], ['asg-abc123'], [7]);
 
-  it('reads control-plane/lt-name (not array) when role is control-plane', async () => {
-    const cpEvent = { paramName: '/k8s/development/golden-ami/latest', role: 'control-plane' as const };
-    mockSsmSend
-      .mockResolvedValueOnce({ Parameter: { Value: 'ami-0newimage123' } })
-      .mockResolvedValueOnce({ Parameter: { Value: 'lt-cp-999' } });
-    mockEc2Send
-      .mockResolvedValueOnce({ LaunchTemplateVersion: { VersionNumber: 2 } })
-      .mockResolvedValueOnce({});
+        await handler(event, mockEc2, mockSsm, mockAsg);
 
-    await handler(cpEvent, mockEc2, mockSsm);
+        expect(mockAsgSend).toHaveBeenCalledWith(
+            expect.objectContaining({ input: expect.objectContaining({
+                AutoScalingGroupName: 'asg-abc123',
+                LaunchTemplate: { LaunchTemplateName: 'lt-abc123', Version: '$Default' },
+            })}),
+        );
+    });
 
-    expect(mockSsmSend).toHaveBeenCalledWith(
-      expect.objectContaining({ input: expect.objectContaining({
-        Name: '/k8s/development/ami-refresh/control-plane/lt-name',
-      })}),
-    );
-  });
+    it('updates all LTs and ASGs in the worker pool', async () => {
+        setupWorkerMocks(['lt-111', 'lt-222'], ['asg-111', 'asg-222'], [3, 3]);
+
+        await handler(event, mockEc2, mockSsm, mockAsg);
+
+        const createCalls = mockEc2Send.mock.calls.filter(([cmd]) =>
+            cmd.constructor?.name === 'CreateLaunchTemplateVersionCommand',
+        );
+        expect(createCalls).toHaveLength(2);
+        expect(mockAsgSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('reads control-plane/lt-name and asg-name when role is control-plane', async () => {
+        const cpEvent = { paramName: '/k8s/development/golden-ami/latest', role: 'control-plane' as const };
+        mockSsmSend
+            .mockResolvedValueOnce({ Parameter: { Value: 'ami-0newimage123' } })
+            .mockResolvedValueOnce({ Parameter: { Value: 'lt-cp-999' } })
+            .mockResolvedValueOnce({ Parameter: { Value: 'asg-cp-999' } });
+        mockEc2Send
+            .mockResolvedValueOnce({ LaunchTemplateVersion: { VersionNumber: 2 } })
+            .mockResolvedValueOnce({});
+        mockAsgSend.mockResolvedValueOnce({});
+
+        await handler(cpEvent, mockEc2, mockSsm, mockAsg);
+
+        expect(mockSsmSend).toHaveBeenCalledWith(
+            expect.objectContaining({ input: expect.objectContaining({
+                Name: '/k8s/development/ami-refresh/control-plane/lt-name',
+            })}),
+        );
+        expect(mockSsmSend).toHaveBeenCalledWith(
+            expect.objectContaining({ input: expect.objectContaining({
+                Name: '/k8s/development/ami-refresh/control-plane/asg-name',
+            })}),
+        );
+        expect(mockAsgSend).toHaveBeenCalledWith(
+            expect.objectContaining({ input: expect.objectContaining({
+                AutoScalingGroupName: 'asg-cp-999',
+                LaunchTemplate: { LaunchTemplateName: 'lt-cp-999', Version: '$Default' },
+            })}),
+        );
+    });
 });
