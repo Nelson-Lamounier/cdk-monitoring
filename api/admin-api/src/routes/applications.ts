@@ -329,6 +329,11 @@ export function createApplicationsRouter(config: AdminApiConfig): Hono {
     );
 
     if (!Items || Items.length === 0) {
+      try {
+        await pgDeleteApplication(getPool(config), slug);
+      } catch (pgErr) {
+        console.error('[applications] PG shadow delete failed (early exit)', pgErr);
+      }
       return ctx.json({ deleted: true, slug });
     }
 

@@ -350,13 +350,15 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
 
     try {
       const existingPg = await pgGetResume(getPool(config), id);
-      if (existingPg) {
-        await upsertResume(getPool(config), {
-          ...existingPg,
-          label:       body.label?.trim() ?? existingPg.label,
-          contentJson: body.data ?? existingPg.contentJson,
-        });
-      }
+      await upsertResume(getPool(config), {
+        id,
+        userId:           existingPg?.userId           ?? null,
+        jobApplicationId: existingPg?.jobApplicationId ?? null,
+        label:            body.label?.trim()           ?? existingPg?.label ?? '',
+        isActive:         existingPg?.isActive         ?? false,
+        contentJson:      body.data                    ?? existingPg?.contentJson ?? {},
+        renderedHtml:     existingPg?.renderedHtml      ?? null,
+      });
     } catch (pgErr) {
       console.error('[resumes] PG shadow update failed', pgErr);
     }
