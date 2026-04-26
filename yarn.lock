@@ -4734,9 +4734,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@nelsonlamounier/cdk-deploy-scripts@npm:^1.0.2":
-  version: 1.0.2
-  resolution: "@nelsonlamounier/cdk-deploy-scripts@npm:1.0.2"
+"@nelsonlamounier/cdk-deploy-scripts@npm:^1.0.3":
+  version: 1.0.3
+  resolution: "@nelsonlamounier/cdk-deploy-scripts@npm:1.0.3"
   dependencies:
     "@aws-sdk/client-auto-scaling": "npm:^3.0.0"
     "@aws-sdk/client-cloudformation": "npm:^3.0.0"
@@ -4763,7 +4763,7 @@ __metadata:
     cdk-preflight: bin/cdk-preflight.js
     cdk-security-scan: bin/cdk-security-scan.js
     cdk-synthesize: bin/cdk-synthesize.js
-  checksum: 10c0/e7d7297f97280810743f5d046379acc4d7c8d26a9332000ab5f2e0d2c4841d65fb3b42fd334a4d9176bb10027decf5a9a23d7f7d952581c4a814c6a9dc04a2a2
+  checksum: 10c0/1f41818e953eac15aece74df3ab848636b763a0a22e85380add6adcb084dd3733907adbfea5bccab46e760da9707f8120a5b00861b682846ff229f9a57ef67f8
   languageName: node
   linkType: hard
 
@@ -7215,7 +7215,7 @@ __metadata:
     "@aws-sdk/credential-providers": "npm:^3.1001.0"
     "@aws-sdk/lib-dynamodb": "npm:^3.1001.0"
     "@aws-sdk/types": "npm:^3.973.4"
-    "@nelsonlamounier/cdk-deploy-scripts": "npm:^1.0.2"
+    "@nelsonlamounier/cdk-deploy-scripts": "npm:^1.0.3"
     "@types/mime-types": "npm:^3.0.1"
     esbuild: "npm:^0.27.3"
     mime-types: "npm:^3.0.2"
@@ -7268,7 +7268,7 @@ __metadata:
     "@cdklabs/generative-ai-cdk-constructs": "npm:^0.1.314"
     "@eslint/js": "npm:^9.0.0"
     "@jest/test-sequencer": "npm:^29.7.0"
-    "@nelsonlamounier/cdk-deploy-scripts": "npm:^1.0.2"
+    "@nelsonlamounier/cdk-deploy-scripts": "npm:^1.0.3"
     "@smithy/util-waiter": "npm:^4.2.8"
     "@types/aws-lambda": "npm:^8.10.159"
     "@types/glob": "npm:^7"
