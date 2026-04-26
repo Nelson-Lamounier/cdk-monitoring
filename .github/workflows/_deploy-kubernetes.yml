@@ -594,7 +594,7 @@ jobs:
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --query 'StackResourceSummaries[?ResourceType==`AWS::Lambda::Function` && contains(LogicalResourceId, `AmiRefresh`)].PhysicalResourceId' \
-            --output json)
+            --output json | jq -c '.')
 
           COUNT=$(echo "$LAMBDAS" | jq 'length')
           if [ "$COUNT" -lt 3 ]; then
