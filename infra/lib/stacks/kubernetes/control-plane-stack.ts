@@ -189,13 +189,11 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             userData,
             namePrefix,
             logGroupKmsKey,
-            // Resolve AMI at synth time (not deploy time) so CloudFormation detects
-            // a template diff whenever the Golden AMI rotates and creates a new LT
-            // version. fromSsmParameter() used UsePreviousValue=true and silently
-            // kept the old AMI even after a new bake updated the SSM path.
-            machineImage: ec2.MachineImage.genericLinux({
-                [this.region]: ssm.StringParameter.valueFromLookup(this, configs.image.amiSsmPath),
-            }),
+            // Resolve AMI via CloudFormation SSM parameter type at deploy time.
+            // The AMI refresh Step Function owns subsequent rotations by calling
+            // CreateLaunchTemplateVersion directly — CDK does not need to bake
+            // the AMI ID at synth time, which would require credentials in CI.
+            machineImage: ec2.MachineImage.fromSsmParameter(configs.image.amiSsmPath),
             // Required: Kubernetes pod overlay networking (Calico) uses pod IPs
             // that don't match ENI IPs — AWS drops this traffic unless disabled.
             disableSourceDestCheck: true,

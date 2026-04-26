@@ -151,20 +151,6 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Clear stale Golden AMI context (force fresh SSM lookup at synth)
-        run: |
-          node -e "
-            const fs = require('fs');
-            const path = 'infra/cdk.context.json';
-            const ctx = JSON.parse(fs.readFileSync(path, 'utf8'));
-            const before = Object.keys(ctx).length;
-            const cleaned = Object.fromEntries(
-              Object.entries(ctx).filter(([k]) => !k.includes('golden-ami'))
-            );
-            fs.writeFileSync(path, JSON.stringify(cleaned, null, 2) + '\n');
-            console.log('Cleared', before - Object.keys(cleaned).length, 'stale AMI context entries');
-          "
-
       - name: Synthesize & Determine Stack Names
         id: synth
         env:
