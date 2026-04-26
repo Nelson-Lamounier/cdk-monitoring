@@ -550,6 +550,127 @@ jobs:
         run: just ci-integration-test kubernetes/control-plane-stack $CDK_ENV --verbose
 
   # ===========================================================================
+  # Smoke Test AMI Refresh Lambdas (3b-gate)
+  #
+  # Invokes each of the three AMI refresh Lambda functions (UpdateLaunchTemplate,
+  # StartInstanceRefresh, CheckRefreshStatus) with a canary payload immediately
+  # after the ControlPlane stack is deployed. The test does NOT require real SSM
+  # data — it only distinguishes "crashes before SDK init" (TypeError = bundling
+  # regression) from "reaches real business logic" (SSM miss = Lambda is alive).
+  #
+  # Gates both worker pool deployments: if the Lambdas are broken, rolling
+  # worker instances after an AMI bake will silently fail.
+  # ===========================================================================
+  smoke-test-ami-refresh:
+    name: Smoke Test AMI Refresh Lambdas
+    needs: [setup, deploy-controlplane]
+    if: always() && needs.deploy-controlplane.result == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Discover AMI Refresh Lambda Functions
+        id: discover
+        shell: bash
+        env:
+          STACK_NAME: ${{ needs.setup.outputs.controlplane-stack }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: |
+          set -euo pipefail
+
+          LAMBDAS=$(aws cloudformation list-stack-resources \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'StackResourceSummaries[?ResourceType==`AWS::Lambda::Function` && contains(LogicalResourceId, `AmiRefresh`)].PhysicalResourceId' \
+            --output json)
+
+          COUNT=$(echo "$LAMBDAS" | jq 'length')
+          if [ "$COUNT" -lt 3 ]; then
+            echo "::error::Expected 3 AmiRefresh Lambdas in $STACK_NAME, found $COUNT"
+            aws cloudformation list-stack-resources \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --query 'StackResourceSummaries[?ResourceType==`AWS::Lambda::Function`].[LogicalResourceId,PhysicalResourceId]' \
+              --output table
+            exit 1
+          fi
+
+          echo "Discovered $COUNT AMI refresh Lambda functions:"
+          echo "$LAMBDAS" | jq -r '.[]' | sed 's/^/  /'
+          echo "lambda_names=$LAMBDAS" >> "$GITHUB_OUTPUT"
+
+      - name: Invoke AMI Refresh Lambdas (canary)
+        shell: bash
+        env:
+          LAMBDA_NAMES: ${{ steps.discover.outputs.lambda_names }}
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: |
+          set -euo pipefail
+
+          PAYLOAD='{"paramName":"/k8s/'"$CDK_ENV"'/golden-ami/latest","role":"workers"}'
+          FAILED=0
+
+          while IFS= read -r FN; do
+            echo ""
+            echo "── Invoking: $FN"
+
+            aws lambda invoke \
+              --function-name "$FN" \
+              --payload "$PAYLOAD" \
+              --cli-binary-format raw-in-base64-out \
+              --region "$AWS_REGION" \
+              /tmp/response.json \
+              --output json > /tmp/invoke_result.json
+
+            STATUS=$(jq -r '.StatusCode' /tmp/invoke_result.json)
+            FUNCTION_ERROR=$(jq -r '.FunctionError // empty' /tmp/invoke_result.json)
+
+            if [ "$STATUS" != "200" ]; then
+              echo "::error::$FN returned HTTP $STATUS — Lambda service error"
+              FAILED=1
+              continue
+            fi
+
+            if [ -n "$FUNCTION_ERROR" ]; then
+              ERROR_TYPE=$(jq -r '.errorType // ""' /tmp/response.json)
+              ERROR_MSG=$(jq -r '.errorMessage // ""' /tmp/response.json | head -c 200)
+
+              if echo "$ERROR_TYPE" | grep -qE "^(TypeError|ReferenceError|SyntaxError)$"; then
+                echo "::error::$FN crashed with $ERROR_TYPE: $ERROR_MSG"
+                echo "::error::Handler fails before any business logic — likely a bundling or client-instantiation regression."
+                FAILED=1
+              else
+                echo "  ⚠ Business error (Lambda is alive): $ERROR_TYPE — $ERROR_MSG"
+                echo "  Expected when SSM parameters are not yet populated."
+              fi
+            else
+              echo "  ✓ $FN succeeded"
+            fi
+          done < <(echo "$LAMBDA_NAMES" | jq -r '.[]')
+
+          if [ "$FAILED" != "0" ]; then
+            echo ""
+            echo "One or more AMI refresh Lambdas failed the canary check."
+            echo "Check CloudWatch logs: aws logs tail /aws/lambda/<fn-name> --since 10m --region $AWS_REGION"
+            exit 1
+          fi
+
+          echo ""
+          echo "All AMI refresh Lambdas passed the canary check."
+
   # ===========================================================================
   # Deploy General Pool ASG Stack (3b) — General-Purpose ASG Pool
   #
@@ -558,8 +679,12 @@ jobs:
   # ===========================================================================
   deploy-general-pool:
     name: Deploy General Pool ASG
-    needs: [setup, deploy-controlplane, verify-controlplane-stack]
-    if: always() && needs.deploy-controlplane.result == 'success' && needs.verify-controlplane-stack.result == 'success'
+    needs: [setup, deploy-controlplane, verify-controlplane-stack, smoke-test-ami-refresh]
+    if: >-
+      always()
+      && needs.deploy-controlplane.result == 'success'
+      && needs.verify-controlplane-stack.result == 'success'
+      && needs.smoke-test-ami-refresh.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.general-pool-stack }}
@@ -619,8 +744,12 @@ jobs:
   # ===========================================================================
   deploy-monitoring-pool:
     name: Deploy Monitoring Pool ASG
-    needs: [setup, deploy-controlplane, verify-controlplane-stack]
-    if: always() && needs.deploy-controlplane.result == 'success' && needs.verify-controlplane-stack.result == 'success'
+    needs: [setup, deploy-controlplane, verify-controlplane-stack, smoke-test-ami-refresh]
+    if: >-
+      always()
+      && needs.deploy-controlplane.result == 'success'
+      && needs.verify-controlplane-stack.result == 'success'
+      && needs.smoke-test-ami-refresh.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.monitoring-pool-stack }}
@@ -901,6 +1030,7 @@ jobs:
         setup,
         verify-bff-ecr,
         deploy-controlplane,
+        smoke-test-ami-refresh,
         deploy-general-pool,
         deploy-monitoring-pool,
         deploy-api,
@@ -918,6 +1048,7 @@ jobs:
       && (
         needs.verify-bff-ecr.result == 'failure'
         || needs.deploy-controlplane.result == 'failure'
+        || needs.smoke-test-ami-refresh.result == 'failure'
         || needs.deploy-general-pool.result == 'failure'
         || needs.deploy-monitoring-pool.result == 'failure'
         || needs.deploy-api.result == 'failure'
@@ -979,6 +1110,7 @@ jobs:
       - verify-bff-ecr
       - deploy-data
       - deploy-controlplane
+      - smoke-test-ami-refresh
       - deploy-general-pool
       - deploy-monitoring-pool
       - deploy-api
@@ -1049,6 +1181,7 @@ jobs:
         env:
           DEPLOY_DATA_RESULT: ${{ needs.deploy-data.result }}
           DEPLOY_CONTROLPLANE_RESULT: ${{ needs.deploy-controlplane.result }}
+          SMOKE_TEST_AMI_REFRESH_RESULT: ${{ needs.smoke-test-ami-refresh.result || 'skipped' }}
           DEPLOY_GENERAL_POOL_RESULT: ${{ needs.deploy-general-pool.result || 'skipped' }}
 
           DEPLOY_MON_POOL_RESULT: ${{ needs.deploy-monitoring-pool.result || 'skipped' }}
