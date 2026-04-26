@@ -4,6 +4,9 @@ import {
 } from '@aws-sdk/client-auto-scaling';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 
+const asg = new AutoScalingClient({});
+const ssm = new SSMClient({});
+
 export interface StartInstanceRefreshEvent {
   paramName: string;
   role: 'workers' | 'control-plane';
@@ -17,17 +20,15 @@ export interface StartInstanceRefreshResult {
 
 export async function handler(
   event: StartInstanceRefreshEvent,
-  asgClient: AutoScalingClient = new AutoScalingClient({}),
-  ssmClient: SSMClient = new SSMClient({}),
 ): Promise<StartInstanceRefreshResult> {
   const env = event.paramName.split('/')[2];
   if (!env) throw new Error(`Cannot extract env from paramName: ${event.paramName}`);
 
-  const asgNames = await getAsgNames(env, event.role, ssmClient);
+  const asgNames = await getAsgNames(env, event.role);
 
   const refreshIds: Array<{ asgName: string; refreshId: string }> = [];
   for (const asgName of asgNames) {
-    const resp = await asgClient.send(new StartInstanceRefreshCommand({
+    const resp = await asg.send(new StartInstanceRefreshCommand({
       AutoScalingGroupName: asgName,
       Preferences: { MinHealthyPercentage: 0, InstanceWarmup: 60 },
     }));
@@ -39,9 +40,9 @@ export async function handler(
   return { role: event.role, env, refreshIds };
 }
 
-async function getAsgNames(env: string, role: string, ssmClient: SSMClient): Promise<string[]> {
+async function getAsgNames(env: string, role: string): Promise<string[]> {
   if (role === 'workers') {
-    const p = await ssmClient.send(
+    const p = await ssm.send(
       new GetParameterCommand({ Name: `/k8s/${env}/ami-refresh/workers/asg-names` }),
     );
     const val = p.Parameter?.Value;
@@ -52,7 +53,7 @@ async function getAsgNames(env: string, role: string, ssmClient: SSMClient): Pro
     }
     return parsed as string[];
   }
-  const p = await ssmClient.send(
+  const p = await ssm.send(
     new GetParameterCommand({ Name: `/k8s/${env}/ami-refresh/control-plane/asg-name` }),
   );
   const val = p.Parameter?.Value;

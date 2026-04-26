@@ -4,6 +4,9 @@ import {
 } from '@aws-sdk/client-auto-scaling';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 
+const asg = new AutoScalingClient({});
+const ssm = new SSMClient({});
+
 export interface CheckRefreshStatusEvent {
   paramName: string;
   role: 'workers' | 'control-plane';
@@ -20,13 +23,11 @@ const MAX_WAIT_MINUTES = Number(process.env.MAX_WAIT_MINUTES ?? '40');
 
 export async function handler(
   event: CheckRefreshStatusEvent,
-  asgClient: AutoScalingClient = new AutoScalingClient({}),
-  ssmClient: SSMClient = new SSMClient({}),
 ): Promise<CheckRefreshStatusResult> {
   const env = event.paramName.split('/')[2];
   if (!env) throw new Error(`Cannot extract env from paramName: ${event.paramName}`);
-  const asgNames = await getAsgNames(env, event.role, ssmClient);
-  const statuses = await Promise.all(asgNames.map(name => checkAsg(name, asgClient)));
+  const asgNames = await getAsgNames(env, event.role);
+  const statuses = await Promise.all(asgNames.map(name => checkAsg(name)));
 
   const failed = statuses.find(s => s.status === 'FAILED');
   if (failed) return { status: 'FAILED', detail: failed.detail };
@@ -34,11 +35,8 @@ export async function handler(
   return { status: 'IN_PROGRESS', detail: null };
 }
 
-async function checkAsg(
-  asgName: string,
-  asgClient: AutoScalingClient,
-): Promise<CheckRefreshStatusResult> {
-  const resp = await asgClient.send(
+async function checkAsg(asgName: string): Promise<CheckRefreshStatusResult> {
+  const resp = await asg.send(
     new DescribeInstanceRefreshesCommand({ AutoScalingGroupName: asgName }),
   );
   const refresh = resp.InstanceRefreshes?.[0];
@@ -64,18 +62,14 @@ async function checkAsg(
   return { status: 'IN_PROGRESS', detail: null };
 }
 
-async function getAsgNames(
-  env: string,
-  role: string,
-  ssmClient: SSMClient,
-): Promise<string[]> {
+async function getAsgNames(env: string, role: string): Promise<string[]> {
   if (role === 'workers') {
-    const p = await ssmClient.send(
+    const p = await ssm.send(
       new GetParameterCommand({ Name: `/k8s/${env}/ami-refresh/workers/asg-names` }),
     );
     return JSON.parse(p.Parameter!.Value!);
   }
-  const p = await ssmClient.send(
+  const p = await ssm.send(
     new GetParameterCommand({ Name: `/k8s/${env}/ami-refresh/control-plane/asg-name` }),
   );
   return [p.Parameter!.Value!];
