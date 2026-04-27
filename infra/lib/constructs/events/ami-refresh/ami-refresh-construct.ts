@@ -66,6 +66,7 @@ export class AmiRefreshConstruct extends Construct {
         'ec2:CreateLaunchTemplateVersion',
         'ec2:ModifyLaunchTemplate',
         'ec2:DescribeLaunchTemplateVersions',
+        'ec2:RunInstances',
       ],
       resources: [`arn:aws:ec2:${stack.region}:${stack.account}:launch-template/*`],
     }));
