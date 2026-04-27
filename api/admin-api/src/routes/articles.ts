@@ -1,39 +1,27 @@
 /**
  * @format
- * admin-api — Article management routes.
+ * admin-api — Article management routes (PG-only).
  *
  * Routes (all protected by Cognito JWT middleware applied at the router level):
  *
  *   GET    /api/admin/articles               — List articles, optionally filtered by status.
  *                                              ?status=all|draft|review|published|rejected
- *                                              Default: all (fan-out across all statuses)
- *   GET    /api/admin/articles/:slug         — Get article by slug (primary key)
- *   GET    /api/admin/articles/:slug/versions — List pipeline version history for a slug
- *   PUT    /api/admin/articles/:slug         — Update article metadata; syncs gsi1pk on
- *                                              status change so GSI queries stay consistent.
- *   DELETE /api/admin/articles/:slug         — Cascade delete METADATA + CONTENT#<slug>
- *   POST   /api/admin/articles/:slug/publish — Trigger publish Lambda pipeline (async)
+ *                                              Default: all
+ *   GET    /api/admin/articles/:slug         — Get article by slug
+ *   GET    /api/admin/articles/:slug/versions — List pipeline_runs version history for a slug
+ *   PUT    /api/admin/articles/:slug         — Update article metadata (PG upsert)
+ *   DELETE /api/admin/articles/:slug         — Delete article from PG
+ *   POST   /api/admin/articles/:slug/publish — Flip status to 'published' in PG
  *
  * BFF note:
  *   This BFF is the sole write path for the start-admin TanStack application.
  *   The public-api service exposes the corresponding read-only endpoints for
  *   portfolio visitors — these admin routes must never be exposed publicly.
- *
- * DynamoDB GSI pattern:
- *   Articles are stored with gsi1pk = 'STATUS#<status>' (e.g. 'STATUS#draft') so
- *   that listing by status requires only a GSI KeyConditionExpression, not a Scan.
- *   The attribute name is `gsi1pk`, NOT `status` — these are two separate attributes.
  */
 
 import { Hono } from 'hono';
-import {
-  UpdateCommand,
-  DeleteCommand,
-} from '@aws-sdk/lib-dynamodb';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import type { JWTPayload } from 'jose';
 import type { AdminApiConfig } from '../lib/config.js';
-import { docClient } from '../lib/dynamo.js';
 import { getPool } from '../lib/pg.js';
 import {
     upsertArticle,
@@ -50,23 +38,6 @@ type AdminApiBindings = {
   };
 };
 
-/** Lazily-initialised Lambda client — resolves credentials from IMDS. */
-let _lambdaClient: LambdaClient | undefined;
-
-/**
- * Get or create the singleton Lambda client.
- *
- * @returns Singleton LambdaClient.
- */
-function getLambdaClient(): LambdaClient {
-  if (!_lambdaClient) {
-    _lambdaClient = new LambdaClient({
-      region: process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? 'eu-west-1',
-    });
-  }
-  return _lambdaClient;
-}
-
 /**
  * Create the articles admin router.
  *
@@ -76,20 +47,12 @@ function getLambdaClient(): LambdaClient {
 export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindings> {
   const router = new Hono<AdminApiBindings>();
 
-  // -----------------------------------------------------------------------
-  // GET /api/admin/articles
-  // List articles by status using GSI1 (gsi1pk = 'STATUS#<status>').
-  //
-  // Query param: ?status=all|draft|review|published|rejected
-  // Default: 'all' — fans out across all four statuses in parallel.
-  //
-  // GSI design: the partition key on the index is `gsi1pk` (e.g.
-  // 'STATUS#draft'), NOT the `status` attribute itself.
-  // -----------------------------------------------------------------------
-
-  /** Valid article statuses queryable via GSI1. */
+  /** Valid article statuses. */
   const ALL_STATUSES = ['draft', 'processing', 'review', 'published', 'rejected', 'flagged'] as const;
 
+  // -----------------------------------------------------------------------
+  // GET /api/admin/articles
+  // -----------------------------------------------------------------------
   router.get('/', async (ctx) => {
     const rawStatus = (ctx.req.query('status') ?? 'all').toLowerCase();
     const pool = getPool(config);
@@ -109,7 +72,6 @@ export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindi
 
   // -----------------------------------------------------------------------
   // GET /api/admin/articles/:slug
-  // Fetch full article metadata by primary key.
   // -----------------------------------------------------------------------
   router.get('/:slug', async (ctx) => {
     const slug = ctx.req.param('slug');
@@ -119,11 +81,7 @@ export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindi
   });
 
   // -----------------------------------------------------------------------
-  // PUT /api/admin/articles/:slug
-  // Update article metadata fields (title, excerpt, tags, status, etc.).
-  //
-  // When `status` is included in the body, gsi1pk is also updated so the
-  // item appears in the correct GSI bucket on the next list query.
+  // PUT /api/admin/articles/:slug — PG-only upsert
   // -----------------------------------------------------------------------
   router.put('/:slug', async (ctx) => {
     const slug = ctx.req.param('slug');
@@ -132,6 +90,7 @@ export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindi
     const allowedFields = [
       'title', 'excerpt', 'tags', 'status', 'coverImage',
       'author', 'category', 'publishedAt', 'seo',
+      'contentMd', 'aiGenerated', 'aiModel',
     ];
     const updates = Object.fromEntries(
       Object.entries(body).filter(([k]) => allowedFields.includes(k)),
@@ -141,201 +100,91 @@ export function createArticlesRouter(config: AdminApiConfig): Hono<AdminApiBindi
       return ctx.json({ error: 'No valid fields to update' }, 400);
     }
 
-    const expressionParts: string[] = [];
-    const exprAttrNames: Record<string, string> = {};
-    const exprAttrValues: Record<string, unknown> = {};
+    const pool = getPool(config);
+    const existing = await getArticleBySlug(pool, slug);
+    if (!existing) return ctx.json({ error: 'Article not found' }, 404);
 
-    for (const [key, value] of Object.entries(updates)) {
-      const nameAlias = `#${key}`;
-      const valueAlias = `:${key}`;
-      expressionParts.push(`${nameAlias} = ${valueAlias}`);
-      exprAttrNames[nameAlias] = key;
-      exprAttrValues[valueAlias] = value;
+    const merged: import('../lib/repositories/articles.js').Article = {
+        slug,
+        title:       'title'       in updates ? (updates['title']       as string)              : existing.title,
+        excerpt:     'excerpt'     in updates ? (updates['excerpt']     as string | null)       : existing.excerpt,
+        contentMd:   'contentMd'   in updates ? (updates['contentMd']   as string)              : existing.contentMd,
+        tags:        'tags'        in updates ? (updates['tags']        as string[])            : existing.tags,
+        status:      'status'      in updates ? (updates['status']      as string)              : existing.status,
+        aiGenerated: 'aiGenerated' in updates ? (updates['aiGenerated'] as boolean)             : existing.aiGenerated,
+        aiModel:     'aiModel'     in updates ? (updates['aiModel']     as string | null)       : existing.aiModel,
+        publishedAt: 'publishedAt' in updates
+            ? (updates['publishedAt'] ? new Date(updates['publishedAt'] as string) : null)
+            : existing.publishedAt,
+        coverImage:  'coverImage'  in updates ? (updates['coverImage']  as string | null)       : existing.coverImage,
+    };
 
-      // Sync GSI1 partition key when status changes, so the item
-      // moves to the correct bucket in the status-date index.
-      if (key === 'status' && typeof value === 'string') {
-        exprAttrValues[':gsi1pk'] = `STATUS#${value}`;
-        expressionParts.push('gsi1pk = :gsi1pk');
-
-        // For published articles, stamp publishedAt if not already set
-        if (value === 'published' && !updates['publishedAt']) {
-          exprAttrValues[':publishedAt'] = new Date().toISOString();
-          expressionParts.push('publishedAt = if_not_exists(publishedAt, :publishedAt)');
-        }
-      }
-    }
-
-    // Always stamp updatedAt
-    exprAttrNames['#updatedAt'] = 'updatedAt';
-    exprAttrValues[':updatedAt'] = new Date().toISOString();
-    expressionParts.push('#updatedAt = :updatedAt');
-
-    await docClient.send(
-      new UpdateCommand({
-        TableName: config.dynamoTableName,
-        Key: { pk: `ARTICLE#${slug}`, sk: 'METADATA' },
-        UpdateExpression: `SET ${expressionParts.join(', ')}`,
-        ExpressionAttributeNames: exprAttrNames,
-        ExpressionAttributeValues: exprAttrValues,
-        ConditionExpression: 'attribute_exists(pk)',
-      }),
-    );
-
-    // Shadow write to PG — non-fatal during dual-write period
-    // Only write when we have a complete record (title + contentMd present).
-    // Partial updates (status/tag changes) are synced via the migration job.
-    // NOTE: contentMd is not in allowedFields (not a DynamoDB field), so we
-    // read it from the raw body rather than from the filtered `updates` map.
-    if ('title' in updates && 'contentMd' in body) {
-        try {
-            const pool = getPool(config);
-            const contentMd   = typeof body['contentMd']   === 'string'  ? body['contentMd']   : '';
-            const aiGenerated = typeof body['aiGenerated'] === 'boolean' ? body['aiGenerated'] : false;
-            const aiModel     = typeof body['aiModel']     === 'string'  ? body['aiModel']     : null;
-            await upsertArticle(pool, {
-                slug,
-                title:       (updates['title']      as string)            ?? '',
-                excerpt:     (updates['excerpt']     as string | null)     ?? null,
-                contentMd,
-                tags:        (updates['tags']        as string[])          ?? [],
-                status:      (updates['status']      as string)            ?? 'draft',
-                aiGenerated,
-                aiModel,
-                publishedAt: updates['publishedAt']  ? new Date(updates['publishedAt'] as string) : null,
-                coverImage:  (updates['coverImage']  as string | null)     ?? null,
-            });
-        } catch (pgErr: unknown) {
-            console.error(`[articles] PG shadow write failed — slug=${slug}`, pgErr);
-        }
-    }
-
+    await upsertArticle(pool, merged);
     return ctx.json({ updated: true, slug });
   });
 
   // -----------------------------------------------------------------------
-  // DELETE /api/admin/articles/:slug
-  // Cascade-delete both DynamoDB records for an article:
-  //   - METADATA  (pk: ARTICLE#<slug>, sk: METADATA)
-  //   - CONTENT   (pk: ARTICLE#<slug>, sk: CONTENT#<slug>)
-  //
-  // Both deletes run in parallel. The CONTENT record deletion is
-  // best-effort — if it doesn't exist the error is silently swallowed
-  // (the article may not have content yet).
+  // DELETE /api/admin/articles/:slug — PG-only
   // -----------------------------------------------------------------------
   router.delete('/:slug', async (ctx) => {
     const slug = ctx.req.param('slug');
-
-    await Promise.all([
-      // Delete the primary metadata record
-      docClient.send(
-        new DeleteCommand({
-          TableName: config.dynamoTableName,
-          Key: { pk: `ARTICLE#${slug}`, sk: 'METADATA' },
-          ConditionExpression: 'attribute_exists(pk)',
-        }),
-      ),
-      // Best-effort delete the content record (may not exist for new drafts)
-      docClient.send(
-        new DeleteCommand({
-          TableName: config.dynamoTableName,
-          Key: { pk: `ARTICLE#${slug}`, sk: `CONTENT#${slug}` },
-        }),
-      ),
-    ]);
-
-    // Shadow delete from PG — non-fatal
-    try {
-        await pgDeleteArticle(getPool(config), slug);
-    } catch (pgErr: unknown) {
-        console.error(`[articles] PG shadow delete failed — slug=${slug}`, pgErr);
-    }
-
+    await pgDeleteArticle(getPool(config), slug);
     return ctx.json({ deleted: true, slug });
   });
 
   // -----------------------------------------------------------------------
-  // POST /api/admin/articles/:slug/publish
-  // Invoke the Bedrock publish Lambda pipeline asynchronously.
-  // The Lambda handles MDX processing, AI enrichment, and S3 upload.
+  // POST /api/admin/articles/:slug/publish — PG status flip
   // -----------------------------------------------------------------------
   router.post('/:slug/publish', async (ctx) => {
     const slug = ctx.req.param('slug');
-    const jwtPayload = ctx.get('jwtPayload') as { sub?: string };
+    const pool = getPool(config);
 
-    const payload = JSON.stringify({
-      slug,
-      triggeredBy: jwtPayload?.sub ?? 'unknown',
-      triggeredAt: new Date().toISOString(),
-    });
+    const existing = await getArticleBySlug(pool, slug);
+    if (!existing) return ctx.json({ error: 'Article not found' }, 404);
 
-    await getLambdaClient().send(
-      new InvokeCommand({
-        FunctionName: config.publishLambdaArn,
-        InvocationType: 'Event', // async — fire and forget
-        Payload: Buffer.from(payload),
-      }),
+    await pool.query(
+        `UPDATE articles SET status = 'published', published_at = COALESCE(published_at, NOW()), updated_at = NOW() WHERE slug = $1`,
+        [slug],
     );
-
-    return ctx.json({ queued: true, slug });
+    return ctx.json({ published: true, slug });
   });
 
   // -----------------------------------------------------------------------
-  // GET /api/admin/articles/:slug/versions
-  // Return the complete pipeline version history for an article slug.
-  //
-  // Invokes the version-history Lambda (bedrock-*-pipeline-version-history)
-  // which queries DynamoDB for all VERSION#v<n> records sorted newest-first.
-  //
-  // Optional query param: ?limit=<n> (default 20, max 50)
-  //
-  // Response: 200 { success, slug, totalVersions, versions[] }
-  //         | 502 { error } — Lambda execution error or invocation failure
+  // GET /api/admin/articles/:slug/versions — read pipeline_runs history
   // -----------------------------------------------------------------------
   router.get('/:slug/versions', async (ctx) => {
     const slug = ctx.req.param('slug');
     const limitParam = ctx.req.query('limit');
     const limit = limitParam ? Math.min(parseInt(limitParam, 10), 50) : 20;
+    const pool = getPool(config);
 
-    let rawPayload: string;
+    const result = await pool.query<{
+        id: string; status: string; metadata: Record<string, unknown> | null;
+        error_message: string | null; created_at: Date; updated_at: Date;
+    }>(
+        `SELECT id, status, metadata, error_message, created_at, updated_at
+         FROM pipeline_runs
+         WHERE pipeline_type = 'article' AND reference_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2`,
+        [slug, limit],
+    );
 
-    try {
-      const invokeResult = await getLambdaClient().send(
-        new InvokeCommand({
-          FunctionName: config.versionHistoryLambdaArn,
-          InvocationType: 'RequestResponse', // sync — we need the result
-          Payload: Buffer.from(JSON.stringify({ slug, limit })),
-        }),
-      );
+    const versions = result.rows.map((r) => ({
+        pipelineRunId: r.id,
+        status:        r.status,
+        metadata:      r.metadata,
+        errorMessage:  r.error_message,
+        createdAt:     r.created_at,
+        updatedAt:     r.updated_at,
+    }));
 
-      rawPayload = invokeResult.Payload
-        ? Buffer.from(invokeResult.Payload).toString('utf-8')
-        : '{}';
-
-      if (invokeResult.FunctionError) {
-        console.error(`[articles] Version history Lambda error — slug=${slug} error=${invokeResult.FunctionError}`, rawPayload);
-        return ctx.json({ error: `Version history failed: ${invokeResult.FunctionError}` }, 502);
-      }
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[articles] Version history Lambda invocation failed — slug=${slug}`, err);
-      return ctx.json({ error: `Version history invocation failed: ${message}` }, 502);
-    }
-
-    // Parse and proxy the Lambda response directly to the admin dashboard.
-    const result = JSON.parse(rawPayload) as {
-      success: boolean;
-      slug: string;
-      totalVersions: number;
-      versions: unknown[];
-      message?: string;
-    };
-
-    if (!result.success) {
-      return ctx.json({ error: result.message ?? 'Version history query failed' }, 502);
-    }
-
-    return ctx.json(result, 200);
+    return ctx.json({
+        success:       true,
+        slug,
+        totalVersions: versions.length,
+        versions,
+    });
   });
 
   return router;

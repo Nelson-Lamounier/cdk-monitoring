@@ -1,102 +1,47 @@
 /**
  * @format
- * Tests for admin-api routes/articles.ts
- *
- * Strategy: mock `../../src/lib/dynamo.js` and `@aws-sdk/client-lambda`
- * using `jest.unstable_mockModule()` — the correct ESM-compatible API in
- * Jest 29. All module imports happen through top-level `await import()` so
- * that the mock registry is populated before the route module is evaluated.
- *
- * Coverage:
- *   GET  /                    — list all statuses (fan-out)
- *   GET  /                    — list single status
- *   GET  /                    — 400 on invalid status param
- *   GET  /:slug               — found article
- *   GET  /:slug               — 404 when item absent
- *   PUT  /:slug               — updates allowed fields only
- *   PUT  /:slug               — syncs gsi1pk on status change
- *   PUT  /:slug               — 400 when no valid fields supplied
- *   DELETE /:slug             — cascade deletes both DynamoDB records
- *   POST /:slug/publish       — invokes Lambda asynchronously
+ * Tests for admin-api routes/articles.ts (PG-only after Phase 5).
  */
 
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 // ---------------------------------------------------------------------------
-// Shared send mocks — live in module scope; captured by unstable_mockModule
+// Repository + pool mocks
 // ---------------------------------------------------------------------------
-
-/** Shared docClient.send mock. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const sendMock = jest.fn() as jest.Mock<any>;
-
-/** Shared LambdaClient.send mock. */
-const lambdaSendMock = jest.fn<() => Promise<object>>().mockResolvedValue({});
-
-// ---------------------------------------------------------------------------
-// ESM module mocks — MUST happen before any `await import()` of the modules
-// ---------------------------------------------------------------------------
-
-jest.unstable_mockModule('../../src/lib/dynamo.js', () => ({
-  docClient: { send: sendMock },
-}));
-
-jest.unstable_mockModule('@aws-sdk/client-lambda', () => {
-  class LambdaClient {
-    /** @param _input - constructor input (unused in tests) */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    constructor(_input: unknown) {}
-    send = lambdaSendMock;
-  }
-
-  class InvokeCommand {
-    /** @param input - Lambda invocation input. */
-    constructor(public readonly input: unknown) {}
-  }
-
-  return { LambdaClient, InvokeCommand };
-});
 
 const pgUpsertMock = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
-const pgGetArticleBySlugMock = jest.fn<() => Promise<null>>().mockResolvedValue(null);
+const pgDeleteArticleMock = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
+const pgGetArticleBySlugMock = jest.fn<() => Promise<unknown>>().mockResolvedValue(null);
 const pgListArticlesByStatusMock = jest.fn<() => Promise<never[]>>().mockResolvedValue([]);
 const pgListAllArticlesMock = jest.fn<() => Promise<never[]>>().mockResolvedValue([]);
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const poolQueryMock = jest.fn() as jest.Mock<any>;
+poolQueryMock.mockResolvedValue({ rows: [] });
+
 jest.unstable_mockModule('../../src/lib/repositories/articles.js', () => ({
     upsertArticle: pgUpsertMock,
-    deleteArticle: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
+    deleteArticle: pgDeleteArticleMock,
     getArticleBySlug: pgGetArticleBySlugMock,
     listArticlesByStatus: pgListArticlesByStatusMock,
     listAllArticles: pgListAllArticlesMock,
 }));
 
 jest.unstable_mockModule('../../src/lib/pg.js', () => ({
-    getPool: jest.fn(() => ({})),
+    getPool: jest.fn(() => ({ query: poolQueryMock })),
 }));
 
 // ---------------------------------------------------------------------------
-// Dynamic imports — resolved AFTER mocks are registered
+// Dynamic imports
 // ---------------------------------------------------------------------------
 
 const { Hono } = await import('hono');
 const { createArticlesRouter } = await import('../../src/routes/articles.js');
 
-// Module-scope app used by PG shadow-write tests (mounts router at /api/admin/articles)
-const _appForPgTests = new Hono();
-_appForPgTests.use('*', async (ctx, next) => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (ctx as any).set('jwtPayload', { sub: 'test-user-sub' });
-  await next();
-});
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-_appForPgTests.route('/api/admin/articles', createArticlesRouter({ dynamoTableName: 'test-articles', dynamoGsi1Name: 'gsi1-status-date', dynamoGsi2Name: 'gsi2-tag-date', assetsBucketName: 'test-bucket', publishLambdaArn: 'arn:aws:lambda:eu-west-1:123:function:publish', articleTriggerArn: 'arn:aws:lambda:eu-west-1:123:function:trigger', strategistTriggerArn: 'arn:aws:lambda:eu-west-1:123:function:strategist', strategistTableName: 'test-strategist', resumesTableName: 'test-strategist', cognitoUserPoolId: 'eu-west-1_TestPool', cognitoClientId: 'testClient', cognitoIssuerUrl: 'https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_TestPool', awsRegion: 'eu-west-1', port: 3002, pgHost: 'pgbouncer.platform.svc.cluster.local', pgPort: 5432, pgDatabase: 'tucaken', pgUser: 'postgres', pgPassword: 'secret' } as any));
-const app = _appForPgTests;
-
 // ---------------------------------------------------------------------------
 // Test configuration
 // ---------------------------------------------------------------------------
 
-/** @type {import('../../src/lib/config.js').AdminApiConfig} */
 const testConfig = {
   dynamoTableName: 'test-articles',
   dynamoGsi1Name: 'gsi1-status-date',
@@ -118,10 +63,6 @@ const testConfig = {
   pgUser: 'postgres',
   pgPassword: 'secret',
 } as const;
-
-// ---------------------------------------------------------------------------
-// App factory
-// ---------------------------------------------------------------------------
 
 /**
  * Builds the test Hono app with a stub JWT middleware.
@@ -145,14 +86,16 @@ function buildApp() {
 // ---------------------------------------------------------------------------
 
 const ARTICLE_ITEM = {
-  pk: 'ARTICLE#my-slug',
-  sk: 'METADATA',
-  gsi1pk: 'STATUS#draft',
   slug: 'my-slug',
   title: 'My Test Article',
+  excerpt: null,
+  contentMd: '# Hello',
+  tags: ['x'],
   status: 'draft',
-  createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z',
+  aiGenerated: false,
+  aiModel: null,
+  publishedAt: null,
+  coverImage: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -161,7 +104,6 @@ const ARTICLE_ITEM = {
 
 describe('GET / — list articles', () => {
   beforeEach(() => {
-    sendMock.mockReset();
     pgListAllArticlesMock.mockReset();
     pgListArticlesByStatusMock.mockReset();
   });
@@ -176,7 +118,6 @@ describe('GET / — list articles', () => {
     expect(body.articles).toHaveLength(1);
     expect(body.count).toBe(1);
     expect(pgListAllArticlesMock).toHaveBeenCalledTimes(1);
-    expect(sendMock).not.toHaveBeenCalled();
   });
 
   it('calls listArticlesByStatus when ?status=draft', async () => {
@@ -187,9 +128,7 @@ describe('GET / — list articles', () => {
 
     expect(res.status).toBe(200);
     expect(body.articles).toHaveLength(1);
-    expect(pgListArticlesByStatusMock).toHaveBeenCalledTimes(1);
     expect(pgListArticlesByStatusMock).toHaveBeenCalledWith(expect.anything(), 'draft');
-    expect(sendMock).not.toHaveBeenCalled();
   });
 
   it('returns 400 for an unknown status value', async () => {
@@ -214,7 +153,6 @@ describe('GET / — list articles', () => {
 
 describe('GET /:slug — get article by slug', () => {
   beforeEach(() => {
-    sendMock.mockReset();
     pgGetArticleBySlugMock.mockReset();
   });
 
@@ -227,7 +165,6 @@ describe('GET /:slug — get article by slug', () => {
     expect(res.status).toBe(200);
     expect(body.article.slug).toBe('my-slug');
     expect(body.article.title).toBe('My Test Article');
-    expect(sendMock).not.toHaveBeenCalled();
   });
 
   it('calls getArticleBySlug with the correct slug', async () => {
@@ -235,7 +172,6 @@ describe('GET /:slug — get article by slug', () => {
 
     await buildApp().request('/my-slug');
 
-    expect(pgGetArticleBySlugMock).toHaveBeenCalledTimes(1);
     expect(pgGetArticleBySlugMock).toHaveBeenCalledWith(expect.anything(), 'my-slug');
   });
 
@@ -253,12 +189,12 @@ describe('GET /:slug — get article by slug', () => {
 // PUT /:slug
 // ---------------------------------------------------------------------------
 
-describe('PUT /:slug — update article', () => {
+describe('PUT /:slug — update article (PG upsert)', () => {
   beforeEach(() => {
-    sendMock.mockReset();
-    sendMock.mockResolvedValue({});
     pgUpsertMock.mockReset();
     pgUpsertMock.mockResolvedValue(undefined);
+    pgGetArticleBySlugMock.mockReset();
+    pgGetArticleBySlugMock.mockResolvedValue(ARTICLE_ITEM as never);
   });
 
   it('returns 200 with updated: true on success', async () => {
@@ -271,6 +207,7 @@ describe('PUT /:slug — update article', () => {
     expect(res.status).toBe(200);
     expect(body.updated).toBe(true);
     expect(body.slug).toBe('my-slug');
+    expect(pgUpsertMock).toHaveBeenCalledTimes(1);
   });
 
   it('returns 400 when body contains no valid fields', async () => {
@@ -282,74 +219,43 @@ describe('PUT /:slug — update article', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/No valid fields/);
+    expect(pgUpsertMock).not.toHaveBeenCalled();
   });
 
-  it('syncs gsi1pk when status is updated', async () => {
+  it('returns 404 when article does not exist in PG', async () => {
+    pgGetArticleBySlugMock.mockResolvedValue(null);
+    const res = await buildApp().request('/missing', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Whatever' }),
+    });
+    expect(res.status).toBe(404);
+    expect(pgUpsertMock).not.toHaveBeenCalled();
+  });
+
+  it('filters out fields not in the allowed list before upserting', async () => {
+    await buildApp().request('/my-slug', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'New', evilField: 'nope' }),
+    });
+    expect(pgUpsertMock).toHaveBeenCalledTimes(1);
+    const arg = pgUpsertMock.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(arg['title']).toBe('New');
+    expect(arg).not.toHaveProperty('evilField');
+  });
+
+  it('merges body fields onto the existing article', async () => {
     await buildApp().request('/my-slug', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'published' }),
     });
-    const callArg = sendMock.mock.calls[0]?.[0] as {
-      input: { ExpressionAttributeValues: Record<string, string> };
-    };
-    expect(callArg.input.ExpressionAttributeValues[':gsi1pk']).toBe('STATUS#published');
-  });
-
-  it('does not include gsi1pk when status is not in the update', async () => {
-    await buildApp().request('/my-slug', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'No Status Change' }),
-    });
-    const callArg = sendMock.mock.calls[0]?.[0] as {
-      input: { ExpressionAttributeValues: Record<string, string> };
-    };
-    expect(callArg.input.ExpressionAttributeValues[':gsi1pk']).toBeUndefined();
-  });
-
-  it('always stamps updatedAt regardless of which fields are updated', async () => {
-    await buildApp().request('/my-slug', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Any Title' }),
-    });
-    const callArg = sendMock.mock.calls[0]?.[0] as {
-      input: { ExpressionAttributeValues: Record<string, string> };
-    };
-    expect(callArg.input.ExpressionAttributeValues[':updatedAt']).toBeTruthy();
-  });
-
-  it('should attempt PG shadow write on successful DynamoDB update', async () => {
-    sendMock.mockResolvedValue({ Attributes: { slug: 'test-slug', title: 'Updated' } });
-    const res = await app.request('/api/admin/articles/test-slug', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Updated', contentMd: '# Content' }),
-    });
-    expect(res.status).toBe(200);
-    expect(pgUpsertMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('should still return 200 when PG shadow write fails', async () => {
-    sendMock.mockResolvedValue({ Attributes: { slug: 'test-slug', title: 'Updated' } });
-    (pgUpsertMock as jest.Mock).mockRejectedValueOnce(new Error('PG timeout'));
-    const res = await app.request('/api/admin/articles/test-slug', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Updated', contentMd: '# Content' }),
-    });
-    expect(res.status).toBe(200);
-  });
-
-  it('should NOT call pgUpsertMock when contentMd is absent from the body', async () => {
-    sendMock.mockResolvedValue({});
-    await app.request('/api/admin/articles/test-slug', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Title only, no contentMd' }),
-    });
-    expect(pgUpsertMock).not.toHaveBeenCalled();
+    const arg = pgUpsertMock.mock.calls[0]?.[1] as Record<string, unknown>;
+    // status from body, title from existing
+    expect(arg['status']).toBe('published');
+    expect(arg['title']).toBe('My Test Article');
+    expect(arg['slug']).toBe('my-slug');
   });
 });
 
@@ -357,10 +263,10 @@ describe('PUT /:slug — update article', () => {
 // DELETE /:slug
 // ---------------------------------------------------------------------------
 
-describe('DELETE /:slug — cascade delete article', () => {
+describe('DELETE /:slug — delete article (PG-only)', () => {
   beforeEach(() => {
-    sendMock.mockReset();
-    sendMock.mockResolvedValue({});
+    pgDeleteArticleMock.mockReset();
+    pgDeleteArticleMock.mockResolvedValue(undefined);
   });
 
   it('returns 200 with deleted: true', async () => {
@@ -371,25 +277,10 @@ describe('DELETE /:slug — cascade delete article', () => {
     expect(body.slug).toBe('my-slug');
   });
 
-  it('issues exactly two DynamoDB delete commands (METADATA + CONTENT cascade)', async () => {
+  it('calls pgDeleteArticle exactly once with the slug', async () => {
     await buildApp().request('/my-slug', { method: 'DELETE' });
-    expect(sendMock).toHaveBeenCalledTimes(2);
-  });
-
-  it('targets the METADATA record', async () => {
-    await buildApp().request('/my-slug', { method: 'DELETE' });
-    const keys = sendMock.mock.calls.map(
-      (c) => (c[0] as { input: { Key: Record<string, string> } }).input.Key,
-    );
-    expect(keys).toContainEqual({ pk: 'ARTICLE#my-slug', sk: 'METADATA' });
-  });
-
-  it('targets the CONTENT record in the cascade delete', async () => {
-    await buildApp().request('/my-slug', { method: 'DELETE' });
-    const keys = sendMock.mock.calls.map(
-      (c) => (c[0] as { input: { Key: Record<string, string> } }).input.Key,
-    );
-    expect(keys).toContainEqual({ pk: 'ARTICLE#my-slug', sk: 'CONTENT#my-slug' });
+    expect(pgDeleteArticleMock).toHaveBeenCalledTimes(1);
+    expect(pgDeleteArticleMock).toHaveBeenCalledWith(expect.anything(), 'my-slug');
   });
 });
 
@@ -397,14 +288,108 @@ describe('DELETE /:slug — cascade delete article', () => {
 // POST /:slug/publish
 // ---------------------------------------------------------------------------
 
-describe('POST /:slug/publish — trigger publish Lambda', () => {
-  beforeEach(() => { sendMock.mockReset(); });
+describe('POST /:slug/publish — flip status to published in PG', () => {
+  beforeEach(() => {
+    pgGetArticleBySlugMock.mockReset();
+    poolQueryMock.mockReset();
+    poolQueryMock.mockResolvedValue({ rows: [] });
+  });
 
-  it('returns 200 with queued: true', async () => {
+  it('returns 200 with published: true and runs UPDATE statement', async () => {
+    pgGetArticleBySlugMock.mockResolvedValue(ARTICLE_ITEM as never);
+
     const res = await buildApp().request('/my-slug/publish', { method: 'POST' });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { queued: boolean; slug: string };
-    expect(body.queued).toBe(true);
+    const body = (await res.json()) as { published: boolean; slug: string };
+    expect(body.published).toBe(true);
     expect(body.slug).toBe('my-slug');
+
+    expect(poolQueryMock).toHaveBeenCalledTimes(1);
+    const sql = poolQueryMock.mock.calls[0]?.[0] as string;
+    const params = poolQueryMock.mock.calls[0]?.[1] as unknown[];
+    expect(sql).toMatch(/UPDATE articles/);
+    expect(sql).toMatch(/status = 'published'/);
+    expect(sql).toMatch(/COALESCE\(published_at, NOW\(\)\)/);
+    expect(params).toEqual(['my-slug']);
+  });
+
+  it('returns 404 when article does not exist', async () => {
+    pgGetArticleBySlugMock.mockResolvedValue(null);
+
+    const res = await buildApp().request('/missing/publish', { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(poolQueryMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /:slug/versions
+// ---------------------------------------------------------------------------
+
+describe('GET /:slug/versions — read pipeline_runs history', () => {
+  beforeEach(() => {
+    poolQueryMock.mockReset();
+  });
+
+  it('returns versions mapped from pipeline_runs rows', async () => {
+    const now = new Date('2026-04-25T00:00:00.000Z');
+    poolQueryMock.mockResolvedValue({
+      rows: [
+        {
+          id: 'run-1',
+          status: 'success',
+          metadata: { foo: 'bar' },
+          error_message: null,
+          created_at: now,
+          updated_at: now,
+        },
+        {
+          id: 'run-2',
+          status: 'failed',
+          metadata: null,
+          error_message: 'boom',
+          created_at: now,
+          updated_at: now,
+        },
+      ],
+    });
+
+    const res = await buildApp().request('/my-slug/versions');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      slug: string;
+      totalVersions: number;
+      versions: Array<{ pipelineRunId: string; status: string; errorMessage: string | null }>;
+    };
+
+    expect(body.success).toBe(true);
+    expect(body.slug).toBe('my-slug');
+    expect(body.totalVersions).toBe(2);
+    expect(body.versions[0]?.pipelineRunId).toBe('run-1');
+    expect(body.versions[0]?.status).toBe('success');
+    expect(body.versions[1]?.pipelineRunId).toBe('run-2');
+    expect(body.versions[1]?.errorMessage).toBe('boom');
+
+    const sql = poolQueryMock.mock.calls[0]?.[0] as string;
+    const params = poolQueryMock.mock.calls[0]?.[1] as unknown[];
+    expect(sql).toMatch(/FROM pipeline_runs/);
+    expect(sql).toMatch(/pipeline_type = 'article'/);
+    expect(params).toEqual(['my-slug', 20]);
+  });
+
+  it('honours ?limit query param (capped at 50)', async () => {
+    poolQueryMock.mockResolvedValue({ rows: [] });
+    await buildApp().request('/my-slug/versions?limit=99');
+    const params = poolQueryMock.mock.calls[0]?.[1] as unknown[];
+    expect(params).toEqual(['my-slug', 50]);
+  });
+
+  it('returns empty versions array when pipeline_runs has no rows', async () => {
+    poolQueryMock.mockResolvedValue({ rows: [] });
+    const res = await buildApp().request('/my-slug/versions');
+    const body = (await res.json()) as { totalVersions: number; versions: unknown[] };
+    expect(body.totalVersions).toBe(0);
+    expect(body.versions).toHaveLength(0);
   });
 });
