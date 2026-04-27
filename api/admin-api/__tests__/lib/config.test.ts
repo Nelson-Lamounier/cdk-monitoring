@@ -35,6 +35,7 @@ const VALID_ENV: Record<string, string> = {
   PG_DATABASE: 'tucaken',
   PG_USER: 'postgres',
   PG_PASSWORD: 'secret',
+  INGESTION_IMAGE: '771826808455.dkr.ecr.eu-west-1.amazonaws.com/ingestion:latest',
 };
 
 // ---------------------------------------------------------------------------
@@ -112,6 +113,46 @@ describe('loadConfig()', () => {
     it('throws the admin-api service prefix in the error message', () => {
       unsetEnv(Object.keys(VALID_ENV));
       expect(() => loadConfig()).toThrow('[admin-api] Missing required environment variables');
+    });
+  });
+
+  describe('ingestion config', () => {
+    it('throws when INGESTION_IMAGE is missing', () => {
+      delete process.env['INGESTION_IMAGE'];
+      expect(() => loadConfig()).toThrow(/INGESTION_IMAGE/);
+    });
+
+    it('resolves ingestionImage from INGESTION_IMAGE env var', () => {
+      const cfg = loadConfig();
+      expect(cfg.ingestionImage).toBe(
+        '771826808455.dkr.ecr.eu-west-1.amazonaws.com/ingestion:latest',
+      );
+    });
+
+    it('defaults ingestionNamespace to "ingestion" when INGESTION_NAMESPACE unset', () => {
+      delete process.env['INGESTION_NAMESPACE'];
+      const cfg = loadConfig();
+      expect(cfg.ingestionNamespace).toBe('ingestion');
+    });
+
+    it('defaults ingestionServiceAccount to "ingestion-sa" when INGESTION_SERVICE_ACCOUNT unset', () => {
+      delete process.env['INGESTION_SERVICE_ACCOUNT'];
+      const cfg = loadConfig();
+      expect(cfg.ingestionServiceAccount).toBe('ingestion-sa');
+    });
+
+    it('overrides ingestionNamespace when INGESTION_NAMESPACE set', () => {
+      process.env['INGESTION_NAMESPACE'] = 'custom-ns';
+      const cfg = loadConfig();
+      expect(cfg.ingestionNamespace).toBe('custom-ns');
+      delete process.env['INGESTION_NAMESPACE'];
+    });
+
+    it('overrides ingestionServiceAccount when INGESTION_SERVICE_ACCOUNT set', () => {
+      process.env['INGESTION_SERVICE_ACCOUNT'] = 'custom-sa';
+      const cfg = loadConfig();
+      expect(cfg.ingestionServiceAccount).toBe('custom-sa');
+      delete process.env['INGESTION_SERVICE_ACCOUNT'];
     });
   });
 });

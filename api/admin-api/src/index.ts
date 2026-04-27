@@ -30,6 +30,7 @@ import { createCommentsRouter } from './routes/comments.js';
 import { createContentRouter } from './routes/content.js';
 import { createDraftsRouter } from './routes/drafts.js';
 import { createFinopsRouter } from './routes/finops.js';
+import { createIngestionRouter } from './routes/ingestion.js';
 import { createPipelinesRouter } from './routes/pipelines.js';
 import { createResumesRouter } from './routes/resumes.js';
 
@@ -91,6 +92,7 @@ app.route('/api/admin/comments', createCommentsRouter(config));
 app.route('/api/admin/content', createContentRouter(config));
 app.route('/api/admin/drafts', createDraftsRouter(config));
 app.route('/api/admin/finops', createFinopsRouter(config));
+app.route('/api/admin/ingestion', createIngestionRouter(config));
 app.route('/api/admin/pipelines', createPipelinesRouter(config));
 app.route('/api/admin/resumes', createResumesRouter(config));
 

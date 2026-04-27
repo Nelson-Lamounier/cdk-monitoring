@@ -1,0 +1,192 @@
+/**
+ * @format
+ * Tests for admin-api routes/ingestion.ts
+ *
+ * Mocks `../../src/lib/k8s.js` so the route is exercised against a fake
+ * BatchV1Api client. Covers validation, successful Job creation, and error
+ * propagation when the K8s API call rejects.
+ */
+
+import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+
+// ---------------------------------------------------------------------------
+// Shared K8s mock — captured by unstable_mockModule
+// ---------------------------------------------------------------------------
+
+const createNamespacedJobMock = jest.fn<() => Promise<object>>().mockResolvedValue({});
+
+jest.unstable_mockModule('../../src/lib/k8s.js', () => ({
+    getBatchApi: () => ({ createNamespacedJob: createNamespacedJobMock }),
+    _resetBatchApi: () => {},
+}));
+
+// ---------------------------------------------------------------------------
+// Dynamic imports — resolved AFTER mocks are registered
+// ---------------------------------------------------------------------------
+
+const { Hono } = await import('hono');
+const { createIngestionRouter } = await import('../../src/routes/ingestion.js');
+
+// ---------------------------------------------------------------------------
+// Test configuration
+// ---------------------------------------------------------------------------
+
+const testConfig = {
+  dynamoTableName: 'test-articles',
+  dynamoGsi1Name: 'gsi1-status-date',
+  dynamoGsi2Name: 'gsi2-tag-date',
+  assetsBucketName: 'test-bucket',
+  publishLambdaArn: 'arn:aws:lambda:eu-west-1:123:function:publish',
+  articleTriggerArn: 'arn:aws:lambda:eu-west-1:123:function:trigger',
+  versionHistoryLambdaArn: 'arn:aws:lambda:eu-west-1:123:function:version-history',
+  strategistTriggerArn: 'arn:aws:lambda:eu-west-1:123:function:strategist',
+  strategistTableName: 'test-strategist',
+  resumesTableName: 'test-strategist',
+  cognitoUserPoolId: 'eu-west-1_TestPool',
+  cognitoClientId: 'testClient',
+  cognitoIssuerUrl: 'https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_TestPool',
+  awsRegion: 'eu-west-1',
+  port: 3002,
+  pgHost: 'pgbouncer.platform.svc.cluster.local',
+  pgPort: 5432,
+  pgDatabase: 'tucaken',
+  pgUser: 'postgres',
+  pgPassword: 'secret',
+  ingestionNamespace: 'ingestion',
+  ingestionImage: '771826808455.dkr.ecr.eu-west-1.amazonaws.com/ingestion:latest',
+  ingestionServiceAccount: 'ingestion-sa',
+} as const;
+
+// ---------------------------------------------------------------------------
+// App factory
+// ---------------------------------------------------------------------------
+
+function buildApp() {
+  const app = new Hono();
+  app.use('*', async (ctx, next) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ctx as any).set('jwtPayload', { sub: 'test-user-sub' });
+    await next();
+  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app.route('/', createIngestionRouter(testConfig as any));
+  return app;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('POST /trigger — create ingestion Job', () => {
+  beforeEach(() => {
+    createNamespacedJobMock.mockReset();
+    createNamespacedJobMock.mockResolvedValue({});
+  });
+
+  it('returns 400 when body is not valid JSON', async () => {
+    const res = await buildApp().request('/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'not-json',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/valid JSON/);
+    expect(createNamespacedJobMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when userId is missing', async () => {
+    const res = await buildApp().request('/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoFullName: 'owner/repo' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/userId/);
+    expect(createNamespacedJobMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when repoFullName is missing', async () => {
+    const res = await buildApp().request('/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'user-123' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/repoFullName/);
+    expect(createNamespacedJobMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when repoFullName does not match owner/repo', async () => {
+    const res = await buildApp().request('/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'user-123', repoFullName: 'invalid' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/owner\/repo/);
+    expect(createNamespacedJobMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 202 with jobName and creates a Job whose env contains USER_ID/REPO_FULL_NAME/FORCE_REINDEX', async () => {
+    const res = await buildApp().request('/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'user-123', repoFullName: 'octocat/hello-world', forceReindex: true }),
+    });
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      status: string;
+      jobName: string;
+      userId: string;
+      repoFullName: string;
+      forceReindex: boolean;
+    };
+    expect(body.status).toBe('queued');
+    expect(body.jobName).toMatch(/^ingestion-user-123-octocat-hello-world-\d+$/);
+    expect(body.userId).toBe('user-123');
+    expect(body.repoFullName).toBe('octocat/hello-world');
+    expect(body.forceReindex).toBe(true);
+
+    expect(createNamespacedJobMock).toHaveBeenCalledTimes(1);
+    const callArgs = createNamespacedJobMock.mock.calls[0] as unknown as [string, { spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> } } } }];
+    expect(callArgs[0]).toBe('ingestion');
+
+    const env = callArgs[1].spec.template.spec.containers[0]!.env;
+    const envMap = Object.fromEntries(env.map((e) => [e.name, e.value]));
+    expect(envMap['USER_ID']).toBe('user-123');
+    expect(envMap['REPO_FULL_NAME']).toBe('octocat/hello-world');
+    expect(envMap['FORCE_REINDEX']).toBe('true');
+  });
+
+  it('defaults forceReindex to false when omitted', async () => {
+    const res = await buildApp().request('/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'user-123', repoFullName: 'octocat/hello-world' }),
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { forceReindex: boolean };
+    expect(body.forceReindex).toBe(false);
+  });
+
+  it('returns 502 when the K8s API rejects', async () => {
+    createNamespacedJobMock.mockRejectedValueOnce(new Error('boom'));
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await buildApp().request('/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'user-123', repoFullName: 'octocat/hello-world' }),
+    });
+
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/Failed to schedule/);
+    consoleSpy.mockRestore();
+  });
+});

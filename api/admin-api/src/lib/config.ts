@@ -75,6 +75,15 @@ export interface AdminApiConfig {
   readonly pgUser: string;
   /** PostgreSQL password (from Secrets Manager via ESO). */
   readonly pgPassword: string;
+
+  /** Kubernetes namespace where ingestion Jobs are created. */
+  readonly ingestionNamespace: string;
+
+  /** Container image for the ingestion worker (run-ingestion.js). */
+  readonly ingestionImage: string;
+
+  /** ServiceAccount the ingestion Job pod runs as. */
+  readonly ingestionServiceAccount: string;
 }
 
 /**
@@ -106,6 +115,7 @@ export function loadConfig(): AdminApiConfig {
     PG_DATABASE: process.env['PG_DATABASE'],
     PG_USER: process.env['PG_USER'],
     PG_PASSWORD: process.env['PG_PASSWORD'],
+    INGESTION_IMAGE: process.env['INGESTION_IMAGE'],
   };
 
   const missing = Object.entries(required)
@@ -140,5 +150,8 @@ export function loadConfig(): AdminApiConfig {
     pgDatabase: required['PG_DATABASE']!,
     pgUser: required['PG_USER']!,
     pgPassword: required['PG_PASSWORD']!,
+    ingestionNamespace: process.env['INGESTION_NAMESPACE'] ?? 'ingestion',
+    ingestionImage: required['INGESTION_IMAGE']!,
+    ingestionServiceAccount: process.env['INGESTION_SERVICE_ACCOUNT'] ?? 'ingestion-sa',
   };
 }

@@ -93,6 +93,9 @@ const testConfig = {
   pgDatabase: 'tucaken',
   pgUser: 'postgres',
   pgPassword: 'secret',
+  ingestionNamespace: 'ingestion',
+  ingestionImage: '771826808455.dkr.ecr.eu-west-1.amazonaws.com/ingestion:latest',
+  ingestionServiceAccount: 'ingestion-sa',
 };
 
 // ---------------------------------------------------------------------------
