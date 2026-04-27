@@ -38,25 +38,9 @@ jest.unstable_mockModule('../../src/lib/repositories/pipeline-runs.js', () => ({
 // imports it at the top level.
 jest.unstable_mockModule('../../src/lib/repositories/applications.js', () => ({
   listApplications:        jest.fn<() => Promise<unknown[]>>().mockResolvedValue([]),
+  getApplication:          jest.fn<() => Promise<unknown>>().mockResolvedValue(null),
   updateApplicationStatus: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
   deleteApplication:       jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
-}));
-
-// AWS SDK clients — instantiated at route load even if unused by these tests.
-jest.unstable_mockModule('@aws-sdk/client-dynamodb', () => ({
-  DynamoDBClient: class { constructor(_: unknown) {} },
-}));
-jest.unstable_mockModule('@aws-sdk/lib-dynamodb', () => ({
-  DynamoDBDocumentClient: { from: () => ({ send: jest.fn() }) },
-  QueryCommand:    class { constructor(public input: unknown) {} },
-  UpdateCommand:   class { constructor(public input: unknown) {} },
-  BatchWriteCommand: class { constructor(public input: unknown) {} },
-  GetCommand:      class { constructor(public input: unknown) {} },
-}));
-jest.unstable_mockModule('@aws-sdk/client-sfn', () => ({
-  SFNClient: class { constructor(_: unknown) {} },
-  GetExecutionHistoryCommand: class { constructor(public input: unknown) {} },
-  DescribeExecutionCommand:   class { constructor(public input: unknown) {} },
 }));
 
 // ---------------------------------------------------------------------------

@@ -1,61 +1,40 @@
 /**
  * @format
- * Tests for admin-api routes/resumes.ts
- *
- * Strategy: mock `../../src/lib/dynamo.js` using `jest.unstable_mockModule()`
- * — the correct ESM-compatible API in Jest 29. All module imports are via
- * top-level `await import()` so the mock registry is populated before the
- * route module is evaluated.
- *
- * Coverage:
- *   GET  /                 — list all resume summaries (summary strips DynamoDB keys)
- *   GET  /active           — 200 with active resume including data
- *   GET  /active           — 404 when no active resume configured
- *   GET  /:id              — 200 with full resume
- *   GET  /:id              — 404 when not found
- *   POST /                 — 201 creates resume with isActive: false
- *   POST /                 — 400 when label is missing or empty string
- *   POST /                 — 400 when data is missing or is an array
- *   PUT  /:id              — 200 updates label and/or data
- *   PUT  /:id              — 400 when neither label nor data provided
- *   DELETE /:id            — 200 for inactive resume
- *   DELETE /:id            — 404 when not found
- *   DELETE /:id            — 409 when resume is active
- *   POST /:id/activate     — deactivates previous, activates target
- *   POST /:id/activate     — skips deactivation when target already active
- *   POST /:id/activate     — skips deactivation when no active resume exists
+ * Tests for admin-api routes/resumes.ts (PG-only after Phase 5).
  */
 
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 // ---------------------------------------------------------------------------
-// Shared send mock
+// Repository mocks
 // ---------------------------------------------------------------------------
 
-/** Shared docClient.send mock — reset in beforeEach. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const sendMock = jest.fn() as jest.Mock<any>;
-
-// ---------------------------------------------------------------------------
-// ESM module mock — MUST be called before any import() of the mocked module
-// ---------------------------------------------------------------------------
-
-jest.unstable_mockModule('../../src/lib/dynamo.js', () => ({
-  docClient: { send: sendMock },
-}));
-
-// PG repository mocks
-const pgListResumesMock = jest.fn<() => Promise<never[]>>().mockResolvedValue([]);
-const pgGetResumeMock = jest.fn<() => Promise<null>>().mockResolvedValue(null);
-const pgGetActiveResumeMock = jest.fn<() => Promise<null>>().mockResolvedValue(null);
+const pgListResumesMock     = jest.fn() as jest.Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const pgGetResumeMock       = jest.fn() as jest.Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const pgGetActiveResumeMock = jest.fn() as jest.Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const pgUpsertResumeMock    = jest.fn() as jest.Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const pgDeleteResumeMock    = jest.fn() as jest.Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const pgSetActiveResumeMock = jest.fn() as jest.Mock<any>;
+pgListResumesMock.mockResolvedValue([]);
+pgGetResumeMock.mockResolvedValue(null);
+pgGetActiveResumeMock.mockResolvedValue(null);
+pgUpsertResumeMock.mockResolvedValue(undefined);
+pgDeleteResumeMock.mockResolvedValue(undefined);
+pgSetActiveResumeMock.mockResolvedValue(undefined);
 
 jest.unstable_mockModule('../../src/lib/repositories/resumes.js', () => ({
-  upsertResume: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
-  getResume: pgGetResumeMock,
-  listResumes: pgListResumesMock,
+  upsertResume:    pgUpsertResumeMock,
+  getResume:       pgGetResumeMock,
+  listResumes:     pgListResumesMock,
   getActiveResume: pgGetActiveResumeMock,
-  deleteResume: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
-  setActiveResume: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
+  deleteResume:    pgDeleteResumeMock,
+  setActiveResume: pgSetActiveResumeMock,
 }));
 
 jest.unstable_mockModule('../../src/lib/pg.js', () => ({
@@ -94,11 +73,6 @@ const testConfig = {
 // App factory
 // ---------------------------------------------------------------------------
 
-/**
- * Builds the Hono test app with a stub JWT middleware.
- *
- * @returns Configured Hono app with resumes router mounted at /.
- */
 function buildApp() {
   const app = new Hono();
   app.use('*', async (ctx, next) => {
@@ -112,32 +86,9 @@ function buildApp() {
 }
 
 // ---------------------------------------------------------------------------
-// Test data
+// Test data — PG-shaped resume records
 // ---------------------------------------------------------------------------
 
-const RESUME_ENTITY = {
-  pk: 'RESUME#resume-uuid-1',
-  sk: 'METADATA',
-  gsi1pk: 'RESUME',
-  gsi1sk: 'RESUME#2026-01-01T00:00:00.000Z',
-  entityType: 'RESUME',
-  resumeId: 'resume-uuid-1',
-  label: 'Senior Engineer 2026',
-  isActive: false,
-  data: { basics: { name: 'Nelson Lamounier' } },
-  createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z',
-};
-
-const ACTIVE_RESUME_ENTITY = {
-  ...RESUME_ENTITY,
-  resumeId: 'active-uuid',
-  pk: 'RESUME#active-uuid',
-  isActive: true,
-  label: 'Active CV',
-};
-
-// PG-shaped resume records (from repositories/resumes.ts Resume interface)
 const PG_RESUME = {
   id: 'resume-uuid-1',
   userId: null,
@@ -161,22 +112,20 @@ const PG_ACTIVE_RESUME = {
 
 describe('GET / — list all resume summaries', () => {
   beforeEach(() => {
-    sendMock.mockReset();
     pgListResumesMock.mockReset();
   });
 
   it('returns 200 with a list of resumes from PG', async () => {
-    pgListResumesMock.mockResolvedValue([PG_RESUME] as never[]);
+    pgListResumesMock.mockResolvedValue([PG_RESUME]);
     const res = await buildApp().request('/');
     const body = (await res.json()) as { resumes: unknown[]; count: number };
     expect(res.status).toBe(200);
     expect(body.resumes).toHaveLength(1);
     expect(body.count).toBe(1);
-    expect(sendMock).not.toHaveBeenCalled();
   });
 
   it('PG resume has id and label fields (no DynamoDB keys)', async () => {
-    pgListResumesMock.mockResolvedValue([PG_RESUME] as never[]);
+    pgListResumesMock.mockResolvedValue([PG_RESUME]);
     const res = await buildApp().request('/');
     const body = (await res.json()) as { resumes: Record<string, unknown>[] };
     const resume = body.resumes[0] as Record<string, unknown>;
@@ -187,7 +136,7 @@ describe('GET / — list all resume summaries', () => {
   });
 
   it('returns empty list when PG returns no items', async () => {
-    pgListResumesMock.mockResolvedValue([] as never[]);
+    pgListResumesMock.mockResolvedValue([]);
     const res = await buildApp().request('/');
     const body = (await res.json()) as { resumes: unknown[]; count: number };
     expect(body.resumes).toHaveLength(0);
@@ -201,22 +150,20 @@ describe('GET / — list all resume summaries', () => {
 
 describe('GET /active — get active resume', () => {
   beforeEach(() => {
-    sendMock.mockReset();
     pgGetActiveResumeMock.mockReset();
   });
 
   it('returns 200 with the active resume when one exists', async () => {
-    pgGetActiveResumeMock.mockResolvedValue(PG_ACTIVE_RESUME as never);
+    pgGetActiveResumeMock.mockResolvedValue(PG_ACTIVE_RESUME);
     const res = await buildApp().request('/active');
     const body = (await res.json()) as { resume: Record<string, unknown> };
     expect(res.status).toBe(200);
     expect(body.resume['id']).toBe('active-uuid');
     expect(body.resume['isActive']).toBe(true);
-    expect(sendMock).not.toHaveBeenCalled();
   });
 
   it('includes the full contentJson payload in the active resume response', async () => {
-    pgGetActiveResumeMock.mockResolvedValue(PG_ACTIVE_RESUME as never);
+    pgGetActiveResumeMock.mockResolvedValue(PG_ACTIVE_RESUME);
     const res = await buildApp().request('/active');
     const body = (await res.json()) as { resume: Record<string, unknown> };
     expect(body.resume['contentJson']).toEqual({ basics: { name: 'Nelson Lamounier' } });
@@ -237,22 +184,20 @@ describe('GET /active — get active resume', () => {
 
 describe('GET /:id — get resume by ID', () => {
   beforeEach(() => {
-    sendMock.mockReset();
     pgGetResumeMock.mockReset();
   });
 
   it('returns 200 with full resume including contentJson', async () => {
-    pgGetResumeMock.mockResolvedValue(PG_RESUME as never);
+    pgGetResumeMock.mockResolvedValue(PG_RESUME);
     const res = await buildApp().request('/resume-uuid-1');
     const body = (await res.json()) as { resume: Record<string, unknown> };
     expect(res.status).toBe(200);
     expect(body.resume['id']).toBe('resume-uuid-1');
     expect(body.resume['contentJson']).toEqual({ basics: { name: 'Nelson Lamounier' } });
-    expect(sendMock).not.toHaveBeenCalled();
   });
 
   it('calls getResume with the correct id', async () => {
-    pgGetResumeMock.mockResolvedValue(PG_RESUME as never);
+    pgGetResumeMock.mockResolvedValue(PG_RESUME);
     await buildApp().request('/resume-uuid-1');
     expect(pgGetResumeMock).toHaveBeenCalledTimes(1);
     expect(pgGetResumeMock).toHaveBeenCalledWith(expect.anything(), 'resume-uuid-1');
@@ -271,11 +216,20 @@ describe('GET /:id — get resume by ID', () => {
 
 describe('POST / — create resume', () => {
   beforeEach(() => {
-    sendMock.mockReset();
-    sendMock.mockResolvedValue({});
+    pgUpsertResumeMock.mockReset();
+    pgUpsertResumeMock.mockResolvedValue(undefined);
+    pgGetResumeMock.mockReset();
   });
 
   it('returns 201 with the created resume', async () => {
+    // After upsert the route reads the resume back from PG.
+    pgGetResumeMock.mockImplementation(async (_pool: unknown, id: unknown) => ({
+      ...PG_RESUME,
+      id: id as string,
+      label: 'New CV 2026',
+      contentJson: { basics: { name: 'Nelson' } },
+    }));
+
     const res = await buildApp().request('/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -285,22 +239,23 @@ describe('POST / — create resume', () => {
     expect(res.status).toBe(201);
     expect(body.resume['label']).toBe('New CV 2026');
     expect(body.resume['isActive']).toBe(false);
-    expect(typeof body.resume['resumeId']).toBe('string');
+    expect(typeof body.resume['id']).toBe('string');
+    expect(pgUpsertResumeMock).toHaveBeenCalledTimes(1);
   });
 
-  it('PUTs entity with correct DynamoDB key structure', async () => {
+  it('upserts to PG with isActive: false', async () => {
+    pgGetResumeMock.mockResolvedValue(PG_RESUME);
     await buildApp().request('/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ label: 'Test', data: { version: 1 } }),
     });
-    const callArg = sendMock.mock.calls[0]?.[0] as {
-      input: { Item: Record<string, unknown> };
-    };
-    expect(callArg.input.Item['sk']).toBe('METADATA');
-    expect(callArg.input.Item['gsi1pk']).toBe('RESUME');
-    expect(callArg.input.Item['entityType']).toBe('RESUME');
-    expect(callArg.input.Item['isActive']).toBe(false);
+    expect(pgUpsertResumeMock).toHaveBeenCalledTimes(1);
+    const upsertArg = pgUpsertResumeMock.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(upsertArg['isActive']).toBe(false);
+    expect(upsertArg['label']).toBe('Test');
+    expect(upsertArg['contentJson']).toEqual({ version: 1 });
+    expect(typeof upsertArg['id']).toBe('string');
   });
 
   it('returns 400 when label is missing', async () => {
@@ -312,6 +267,7 @@ describe('POST / — create resume', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/label/);
+    expect(pgUpsertResumeMock).not.toHaveBeenCalled();
   });
 
   it('returns 400 when label is an empty string', async () => {
@@ -350,11 +306,13 @@ describe('POST / — create resume', () => {
 
 describe('PUT /:id — update resume', () => {
   beforeEach(() => {
-    sendMock.mockReset();
-    sendMock.mockResolvedValue({ Attributes: RESUME_ENTITY });
+    pgUpsertResumeMock.mockReset();
+    pgUpsertResumeMock.mockResolvedValue(undefined);
+    pgGetResumeMock.mockReset();
   });
 
   it('returns 200 with updated resume on success', async () => {
+    pgGetResumeMock.mockResolvedValue(PG_RESUME);
     const res = await buildApp().request('/resume-uuid-1', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -363,6 +321,18 @@ describe('PUT /:id — update resume', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { resume: unknown };
     expect(body.resume).toBeDefined();
+    expect(pgUpsertResumeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 404 when resume does not exist', async () => {
+    pgGetResumeMock.mockResolvedValue(null);
+    const res = await buildApp().request('/missing-id', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: 'Whatever' }),
+    });
+    expect(res.status).toBe(404);
+    expect(pgUpsertResumeMock).not.toHaveBeenCalled();
   });
 
   it('returns 400 when neither label nor data is provided', async () => {
@@ -374,18 +344,19 @@ describe('PUT /:id — update resume', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/label.*data|data.*label/i);
+    expect(pgUpsertResumeMock).not.toHaveBeenCalled();
   });
 
-  it('always stamps updatedAt in the UpdateExpression', async () => {
+  it('merges label from body over existing record', async () => {
+    pgGetResumeMock.mockResolvedValue(PG_RESUME);
     await buildApp().request('/resume-uuid-1', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ label: 'New Label' }),
     });
-    const callArg = sendMock.mock.calls[0]?.[0] as {
-      input: { ExpressionAttributeValues: Record<string, unknown> };
-    };
-    expect(callArg.input.ExpressionAttributeValues[':updatedAt']).toBeTruthy();
+    const upsertArg = pgUpsertResumeMock.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(upsertArg['label']).toBe('New Label');
+    expect(upsertArg['contentJson']).toEqual(PG_RESUME.contentJson);
   });
 });
 
@@ -394,38 +365,36 @@ describe('PUT /:id — update resume', () => {
 // ---------------------------------------------------------------------------
 
 describe('DELETE /:id — delete resume', () => {
-  beforeEach(() => { sendMock.mockReset(); });
+  beforeEach(() => {
+    pgGetResumeMock.mockReset();
+    pgDeleteResumeMock.mockReset();
+    pgDeleteResumeMock.mockResolvedValue(undefined);
+  });
 
   it('returns 200 when resume exists and is not active', async () => {
-    sendMock
-      .mockResolvedValueOnce({ Item: RESUME_ENTITY }) // GetCommand — isActive: false
-      .mockResolvedValueOnce({});                     // DeleteCommand
-
+    pgGetResumeMock.mockResolvedValue(PG_RESUME);
     const res = await buildApp().request('/resume-uuid-1', { method: 'DELETE' });
     const body = (await res.json()) as { deleted: boolean; resumeId: string };
     expect(res.status).toBe(200);
     expect(body.deleted).toBe(true);
     expect(body.resumeId).toBe('resume-uuid-1');
+    expect(pgDeleteResumeMock).toHaveBeenCalledWith(expect.anything(), 'resume-uuid-1');
   });
 
   it('returns 404 when resume does not exist', async () => {
-    sendMock.mockResolvedValue({ Item: undefined });
+    pgGetResumeMock.mockResolvedValue(null);
     const res = await buildApp().request('/nonexistent', { method: 'DELETE' });
     expect(res.status).toBe(404);
+    expect(pgDeleteResumeMock).not.toHaveBeenCalled();
   });
 
   it('returns 409 when trying to delete the active resume', async () => {
-    sendMock.mockResolvedValue({ Item: ACTIVE_RESUME_ENTITY });
+    pgGetResumeMock.mockResolvedValue(PG_ACTIVE_RESUME);
     const res = await buildApp().request('/active-uuid', { method: 'DELETE' });
     expect(res.status).toBe(409);
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/cannot delete the active resume/i);
-  });
-
-  it('does not issue a DeleteCommand when the resume is active', async () => {
-    sendMock.mockResolvedValue({ Item: ACTIVE_RESUME_ENTITY });
-    await buildApp().request('/active-uuid', { method: 'DELETE' });
-    expect(sendMock).toHaveBeenCalledTimes(1); // only the GetCommand
+    expect(pgDeleteResumeMock).not.toHaveBeenCalled();
   });
 });
 
@@ -434,43 +403,47 @@ describe('DELETE /:id — delete resume', () => {
 // ---------------------------------------------------------------------------
 
 describe('POST /:id/activate — activate resume', () => {
-  beforeEach(() => { sendMock.mockReset(); });
+  beforeEach(() => {
+    pgGetResumeMock.mockReset();
+    pgGetActiveResumeMock.mockReset();
+    pgSetActiveResumeMock.mockReset();
+    pgSetActiveResumeMock.mockResolvedValue(undefined);
+  });
 
-  it('returns 200 with the activated resume', async () => {
-    const activatedAttributes = {
-      ...RESUME_ENTITY,
-      resumeId: 'target-uuid',
-      pk: 'RESUME#target-uuid',
-      isActive: true,
-    };
-    sendMock
-      .mockResolvedValueOnce({ Items: [ACTIVE_RESUME_ENTITY] }) // findActive scan
-      .mockResolvedValueOnce({})                                 // deactivate old
-      .mockResolvedValueOnce({ Attributes: activatedAttributes }); // activate target
+  it('returns 404 when target resume does not exist', async () => {
+    pgGetResumeMock.mockResolvedValue(null);
+    const res = await buildApp().request('/missing/activate', { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(pgSetActiveResumeMock).not.toHaveBeenCalled();
+  });
 
-    const res = await buildApp().request('/target-uuid/activate', { method: 'POST' });
+  it('calls setActiveResume with current active id and target id', async () => {
+    // First get for target, then second get returns activated resume after switch
+    pgGetResumeMock
+      .mockResolvedValueOnce(PG_RESUME)
+      .mockResolvedValueOnce({ ...PG_RESUME, isActive: true });
+    pgGetActiveResumeMock.mockResolvedValue(PG_ACTIVE_RESUME);
+
+    const res = await buildApp().request('/resume-uuid-1/activate', { method: 'POST' });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { resume: Record<string, unknown> };
-    expect(body.resume['isActive']).toBe(true);
+    expect(pgSetActiveResumeMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'active-uuid',
+      'resume-uuid-1',
+    );
   });
 
-  it('skips deactivation when the target is already the active resume', async () => {
-    const sameActive = { ...ACTIVE_RESUME_ENTITY, resumeId: 'same-uuid', pk: 'RESUME#same-uuid' };
-    sendMock
-      .mockResolvedValueOnce({ Items: [sameActive] }) // findActive — same ID
-      .mockResolvedValueOnce({ Attributes: sameActive }); // activate
-
-    await buildApp().request('/same-uuid/activate', { method: 'POST' });
-    // Scan + activate only — no deactivate call
-    expect(sendMock).toHaveBeenCalledTimes(2);
-  });
-
-  it('skips deactivation when no active resume exists', async () => {
-    sendMock
-      .mockResolvedValueOnce({ Items: [] })                   // findActive → none
-      .mockResolvedValueOnce({ Attributes: RESUME_ENTITY });  // activate
+  it('passes null for current active when no resume is active', async () => {
+    pgGetResumeMock
+      .mockResolvedValueOnce(PG_RESUME)
+      .mockResolvedValueOnce({ ...PG_RESUME, isActive: true });
+    pgGetActiveResumeMock.mockResolvedValue(null);
 
     await buildApp().request('/resume-uuid-1/activate', { method: 'POST' });
-    expect(sendMock).toHaveBeenCalledTimes(2);
+    expect(pgSetActiveResumeMock).toHaveBeenCalledWith(
+      expect.anything(),
+      null,
+      'resume-uuid-1',
+    );
   });
 });

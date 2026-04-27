@@ -1,6 +1,6 @@
 /**
  * @format
- * admin-api — Resume management routes.
+ * admin-api — Resume management routes (PG-only after Phase 5).
  *
  * Routes (all protected by Cognito JWT middleware):
  *
@@ -11,35 +11,13 @@
  *   PUT    /api/admin/resumes/:id          — Update label and/or data
  *   DELETE /api/admin/resumes/:id          — Delete (guards against deleting the active one)
  *   POST   /api/admin/resumes/:id/activate — Set a resume as the publicly displayed one
- *
- * DynamoDB access pattern:
- *   Resumes live in the **Strategist table** (STRATEGIST_TABLE_NAME), NOT the articles table.
- *   This matches the migration note in the shared `dynamodb-resumes.ts` lib (2026-03).
- *
- *   Key schema:
- *     pk: RESUME#<uuid>     sk: METADATA
- *     gsi1pk: RESUME        gsi1sk: RESUME#<createdAt>    → lists all resumes (GSI1)
- *     entityType: RESUME
- *     isActive: boolean     → only one should be true at a time
- *
- *   Active resume lookup:
- *     Scan with FilterExpression: entityType=RESUME AND isActive=true AND sk=METADATA
- *     (Small table — scan is acceptable; typically < 20 resumes)
  */
 
 import { randomUUID } from 'node:crypto';
 
 import { Hono } from 'hono';
-import {
-  DeleteCommand,
-  GetCommand,
-  PutCommand,
-  ScanCommand,
-  UpdateCommand,
-} from '@aws-sdk/lib-dynamodb';
 import type { JWTPayload } from 'jose';
 import type { AdminApiConfig } from '../lib/config.js';
-import { docClient } from '../lib/dynamo.js';
 import { getPool } from '../lib/pg.js';
 import {
     upsertResume,
@@ -58,93 +36,6 @@ type AdminApiBindings = {
 };
 
 // ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
-
-/** Resume entity as stored in DynamoDB. */
-interface ResumeEntity {
-  pk: string;
-  sk: 'METADATA';
-  gsi1pk: 'RESUME';
-  gsi1sk: string;
-  entityType: 'RESUME';
-  resumeId: string;
-  label: string;
-  isActive: boolean;
-  /** Full resume JSON blob — stored as a DynamoDB Map. */
-  data: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** Summary shape returned to the client for list operations. */
-interface ResumeSummary {
-  resumeId: string;
-  label: string;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** Full resume with content data. */
-interface ResumeWithData extends ResumeSummary {
-  data: Record<string, unknown>;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Map a raw DynamoDB item to a client-facing summary (strip DynamoDB keys).
- *
- * @param entity - Raw DynamoDB item cast to ResumeEntity
- * @returns Summary without internal DynamoDB partition/sort keys
- */
-function toSummary(entity: ResumeEntity): ResumeSummary {
-  return {
-    resumeId: entity.resumeId,
-    label: entity.label,
-    isActive: entity.isActive ?? false,
-    createdAt: entity.createdAt,
-    updatedAt: entity.updatedAt,
-  };
-}
-
-/**
- * Map a raw DynamoDB item to the full shape including data.
- *
- * @param entity - Raw DynamoDB item cast to ResumeEntity
- * @returns Full resume with data
- */
-function toFull(entity: ResumeEntity): ResumeWithData {
-  return { ...toSummary(entity), data: entity.data ?? {} };
-}
-
-/**
- * Look up the currently active resume (isActive = true).
- * Uses a Scan — acceptable for small tables (< 20 items).
- *
- * @param config - Resolved application configuration
- * @returns Full resume with data, or null if none is active
- */
-async function findActive(config: AdminApiConfig): Promise<ResumeWithData | null> {
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: config.resumesTableName,
-      FilterExpression: 'entityType = :type AND isActive = :active AND sk = :sk',
-      ExpressionAttributeValues: {
-        ':type': 'RESUME',
-        ':active': true,
-        ':sk': 'METADATA',
-      },
-    }),
-  );
-  if (!result.Items || result.Items.length === 0) return null;
-  return toFull(result.Items[0] as ResumeEntity);
-}
-
-// ---------------------------------------------------------------------------
 // Router factory
 // ---------------------------------------------------------------------------
 
@@ -158,8 +49,7 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
   const router = new Hono<AdminApiBindings>();
 
   // -------------------------------------------------------------------------
-  // GET /api/admin/resumes
-  // List all resume summaries (no data payload to keep response lean).
+  // GET /api/admin/resumes — list summaries
   // -------------------------------------------------------------------------
   router.get('/', async (ctx) => {
     const resumes = await listResumes(getPool(config));
@@ -167,8 +57,7 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/admin/resumes/active
-  // Return the currently active resume (with full data).
+  // GET /api/admin/resumes/active — active resume
   // Must be defined BEFORE /:id to take route precedence.
   // -------------------------------------------------------------------------
   router.get('/active', async (ctx) => {
@@ -178,8 +67,7 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/admin/resumes/:id
-  // Fetch a single resume by UUID with full data.
+  // GET /api/admin/resumes/:id — fetch one
   // -------------------------------------------------------------------------
   router.get('/:id', async (ctx) => {
     const id = ctx.req.param('id');
@@ -189,11 +77,7 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/admin/resumes
-  // Create a new resume.
-  //
-  // Request body: { label: string, data: Record<string, unknown> }
-  // Response:     { resume: ResumeWithData }
+  // POST /api/admin/resumes — create
   // -------------------------------------------------------------------------
   router.post('/', async (ctx) => {
     const body = await ctx.req.json<{ label?: string; data?: Record<string, unknown> }>();
@@ -207,52 +91,22 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
     }
 
     const resumeId = randomUUID();
-    const now = new Date().toISOString();
-
-    const entity: ResumeEntity = {
-      pk: `RESUME#${resumeId}`,
-      sk: 'METADATA',
-      gsi1pk: 'RESUME',
-      gsi1sk: `RESUME#${now}`,
-      entityType: 'RESUME',
-      resumeId,
-      label: body.label.trim(),
-      isActive: false,
-      data: body.data,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    await docClient.send(
-      new PutCommand({
-        TableName: config.resumesTableName,
-        Item: entity,
-        ConditionExpression: 'attribute_not_exists(pk)',
-      }),
-    );
-
-    try {
-      await upsertResume(getPool(config), {
-        id:               entity.resumeId,
-        userId:           null,
-        jobApplicationId: null,
-        label:            entity.label,
-        isActive:         entity.isActive,
-        contentJson:      entity.data,
-        renderedHtml:     null,
-      });
-    } catch (pgErr) {
-      console.error('[resumes] PG shadow write failed', pgErr);
-    }
-
-    return ctx.json({ resume: toFull(entity) }, 201);
+    const pool = getPool(config);
+    await upsertResume(pool, {
+      id:               resumeId,
+      userId:           null,
+      jobApplicationId: null,
+      label:            body.label.trim(),
+      isActive:         false,
+      contentJson:      body.data,
+      renderedHtml:     null,
+    });
+    const created = await pgGetResume(pool, resumeId);
+    return ctx.json({ resume: created }, 201);
   });
 
   // -------------------------------------------------------------------------
-  // PUT /api/admin/resumes/:id
-  // Update label and/or data for an existing resume.
-  //
-  // Request body: { label?: string, data?: Record<string, unknown> }
+  // PUT /api/admin/resumes/:id — update
   // -------------------------------------------------------------------------
   router.put('/:id', async (ctx) => {
     const id = ctx.req.param('id');
@@ -262,156 +116,49 @@ export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindin
       return ctx.json({ error: 'At least one of "label" or "data" must be provided' }, 400);
     }
 
-    const expressionParts: string[] = ['updatedAt = :updatedAt'];
-    const exprAttrNames: Record<string, string> = {};
-    const exprAttrValues: Record<string, unknown> = {
-      ':updatedAt': new Date().toISOString(),
-    };
+    const pool = getPool(config);
+    const existing = await pgGetResume(pool, id);
+    if (!existing) return ctx.json({ error: `Resume not found: ${id}` }, 404);
 
-    if (body.label) {
-      exprAttrNames['#label'] = 'label';
-      exprAttrValues[':label'] = body.label.trim();
-      expressionParts.push('#label = :label');
-    }
-
-    if (body.data) {
-      exprAttrNames['#data'] = 'data';
-      exprAttrValues[':data'] = body.data;
-      expressionParts.push('#data = :data');
-    }
-
-    const result = await docClient.send(
-      new UpdateCommand({
-        TableName: config.resumesTableName,
-        Key: { pk: `RESUME#${id}`, sk: 'METADATA' },
-        UpdateExpression: `SET ${expressionParts.join(', ')}`,
-        ExpressionAttributeNames: Object.keys(exprAttrNames).length > 0 ? exprAttrNames : undefined,
-        ExpressionAttributeValues: exprAttrValues,
-        ConditionExpression: 'attribute_exists(pk)',
-        ReturnValues: 'ALL_NEW',
-      }),
-    );
-
-    if (!result.Attributes) {
-      return ctx.json({ error: `Resume not found: ${id}` }, 404);
-    }
-
-    try {
-      const existingPg = await pgGetResume(getPool(config), id);
-      await upsertResume(getPool(config), {
-        id,
-        userId:           existingPg?.userId           ?? null,
-        jobApplicationId: existingPg?.jobApplicationId ?? null,
-        label:            body.label?.trim()           ?? existingPg?.label ?? '',
-        isActive:         existingPg?.isActive         ?? false,
-        contentJson:      body.data                    ?? existingPg?.contentJson ?? {},
-        renderedHtml:     existingPg?.renderedHtml      ?? null,
-      });
-    } catch (pgErr) {
-      console.error('[resumes] PG shadow update failed', pgErr);
-    }
-
-    return ctx.json({ resume: toFull(result.Attributes as ResumeEntity) });
+    await upsertResume(pool, {
+      ...existing,
+      label:       body.label?.trim() ?? existing.label,
+      contentJson: body.data          ?? existing.contentJson,
+    });
+    const updated = await pgGetResume(pool, id);
+    return ctx.json({ resume: updated });
   });
 
   // -------------------------------------------------------------------------
-  // DELETE /api/admin/resumes/:id
-  // Delete a resume. Guards against deleting the active one.
+  // DELETE /api/admin/resumes/:id — delete (guards active)
   // -------------------------------------------------------------------------
   router.delete('/:id', async (ctx) => {
     const id = ctx.req.param('id');
-
-    // Fetch the item first to check isActive
-    const existing = await docClient.send(
-      new GetCommand({
-        TableName: config.resumesTableName,
-        Key: { pk: `RESUME#${id}`, sk: 'METADATA' },
-      }),
-    );
-
-    if (!existing.Item) {
-      return ctx.json({ error: `Resume not found: ${id}` }, 404);
-    }
-
-    if ((existing.Item as ResumeEntity).isActive) {
+    const pool = getPool(config);
+    const existing = await pgGetResume(pool, id);
+    if (!existing) return ctx.json({ error: `Resume not found: ${id}` }, 404);
+    if (existing.isActive) {
       return ctx.json(
         { error: 'Cannot delete the active resume. Activate another resume first.' },
         409,
       );
     }
-
-    await docClient.send(
-      new DeleteCommand({
-        TableName: config.resumesTableName,
-        Key: { pk: `RESUME#${id}`, sk: 'METADATA' },
-        ConditionExpression: 'attribute_exists(pk)',
-      }),
-    );
-
-    try {
-      await pgDeleteResume(getPool(config), id);
-    } catch (pgErr) {
-      console.error('[resumes] PG shadow delete failed', pgErr);
-    }
-
+    await pgDeleteResume(pool, id);
     return ctx.json({ deleted: true, resumeId: id });
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/admin/resumes/:id/activate
-  // Set a resume as the publicly displayed one.
-  //
-  // Deactivates the current active resume (if different) then activates
-  // the target. Both writes are sequential — DynamoDB does not support
-  // multi-item transactions across non-transaction API calls cheaply enough
-  // for this use case (resume changes are rare).
-  //
-  // Response: { resume: ResumeWithData }
+  // POST /api/admin/resumes/:id/activate — set as active
   // -------------------------------------------------------------------------
   router.post('/:id/activate', async (ctx) => {
     const id = ctx.req.param('id');
-    const now = new Date().toISOString();
-
-    // Step 1: Deactivate the currently active resume (if different)
-    const currentActive = await findActive(config);
-    if (currentActive && currentActive.resumeId !== id) {
-      await docClient.send(
-        new UpdateCommand({
-          TableName: config.resumesTableName,
-          Key: { pk: `RESUME#${currentActive.resumeId}`, sk: 'METADATA' },
-          UpdateExpression: 'SET isActive = :inactive, updatedAt = :now',
-          ExpressionAttributeValues: { ':inactive': false, ':now': now },
-        }),
-      );
-    }
-
-    // Step 2: Activate the target resume
-    const result = await docClient.send(
-      new UpdateCommand({
-        TableName: config.resumesTableName,
-        Key: { pk: `RESUME#${id}`, sk: 'METADATA' },
-        UpdateExpression: 'SET isActive = :active, updatedAt = :now',
-        ExpressionAttributeValues: { ':active': true, ':now': now },
-        ConditionExpression: 'attribute_exists(pk)',
-        ReturnValues: 'ALL_NEW',
-      }),
-    );
-
-    if (!result.Attributes) {
-      return ctx.json({ error: `Resume not found: ${id}` }, 404);
-    }
-
-    try {
-      await setActiveResume(
-        getPool(config),
-        currentActive?.resumeId ?? null,
-        id,
-      );
-    } catch (pgErr) {
-      console.error('[resumes] PG shadow activate failed', pgErr);
-    }
-
-    return ctx.json({ resume: toFull(result.Attributes as ResumeEntity) });
+    const pool = getPool(config);
+    const target = await pgGetResume(pool, id);
+    if (!target) return ctx.json({ error: `Resume not found: ${id}` }, 404);
+    const currentActive = await getActiveResume(pool);
+    await setActiveResume(pool, currentActive?.id ?? null, id);
+    const activated = await pgGetResume(pool, id);
+    return ctx.json({ resume: activated });
   });
 
   return router;
