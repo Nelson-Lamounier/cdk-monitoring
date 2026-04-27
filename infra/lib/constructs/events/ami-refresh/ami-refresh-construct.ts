@@ -66,9 +66,37 @@ export class AmiRefreshConstruct extends Construct {
         'ec2:CreateLaunchTemplateVersion',
         'ec2:ModifyLaunchTemplate',
         'ec2:DescribeLaunchTemplateVersions',
-        'ec2:RunInstances',
       ],
       resources: [`arn:aws:ec2:${stack.region}:${stack.account}:launch-template/*`],
+    }));
+    // UpdateAutoScalingGroup with a LaunchTemplate triggers an authorization
+    // simulation: AWS internally evaluates ec2:RunInstances against ALL the
+    // resources the LT references (AMI, subnet, SG, network-interface, volume,
+    // instance, key-pair). Granting only on launch-template/* causes the
+    // simulation to fail with "not authorized to use launch template".
+    //
+    // Scope the broad RunInstances/PassRole grants with aws:CalledVia so they
+    // only succeed when invoked transitively by Auto Scaling — never if the
+    // Lambda itself calls ec2:RunInstances directly.
+    lambdaRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'Ec2RunInstancesViaAsg',
+      actions: ['ec2:RunInstances'],
+      resources: ['*'],
+      conditions: {
+        'ForAnyValue:StringEquals': {
+          'aws:CalledVia': ['autoscaling.amazonaws.com'],
+        },
+      },
+    }));
+    lambdaRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'IamPassRoleViaAsg',
+      actions: ['iam:PassRole'],
+      resources: ['*'],
+      conditions: {
+        'ForAnyValue:StringEquals': {
+          'aws:CalledVia': ['autoscaling.amazonaws.com'],
+        },
+      },
     }));
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       sid: 'AsgRefresh',
