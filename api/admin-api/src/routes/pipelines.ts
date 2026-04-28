@@ -17,6 +17,7 @@ import { Hono } from 'hono';
 import type { JWTPayload } from 'jose';
 import type { V1Job } from '@kubernetes/client-node';
 import type { AdminApiConfig } from '../lib/config.js';
+import { isImageConfigured } from '../lib/config.js';
 import { getBatchApi } from '../lib/k8s.js';
 import { getPool } from '../lib/pg.js';
 import { insertPipelineRun, getPipelineRun } from '../lib/repositories/pipeline-runs.js';
@@ -113,6 +114,11 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
     if (!s3SourceKey) return ctx.json({ error: '"s3SourceKey" is required' }, 400);
     const mode = body.mode?.trim() || 'kb-augmented';
 
+    if (!isImageConfigured(config.articlePipelineImage)) {
+      console.error('[pipelines/article-job] ARTICLE_PIPELINE_IMAGE not yet set — Image Updater write pending', { value: config.articlePipelineImage });
+      return ctx.json({ error: 'Article pipeline image not yet configured — first deploy must complete' }, 502);
+    }
+
     const pipelineRunId = randomUUID();
     try {
       await insertPipelineRun(getPool(config), {
@@ -179,6 +185,11 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
       if (!v) return ctx.json({ error: `"${k}" is required` }, 400);
     }
     const mode = body.mode?.trim() || 'standard';
+
+    if (!isImageConfigured(config.strategistPipelineImage)) {
+      console.error('[pipelines/strategist-job] STRATEGIST_PIPELINE_IMAGE not yet set — Image Updater write pending', { value: config.strategistPipelineImage });
+      return ctx.json({ error: 'Strategist pipeline image not yet configured — first deploy must complete' }, 502);
+    }
 
     const pipelineRunId = randomUUID();
     try {

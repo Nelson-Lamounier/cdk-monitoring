@@ -97,14 +97,21 @@ describe('loadConfig()', () => {
   });
 
   describe('pipeline config', () => {
-    it('throws when ARTICLE_PIPELINE_IMAGE is missing', () => {
+    // The 3 *_IMAGE env vars are written by ArgoCD Image Updater on each ECR
+    // push. On first deploy (before any push) they may be unset — we fall back
+    // to UNSET_IMAGE_SENTINEL and let routes return 502 via isImageConfigured.
+    it('falls back to sentinel when ARTICLE_PIPELINE_IMAGE is missing', async () => {
       delete process.env['ARTICLE_PIPELINE_IMAGE'];
-      expect(() => loadConfig()).toThrow(/ARTICLE_PIPELINE_IMAGE/);
+      const { UNSET_IMAGE_SENTINEL } = await import('../../src/lib/config.js');
+      const cfg = loadConfig();
+      expect(cfg.articlePipelineImage).toBe(UNSET_IMAGE_SENTINEL);
     });
 
-    it('throws when STRATEGIST_PIPELINE_IMAGE is missing', () => {
+    it('falls back to sentinel when STRATEGIST_PIPELINE_IMAGE is missing', async () => {
       delete process.env['STRATEGIST_PIPELINE_IMAGE'];
-      expect(() => loadConfig()).toThrow(/STRATEGIST_PIPELINE_IMAGE/);
+      const { UNSET_IMAGE_SENTINEL } = await import('../../src/lib/config.js');
+      const cfg = loadConfig();
+      expect(cfg.strategistPipelineImage).toBe(UNSET_IMAGE_SENTINEL);
     });
 
     it('defaults pipeline namespaces and SAs when env unset', () => {
@@ -137,9 +144,11 @@ describe('loadConfig()', () => {
   });
 
   describe('ingestion config', () => {
-    it('throws when INGESTION_IMAGE is missing', () => {
+    it('falls back to sentinel when INGESTION_IMAGE is missing', async () => {
       delete process.env['INGESTION_IMAGE'];
-      expect(() => loadConfig()).toThrow(/INGESTION_IMAGE/);
+      const { UNSET_IMAGE_SENTINEL } = await import('../../src/lib/config.js');
+      const cfg = loadConfig();
+      expect(cfg.ingestionImage).toBe(UNSET_IMAGE_SENTINEL);
     });
 
     it('resolves ingestionImage from INGESTION_IMAGE env var', () => {

@@ -2,15 +2,36 @@
  * @format
  * admin-api — Fail-fast environment variable validator.
  *
- * All values come from two Kubernetes resources managed by deploy.py:
- *   - `admin-api-secrets`  K8s Secret   (Cognito auth creds, API keys)
- *   - `admin-api-config`   K8s ConfigMap (bucket name, region, PG, K8s namespaces)
+ * Values come from a mix of K8s resources:
+ *   - `admin-api-secrets`        ESO-synced Secret  (Cognito auth, SSM-sourced refs)
+ *   - `platform-rds-credentials` ESO-synced Secret  (PG_HOST/PORT/DATABASE/USER/PASSWORD)
+ *   - Helm-templated env block on the Deployment    (K8s namespace + SA names + 3 image
+ *                                                    URIs tracked by ArgoCD Image Updater)
  *
  * AWS credentials are NEVER in this config — they come from the
  * EC2 Instance Profile (IMDS) via the AWS SDK v3 default credential chain.
  *
+ * The 3 *_IMAGE env vars are TEMPLATED by the Helm chart from values that
+ * Image Updater rewrites on every ECR push. On the very first deploy (before
+ * any ECR push has happened) the values are 'latest' which still resolves to
+ * a valid pullable image. We therefore do NOT fail-fast on missing images —
+ * routes that create Jobs guard with `isImageConfigured()` and return 502
+ * if the value is the unset sentinel.
+ *
  * @throws {Error} On startup if any required variable is absent.
  */
+
+/**
+ * Sentinel value used when the chart was rendered before Image Updater has
+ * written a tag. Routes check this and return 502 instead of creating a
+ * Job that would CrashLoopBackOff on ImagePullBackOff.
+ */
+export const UNSET_IMAGE_SENTINEL = 'image-uri-not-yet-set';
+
+/** Returns true if the image URI has been written by Image Updater (or set manually). */
+export function isImageConfigured(uri: string): boolean {
+  return uri.length > 0 && uri !== UNSET_IMAGE_SENTINEL && !uri.endsWith(':');
+}
 
 /** Resolved, strongly-typed application configuration. */
 export interface AdminApiConfig {
@@ -92,10 +113,12 @@ export function loadConfig(): AdminApiConfig {
     PG_DATABASE: process.env['PG_DATABASE'],
     PG_USER: process.env['PG_USER'],
     PG_PASSWORD: process.env['PG_PASSWORD'],
-    INGESTION_IMAGE: process.env['INGESTION_IMAGE'],
-    ARTICLE_PIPELINE_IMAGE: process.env['ARTICLE_PIPELINE_IMAGE'],
-    STRATEGIST_PIPELINE_IMAGE: process.env['STRATEGIST_PIPELINE_IMAGE'],
   };
+
+  // Job-image env vars are NOT required at startup — see header docblock.
+  // ArgoCD Image Updater writes them via Helm values; on the very first
+  // deploy (before any ECR push) the chart default 'latest' may resolve.
+  // Routes guard with isImageConfigured() before creating Jobs.
 
   const missing = Object.entries(required)
     .filter(([, v]) => !v)
@@ -121,13 +144,13 @@ export function loadConfig(): AdminApiConfig {
     pgUser: required['PG_USER']!,
     pgPassword: required['PG_PASSWORD']!,
     ingestionNamespace: process.env['INGESTION_NAMESPACE'] ?? 'ingestion',
-    ingestionImage: required['INGESTION_IMAGE']!,
+    ingestionImage: process.env['INGESTION_IMAGE'] ?? UNSET_IMAGE_SENTINEL,
     ingestionServiceAccount: process.env['INGESTION_SERVICE_ACCOUNT'] ?? 'ingestion-sa',
     articlePipelineNamespace: process.env['ARTICLE_PIPELINE_NAMESPACE'] ?? 'article-pipeline',
-    articlePipelineImage: required['ARTICLE_PIPELINE_IMAGE']!,
+    articlePipelineImage: process.env['ARTICLE_PIPELINE_IMAGE'] ?? UNSET_IMAGE_SENTINEL,
     articlePipelineServiceAccount: process.env['ARTICLE_PIPELINE_SERVICE_ACCOUNT'] ?? 'article-pipeline-sa',
     strategistPipelineNamespace: process.env['STRATEGIST_PIPELINE_NAMESPACE'] ?? 'job-strategist',
-    strategistPipelineImage: required['STRATEGIST_PIPELINE_IMAGE']!,
+    strategistPipelineImage: process.env['STRATEGIST_PIPELINE_IMAGE'] ?? UNSET_IMAGE_SENTINEL,
     strategistPipelineServiceAccount: process.env['STRATEGIST_PIPELINE_SERVICE_ACCOUNT'] ?? 'job-strategist-sa',
   };
 }

@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import type { JWTPayload } from 'jose';
 import type { AdminApiConfig } from '../lib/config.js';
+import { isImageConfigured } from '../lib/config.js';
 import { getBatchApi } from '../lib/k8s.js';
 import { buildPipelineJob, sanitizeLabel } from '../lib/k8s-job-builder.js';
 import { getPool } from '../lib/pg.js';
@@ -214,6 +215,11 @@ export function createApplicationsRouter(config: AdminApiConfig): Hono<AdminApiB
       if (!v) return ctx.json({ error: `"${k}" is required` }, 400);
     }
     const mode = body.mode?.trim() || 'standard';
+
+    if (!isImageConfigured(config.strategistPipelineImage)) {
+      console.error('[applications/coach] STRATEGIST_PIPELINE_IMAGE not yet set — Image Updater write pending', { value: config.strategistPipelineImage });
+      return ctx.json({ error: 'Strategist pipeline image not yet configured — first deploy must complete' }, 502);
+    }
 
     const coachPipelineRunId = randomUUID();
     try {
