@@ -70,6 +70,18 @@ export interface SharedVpcStackProps extends cdk.StackProps {
     readonly wikiMcpEcrRepositoryName?: string;
     /** Enable wiki-mcp ECR repository creation @default false */
     readonly createWikiMcpEcrRepository?: boolean;
+    /** ingestion K8s Job ECR repository name @default 'ingestion' */
+    readonly ingestionEcrRepositoryName?: string;
+    /** Enable ingestion ECR repository creation @default true */
+    readonly createIngestionEcrRepository?: boolean;
+    /** article-pipeline K8s Job ECR repository name @default 'article-pipeline' */
+    readonly articlePipelineEcrRepositoryName?: string;
+    /** Enable article-pipeline ECR repository creation @default true */
+    readonly createArticlePipelineEcrRepository?: boolean;
+    /** job-strategist K8s Job ECR repository name @default 'job-strategist' */
+    readonly jobStrategistEcrRepositoryName?: string;
+    /** Enable job-strategist ECR repository creation @default true */
+    readonly createJobStrategistEcrRepository?: boolean;
 }
 
 
@@ -106,6 +118,12 @@ export class SharedVpcStack extends cdk.Stack {
     public readonly adminApiEcrRepository?: ecr.Repository;
     /** ECR Repository for the wiki-mcp MCP server */
     public readonly wikiMcpEcrRepository?: ecr.Repository;
+    /** ECR Repository for the ingestion K8s Job (Phase 3) */
+    public readonly ingestionEcrRepository?: ecr.Repository;
+    /** ECR Repository for the article-pipeline K8s Job (Phase 4) */
+    public readonly articlePipelineEcrRepository?: ecr.Repository;
+    /** ECR Repository for the job-strategist K8s Job (Phase 4) */
+    public readonly jobStrategistEcrRepository?: ecr.Repository;
 
     constructor(scope: Construct, id: string, props: SharedVpcStackProps) {
         super(scope, id, props);
@@ -409,6 +427,189 @@ export class SharedVpcStack extends cdk.Stack {
             new cdk.CfnOutput(this, 'AdminApiEcrRepositoryArn', {
                 value: this.adminApiEcrRepository.repositoryArn,
                 description: 'admin-api BFF ECR Repository ARN (Cognito-protected)',
+            });
+        }
+
+        // =====================================================================
+        // ECR Repository (ingestion) — Phase 3 K8s Job image
+        // One-shot pod created on demand by admin-api; replaces the legacy
+        // 3-Lambda chain (Trigger → Fetcher → Worker + S3 staging).
+        // SSM params stored under /shared/ecr-ingestion/{env}/ for CI discovery.
+        // =====================================================================
+        if (props.createIngestionEcrRepository !== false) {
+            const ingestionRepoName = props.ingestionEcrRepositoryName ?? 'ingestion';
+            const isProduction = props.targetEnvironment === Environment.PRODUCTION;
+
+            this.ingestionEcrRepository = new ecr.Repository(this, 'IngestionEcrRepository', {
+                repositoryName: ingestionRepoName,
+                imageScanOnPush: true,
+                imageTagMutability: ecr.TagMutability.MUTABLE,
+                encryption: ecr.RepositoryEncryption.AES_256,
+                removalPolicy: isProduction ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+                lifecycleRules: [
+                    {
+                        rulePriority: 1,
+                        description: 'Remove untagged images after 30 days',
+                        tagStatus: ecr.TagStatus.UNTAGGED,
+                        maxImageAge: cdk.Duration.days(30),
+                    },
+                    {
+                        rulePriority: 2,
+                        description: 'Keep only 50 most recent tagged images',
+                        tagStatus: ecr.TagStatus.ANY,
+                        maxImageCount: 50,
+                    },
+                ],
+            });
+
+            const ingestionEcrSsmPrefix = `/shared/ecr-ingestion/${props.targetEnvironment}`;
+
+            new ssm.StringParameter(this, 'SsmIngestionEcrRepositoryUri', {
+                parameterName: `${ingestionEcrSsmPrefix}/repository-uri`,
+                stringValue: this.ingestionEcrRepository.repositoryUri,
+                description: `ingestion ECR repository URI for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmIngestionEcrRepositoryArn', {
+                parameterName: `${ingestionEcrSsmPrefix}/repository-arn`,
+                stringValue: this.ingestionEcrRepository.repositoryArn,
+                description: `ingestion ECR repository ARN for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmIngestionEcrRepositoryName', {
+                parameterName: `${ingestionEcrSsmPrefix}/repository-name`,
+                stringValue: this.ingestionEcrRepository.repositoryName,
+                description: `ingestion ECR repository name for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new cdk.CfnOutput(this, 'IngestionEcrRepositoryUri', {
+                value: this.ingestionEcrRepository.repositoryUri,
+                description: 'ingestion K8s Job ECR Repository URI for docker push/pull',
+            });
+        }
+
+        // =====================================================================
+        // ECR Repository (article-pipeline) — Phase 4 K8s Job image
+        // Replaces BedrockPipelineStack (4 Lambdas + Step Functions).
+        // SSM params stored under /shared/ecr-article-pipeline/{env}/ for CI discovery.
+        // =====================================================================
+        if (props.createArticlePipelineEcrRepository !== false) {
+            const articlePipelineRepoName = props.articlePipelineEcrRepositoryName ?? 'article-pipeline';
+            const isProduction = props.targetEnvironment === Environment.PRODUCTION;
+
+            this.articlePipelineEcrRepository = new ecr.Repository(this, 'ArticlePipelineEcrRepository', {
+                repositoryName: articlePipelineRepoName,
+                imageScanOnPush: true,
+                imageTagMutability: ecr.TagMutability.MUTABLE,
+                encryption: ecr.RepositoryEncryption.AES_256,
+                removalPolicy: isProduction ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+                lifecycleRules: [
+                    {
+                        rulePriority: 1,
+                        description: 'Remove untagged images after 30 days',
+                        tagStatus: ecr.TagStatus.UNTAGGED,
+                        maxImageAge: cdk.Duration.days(30),
+                    },
+                    {
+                        rulePriority: 2,
+                        description: 'Keep only 50 most recent tagged images',
+                        tagStatus: ecr.TagStatus.ANY,
+                        maxImageCount: 50,
+                    },
+                ],
+            });
+
+            const articlePipelineEcrSsmPrefix = `/shared/ecr-article-pipeline/${props.targetEnvironment}`;
+
+            new ssm.StringParameter(this, 'SsmArticlePipelineEcrRepositoryUri', {
+                parameterName: `${articlePipelineEcrSsmPrefix}/repository-uri`,
+                stringValue: this.articlePipelineEcrRepository.repositoryUri,
+                description: `article-pipeline ECR repository URI for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmArticlePipelineEcrRepositoryArn', {
+                parameterName: `${articlePipelineEcrSsmPrefix}/repository-arn`,
+                stringValue: this.articlePipelineEcrRepository.repositoryArn,
+                description: `article-pipeline ECR repository ARN for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmArticlePipelineEcrRepositoryName', {
+                parameterName: `${articlePipelineEcrSsmPrefix}/repository-name`,
+                stringValue: this.articlePipelineEcrRepository.repositoryName,
+                description: `article-pipeline ECR repository name for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new cdk.CfnOutput(this, 'ArticlePipelineEcrRepositoryUri', {
+                value: this.articlePipelineEcrRepository.repositoryUri,
+                description: 'article-pipeline K8s Job ECR Repository URI for docker push/pull',
+            });
+        }
+
+        // =====================================================================
+        // ECR Repository (job-strategist) — Phase 4 K8s Job image
+        // Replaces StrategistPipelineStack (Analysis + Coaching state machines).
+        // Image is consumed by both the strategist analysis Job and the coach Job
+        // (admin-api selects the entrypoint at Job creation time).
+        // SSM params stored under /shared/ecr-job-strategist/{env}/ for CI discovery.
+        // =====================================================================
+        if (props.createJobStrategistEcrRepository !== false) {
+            const jobStrategistRepoName = props.jobStrategistEcrRepositoryName ?? 'job-strategist';
+            const isProduction = props.targetEnvironment === Environment.PRODUCTION;
+
+            this.jobStrategistEcrRepository = new ecr.Repository(this, 'JobStrategistEcrRepository', {
+                repositoryName: jobStrategistRepoName,
+                imageScanOnPush: true,
+                imageTagMutability: ecr.TagMutability.MUTABLE,
+                encryption: ecr.RepositoryEncryption.AES_256,
+                removalPolicy: isProduction ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+                lifecycleRules: [
+                    {
+                        rulePriority: 1,
+                        description: 'Remove untagged images after 30 days',
+                        tagStatus: ecr.TagStatus.UNTAGGED,
+                        maxImageAge: cdk.Duration.days(30),
+                    },
+                    {
+                        rulePriority: 2,
+                        description: 'Keep only 50 most recent tagged images',
+                        tagStatus: ecr.TagStatus.ANY,
+                        maxImageCount: 50,
+                    },
+                ],
+            });
+
+            const jobStrategistEcrSsmPrefix = `/shared/ecr-job-strategist/${props.targetEnvironment}`;
+
+            new ssm.StringParameter(this, 'SsmJobStrategistEcrRepositoryUri', {
+                parameterName: `${jobStrategistEcrSsmPrefix}/repository-uri`,
+                stringValue: this.jobStrategistEcrRepository.repositoryUri,
+                description: `job-strategist ECR repository URI for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmJobStrategistEcrRepositoryArn', {
+                parameterName: `${jobStrategistEcrSsmPrefix}/repository-arn`,
+                stringValue: this.jobStrategistEcrRepository.repositoryArn,
+                description: `job-strategist ECR repository ARN for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmJobStrategistEcrRepositoryName', {
+                parameterName: `${jobStrategistEcrSsmPrefix}/repository-name`,
+                stringValue: this.jobStrategistEcrRepository.repositoryName,
+                description: `job-strategist ECR repository name for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new cdk.CfnOutput(this, 'JobStrategistEcrRepositoryUri', {
+                value: this.jobStrategistEcrRepository.repositoryUri,
+                description: 'job-strategist K8s Job ECR Repository URI for docker push/pull',
             });
         }
 
