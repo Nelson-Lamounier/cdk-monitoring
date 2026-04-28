@@ -21,6 +21,7 @@ import { Hono } from 'hono';
 import { S3Client, DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { AdminApiConfig } from '../lib/config.js';
+import { isAssetsBucketConfigured } from '../lib/config.js';
 
 /** S3 client singleton — credentials from IMDS, no explicit config. */
 const s3 = new S3Client({
@@ -87,6 +88,17 @@ export function createAssetsRouter(config: AdminApiConfig): Hono {
       );
     }
 
+    // assetsBucketName is populated by the admin-api-bedrock ESO Secret
+    // when ai-content-stack ships /bedrock-dev/assets-bucket-name to SSM.
+    // Until then, refuse uploads with 503 instead of producing a signed
+    // URL that points at an undefined bucket.
+    if (!isAssetsBucketConfigured(config.assetsBucketName)) {
+      return ctx.json(
+        { error: 'Asset uploads unavailable — S3 bucket not configured (Bedrock content stack not deployed yet)' },
+        503,
+      );
+    }
+
     // Scope uploads to articles/ prefix to prevent path traversal attacks
     const safeKey = `articles/${key.replace(/^\/+/, '').replace(/\.\./g, '')}`;
 
@@ -114,6 +126,13 @@ export function createAssetsRouter(config: AdminApiConfig): Hono {
     // Scope safety: only allow deletion within articles/ prefix
     if (!key.startsWith('articles/')) {
       return ctx.json({ error: 'Asset key must be within articles/ prefix' }, 403);
+    }
+
+    if (!isAssetsBucketConfigured(config.assetsBucketName)) {
+      return ctx.json(
+        { error: 'Asset deletion unavailable — S3 bucket not configured (Bedrock content stack not deployed yet)' },
+        503,
+      );
     }
 
     await s3.send(

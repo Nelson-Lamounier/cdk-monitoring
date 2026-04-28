@@ -38,6 +38,19 @@ export function isImageConfigured(uri: string): boolean {
   return uri.length > 0 && uri !== UNSET_IMAGE_SENTINEL && !uri.endsWith(':');
 }
 
+/**
+ * Returns true if config.assetsBucketName resolves to a real S3 bucket.
+ *
+ * The value comes from the optional admin-api-bedrock ESO Secret, which
+ * is populated when ai-applications/infra bedrock/ai-content-stack
+ * publishes /bedrock-dev/assets-bucket-name to SSM. Until then the
+ * Secret is absent and `assetsBucketName` is undefined; routes that
+ * write to S3 return 503 instead of crashing.
+ */
+export function isAssetsBucketConfigured(name: string | undefined): name is string {
+  return typeof name === 'string' && name.length > 0;
+}
+
 /** The 3 logical images admin-api may launch as Jobs. */
 export type JobImageName = 'ingestion' | 'article-pipeline' | 'job-strategist';
 
@@ -107,8 +120,15 @@ export function _resetJobImageCache(): void {
 
 /** Resolved, strongly-typed application configuration. */
 export interface AdminApiConfig {
-  /** S3 assets bucket name for media uploads. */
-  readonly assetsBucketName: string;
+  /**
+   * S3 assets bucket name for media uploads.
+   *
+   * Optional — populated by the admin-api-bedrock ESO Secret when
+   * ai-applications/infra bedrock/ai-content-stack deploys and
+   * publishes /bedrock-dev/assets-bucket-name to SSM. Until then this
+   * field is undefined; consume only via {@link isAssetsBucketConfigured}.
+   */
+  readonly assetsBucketName: string | undefined;
 
   /** Cognito User Pool ID — used for JWKS URL construction. */
   readonly cognitoUserPoolId: string;
@@ -170,7 +190,6 @@ export interface AdminApiConfig {
  */
 export function loadConfig(): AdminApiConfig {
   const required: Record<string, string | undefined> = {
-    ASSETS_BUCKET_NAME: process.env['ASSETS_BUCKET_NAME'],
     COGNITO_USER_POOL_ID: process.env['COGNITO_USER_POOL_ID'],
     COGNITO_CLIENT_ID: process.env['COGNITO_CLIENT_ID'],
     COGNITO_ISSUER_URL: process.env['COGNITO_ISSUER_URL'],
@@ -181,6 +200,12 @@ export function loadConfig(): AdminApiConfig {
     PG_USER: process.env['PG_USER'],
     PG_PASSWORD: process.env['PG_PASSWORD'],
   };
+
+  // ASSETS_BUCKET_NAME is intentionally optional — it lands in SSM only
+  // after ai-content-stack deploys. Routes consume via
+  // isAssetsBucketConfigured(); a missing value yields a 503 from the
+  // S3 write paths instead of a CrashLoop on pod boot.
+  const assetsBucketName = process.env['ASSETS_BUCKET_NAME'];
 
   // Job-image URIs are NOT loaded at startup — see header docblock.
   // Routes call getJobImage(name) which reads from /etc/admin-api/images/{name}
@@ -198,7 +223,7 @@ export function loadConfig(): AdminApiConfig {
   }
 
   return {
-    assetsBucketName: required['ASSETS_BUCKET_NAME']!,
+    assetsBucketName: assetsBucketName && assetsBucketName.length > 0 ? assetsBucketName : undefined,
     cognitoUserPoolId: required['COGNITO_USER_POOL_ID']!,
     cognitoClientId: required['COGNITO_CLIENT_ID']!,
     cognitoIssuerUrl: required['COGNITO_ISSUER_URL']!,
