@@ -189,12 +189,12 @@ describe('POST /:slug/coach', () => {
     expect(insertPipelineRunMock).toHaveBeenCalledTimes(1);
     expect(createNamespacedJobMock).toHaveBeenCalledTimes(1);
 
-    const callArgs = createNamespacedJobMock.mock.calls[0] as unknown as [
-      string,
-      { spec: { template: { spec: { containers: Array<{ command: string[]; env: Array<{ name: string; value: string }> }> } } } },
-    ];
-    expect(callArgs[0]).toBe('job-strategist');
-    const container = callArgs[1].spec.template.spec.containers[0]!;
+    const callArgs = createNamespacedJobMock.mock.calls[0] as unknown as [{
+      namespace: string;
+      body: { spec: { template: { spec: { containers: Array<{ command: string[]; env: Array<{ name: string; value: string }> }> } } } };
+    }];
+    expect(callArgs[0].namespace).toBe('job-strategist');
+    const container = callArgs[0].body.spec.template.spec.containers[0]!;
     expect(container.command).toEqual(['node', 'dist/run-coach.js']);
     const envMap = Object.fromEntries(container.env.map(e => [e.name, e.value]));
     expect(envMap['COACH_PIPELINE_RUN_ID']).toBe(body.coachPipelineRunId);

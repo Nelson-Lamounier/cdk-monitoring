@@ -143,9 +143,9 @@ describe('POST /article-job/:slug — K8s Job article pipeline', () => {
     expect(insertPipelineRunMock).toHaveBeenCalledTimes(1);
     expect(createNamespacedJobMock).toHaveBeenCalledTimes(1);
 
-    const callArgs = createNamespacedJobMock.mock.calls[0] as unknown as [string, { spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> } } } }];
-    expect(callArgs[0]).toBe('article-pipeline');
-    const env = callArgs[1].spec.template.spec.containers[0]!.env;
+    const callArgs = createNamespacedJobMock.mock.calls[0] as unknown as [{ namespace: string; body: { spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> } } } } }];
+    expect(callArgs[0].namespace).toBe('article-pipeline');
+    const env = callArgs[0].body.spec.template.spec.containers[0]!.env;
     const envMap = Object.fromEntries(env.map(e => [e.name, e.value]));
     expect(envMap['PIPELINE_RUN_ID']).toBe(body.pipelineRunId);
     expect(envMap['SLUG']).toBe('my-slug');
@@ -227,9 +227,9 @@ describe('POST /strategist-job — K8s Job strategist pipeline', () => {
     expect(body.status).toBe('queued');
     expect(body.applicationId).toBe('app-123');
 
-    const callArgs = createNamespacedJobMock.mock.calls[0] as unknown as [string, { spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> } } } }];
-    expect(callArgs[0]).toBe('job-strategist');
-    const env = callArgs[1].spec.template.spec.containers[0]!.env;
+    const callArgs = createNamespacedJobMock.mock.calls[0] as unknown as [{ namespace: string; body: { spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> } } } } }];
+    expect(callArgs[0].namespace).toBe('job-strategist');
+    const env = callArgs[0].body.spec.template.spec.containers[0]!.env;
     const envMap = Object.fromEntries(env.map(e => [e.name, e.value]));
     expect(envMap['PIPELINE_RUN_ID']).toBe(body.pipelineRunId);
     expect(envMap['APPLICATION_ID']).toBe('app-123');

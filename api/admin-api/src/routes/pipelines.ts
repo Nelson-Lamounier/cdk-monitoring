@@ -154,7 +154,7 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
       envFromSecretRefs:   ['platform-rds-credentials'],
     });
 
-    try { await getBatchApi().createNamespacedJob(config.articlePipelineNamespace, job); }
+    try { await getBatchApi().createNamespacedJob({ namespace: config.articlePipelineNamespace, body: job }); }
     catch (err: unknown) {
       console.error('[pipelines/article-job] failed to create K8s Job', err);
       return ctx.json({ error: 'Failed to schedule pipeline Job' }, 502);
@@ -230,7 +230,7 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
       envFromSecretRefs: ['platform-rds-credentials'],
     });
 
-    try { await getBatchApi().createNamespacedJob(config.strategistPipelineNamespace, job); }
+    try { await getBatchApi().createNamespacedJob({ namespace: config.strategistPipelineNamespace, body: job }); }
     catch (err: unknown) {
       console.error('[pipelines/strategist-job] failed to create K8s Job', err);
       return ctx.json({ error: 'Failed to schedule pipeline Job' }, 502);

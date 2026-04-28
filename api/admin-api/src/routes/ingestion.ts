@@ -127,7 +127,8 @@ export function createIngestionRouter(config: AdminApiConfig): Hono<AdminApiBind
         const job = buildJobSpec(config, ingestionImage, userId, repoFullName, forceReindex, Date.now());
 
         try {
-            await getBatchApi().createNamespacedJob(config.ingestionNamespace, job);
+            // @kubernetes/client-node v1.x switched to options-object API.
+            await getBatchApi().createNamespacedJob({ namespace: config.ingestionNamespace, body: job });
         } catch (err: unknown) {
             console.error('[ingestion] failed to create K8s Job', err);
             return ctx.json({ error: 'Failed to schedule ingestion Job' }, 502);

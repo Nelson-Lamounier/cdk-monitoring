@@ -137,10 +137,10 @@ describe('POST /trigger — create ingestion Job', () => {
     expect(body.forceReindex).toBe(true);
 
     expect(createNamespacedJobMock).toHaveBeenCalledTimes(1);
-    const callArgs = createNamespacedJobMock.mock.calls[0] as unknown as [string, { spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> } } } }];
-    expect(callArgs[0]).toBe('ingestion');
+    const callArgs = createNamespacedJobMock.mock.calls[0] as unknown as [{ namespace: string; body: { spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> } } } } }];
+    expect(callArgs[0].namespace).toBe('ingestion');
 
-    const env = callArgs[1].spec.template.spec.containers[0]!.env;
+    const env = callArgs[0].body.spec.template.spec.containers[0]!.env;
     const envMap = Object.fromEntries(env.map((e) => [e.name, e.value]));
     expect(envMap['USER_ID']).toBe('test-user');
     expect(envMap['REPO_FULL_NAME']).toBe('octocat/hello-world');

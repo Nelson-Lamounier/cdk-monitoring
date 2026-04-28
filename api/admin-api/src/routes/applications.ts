@@ -268,7 +268,7 @@ export function createApplicationsRouter(config: AdminApiConfig): Hono<AdminApiB
       envFromSecretRefs: ['platform-rds-credentials'],
     });
 
-    try { await getBatchApi().createNamespacedJob(config.strategistPipelineNamespace, job); }
+    try { await getBatchApi().createNamespacedJob({ namespace: config.strategistPipelineNamespace, body: job }); }
     catch (err: unknown) {
       console.error('[applications/coach] failed to create K8s Job', err);
       return ctx.json({ error: 'Failed to schedule coach Job' }, 502);
