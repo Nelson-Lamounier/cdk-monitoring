@@ -1,6 +1,16 @@
-# CloudWatch & Steampipe Data Paths — Detailed Review Report
+---
+title: CloudWatch & Steampipe Data Paths
+type: concept
+tags: [cloudwatch, steampipe, grafana, observability, monitoring]
+sources:
+  - infra/lib/stacks/kubernetes/base-stack.ts
+created: 2026-04-28
+updated: 2026-04-28
+---
 
-This report provides an in-depth review of how AWS resource data reaches the Grafana UI through two independent data paths: **CloudWatch Logs Insights** and **Steampipe SQL**.
+# CloudWatch & Steampipe Data Paths
+
+How AWS resource data reaches the Grafana UI through two independent data paths: **CloudWatch Logs Insights** and **Steampipe SQL**.
 
 ---
 

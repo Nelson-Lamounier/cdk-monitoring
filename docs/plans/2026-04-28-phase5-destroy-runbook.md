@@ -40,6 +40,8 @@ Stack-name suffix tracks the `environment` context. Substitute `staging` / `prod
 
 ## DynamoDB tables
 
+> **Scope clarification:** Phase 5 destroys only the **Bedrock pipeline DynamoDB tables** (`bedrock-development-content`, `bedrock-development-strategist`) from the `ai-applications` infra. The **Next.js application DynamoDB table** in `KubernetesDataStack` (this repo, `infra/lib/stacks/kubernetes/data-stack.ts`) is **not touched** by Phase 5 — it stores articles and engagement metrics for the live frontend. See [Stack 1: Data](../projects/cdk-platform-stacks.md#stack-1-data-kubernetesdatastack) for details.
+
 `cdk destroy` will delete the tables only if `removalPolicy: DESTROY` was set. Production typically uses `RETAIN`, so the tables survive even when their stacks are gone. Force-delete manually:
 
 ```bash

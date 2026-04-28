@@ -1,3 +1,13 @@
+---
+title: Networking Observability
+type: concept
+tags: [vpc-flow-logs, nlb, cloudwatch, observability, networking]
+sources:
+  - infra/lib/stacks/kubernetes/base-stack.ts
+created: 2026-04-28
+updated: 2026-04-28
+---
+
 # Networking Observability Strategy
 
 > Solo-developer, cost-optimised logging with 3-day retention across the full

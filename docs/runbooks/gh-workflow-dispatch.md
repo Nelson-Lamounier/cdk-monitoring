@@ -1,3 +1,12 @@
+---
+title: GitHub Workflow Dispatch Reference
+type: runbook
+tags: [github-actions, ci-cd, workflow-dispatch, gh-cli]
+sources: []
+created: 2026-04-28
+updated: 2026-04-28
+---
+
 # GitHub CLI — Workflow Dispatch Reference
 
 ## Syntax
