@@ -27,7 +27,7 @@ import { createArticlesRouter } from './routes/articles.js';
 import { createApplicationsRouter } from './routes/applications.js';
 import { createAssetsRouter } from './routes/assets.js';
 import { createFinopsRouter } from './routes/finops.js';
-import { createGitHubRouter } from './routes/github.js';
+import { createGitHubRouter, createGitHubWebhookRouter } from './routes/github.js';
 import { createIngestionRouter } from './routes/ingestion.js';
 import { createPipelinesRouter } from './routes/pipelines.js';
 import { createResumesRouter } from './routes/resumes.js';
@@ -71,6 +71,11 @@ app.use(
 
 // ── Health check (unauthenticated) ───────────────────────────────────────────
 app.route('/healthz', createHealthRouter());
+
+// ── GitHub webhook (unauthenticated — HMAC-verified) ─────────────────────────
+// Must be registered BEFORE the JWT middleware which guards /api/admin/*.
+// GitHub posts to /api/github/webhook; does not carry a Cognito token.
+app.route('/api/github', createGitHubWebhookRouter(config));
 
 // ── Cognito JWT guard — applied to all /api/admin/* routes ───────────────────
 const jwtMiddleware = cognitoJwtAuth(

@@ -188,6 +188,13 @@ export interface AdminApiConfig {
    */
   readonly githubPrivateKey: string | undefined;
 
+  /**
+   * GitHub App webhook secret — HMAC-SHA256 key for verifying payloads.
+   * Optional — webhook endpoint returns 501 when absent (not yet configured).
+   * Injected via the admin-api-github ESO Secret.
+   */
+  readonly githubWebhookSecret: string | undefined;
+
   // Note: image URIs are NOT in this config object. Use getJobImage(name)
   // from this same module — it reads from the file mount on each call (with
   // a 30s cache) so a Secret rotation by ESO is picked up without restart.
@@ -236,14 +243,16 @@ export function loadConfig(): AdminApiConfig {
     );
   }
 
-  // GitHub App credentials — optional; routes degrade to 503 when absent.
-  const githubAppId     = process.env['GITHUB_APP_ID'];
-  const githubPrivateKey = process.env['GITHUB_PRIVATE_KEY'];
+  // GitHub App credentials — all optional; routes degrade gracefully when absent.
+  const githubAppId         = process.env['GITHUB_APP_ID'];
+  const githubPrivateKey    = process.env['GITHUB_PRIVATE_KEY'];
+  const githubWebhookSecret = process.env['GITHUB_WEBHOOK_SECRET'];
 
   return {
-    assetsBucketName: assetsBucketName && assetsBucketName.length > 0 ? assetsBucketName : undefined,
-    githubAppId:     githubAppId && githubAppId.length > 0 ? githubAppId : undefined,
-    githubPrivateKey: githubPrivateKey && githubPrivateKey.length > 0 ? githubPrivateKey : undefined,
+    assetsBucketName:     assetsBucketName && assetsBucketName.length > 0 ? assetsBucketName : undefined,
+    githubAppId:          githubAppId && githubAppId.length > 0 ? githubAppId : undefined,
+    githubPrivateKey:     githubPrivateKey && githubPrivateKey.length > 0 ? githubPrivateKey : undefined,
+    githubWebhookSecret:  githubWebhookSecret && githubWebhookSecret.length > 0 ? githubWebhookSecret : undefined,
     cognitoUserPoolId: required['COGNITO_USER_POOL_ID']!,
     cognitoClientId: required['COGNITO_CLIENT_ID']!,
     cognitoIssuerUrl: required['COGNITO_ISSUER_URL']!,

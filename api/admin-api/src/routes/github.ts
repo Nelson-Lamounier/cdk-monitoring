@@ -22,6 +22,7 @@
  *   No long-lived PAT is ever persisted.
  */
 
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import type { JWTPayload } from 'jose';
 import type { Pool } from 'pg';
@@ -450,6 +451,87 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
 
         await deleteRepository(pool, uid, repoFullName);
         return ctx.json({ success: true });
+    });
+
+    return router;
+}
+
+// =============================================================================
+// WEBHOOK ROUTER — unauthenticated, mounted outside /api/admin/*
+// =============================================================================
+
+/**
+ * POST /webhook
+ *
+ * Receives GitHub App webhook events. No Cognito JWT required — GitHub signs
+ * payloads with HMAC-SHA256 using the webhook secret instead.
+ *
+ * Handled events:
+ *   installation.deleted — remove oauth_connections row(s) for the installation
+ *   installation.suspend / installation.unsuspend — no-op (acknowledged)
+ *   push — no-op (future: trigger incremental re-index)
+ *   * — acknowledged with 200, not processed
+ *
+ * GitHub retries on any non-2xx. Always return 200 once signature is verified,
+ * even for unhandled event types, to avoid spurious retries.
+ */
+export function createGitHubWebhookRouter(config: AdminApiConfig): Hono {
+    const router = new Hono();
+
+    router.post('/webhook', async (ctx) => {
+        // ── 1. Require webhook secret to be configured ────────────────────────
+        const { githubWebhookSecret } = config;
+        if (!githubWebhookSecret) {
+            console.warn('[github/webhook] GITHUB_WEBHOOK_SECRET not set — endpoint inactive');
+            return ctx.json({ error: 'Webhook not configured' }, 501);
+        }
+
+        // ── 2. Verify HMAC-SHA256 signature ───────────────────────────────────
+        // GitHub sends: X-Hub-Signature-256: sha256=<hex>
+        const sigHeader = ctx.req.header('X-Hub-Signature-256') ?? '';
+        const rawBody   = await ctx.req.text();
+
+        const expected = 'sha256=' + createHmac('sha256', githubWebhookSecret)
+            .update(rawBody)
+            .digest('hex');
+
+        const sigBuf = Buffer.from(sigHeader.padEnd(expected.length));
+        const expBuf = Buffer.from(expected);
+        const valid  = sigBuf.length === expBuf.length &&
+                       timingSafeEqual(sigBuf, expBuf);
+
+        if (!valid) {
+            console.warn('[github/webhook] signature mismatch');
+            return ctx.json({ error: 'Invalid signature' }, 401);
+        }
+
+        // ── 3. Parse event type ───────────────────────────────────────────────
+        const eventType = ctx.req.header('X-GitHub-Event') ?? 'unknown';
+        let payload: Record<string, unknown>;
+        try { payload = JSON.parse(rawBody) as Record<string, unknown>; }
+        catch { return ctx.json({ error: 'Invalid JSON payload' }, 400); }
+
+        const action = typeof payload['action'] === 'string' ? payload['action'] : '';
+
+        console.log(`[github/webhook] event=${eventType} action=${action}`);
+
+        // ── 4. Handle installation.deleted ────────────────────────────────────
+        if (eventType === 'installation' && action === 'deleted') {
+            const inst = payload['installation'] as Record<string, unknown> | undefined;
+            const installationId = String(inst?.['id'] ?? '');
+
+            if (installationId) {
+                const pool = getPool(config);
+                await pool.query(
+                    `DELETE FROM oauth_connections
+                     WHERE provider = 'github' AND installation_id = $1`,
+                    [installationId],
+                );
+                console.log(`[github/webhook] removed installation ${installationId}`);
+            }
+        }
+
+        return ctx.json({ ok: true });
     });
 
     return router;
