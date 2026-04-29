@@ -174,6 +174,20 @@ export interface AdminApiConfig {
   /** ServiceAccount the strategist-pipeline Job pod runs as. */
   readonly strategistPipelineServiceAccount: string;
 
+  /**
+   * GitHub App numeric ID (e.g. "123456").
+   * Optional — GitHub routes return 503 when absent.
+   * Injected via the admin-api-github ESO Secret.
+   */
+  readonly githubAppId: string | undefined;
+
+  /**
+   * GitHub App RSA private key in PKCS#8 PEM format.
+   * Optional — GitHub routes return 503 when absent.
+   * Injected via the admin-api-github ESO Secret.
+   */
+  readonly githubPrivateKey: string | undefined;
+
   // Note: image URIs are NOT in this config object. Use getJobImage(name)
   // from this same module — it reads from the file mount on each call (with
   // a 30s cache) so a Secret rotation by ESO is picked up without restart.
@@ -222,8 +236,14 @@ export function loadConfig(): AdminApiConfig {
     );
   }
 
+  // GitHub App credentials — optional; routes degrade to 503 when absent.
+  const githubAppId     = process.env['GITHUB_APP_ID'];
+  const githubPrivateKey = process.env['GITHUB_PRIVATE_KEY'];
+
   return {
     assetsBucketName: assetsBucketName && assetsBucketName.length > 0 ? assetsBucketName : undefined,
+    githubAppId:     githubAppId && githubAppId.length > 0 ? githubAppId : undefined,
+    githubPrivateKey: githubPrivateKey && githubPrivateKey.length > 0 ? githubPrivateKey : undefined,
     cognitoUserPoolId: required['COGNITO_USER_POOL_ID']!,
     cognitoClientId: required['COGNITO_CLIENT_ID']!,
     cognitoIssuerUrl: required['COGNITO_ISSUER_URL']!,

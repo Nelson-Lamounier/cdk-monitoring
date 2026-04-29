@@ -27,6 +27,7 @@ import { createArticlesRouter } from './routes/articles.js';
 import { createApplicationsRouter } from './routes/applications.js';
 import { createAssetsRouter } from './routes/assets.js';
 import { createFinopsRouter } from './routes/finops.js';
+import { createGitHubRouter } from './routes/github.js';
 import { createIngestionRouter } from './routes/ingestion.js';
 import { createPipelinesRouter } from './routes/pipelines.js';
 import { createResumesRouter } from './routes/resumes.js';
@@ -82,6 +83,7 @@ const jwtMiddleware = cognitoJwtAuth(
 app.use('/api/admin/*', jwtMiddleware);
 
 // ── Protected routes ─────────────────────────────────────────────────────────
+app.route('/api/admin/github', createGitHubRouter(config));
 app.route('/api/admin/articles', createArticlesRouter(config));
 app.route('/api/admin/applications', createApplicationsRouter(config));
 app.route('/api/admin/assets', createAssetsRouter(config));
