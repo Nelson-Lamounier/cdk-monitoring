@@ -6,4 +6,3 @@
 export * from './shared';
 export * from './org';
 export * from './kubernetes';
-export * from './bedrock';

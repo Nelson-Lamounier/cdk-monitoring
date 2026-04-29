@@ -134,10 +134,6 @@ export class CrossplaneIamConstruct extends Construct {
             },
         });
 
-        // Tag the construct's resources
-        cdk.Tags.of(this).add('managed-by', 'cdk');
-        cdk.Tags.of(this).add('purpose', 'crossplane-credentials');
-
         // CDK-nag suppression: rotation is handled via pipeline/manual process
         // (no Lambda auto-rotator exists for IAM access keys)
         NagSuppressions.addResourceSuppressions(this.credentialSecret, [{

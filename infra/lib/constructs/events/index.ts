@@ -1,8 +1,3 @@
-/**
- * @format
- * Events Constructs - Central Export
- *
- * This module provides reusable EventBridge constructs.
- */
+/** @format */
 
-export * from './eventbridge-rule';
+export { AmiRefreshConstruct } from './ami-refresh/ami-refresh-construct';

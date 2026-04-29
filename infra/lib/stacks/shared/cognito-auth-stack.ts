@@ -129,7 +129,13 @@ export class CognitoAuthStack extends cdk.Stack {
                 sms: false,
                 otp: true,
             },
-            advancedSecurityMode: cognito.AdvancedSecurityMode.ENFORCED,
+            // Plus tier replaces the deprecated AdvancedSecurityMode.ENFORCED.
+            // Same behavior + pricing as before (~$0.05/MAU); also satisfies
+            // cdk-nag AwsSolutions-COG8 which requires the Plus feature plan.
+            // Combined with the threat-protection modes below for full
+            // adaptive auth + compromised-credentials detection.
+            featurePlan: cognito.FeaturePlan.PLUS,
+            standardThreatProtectionMode: cognito.StandardThreatProtectionMode.FULL_FUNCTION,
         });
 
         // CDK-Nag: Suppress MFA enforcement requirement for a

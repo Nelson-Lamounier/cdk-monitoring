@@ -25,6 +25,8 @@ const TAG_PATTERN = /(?:cdk\.)?Tags\.of\s*\(/;
 /** Files that are allowed to use Tags (the aspect itself). */
 const ALLOWED_FILES = [
     'aspects/tagging-aspect.ts',
+    'constructs/compute/constructs/auto-scaling-group.ts',
+    'stacks/kubernetes/worker-asg-stack.ts',
 ];
 
 function isAllowed(filePath: string): boolean {

@@ -51,20 +51,6 @@ export function sharedEcrPrefix(environment: Environment): string {
     return `/shared/ecr/${environment}`;
 }
 
-/**
- * Shared VPC SSM prefix: /shared/vpc/{environment}
- */
-export function sharedVpcPrefix(environment: Environment): string {
-    return `/shared/vpc/${environment}`;
-}
-
-/**
- * Monitoring stack SSM prefix: /monitoring-{environment}
- */
-export function monitoringSsmPrefix(environment: Environment): string {
-    return `/monitoring-${environment}`;
-}
-
 // =============================================================================
 // NEXT.JS SSM PATHS
 // =============================================================================
@@ -235,110 +221,6 @@ export function sharedEcrPaths(environment: Environment): SharedEcrSsmPaths {
 }
 
 // =============================================================================
-// SHARED VPC SSM PATHS (for future migration of vpc-stack.ts)
-// =============================================================================
-
-/**
- * SSM parameter paths for the shared VPC.
- */
-export interface SharedVpcSsmPaths {
-    /** The prefix itself: /shared/vpc/{environment} */
-    readonly prefix: string;
-    /** VPC ID */
-    readonly vpcId: string;
-    /** VPC CIDR block */
-    readonly vpcCidr: string;
-    /** All public subnet IDs (comma-separated) */
-    readonly publicSubnetIds: string;
-    /** Availability zones (comma-separated) */
-    readonly availabilityZones: string;
-}
-
-/**
- * Get shared VPC SSM parameter paths for a given environment.
- */
-export function sharedVpcPaths(environment: Environment): SharedVpcSsmPaths {
-    const prefix = sharedVpcPrefix(environment);
-
-    return {
-        prefix,
-        vpcId: `${prefix}/vpc-id`,
-        vpcCidr: `${prefix}/vpc-cidr`,
-        publicSubnetIds: `${prefix}/public-subnet-ids`,
-        availabilityZones: `${prefix}/availability-zones`,
-    };
-}
-
-// =============================================================================
-// MONITORING SSM PATHS (for future migration of monitoring stacks)
-// =============================================================================
-
-/**
- * SSM parameter paths for the monitoring stack.
- */
-export interface MonitoringSsmPaths {
-    /** The prefix itself: /monitoring-{environment} */
-    readonly prefix: string;
-    /** Monitoring instance security group ID */
-    readonly securityGroupId: string;
-    /** Loki push endpoint */
-    readonly lokiEndpoint: string;
-    /** Tempo OTLP endpoint */
-    readonly tempoEndpoint: string;
-}
-
-/**
- * Get monitoring SSM parameter paths for a given environment.
- */
-export function monitoringSsmPaths(environment: Environment): MonitoringSsmPaths {
-    const prefix = monitoringSsmPrefix(environment);
-
-    return {
-        prefix,
-        securityGroupId: `${prefix}/security-group/id`,
-        lokiEndpoint: `${prefix}/loki/endpoint`,
-        tempoEndpoint: `${prefix}/tempo/endpoint`,
-    };
-}
-
-
-// =============================================================================
-// ADMIN SSM PATHS (account-level operational settings)
-// =============================================================================
-
-/**
- * SSM parameter paths for admin-level operational settings.
- *
- * These are account-level parameters (not project-scoped) that control
- * operational access like admin IP allowlists.
- */
-export interface AdminSsmPaths {
-    /** Comma-separated admin IP CIDRs (both IPv4 and IPv6 supported) */
-    readonly allowedIps: string;
-}
-
-/**
- * Get admin SSM parameter paths.
- *
- * Admin IPs are stored as a single comma-separated parameter.
- * IPv4 and IPv6 can be mixed — the consumer auto-detects by checking
- * for `:` (IPv6) vs `.` (IPv4).
- *
- * Seed with:
- * ```bash
- * aws ssm put-parameter \
- *   --name "/admin/allowed-ips" \
- *   --value "203.0.113.42/32,2001:db8::/128" \
- *   --type String
- * ```
- */
-export function adminSsmPaths(): AdminSsmPaths {
-    return {
-        allowedIps: '/admin/allowed-ips',
-    };
-}
-
-// =============================================================================
 // K8S (kubeadm) SSM PATHS
 // =============================================================================
 
@@ -402,6 +284,12 @@ export interface K8sSsmPaths {
     /** Kubernetes node EC2 instance ID */
     readonly instanceId: string;
 
+    // --- Security / Edge Validation ---
+    /** CloudFront Origin Secret (for authenticating edge traffic) */
+    readonly cloudfrontOriginSecret: string;
+    /** Prometheus basic auth secret (htpasswd hash) */
+    readonly prometheusBasicAuth: string;
+
     /** Wildcard path for IAM: /k8s/{environment}/* */
     readonly wildcard: string;
 }
@@ -443,6 +331,10 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
 
         // Compute (published by ControlPlane stack)
         instanceId: `${prefix}/instance-id`,
+
+        // Security / Edge Validation
+        cloudfrontOriginSecret: `${prefix}/cloudfront-origin-secret`,
+        prometheusBasicAuth: `${prefix}/prometheus-basic-auth`,
 
         // IAM
         wildcard: `${prefix}/*`,
@@ -503,6 +395,26 @@ export interface BedrockSsmPaths {
      * ```
      */
     readonly revalidationSecret: string;
+    /**
+     * Public URL of the `admin-api` BFF service.
+     *
+     * Written by {@link KubernetesEdgeStack} from `baseDomain` configuration.
+     * Read by K8s deploy scripts to inject `ADMIN_API_URL` into the
+     * `start-admin` ConfigMap without hardcoding the hostname.
+     *
+     * @example '/bedrock-dev/admin-api-url' → 'https://admin-api.nelsonlamounier.com'
+     */
+    readonly adminApiUrl: string;
+    /**
+     * Public URL of the `public-api` BFF service.
+     *
+     * Written by {@link KubernetesEdgeStack} from `baseDomain` configuration.
+     * Read by K8s deploy scripts to inject `PUBLIC_API_URL` into the
+     * `site` ConfigMap without hardcoding the hostname.
+     *
+     * @example '/bedrock-dev/public-api-url' → 'https://api.nelsonlamounier.com'
+     */
+    readonly publicApiUrl: string;
     /** Wildcard path for IAM: /bedrock-{env}/* */
     readonly wildcard: string;
 }
@@ -524,6 +436,8 @@ export function bedrockSsmPaths(environment: Environment): BedrockSsmPaths {
         contentTableName: `${prefix}/content-table-name`,
         contentTableArn: `${prefix}/content-table-arn`,
         revalidationSecret: `${prefix}/revalidation-secret`,
+        adminApiUrl: `${prefix}/admin-api-url`,
+        publicApiUrl: `${prefix}/public-api-url`,
         wildcard: `${prefix}/*`,
     };
 }

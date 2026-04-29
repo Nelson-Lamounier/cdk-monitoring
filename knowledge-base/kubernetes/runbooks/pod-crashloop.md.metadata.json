@@ -1,8 +1,0 @@
-{
-  "metadataAttributes": {
-    "doc_type": "runbook",
-    "domain": "kubernetes",
-    "tags": "pod,crashloopbackoff,troubleshooting,kubernetes,k8sgpt,argocd",
-    "status": "accepted"
-  }
-}

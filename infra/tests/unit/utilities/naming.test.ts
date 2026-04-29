@@ -41,7 +41,6 @@ describe('Naming Utilities', () => {
         it('should resolve K8s project stacks', () => {
             // K8s project namespace is empty — stack names use component only
             expect(getStackId(Project.KUBERNETES, 'controlPlane', 'development')).toBe('ControlPlane-development');
-            expect(getStackId(Project.KUBERNETES, 'goldenAmi', 'development')).toBe('GoldenAmi-development');
             expect(getStackId(Project.KUBERNETES, 'edge', 'production')).toBe('Edge-production');
         });
 
@@ -51,12 +50,6 @@ describe('Naming Utilities', () => {
 
         it('should resolve Org project stacks (normalized, no Stack suffix)', () => {
             expect(getStackId(Project.ORG, 'dnsRole', 'production')).toBe('Org-DnsRole-production');
-        });
-
-        it('should resolve Bedrock project stacks', () => {
-            expect(getStackId(Project.BEDROCK, 'data', 'development')).toBe('Bedrock-Data-development');
-            expect(getStackId(Project.BEDROCK, 'agent', 'development')).toBe('Bedrock-Agent-development');
-            expect(getStackId(Project.BEDROCK, 'api', 'production')).toBe('Bedrock-Api-production');
         });
 
         it('should throw on invalid stack key', () => {
@@ -72,16 +65,12 @@ describe('Naming Utilities', () => {
     describe('STACK_REGISTRY', () => {
         it('should contain all project entries', () => {
             expect(Object.keys(STACK_REGISTRY)).toStrictEqual(
-                expect.arrayContaining(['shared', 'kubernetes', 'org', 'bedrock'])
+                expect.arrayContaining(['shared', 'kubernetes', 'org'])
             );
         });
 
         it('should have expected k8s stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.kubernetes)).toStrictEqual(['data', 'base', 'goldenAmi', 'ssmAutomation', 'controlPlane', 'appWorker', 'monitoringWorker', 'argocdWorker', 'appIam', 'api', 'edge', 'observability']);
-        });
-
-        it('should have expected bedrock stack keys', () => {
-            expect(Object.keys(STACK_REGISTRY.bedrock)).toStrictEqual(['data', 'agent', 'api', 'content']);
+            expect(Object.keys(STACK_REGISTRY.kubernetes)).toStrictEqual(['data', 'base', 'controlPlane', 'generalPool', 'monitoringPool', 'appIam', 'api', 'edge', 'observability', 'platformRds']);
         });
     });
 
@@ -115,7 +104,7 @@ describe('Naming Utilities', () => {
         });
 
         it('should handle empty component', () => {
-            expect(flatName('bedrock', '', 'staging')).toBe('bedrock-stg');
+            expect(flatName('kubernetes', '', 'staging')).toBe('kubernetes-stg');
         });
 
         it('should produce short names for all environments', () => {

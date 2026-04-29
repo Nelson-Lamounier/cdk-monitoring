@@ -15,7 +15,9 @@ import { TEST_ENV } from './constants';
  * Creates a test CDK App with standard configuration
  */
 export function createTestApp(): cdk.App {
-    return new cdk.App();
+    return new cdk.App({
+        context: { 'aws:cdk:bundling-stacks': [] },
+    });
 }
 
 /**

@@ -34,33 +34,17 @@ export const STACK_REGISTRY = {
     kubernetes: {
         data: 'Data',
         base: 'Base',
-        goldenAmi: 'GoldenAmi',
-        ssmAutomation: 'SsmAutomation',
         controlPlane: 'ControlPlane',
-        appWorker: 'AppWorker',
-        monitoringWorker: 'MonitoringWorker',
-        argocdWorker: 'ArgocdWorker',
+        generalPool: 'GeneralPool',
+        monitoringPool: 'MonitoringPool',
         appIam: 'AppIam',
         api: 'Api',
         edge: 'Edge',
         observability: 'Observability',
+        platformRds: 'PlatformRds',
     },
     org: {
         dnsRole: 'DnsRole',
-    },
-    bedrock: {
-        data: 'Data',
-        kb: 'Kb',
-        agent: 'Agent',
-        api: 'Api',
-        content: 'Content',
-        pipeline: 'Pipeline',
-        strategistData: 'Strategist-Data',
-        strategistPipeline: 'Strategist-Pipeline',
-    },
-    selfHealing: {
-        gateway: 'Gateway',
-        agent: 'Agent',
     },
 } as const;
 
@@ -81,7 +65,7 @@ export type RegistryStackKey<P extends RegistryProject> = keyof (typeof STACK_RE
  * If namespace is empty: {Component}-{environment}
  *
  * @param namespace - Project namespace (e.g. 'NextJS', '' for Kubernetes)
- * @param component - Stack component name (e.g. 'ControlPlane', 'AppWorker')
+ * @param component - Stack component name (e.g. 'ControlPlane', 'GeneralPool')
  * @param environment - Target environment (e.g. 'development')
  * @returns Full stack name (e.g. 'NextJS-Compute-development' or 'ControlPlane-development')
  *
@@ -111,8 +95,6 @@ const PROJECT_TO_REGISTRY: Record<Project, RegistryProject> = {
     [Project.SHARED]: 'shared',
     [Project.KUBERNETES]: 'kubernetes',
     [Project.ORG]: 'org',
-    [Project.BEDROCK]: 'bedrock',
-    [Project.SELF_HEALING]: 'selfHealing',
 };
 
 /**

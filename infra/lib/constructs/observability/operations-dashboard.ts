@@ -6,10 +6,9 @@
  * deployment pipeline. Complements the pre-existing InfrastructureDashboard
  * (EC2/NLB health) with operational execution tracing:
  *
- *   Section 1: AMI Build Pipeline       (Image Builder status + logs)
- *   Section 2: SSM Bootstrap Execution  (Automation success/fail + SFn logs)
- *   Section 3: Drift Enforcement        (Association compliance + RunCommand logs)
- *   Section 4: Self-Healing Pipeline    (Agent + tool Lambda metrics + logs)
+ *   Section 1: SSM Bootstrap Execution  (Automation success/fail + SFn logs)
+ *   Section 2: Drift Enforcement        (Association compliance + RunCommand logs)
+ *   Section 3: Self-Healing Pipeline    (Agent + tool Lambda metrics + logs)
  *
  * Panel Style Philosophy:
  *   - SingleValueWidget → instant pass/fail at a glance (counts)
@@ -141,10 +140,7 @@ export class OperationsDashboard extends Construct {
             defaultInterval: cdk.Duration.hours(6),
         });
 
-        // =================================================================
-        // Section 1: AMI Build Pipeline
-        // =================================================================
-        this.addAmiSection(namePrefix);
+
 
         // =================================================================
         // Section 2: SSM Bootstrap Execution
@@ -160,47 +156,10 @@ export class OperationsDashboard extends Construct {
         // Section 4: Self-Healing Pipeline
         // =================================================================
         if (props.selfHealing) {
-            this.addSelfHealingSection(props.selfHealing, namePrefix, period);
+            this.addSelfHealingSection(props.selfHealing, period);
         }
     }
 
-    // -----------------------------------------------------------------
-    // Section 1: AMI Build Pipeline
-    // -----------------------------------------------------------------
-
-    /**
-     * AMI Build section — Image Builder execution visibility.
-     *
-     * Uses SSM Automation metrics (the AMI build triggers SSM RunCommand
-     * steps under the hood) and CloudWatch Logs Insights queries to
-     * surface build status and recent build output.
-     */
-    private addAmiSection(namePrefix: string): void {
-        this.dashboard.addWidgets(
-            new cloudwatch.TextWidget({
-                markdown: '# AMI Build Pipeline\nImage Builder execution status and recent build output.',
-                width: FULL_WIDTH,
-                height: 1,
-            }),
-        );
-
-        // Image Builder doesn't emit native CloudWatch metrics,
-        // so we use Logs Insights against the SSM RunCommand logs
-        // (Image Builder steps execute via SSM on the build instance).
-        this.dashboard.addWidgets(
-            new cloudwatch.LogQueryWidget({
-                title: 'AMI Build — Recent Component Output',
-                logGroupNames: [`/aws/imagebuilder/${namePrefix}-golden-ami`],
-                width: FULL_WIDTH,
-                height: LOG_WIDGET_HEIGHT,
-                queryLines: [
-                    'fields @timestamp, @message',
-                    'sort @timestamp desc',
-                    'limit 50',
-                ],
-            }),
-        );
-    }
 
     // -----------------------------------------------------------------
     // Section 2: SSM Bootstrap Execution
@@ -448,7 +407,6 @@ export class OperationsDashboard extends Construct {
      */
     private addSelfHealingSection(
         config: OpsDashboardSelfHealingConfig,
-        namePrefix: string,
         period: cdk.Duration,
     ): void {
         this.dashboard.addWidgets(

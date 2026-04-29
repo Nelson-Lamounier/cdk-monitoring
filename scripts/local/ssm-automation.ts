@@ -16,6 +16,7 @@ import {
     SSMClient,
     DescribeAutomationExecutionsCommand,
     GetAutomationExecutionCommand,
+    GetCommandInvocationCommand,
 } from '@aws-sdk/client-ssm';
 import type {
     AutomationExecutionMetadata,
@@ -39,9 +40,10 @@ const args = parseArgs(
         { name: 'profile', description: 'AWS CLI profile', hasValue: true },
         { name: 'region', description: 'AWS region', hasValue: true, default: 'eu-west-1' },
         { name: 'runbook', description: 'Filter by Runbook (Document) name prefix', hasValue: true },
-        { name: 'status', description: 'Filter by Execution Status (e.g. Failed,TimedOut,Success)', hasValue: true, default: 'Failed,TimedOut' },
+        { name: 'status', description: 'Filter by Execution Status (e.g. Failed,TimedOut,Success)', hasValue: true, default: 'Failed,TimedOut,Success' },
         { name: 'last', description: 'Number of executions to inspect', hasValue: true, default: '1' },
-        { name: 'log-group', description: 'Override CloudWatch Log Group name for RunCommand logs', hasValue: true, default: '/ssm/k8s/development/bootstrap' },
+        { name: 'since', description: 'How far back to look for executions (e.g. 24h, 48h, 7d)', hasValue: true, default: '24h' },
+        { name: 'log-group', description: 'CloudWatch Log Group base path or full override (default: auto-detect from document name)', hasValue: true, default: '/ssm/k8s/development' },
     ],
     'SSM Automation Troubleshooter — query executions, inspect step failures, and fetch CloudWatch logs',
 );
@@ -67,12 +69,20 @@ const FAILURE_EXECUTION_STATUSES: ReadonlySet<string> = new Set(['Failed', 'Time
 interface ScriptConfig {
     /** Number of executions to query */
     maxResults: number;
-    /** CloudWatch log group for RunCommand outputs */
-    logGroupName: string;
+    /**
+     * CloudWatch log group base path (e.g. `/ssm/k8s/development`).
+     * The script appends `/bootstrap` or `/deploy` based on the document name.
+     * Override with `--log-group` to force a specific group.
+     */
+    logGroupBase: string;
+    /** If true, --log-group was set explicitly and overrides auto-detection */
+    logGroupOverride: boolean;
     /** Status filters to apply */
     statusFilters: string[];
     /** Optional runbook name prefix filter */
     runbookPrefix: string | undefined;
+    /** How far back to search (milliseconds from now) */
+    sinceMs: number;
 }
 
 // ========================================
@@ -289,6 +299,73 @@ function printStepResponse(step: StepExecution): void {
 }
 
 // ========================================
+// Duration Parsing
+// ========================================
+
+/**
+ * Parse a human-readable duration string into milliseconds.
+ *
+ * Supported suffixes:
+ *   - `m`  — minutes  (e.g. `30m`  → 30 minutes)
+ *   - `h`  — hours    (e.g. `24h`  → 24 hours)
+ *   - `d`  — days     (e.g. `7d`   → 7 days)
+ *
+ * @param raw - Duration string (e.g. '24h', '48h', '7d', '30m')
+ * @returns Duration in milliseconds
+ * @throws {Error} If the format is unrecognised
+ */
+function parseSinceDuration(raw: string): number {
+    const match = /^(\d+)(m|h|d)$/.exec(raw.trim().toLowerCase());
+    if (!match) {
+        throw new Error(
+            `Invalid --since value: "${raw}". Expected format: <number><unit> where unit is m, h, or d (e.g. 24h, 7d, 30m).`,
+        );
+    }
+    const value = Number.parseInt(match[1], 10);
+    const unit = match[2];
+    const multipliers: Record<string, number> = {
+        m: 60 * 1000,
+        h: 60 * 60 * 1000,
+        d: 24 * 60 * 60 * 1000,
+    };
+    return value * multipliers[unit];
+}
+
+// ========================================
+// Log Group Resolution
+// ========================================
+
+/**
+ * Resolve the CloudWatch log group for a given SSM document name.
+ *
+ * The SSM construct writes RunCommand output to two groups:
+ *   - `<base>/bootstrap` — k8s-bootstrap-control-plane / k8s-bootstrap-worker
+ *   - `<base>/deploy`    — k8s-dev-deploy-secrets (nextjs, monitoring, start-admin)
+ *
+ * When `--log-group` is given as a full path (contains a trailing segment after
+ * the base), it is used as-is (explicit override). Otherwise the suffix is
+ * derived from the document name.
+ *
+ * @param logGroupBase - Base path from config (e.g. `/ssm/k8s/development`)
+ * @param logGroupOverride - Whether the user explicitly provided a full path
+ * @param documentName - SSM Automation document name (e.g. `k8s-dev-deploy-secrets`)
+ * @returns Full CloudWatch log group name
+ */
+function resolveLogGroup(
+    logGroupBase: string,
+    logGroupOverride: boolean,
+    documentName: string | undefined,
+): string {
+    if (logGroupOverride) return logGroupBase;
+    // Infer suffix from document name
+    const nameLC = (documentName ?? '').toLowerCase();
+    if (nameLC.includes('deploy')) return `${logGroupBase}/deploy`;
+    if (nameLC.includes('bootstrap')) return `${logGroupBase}/bootstrap`;
+    // Unknown document type — default to bootstrap for backwards compat
+    return `${logGroupBase}/bootstrap`;
+}
+
+// ========================================
 // Core Logic
 // ========================================
 
@@ -324,61 +401,74 @@ async function discoverLogStreams(
 }
 
 /**
- * Fetch CloudWatch logs for a RunCommand step and print them.
+ * Fetch CloudWatch logs for a RunCommand step and print them with full pagination.
  *
- * Uses prefix-based stream discovery to find the correct stream name,
- * as the SSM Agent uses `{commandId}/{instanceId}/aws-runShellScript/stdout`.
+ * Paginates forward through all log events (500 per page) so long-running scripts
+ * never get truncated. Returns the total number of lines printed.
  *
  * @param cwlClient - CloudWatch Logs SDK client
  * @param commandId - SSM RunCommand command ID
  * @param logGroupName - CloudWatch Log Group name
+ * @returns Total number of log lines printed (0 = no streams / no events)
  */
 async function fetchAndPrintCloudWatchLogs(
     cwlClient: CloudWatchLogsClient,
     commandId: string,
     logGroupName: string,
-): Promise<void> {
+): Promise<number> {
     const fetchMessage = log.cyan(`Fetching CloudWatch logs (${logGroupName})...`);
     console.log(`     ${fetchMessage}`);
     try {
-        // Step 1: Discover streams matching this command ID
+        // ── 1. Discover streams matching this command ID ─────────────────────
         const streamNames = await discoverLogStreams(cwlClient, commandId, logGroupName);
         if (streamNames.length === 0) {
             log.info('     No CloudWatch log streams found for this command ID.');
-            return;
+            return 0;
         }
 
-        // Step 2: Fetch stdout stream (prefer stdout over stderr)
+        // ── 2. Paginate stdout stream (prefer stdout over stderr) ────────────
         const stdoutStream = streamNames.find((s) => s.endsWith('/stdout'));
         const targetStream = stdoutStream ?? streamNames[0];
         log.info(`     Stream: ${targetStream}`);
 
-        const logEvents = await cwlClient.send(
-            new GetLogEventsCommand({
-                logGroupName,
-                logStreamName: targetStream,
-                limit: 50,
-                startFromHead: false,
-            }),
-        );
+        let totalLines = 0;
+        let nextToken: string | undefined;
 
-        const events = logEvents.events ?? [];
-        if (events.length > 0) {
+        do {
+            const page = await cwlClient.send(
+                new GetLogEventsCommand({
+                    logGroupName,
+                    logStreamName: targetStream,
+                    limit: 500,
+                    startFromHead: true,
+                    nextToken,
+                }),
+            );
+
+            const events = page.events ?? [];
             for (const event of events) {
                 console.log(`     ${log.blue('[CWL]')} ${event.message}`);
             }
-        } else {
+            totalLines += events.length;
+
+            // GetLogEvents uses nextForwardToken for pagination;
+            // stop when the token doesn't change (API returns same token when exhausted).
+            const nextForward = page.nextForwardToken;
+            nextToken = nextForward !== nextToken ? nextForward : undefined;
+        } while (nextToken);
+
+        if (totalLines === 0) {
             log.info('     No CloudWatch log entries found for this stream.');
         }
 
-        // Step 3: Check for stderr stream and warn if it has content
+        // ── 3. Check stderr stream and warn if it has content ────────────────
         const stderrStream = streamNames.find((s) => s.endsWith('/stderr'));
         if (stderrStream) {
             const stderrEvents = await cwlClient.send(
                 new GetLogEventsCommand({
                     logGroupName,
                     logStreamName: stderrStream,
-                    limit: 10,
+                    limit: 50,
                     startFromHead: false,
                 }),
             );
@@ -390,8 +480,84 @@ async function fetchAndPrintCloudWatchLogs(
                 }
             }
         }
+
+        return totalLines;
     } catch (err) {
         log.warn(`     Could not fetch CloudWatch logs: ${(err as Error).message}`);
+        return 0;
+    }
+}
+
+/**
+ * Fallback: fetch full command output via GetCommandInvocation API.
+ *
+ * The SSM Automation step outputs are truncated to 2500 characters.
+ * GetCommandInvocation returns the first 24,000 bytes of stdout/stderr directly
+ * from the SSM service — no CloudWatch required.
+ *
+ * Use this when CloudWatch streams are not yet available or the log group
+ * is misconfigured.
+ *
+ * @param ssmClient - SSM SDK client
+ * @param commandId - SSM RunCommand command ID
+ * @param instanceId - EC2 instance ID that executed the command
+ * @returns Whether output was successfully fetched
+ */
+async function fetchCommandInvocationOutput(
+    ssmClient: SSMClient,
+    commandId: string,
+    instanceId: string,
+): Promise<boolean> {
+    log.info(`     ${log.cyan('[Fallback]')} Fetching output via GetCommandInvocation...`);
+    try {
+        const response = await ssmClient.send(
+            new GetCommandInvocationCommand({
+                CommandId: commandId,
+                InstanceId: instanceId,
+                // PluginName scopes to the shell script output.
+                // AWS-RunShellScript always uses 'aws:runShellScript' as the plugin.
+                PluginName: 'aws:runShellScript',
+            }),
+        );
+
+        const stdout = response.StandardOutputContent?.trim();
+        const stderr = response.StandardErrorContent?.trim();
+        const status = response.StatusDetails ?? 'Unknown';
+        // SSM uploads the full output to S3 when it exceeds 24 KB.
+        // A non-empty StandardOutputUrl is the signal that output was truncated.
+        const outputUrl = response.StandardOutputUrl;
+
+        console.log(`     ${log.cyan('[GetCommandInvocation]')} Status: ${colourStatus(status)}`);
+
+        if (stdout) {
+            for (const line of stdout.split('\n')) {
+                console.log(`     ${log.blue('[STDOUT]')} ${line}`);
+            }
+            if (outputUrl) {
+                log.warn(`     Output exceeded 24 KB — full output at: ${outputUrl}`);
+                log.warn('     Enable CloudWatch logging (CloudWatchOutputEnabled: true) for unlimited output.');
+            }
+        } else {
+            log.info('     No stdout content returned by GetCommandInvocation.');
+        }
+
+        if (stderr) {
+            log.warn('     Stderr content:');
+            for (const line of stderr.split('\n')) {
+                console.log(`     ${log.red('[STDERR]')} ${line}`);
+            }
+        }
+
+        return true;
+    } catch (err) {
+        const msg = (err as Error).message;
+        // InvocationDoesNotExist means the command hasn't started or already expired (30 days)
+        if (msg.includes('InvocationDoesNotExist') || msg.includes('does not exist')) {
+            log.warn('     GetCommandInvocation: invocation record no longer exists (expired or pre-invocation).');
+        } else {
+            log.warn(`     GetCommandInvocation failed: ${msg}`);
+        }
+        return false;
     }
 }
 
@@ -399,17 +565,34 @@ async function fetchAndPrintCloudWatchLogs(
  * Inspect a single SSM Automation execution in detail.
  * Fetches step-level data, outputs, failure reasons, and CloudWatch logs.
  *
+ * ## Output strategy (in priority order):
+ *   1. CloudWatch logs — full paginated output (500 events/page)
+ *   2. GetCommandInvocation fallback — up to 24 KB when CWL has no streams
+ *   3. Native SSM step outputs — always shown (may be truncated at 2500 chars)
+ *
+ * The CloudWatch log group is resolved automatically from the document name:
+ *   - Document name containing 'deploy'    → `<base>/deploy`
+ *   - Document name containing 'bootstrap' → `<base>/bootstrap`
+ *
  * @param ssmClient - SSM SDK client
  * @param cwlClient - CloudWatch Logs SDK client
  * @param executionId - Automation execution ID
+ * @param documentName - SSM Automation document name (used to resolve CW log group)
  * @param config - Script configuration
  */
 async function inspectExecution(
     ssmClient: SSMClient,
     cwlClient: CloudWatchLogsClient,
     executionId: string,
+    documentName: string | undefined,
     config: ScriptConfig,
 ): Promise<{ totalSteps: number; failedSteps: number }> {
+    const resolvedLogGroup = resolveLogGroup(
+        config.logGroupBase,
+        config.logGroupOverride,
+        documentName,
+    );
+
     const executionDetail = await ssmClient.send(
         new GetAutomationExecutionCommand({
             AutomationExecutionId: executionId,
@@ -425,14 +608,37 @@ async function inspectExecution(
 
         printStepDetail(step, stepIndex, steps.length);
 
-        // Fetch CloudWatch logs for RunCommand steps
+        // Fetch logs for aws:runCommand steps — CWL primary, GetCommandInvocation fallback
         if (step.Action === 'aws:runCommand' && step.Outputs?.['CommandId']) {
             const commandId = step.Outputs['CommandId'][0];
+
+            // InstanceIds is a JSON-encoded array: '["i-0abc123"]'
+            const rawInstanceIds = step.Outputs['InstanceIds']?.[0] ?? '';
+            let instanceId: string | undefined;
+            try {
+                const parsed = JSON.parse(rawInstanceIds) as unknown;
+                instanceId = Array.isArray(parsed) ? (parsed[0] as string) : rawInstanceIds || undefined;
+            } catch {
+                instanceId = rawInstanceIds || undefined;
+            }
+
             log.info(`     RunCommand ID: ${commandId}`);
-            await fetchAndPrintCloudWatchLogs(cwlClient, commandId, config.logGroupName);
+            log.info(`     Instance ID:   ${instanceId ?? '(unknown)'}`);
+            log.info(`     CW Log Group:  ${resolvedLogGroup}`);
+
+            // Primary: CloudWatch logs (full paginated output)
+            const cwlLines = await fetchAndPrintCloudWatchLogs(cwlClient, commandId, resolvedLogGroup);
+
+            // Fallback: GetCommandInvocation when CWL has no streams yet
+            // (e.g. CloudWatchOutputEnabled was just added, or streams haven't flushed)
+            if (cwlLines === 0 && instanceId) {
+                await fetchCommandInvocationOutput(ssmClient, commandId, instanceId);
+            } else if (cwlLines === 0) {
+                log.warn('     No CWL output and no instance ID — cannot use GetCommandInvocation fallback.');
+            }
         }
 
-        // Print native SSM outputs and responses
+        // Print native SSM outputs and responses (always shown, may be truncated)
         printStepOutputs(step);
         printStepResponse(step);
 
@@ -459,11 +665,21 @@ async function main(): Promise<void> {
     const awsConfig = buildAwsConfig(args);
     const auth = resolveAuth(awsConfig.profile);
 
+    const sinceRaw = (args['since'] as string) ?? '24h';
+    const sinceMs = parseSinceDuration(sinceRaw);
+
+    const rawLogGroup = args['log-group'] as string;
+    const defaultLogGroupBase = '/ssm/k8s/development';
+    // Detect explicit override: user passed a value different from the default
+    const logGroupOverride = rawLogGroup !== defaultLogGroupBase;
+
     const config: ScriptConfig = {
         maxResults: Math.min(Number.parseInt(args['last'] as string, 10), 50),
-        logGroupName: args['log-group'] as string,
+        logGroupBase: rawLogGroup,
+        logGroupOverride,
         statusFilters: (args.status as string).split(',').map((s) => s.trim()),
         runbookPrefix: args.runbook ? (args.runbook as string) : undefined,
+        sinceMs,
     };
 
     log.header('  SSM Automation Troubleshooter');
@@ -473,7 +689,10 @@ async function main(): Promise<void> {
         'Status Filter': config.statusFilters.join(', '),
         'Runbook Filter': config.runbookPrefix ?? '(all)',
         'Max Executions': String(config.maxResults),
-        'CW Log Group': config.logGroupName,
+        'Since': `${sinceRaw} (from ${new Date(Date.now() - config.sinceMs).toISOString()})`,
+        'CW Log Group': logGroupOverride
+            ? rawLogGroup
+            : `${rawLogGroup}/bootstrap|deploy (auto-detected per execution)`,
     });
 
     const ssmClient = new SSMClient({
@@ -488,7 +707,10 @@ async function main(): Promise<void> {
     // ─── Step 1: Build API filters ────────────────────────────────────────
     log.step(1, 3, 'Querying SSM Automation executions...');
 
-    const filters: Array<{ Key: 'DocumentNamePrefix' | 'ExecutionStatus'; Values: string[] }> = [];
+    // The SSM API supports StartTimeAfter / StartTimeBefore as Filter keys — confirmed in
+    // the SDK type definitions (DescribeAutomationExecutionsCommand.d.ts).
+    type AutomationFilter = { Key: string; Values: string[] };
+    const filters: AutomationFilter[] = [];
 
     if (config.runbookPrefix) {
         filters.push({
@@ -504,19 +726,30 @@ async function main(): Promise<void> {
         });
     }
 
+    // Scope results to the --since window.
+    const startTimeFilter = new Date(Date.now() - config.sinceMs);
+    filters.push({
+        Key: 'StartTimeAfter',
+        Values: [startTimeFilter.toISOString()],
+    });
+
     const describeResponse = await ssmClient.send(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         new DescribeAutomationExecutionsCommand({
             MaxResults: config.maxResults,
-            Filters: filters.length > 0 ? filters : undefined,
+            Filters: filters as any,
         }),
     );
 
     const executions = describeResponse.AutomationExecutionMetadataList ?? [];
 
     if (executions.length === 0) {
-        log.warn(`No executions found matching filters: ${config.statusFilters.join(', ')}`);
+        log.warn(
+            `No executions found matching status [${config.statusFilters.join(', ')}] in the last ${sinceRaw}.`,
+        );
         log.nextSteps([
-            'Try broadening the status filter: --status Success,Failed,TimedOut',
+            `Broaden the time window:  --since 48h  or  --since 7d`,
+            `Broaden the status filter: --status Success,Failed,TimedOut`,
             'Remove the runbook filter to search across all documents',
             'Check the AWS Console → Systems Manager → Automation for recent executions',
         ]);
@@ -543,7 +776,13 @@ async function main(): Promise<void> {
             continue;
         }
 
-        const result = await inspectExecution(ssmClient, cwlClient, executionId, config);
+        const result = await inspectExecution(
+            ssmClient,
+            cwlClient,
+            executionId,
+            execution.DocumentName,
+            config,
+        );
         totalStepsInspected += result.totalSteps;
         totalFailedSteps += result.failedSteps;
     }

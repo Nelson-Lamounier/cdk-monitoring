@@ -5,19 +5,20 @@
  * Creates shared Kubernetes infrastructure hosting both monitoring and
  * application workloads on a kubeadm Kubernetes cluster.
  *
- * Stack Architecture (12 stacks):
- *   1. Kubernetes-Data: DynamoDB, S3 Assets, SSM parameters
- *   2. Kubernetes-Base: VPC, Security Group, KMS, EBS, Elastic IP
- *   2b. Kubernetes-GoldenAmi: EC2 Image Builder pipeline (bakes Golden AMI)
- *   2c. Kubernetes-SsmAutomation: SSM Automation bootstrap documents
- *   3. Kubernetes-ControlPlane: Control plane EC2 (t3.medium), ASG, IAM,
- *   3b. Kubernetes-AppWorker: Application node EC2 (t3.small), ASG, kubeadm join
- *   3c. Kubernetes-MonitoringWorker: Monitoring node EC2 (t3.medium), ASG, kubeadm join
- *   3d. Kubernetes-ArgocdWorker: ArgoCD node EC2 (t3.small Spot), ASG, kubeadm join
- *   4. Kubernetes-AppIam: Application-tier IAM grants (DynamoDB, S3, Secrets)
- *   5. Kubernetes-API: API Gateway + Lambda (email subscriptions)
- *   6. Kubernetes-Edge: ACM + WAF + CloudFront (us-east-1)
- *   7. Kubernetes-Observability: CloudWatch pre-deployment dashboard
+ * Stack Architecture (8 stacks):
+ *   1.  Kubernetes-Data:          DynamoDB, S3 Assets, SSM parameters
+ *   2.  Kubernetes-Base:          VPC, Security Group, KMS, EBS, Elastic IP
+ *   3.  Kubernetes-ControlPlane:  Control plane EC2 (t3.medium), ASG, IAM
+ *   3b. Kubernetes-GeneralPool:   Kubernetes-native worker ASG (Next.js, ArgoCD)
+ *   3c. Kubernetes-MonitoringPool: Kubernetes-native worker ASG (Prometheus, Grafana)
+ *   4.  Kubernetes-AppIam:        Application-tier IAM grants (DynamoDB, S3, Secrets)
+ *   5.  Kubernetes-API:           API Gateway + Lambda (email subscriptions)
+ *   6.  Kubernetes-Edge:          ACM + WAF + CloudFront (us-east-1)
+ *   7.  Kubernetes-Observability: CloudWatch pre-deployment dashboard
+ *
+ * Worker nodes are Kubernetes-native ASG pools. CDK provisions the Launch
+ * Template and Auto Scaling Group; the K8s bootstrap script handles kubeadm
+ * join, node labelling, and taint application automatically.
  *
  * Workload isolation is enforced at the Kubernetes layer via Namespaces,
  * NetworkPolicies, ResourceQuotas, and PriorityClasses.
@@ -35,26 +36,24 @@ import {
     getEnvironmentConfig,
 } from '../../config/environments';
 import { getK8sConfigs } from '../../config/kubernetes';
-import { getNextJsConfigs, getNextJsK8sConfig, nextjsResourceNames } from '../../config/nextjs';
+import { getNextJsConfigs, nextjsResourceNames } from '../../config/nextjs';
 import { Project, getProjectConfig } from '../../config/projects';
 import { nextjsSsmPaths, k8sSsmPaths } from '../../config/ssm-paths';
+import { AmiRefreshConstruct } from '../../constructs/events/ami-refresh/ami-refresh-construct';
 import {
     IProjectFactory,
     ProjectFactoryContext,
     ProjectStackFamily,
 } from '../../factories/project-interfaces';
 import {
-    K8sSsmAutomationStack,
     KubernetesAppIamStack,
     KubernetesBaseStack,
-    GoldenAmiStack,
     KubernetesControlPlaneStack,
     KubernetesDataStack,
     KubernetesEdgeStack,
-    KubernetesMonitoringWorkerStack,
-    KubernetesAppWorkerStack,
-    KubernetesArgocdWorkerStack,
     KubernetesObservabilityStack,
+    KubernetesWorkerAsgStack,
+    PlatformRdsStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId, flatName } from '../../utilities/naming';
@@ -236,59 +235,6 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         const sharedVpcId = baseStack.vpc.vpcId;
 
         // =================================================================
-        // Stack 2b: GOLDEN AMI STACK (Image Builder Pipeline)
-        //
-        // Dedicated stack for the EC2 Image Builder pipeline.
-        // Deployed before ControlPlane so the AMI can be baked before
-        // any ASG launches EC2 instances.
-        // Gated by imageConfig.enableImageBuilder flag.
-        // =================================================================
-        let goldenAmiStack: GoldenAmiStack | undefined;
-        if (configs.image.enableImageBuilder) {
-            goldenAmiStack = new GoldenAmiStack(
-                scope,
-                stackId(this.namespace, 'GoldenAmi', environment),
-                {
-                    env,
-                    description: `Golden AMI Image Builder pipeline - ${environment}`,
-                    targetEnvironment: environment,
-                    vpcId: sharedVpcId,
-                    configs,
-                    namePrefix,
-                    ssmPrefix,
-                },
-            );
-            goldenAmiStack.addDependency(baseStack);
-            stacks.push(goldenAmiStack);
-            stackMap.goldenAmi = goldenAmiStack;
-        }
-
-        // =================================================================
-        // Stack 2c: SSM AUTOMATION STACK (Bootstrap Documents)
-        //
-        // SSM Automation documents for control plane and worker bootstrap.
-        // Deployed independently so bootstrap scripts can be updated
-        // without redeploying EC2 instances.
-        // =================================================================
-        const ssmAutomationStack = new K8sSsmAutomationStack(
-            scope,
-            stackId(this.namespace, 'SsmAutomation', environment),
-            {
-                env,
-                description: `SSM Automation documents for K8s bootstrap - ${environment}`,
-                targetEnvironment: environment,
-                configs,
-                namePrefix,
-                ssmPrefix,
-                scriptsBucketName: `${namePrefix}-k8s-scripts-${env.account}`,
-                notificationEmail: emailConfig.notificationEmail,
-            },
-        );
-        ssmAutomationStack.addDependency(baseStack);
-        stacks.push(ssmAutomationStack);
-        stackMap.ssmAutomation = ssmAutomationStack;
-
-        // =================================================================
         // Stack 3: CONTROL PLANE STACK (ASG + Launch Template + Runtime)
         //
         // kubeadm cluster hosting both monitoring and app workloads.
@@ -317,85 +263,88 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stackMap.controlPlane = controlPlaneStack;
 
         // =================================================================
-        // Stack 3b: WORKER STACK (Application Node — t3.small)
+        // Stack 3b: GENERAL POOL ASG (Kubernetes-Native Worker — general)
         //
-        // Dedicated worker node for Next.js workloads.
-        // Joins the kubeadm cluster via SSM-published join token.
-        // Workload isolated via node labels + taints.
+        // Hosts: Next.js, start-admin, ArgoCD, system components.
+
+        // No taint — accepts all pods without toleration.
+        //
+        // On-Demand ONLY: ArgoCD is on this pool and owns BlueGreen promotion
+        // logic. A Spot interruption that evicts ArgoCD loses the very tool
+        // that would orchestrate the graceful handoff. On-Demand cost delta is
+        // negligible for a single t3.small vs. the operational risk.
+        //
+        // desiredCapacity intentionally absent: start at min=1 and let the
+        // Cluster Autoscaler prove two nodes are needed before provisioning.
+        // Setting it would reset capacity on every `cdk deploy`.
         // =================================================================
-        const workerConfig = getNextJsK8sConfig(environment);
-        const workerStack = new KubernetesAppWorkerStack(
+        const generalPoolStack = new KubernetesWorkerAsgStack(
+
             scope,
-            stackId(this.namespace, 'AppWorker', environment),
+            stackId(this.namespace, 'GeneralPool', environment),
             {
                 vpcId: sharedVpcId,
                 env,
-                description: `Kubernetes worker node for Next.js application - ${environment}`,
+                description: `Kubernetes general-purpose worker pool (Next.js, ArgoCD, system) - ${environment}`,
                 targetEnvironment: environment,
-                workerConfig,
+                poolType: 'general',
                 controlPlaneSsmPrefix: ssmPrefix,
+                clusterName: namePrefix,
+                instanceType: undefined,      // defaults to t3.small
+                minCapacity: 1,
+                maxCapacity: 4,
+                // On-Demand: ArgoCD cannot tolerate Spot interruption.
+                // It is the orchestrator for all BlueGreen promotions — evicting it
+                // removes the tool needed for graceful workload handoff.
+                useSpotInstances: false,
+                rootVolumeSizeGb: 30,
+                useSignals: true,
+                signalsTimeoutMinutes: 40,
                 namePrefix,
-                // cert-manager DNS-01 — pods may run on this worker node
                 crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
             },
         );
-        workerStack.addDependency(controlPlaneStack);
-        stacks.push(workerStack);
-        stackMap.worker = workerStack;
+        generalPoolStack.addDependency(controlPlaneStack);
+        stacks.push(generalPoolStack);
+        stackMap.generalPool = generalPoolStack;
 
         // =================================================================
-        // Stack 3c: MONITORING WORKER STACK (Monitoring Node — t3.small)
+        // Stack 3c: MONITORING POOL ASG (Kubernetes-Native Worker — monitoring)
         //
-        // Dedicated worker node for K8s-native monitoring workloads.
-        // Joins the kubeadm cluster via SSM-published join token.
-        // Workload isolated via node labels + taints (role=monitoring).
+        // Hosts: Prometheus, Grafana, Loki, Tempo, Alloy, Steampipe.
+        // Tainted `dedicated=monitoring:NoSchedule` by the bootstrap script.
         // =================================================================
-        const monitoringWorkerStack = new KubernetesMonitoringWorkerStack(
+        const monitoringPoolStack = new KubernetesWorkerAsgStack(
             scope,
-            stackId(this.namespace, 'MonitoringWorker', environment),
+            stackId(this.namespace, 'MonitoringPool', environment),
             {
                 vpcId: sharedVpcId,
                 env,
-                description: `Kubernetes monitoring worker node - ${environment}`,
+                description: `Kubernetes monitoring worker pool (Prometheus, Grafana, Loki, Tempo) - ${environment}`,
                 targetEnvironment: environment,
-                monitoringWorkerConfig: configs.monitoringWorker,
+                poolType: 'monitoring',
                 controlPlaneSsmPrefix: ssmPrefix,
+                clusterName: namePrefix,
+                instanceType: undefined, // defaults to t3.medium
+                minCapacity: 1,
+                maxCapacity: 2,
+                useSpotInstances: true,
+                rootVolumeSizeGb: 30,
+                useSignals: true,
+                signalsTimeoutMinutes: 40,
                 namePrefix,
-                // cert-manager DNS-01 — pods may run on this worker node
                 crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
+                // Wire the notification email so the monitoring SNS topic has an
+                // email subscriber. Without this, Grafana alerts are published to
+                // the topic (via the EC2 instance role) but never delivered to a
+                // human recipient. emailConfig is sourced from NOTIFICATION_EMAIL
+                // env var at CDK synth time — same as all other stacks.
+                notificationEmail: emailConfig.notificationEmail,
             },
         );
-        monitoringWorkerStack.addDependency(controlPlaneStack);
-        stacks.push(monitoringWorkerStack);
-        stackMap.monitoringWorker = monitoringWorkerStack;
-
-        // =================================================================
-        // Stack 3d: ARGOCD WORKER STACK (ArgoCD Node — t3.small Spot)
-        //
-        // Dedicated worker node for ArgoCD GitOps controller.
-        // Uses Spot instances for cost optimisation (~70% savings).
-        // ArgoCD UI accessed via: ops.nelsonlamounier.com/argocd
-        //   → NLB → Traefik (monitoring node) → ArgoCD Service → pod
-        // No NLB registration or ingress SG needed.
-        // =================================================================
-        const argocdWorkerStack = new KubernetesArgocdWorkerStack(
-            scope,
-            stackId(this.namespace, 'ArgocdWorker', environment),
-            {
-                vpcId: sharedVpcId,
-                env,
-                description: `Kubernetes ArgoCD worker node (Spot) - ${environment}`,
-                targetEnvironment: environment,
-                argocdWorkerConfig: configs.argocdWorker,
-                controlPlaneSsmPrefix: ssmPrefix,
-                namePrefix,
-                // cert-manager DNS-01 — pods may run on this worker node
-                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
-            },
-        );
-        argocdWorkerStack.addDependency(controlPlaneStack);
-        stacks.push(argocdWorkerStack);
-        stackMap.argocdWorker = argocdWorkerStack;
+        monitoringPoolStack.addDependency(controlPlaneStack);
+        stacks.push(monitoringPoolStack);
+        stackMap.monitoringPool = monitoringPoolStack;
 
         // =================================================================
         // Stack 4: APP IAM STACK (Application-Tier Grants)
@@ -410,6 +359,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             stackId(this.namespace, 'AppIam', environment),
             {
                 controlPlaneStack,
+                workerRoleSsmPath: `${ssmPrefix}/general-instance-role-arn`,
                 env,
                 description: `Application-tier IAM grants for Kubernetes cluster - ${environment}`,
                 targetEnvironment: environment,
@@ -428,10 +378,14 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/${resourceNames.dynamoTableName}`,
                     // Bedrock content pipeline — AI-enhanced article metadata
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
+                    // Bedrock strategist pipeline — job applications + resume entities
+                    `arn:aws:dynamodb:${env.region}:${env.account}:table/${bedrockNamePrefix}-job-strategist`,
                 ],
-                // Admin write access — article publishing and deletion
+                // Admin write access — article publishing, deletion, and resume CRUD
                 dynamoWriteTableArns: [
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
+                    // Resumes are stored in the strategist table (migrated 2026-03)
+                    `arn:aws:dynamodb:${env.region}:${env.account}:table/${bedrockNamePrefix}-job-strategist`,
                 ],
                 // Admin S3 write — article image and video uploads from admin panel
                 s3WriteBucketArns: [
@@ -439,12 +393,53 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 ],
                 // Bedrock pipeline SSM — resolve infrastructure for admin publish
                 bedrockSsmPath: `/${bedrockNamePrefix}/*`,
+                // Gap S2: BFF proxy — public-api reads the Bedrock chatbot API key
+                // from Secrets Manager using the EC2 instance profile.
+                // The '*' suffix covers the 6-char random suffix in SM ARNs.
+                bedrockSecretsManagerPath: `${bedrockNamePrefix}/bedrock-api-key*`,
                 dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
+                // admin-api BFF — Lambda invocation for article publish/trigger/strategist
+                // Called via EC2 instance role (IMDS) — no static credentials in K8s.
+                lambdaInvokeArns: [
+                    `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-pipeline-publish`,
+                    `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-pipeline-trigger`,
+                    `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-strategist-trigger`,
+                ],
+                // Platform RDS credentials — ESO aws-secretsmanager store reads this
+                // via the EC2 instance profile. The '?' suffix covers Secrets Manager's
+                // 6-char random suffix appended to the ARN.
+                additionalSecretArns: [
+                    `k8s-${environment}/platform-rds/credentials-??????`,
+                ],
             },
         );
         appIamStack.addDependency(controlPlaneStack);
         stacks.push(appIamStack);
         stackMap.appIam = appIamStack;
+
+        // =================================================================
+        // Stack 4b: PLATFORM RDS STACK
+        //
+        // Single PostgreSQL 16 + pgvector instance in SharedVpc.
+        // All AI pipeline Jobs, admin-api, and public-api connect via
+        // PgBouncer (pgbouncer.platform.svc.cluster.local:5432).
+        // Deployed as sibling to AppIamStack — same dependency (BaseStack).
+        // =================================================================
+        const platformRdsStack = new PlatformRdsStack(
+            scope,
+            stackId(this.namespace, 'PlatformRds', environment),
+            {
+                targetEnvironment: environment,
+                vpc: baseStack.vpc,
+                namePrefix,
+                databaseName: 'tucaken',
+                env,
+                description: `Platform PostgreSQL 16 + pgvector — Tucaken unified data store - ${environment}`,
+            },
+        );
+        platformRdsStack.addDependency(baseStack);
+        stacks.push(platformRdsStack);
+        stackMap.platformRds = platformRdsStack;
 
         // =================================================================
         // Stack 5: API STACK (API Gateway + Lambda)
@@ -516,6 +511,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 // Admin services (Grafana/Prometheus/ArgoCD) DNS
                 opsSubdomain: configs.edge.opsSubdomain,
                 baseDomain: configs.edge.baseDomain,
+                runnersSubdomain: configs.edge.runnersSubdomain,
                 env: edgeEnv,
             },
         );
@@ -561,6 +557,36 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         observabilityStack.addDependency(baseStack);
         stacks.push(observabilityStack);
         stackMap.observability = observabilityStack;
+
+        // =================================================================
+        // AMI REFRESH CONSTRUCT (EventBridge → Step Functions)
+        //
+        // Watches /k8s/${environment}/golden-ami/latest SSM parameter for
+        // updates and automatically rolls worker ASGs (phase 1) then the
+        // control plane ASG (phase 2) — no cdk deploy required after bake.
+        // Scoped to controlPlaneStack so resources are co-located with compute.
+        // =================================================================
+        // AmiRefreshConstruct is scoped to controlPlaneStack but needs Launch Template
+        // identifiers from the worker stacks, which already depend on controlPlaneStack
+        // via addDependency(). Passing CDK tokens (launchTemplateId) across this boundary
+        // would force CloudFormation Fn::ImportValue cross-stack exports and create a cycle.
+        //
+        // Fix: use launchTemplateName (a concrete string at synth time — `${poolId}-lt`)
+        // rather than launchTemplateId (a CloudFormation Ref / CDK token assigned at deploy).
+        new AmiRefreshConstruct(controlPlaneStack, 'AmiRefresh', {
+            ssmPrefix,
+            workerLtNames: [
+                generalPoolStack.launchTemplateName,
+                monitoringPoolStack.launchTemplateName,
+            ],
+            workerAsgNames: [
+                generalPoolStack.concreteAsgName,
+                monitoringPoolStack.concreteAsgName,
+            ],
+            controlPlaneLtName: controlPlaneStack.launchTemplateName,
+            controlPlaneAsgName: controlPlaneStack.concreteAsgName,
+            notificationEmail: emailConfig.notificationEmail,
+        });
 
         cdk.Annotations.of(scope).addInfo(
             `K8s factory created ${stacks.length} stacks for ${environment}: ` +

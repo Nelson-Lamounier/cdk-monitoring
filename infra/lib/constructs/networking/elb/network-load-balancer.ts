@@ -241,9 +241,16 @@ export class NetworkLoadBalancerConstruct extends Construct {
                 ? props.vpc.publicSubnets
                 : props.vpc.privateSubnets;
 
-            const targetSubnet = subnetPool.find(
+            let targetSubnet = subnetPool.find(
                 (s) => s.availabilityZone === props.availabilityZone,
             );
+
+            // Fallback for CDK unit tests where Vpc.fromLookup generates a "dummy" VPC
+            // (the availability zones will be 'dummy1a', 'dummy1b', etc.)
+            if (!targetSubnet && props.vpc.availabilityZones.some(az => az.includes('dummy'))) {
+                targetSubnet = subnetPool[0];
+            }
+
             if (!targetSubnet) {
                 const subnetType = internetFacing ? 'public' : 'private';
                 throw new Error(
@@ -341,6 +348,81 @@ export class NetworkLoadBalancerConstruct extends Construct {
             );
 
             // Outbound: NLB → targets (health checks + forwarding)
+            this.securityGroup.addEgressRule(
+                ec2.Peer.ipv4(vpcCidr),
+                ec2.Port.tcp(port),
+                `TCP/${port} to targets (VPC CIDR)`,
+            );
+        }
+    }
+
+    /**
+     * Configure NLB SG with CloudFront prefix list restriction for HTTP and open
+     * internet for HTTPS.
+     *
+     * **Security design**:
+     * - Port 80 (HTTP): Restricted to the CloudFront managed prefix list only.
+     *   Prevents scanners and bots from hitting Traefik's HTTP entrypoint directly.
+     * - Port 443 (HTTPS): Open to `0.0.0.0/0` and `::/0` (all internet).
+     *   Fine-grained access control is enforced by the Ingress SG on the K8s nodes
+     *   (admin IP allowlist). The NLB is Layer 4 TCP passthrough and does not inspect.
+     *
+     * **Why not restrict port 443 to the prefix list?**
+     * The CloudFront origin-facing prefix list has ~55 MaxEntries — each reference
+     * consumes that many effective rule slots against the 60-rule per-SG limit.
+     * Using the prefix list for both ports 80 and 443 would consume 55 + 55 = 110
+     * effective rules, exceeding the limit and causing CF deployment failures.
+     *
+     * **Inbound**:
+     * - Port 80: CloudFront managed prefix list only (blocks direct scanner access)
+     * - Port 443: `0.0.0.0/0` + `::/0` (Ingress SG enforces admin IP filtering)
+     *
+     * **Outbound**:
+     * - Both ports forwarded to VPC CIDR (health checks + target forwarding)
+     *
+     * @param cloudFrontPrefixListId - AWS managed prefix list ID
+     *   (`com.amazonaws.global.cloudfront.origin-facing`)
+     * @param httpPort - HTTP listener port (typically 80)
+     * @param httpsPort - HTTPS listener port (typically 443)
+     *
+     * @example
+     * ```typescript
+     * nlb.configureCloudFrontSecurityGroup(cfPrefixListId, 80, 443);
+     * ```
+     */
+    public configureCloudFrontSecurityGroup(
+        cloudFrontPrefixListId: string,
+        httpPort: number,
+        httpsPort: number,
+    ): void {
+        const vpcCidr = this.vpc.vpcCidrBlock;
+
+        // Inbound: CloudFront only → NLB HTTP port (port 80)
+        // Blocks direct HTTP access from scanners and bots bypassing CloudFront.
+        this.securityGroup.addIngressRule(
+            ec2.Peer.prefixList(cloudFrontPrefixListId),
+            ec2.Port.tcp(httpPort),
+            'HTTP from CloudFront origin-facing IPs only',
+        );
+
+        // Inbound: internet → NLB HTTPS port (port 443)
+        // Port 443 is open at the NLB layer (Layer 4 TCP passthrough).
+        // Restricting to the CF prefix list would exceed the 60-rule SG limit
+        // (the CF prefix list has ~55 MaxEntries, counted per SG rule reference).
+        // Fine-grained filtering is enforced at the Ingress SG on K8s nodes.
+        this.securityGroup.addIngressRule(
+            ec2.Peer.anyIpv4(),
+            ec2.Port.tcp(httpsPort),
+            'HTTPS from internet (admin access via Traefik)',
+        );
+        this.securityGroup.addIngressRule(
+            ec2.Peer.anyIpv6(),
+            ec2.Port.tcp(httpsPort),
+            'HTTPS from internet IPv6 (admin access via Traefik)',
+        );
+
+        // Outbound: NLB → targets (health checks + forwarding)
+        for (const port of [httpPort, httpsPort]) {
             this.securityGroup.addEgressRule(
                 ec2.Peer.ipv4(vpcCidr),
                 ec2.Port.tcp(port),

@@ -1,4 +1,4 @@
-# CDK Multi-Project Infrastructure
+# CDK Platform Infrastructure
 
 [![CI](https://github.com/Nelson-Lamounier/cdk-monitoring/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Nelson-Lamounier/cdk-monitoring/actions/workflows/ci.yml)
 [![npm: cdk-governance-aspects](https://img.shields.io/npm/v/@nelsonlamounier/cdk-governance-aspects?label=npm%3A%20cdk-governance-aspects&color=cb3837)](https://www.npmjs.com/package/@nelsonlamounier/cdk-governance-aspects)
@@ -6,409 +6,309 @@
 [![AWS CDK](https://img.shields.io/badge/AWS%20CDK-v2-ff9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/cdk/)
 [![License: Private](https://img.shields.io/badge/Licence-Private-lightgrey)](./LICENSE)
 
-> A production-grade AWS CDK monorepo managing **4 projects**, **12+ stacks**, and **3 environments** through the **Project Factory pattern** — with 33 custom Checkov security rules, CDK-Nag compliance across 4 frameworks, a 1,150-line post-deploy smoke test suite, and automated CI/CD via 19 GitHub Actions workflows.
+> AWS CDK v2 TypeScript monorepo: self-managed Kubernetes on EC2 (kubeadm), SharedVpc networking, Cognito authentication, Platform PostgreSQL 16, Bedrock-powered self-healing, and AMI refresh automation — 16 stacks across 3 CDK projects deployed via the Project Factory pattern.
 
 ---
 
-## Why This Repository Exists
+## What it does
 
-This repository consolidates all AWS infrastructure for a solo DevOps portfolio into a single CDK codebase. The alternative — separate repos per project — would duplicate VPC configurations, security groups, IAM policies, and CI/CD workflows across 4 projects. A monorepo with the **Abstract Factory pattern** shares common constructs while isolating project-specific stacks behind typed factory interfaces.
+This repository provisions and manages the complete AWS platform layer for a production SaaS application. It stands up a self-managed Kubernetes cluster (kubeadm, EC2 Spot workers), attaches a SharedVpc used by every project, manages Cognito for the admin dashboard, provisions a Platform PostgreSQL 16 instance with pgvector for application data, and wires two autonomous pipelines: a Bedrock-powered self-healing Lambda that diagnoses and remediates cluster incidents via SSM Run Command, and an AMI Refresh Step Functions state machine that performs rolling node replacement whenever a new Golden AMI is published to SSM.
 
-The key design decision: **every project is a factory** that registers with a central registry. The CDK entry point (`bin/app.ts`, 105 lines) is a slim orchestrator that parses `-c project=X -c environment=Y` from the command line, resolves the factory, and applies cross-cutting concerns (tagging, compliance, governance). No project-specific logic lives in `app.ts` — it delegates everything to the factory.
+Infrastructure is defined as TypeScript CDK constructs (aws-cdk-lib 2.232.1, TypeScript 5.9, Node 22) and ships via 11 GitHub Actions workflow files covering CI validation, CDK stack deployment, and Kubernetes cluster day-1 orchestration. The admin-api BFF (Hono, Node 22) lives in `api/admin-api/` and is deployed to Kubernetes via ArgoCD from the sibling `kubernetes-bootstrap` repository.
 
-```bash
-# Single entry point for all projects
-npx cdk synth -c project=monitoring -c environment=dev
-npx cdk synth -c project=nextjs -c environment=prod
-npx cdk synth -c project=org -c environment=prod
-```
+This repo is the platform infrastructure layer. Application workloads (AI pipelines, Bedrock agents, article ingestion) live in [`ai-applications`](https://github.com/Nelson-Lamounier/ai-applications). The Next.js 15 frontend and admin dashboard live in [`frontend-portfolio`](https://github.com/Nelson-Lamounier/frontend-portfolio). Kubernetes bootstrap scripts, Helm charts, and ArgoCD Applications live in [`kubernetes-bootstrap`](https://github.com/Nelson-Lamounier/kubernetes-bootstrap).
 
 ---
 
-## Projects
+## Why this exists
 
-| Project        | Stacks | Description                                                      |
-| :------------- | :----: | :--------------------------------------------------------------- |
-| **Monitoring** |   3    | Prometheus + Grafana + Loki observability stack on EC2 with EBS  |
-| **Next.js**    |   6    | ECS on EC2 application with CloudFront, API Gateway, DynamoDB    |
-| **Shared**     |   1    | Foundation tier: VPC, ECR repositories, cross-project networking |
-| **Org**        |   1    | Governance tier: cross-account DNS roles, root account resources |
+The prior architecture co-located Next.js ECS stacks, platform infrastructure, and AI pipeline definitions in a single monorepo. As the platform matured — gaining a self-managed Kubernetes cluster, Crossplane, Cognito, Platform RDS, and autonomous self-healing — the co-location created hard coupling between application-tier and platform-tier concerns. Changes to the K8s worker node AMI would trigger the same CI pipeline as a React component change.
 
-### Monitoring Project (3 Stacks)
+This repository is the extracted platform infrastructure layer. The split gives each repo a single reason to change: this repo changes when platform infrastructure changes (new stack, IAM policy update, AMI rotation, CDK version bump), not when an application feature ships.
 
-| Stack       | Resources                                                                    |
-| :---------- | :--------------------------------------------------------------------------- |
-| **Storage** | EBS volumes, S3 script bucket, KMS encryption                                |
-| **SSM**     | SSM Run Command documents for instance configuration                         |
-| **Compute** | EC2 instance, ASG, Launch Template, Security Groups, Prometheus/Grafana/Loki |
+The CDK Project Factory pattern (`infra/bin/app.ts` parses `-c project=X -c environment=Y` and delegates to a typed factory) means the same entry point deploys all 16 stacks across 3 projects without exposing project-specific logic to the orchestrator ([`infra/lib/projects/`](infra/lib/projects/)).
 
-### Next.js Project (6 Stacks)
+---
 
-| Stack           | Resources                                              | Region      |
-| :-------------- | :----------------------------------------------------- | :---------- |
-| **Data**        | ECR, DynamoDB, S3 static assets, SSM secrets           | `eu-west-1` |
-| **Compute**     | ECS Cluster, ASG, Launch Template, IAM roles           | `eu-west-1` |
-| **Networking**  | ALB, Target Groups, Task Security Group                | `eu-west-1` |
-| **Application** | ECS Task Definition, ECS Service, auto-deploy pipeline | `eu-west-1` |
-| **API**         | API Gateway, Lambda functions, regional WAF            | `eu-west-1` |
-| **Edge**        | ACM certificate, CloudFront, global WAF                | `us-east-1` |
+## Highlights
+
+- **16 CDK stacks across 3 projects** — `kubernetes` (10 stacks), `shared` (5 stacks), `org` (1 stack); all stacks created by typed `IProjectFactory` implementations registered in `projectFactoryRegistry`; single `bin/app.ts` entry point, zero project logic in the orchestrator ([`infra/lib/projects/`](infra/lib/projects/), [`infra/bin/app.ts`](infra/bin/app.ts))
+- **AMI Refresh Step Functions pipeline** — 2-phase rolling node replacement (workers first, then control plane), driven by 3 Node 22 Lambda handlers (`update-launch-template`, `start-instance-refresh`, `check-refresh-status`), X-Ray traced, 2-hour timeout, CloudWatch alarm + SNS notification on state machine failure ([`infra/lib/constructs/events/ami-refresh/`](infra/lib/constructs/events/ami-refresh/))
+- **Bedrock self-healing agent** — CloudWatch alarm → EventBridge → Lambda → Bedrock `ConverseCommand` with 3 registered SSM tool actions (`diagnose-alarm`, `ebs-detach`, `analyse-cluster-health`); CDK constructs and CloudWatch dashboard wiring in this repo, Lambda handlers in [`ai-applications`](https://github.com/Nelson-Lamounier/ai-applications) ([docs/projects/self-healing-platform.md](docs/projects/self-healing-platform.md))
+- **Published CDK governance package** — [`@nelsonlamounier/cdk-governance-aspects`](https://www.npmjs.com/package/@nelsonlamounier/cdk-governance-aspects) v1.0.0 MIT: `TaggingAspect` (7-tag kebab-case schema, `cost-centre` for Cost Explorer grouping) + `EnforceReadOnlyDynamoDbAspect` (blocks write actions on ECS task roles at synthesis time); applied across all 16 stacks via CDK `Aspects.of()` ([`packages/cdk-governance-aspects/`](packages/cdk-governance-aspects/))
+- **Synthesis-time security** — 12 custom Checkov rules ([`.checkov/custom_checks/`](.checkov/custom_checks/)), CDK-Nag `AwsSolutions` compliance across all stacks, `EnforceReadOnlyDynamoDbAspect` fails synthesis on IAM violations before a single `cdk deploy` runs; 34 Jest tests (32 infra + 2 CDK aspect package)
+- **9 Architecture Decision Records** documenting every major technology choice with alternatives evaluated, tradeoffs, and rejection rationale ([`docs/decisions/`](docs/decisions/))
 
 ---
 
 ## Architecture
 
-### Design Principles
+```mermaid
+graph TB
+    subgraph "Edge — us-east-1"
+        CF["CloudFront + WAF\n(global CDN)"]
+        ACM["ACM Certificate\n(edge)"]
+        R53["Route53 A record"]
+    end
 
-1. **Abstract Factory Pattern** — Each project implements `IProjectFactory` with a `createAllStacks()` method. The factory registry maps project names to factories. Adding a new project means implementing the interface and registering it.
+    subgraph "Shared — eu-west-1"
+        VPC["SharedVpc\n(public / private / isolated subnets)"]
+        COGNITO["Cognito User Pool\n(admin dashboard PKCE auth)"]
+        XPLANE["Crossplane\n(in-cluster AWS resources)"]
+        SEC["Security Baseline\n(GuardDuty, CloudTrail, SecurityHub)"]
+    end
 
-2. **Blueprints vs. Orchestrators** — `lib/common/` contains environment-agnostic constructs (Blueprints) that focus on a single AWS resource. `lib/stacks/` contains Orchestrators that wire blueprints into functional stacks with dependency injection.
+    subgraph "Kubernetes Platform — eu-west-1"
+        NLB["NLB\n(K8s API + app traffic\nEIP via SubnetMapping)"]
+        CP["Control Plane\nkubeadm, ASG min=1/max=1"]
+        WGEN["Worker Pool — general\nt3.small Spot min=2/max=4"]
+        WMON["Worker Pool — monitoring\nt3.medium Spot\nmin=1/max=2, NoSchedule"]
+        RDS["Platform RDS\nPostgreSQL 16 + pgvector"]
+        OBS["CloudWatch Dashboards\n(Infra + Ops + FinOps)"]
+    end
 
-3. **Three-Layer Configuration** — Global baselines in `defaults.ts` (ports, regions), environment personality in `environments.ts` (cost-optimized dev vs. hardened prod), and project-scoped config in `lib/config/{project}/` (CPU, memory, retention).
+    subgraph "AMI Refresh Pipeline"
+        EB["EventBridge Rule\n(/k8s/env/golden-ami/latest changed)"]
+        SF["Step Functions\n(2-phase state machine)"]
+        LT["update-launch-template\nLambda"]
+        SI["start-instance-refresh\nLambda"]
+        CS["check-refresh-status\nLambda (poll every 60s)"]
+    end
 
-4. **SSM-Based Discovery** — Cross-project resource sharing uses SSM Parameter Store with the `/{project}/{environment}/type/name` convention. Producers write physical IDs; consumers use `valueFromLookup()` during synthesis.
+    subgraph "Self-Healing"
+        CWA["CloudWatch Alarms"]
+        SHL["Bedrock Agent Lambda\nConverseCommand"]
+        SSM["SSM Run Command\n3 remediation tools"]
+    end
 
-5. **Direct Stack References** — Within the same factory, stacks pass construct objects directly (not CloudFormation exports). This avoids unmanaged stack locks from `Fn.importValue`.
+    subgraph "API Layer — eu-west-1"
+        APIGW["API Gateway + WAF\n(regional)"]
+        UTIL["Utility Lambdas × 4\n(subscriptions, ecr-deploy, dns)"]
+    end
 
-### Cross-Cutting Governance (CDK Aspects)
+    subgraph "Org — us-east-1"
+        DNS["CrossAccount DNS Role\n(Route53 in root account)"]
+    end
 
-| Aspect                            | Scope        | Purpose                                                                    |
-| :-------------------------------- | :----------- | :------------------------------------------------------------------------- |
-| **TaggingAspect**                 | All stacks   | Enforces 5-key schema (Environment, Project, Owner, ManagedBy, CostCenter) |
-| **EnforceReadOnlyDynamoDbAspect** | Next.js only | Blocks 8 DynamoDB write/admin actions on ECS task roles                    |
-| **CDK-Nag (AWS Solutions)**       | All stacks   | Synthesis-time compliance validation                                       |
+    CF --> NLB
+    ACM --> CF
+    R53 --> CF
+    NLB --> CP
+    NLB --> WGEN
+    CP --- VPC
+    WGEN --- VPC
+    WMON --- VPC
+    RDS --- VPC
+    COGNITO --- VPC
+    APIGW --> UTIL
+    UTIL --- VPC
+    CWA --> SHL
+    SHL --> SSM
+    SSM --> CP
+    EB --> SF
+    SF --> LT
+    LT --> SI
+    SI --> CS
+    CS --> CP
+    CS --> WGEN
+    DNS -.->|cross-account| R53
+```
 
-### Security Pipeline
+Platform infrastructure is provisioned by CDK stacks in [`infra/lib/stacks/`](infra/lib/stacks/). Application workloads (Next.js, admin-api, public-api, AI pipelines) run as Kubernetes pods or Jobs deployed by ArgoCD from [`kubernetes-bootstrap`](https://github.com/Nelson-Lamounier/kubernetes-bootstrap) — CDK does not manage pod deployments.
 
-| Layer          | Tool    | Details                                                         |
-| :------------- | :------ | :-------------------------------------------------------------- |
-| **Synthesis**  | CDK-Nag | 4 compliance packs (AWS Solutions, HIPAA, NIST 800-53, PCI DSS) |
-| **Pre-Deploy** | Checkov | 33 custom Python checks across 26 files                         |
-| **Deploy**     | CDK     | SLSA provenance tags + OIDC federation                          |
+Canonical docs: [cdk-monitoring Platform](docs/projects/cdk-monitoring-platform.md) · [Self-Healing Platform](docs/projects/self-healing-platform.md) · [Request Lifecycle: Viewer to Pod](docs/concepts/request-lifecycle-viewer-to-pod.md)
 
 ---
 
-## Repository Structure
+## Tech stack
+
+**Infrastructure as Code**
+- AWS CDK v2 / aws-cdk-lib 2.232.1 (TypeScript 5.9, Node 22)
+- CloudFormation (synthesised output)
+- Crossplane v2 (in-cluster AWS resource management)
+
+**Compute & Networking**
+- EC2 Spot instances (Launch Templates, Auto Scaling Groups)
+- Kubernetes (kubeadm, self-managed on EC2)
+- NLB with EIP SubnetMapping, Security Groups, SharedVpc
+- CloudFront + WAF (global edge), API Gateway + WAF (regional)
+
+**Data**
+- RDS PostgreSQL 16 with pgvector (platform data + vector embeddings)
+- S3 (bootstrap artefacts, static assets, access logs)
+- SSM Parameter Store (cross-repo and cross-stack integration bus)
+
+**Auth & Security**
+- Cognito (OAuth 2.0 / PKCE, admin dashboard)
+- ACM, CDK-Nag (AwsSolutions), 12 custom Checkov rules, Snyk
+- GuardDuty, CloudTrail, SecurityHub (SecurityBaselineStack)
+
+**Automation**
+- Step Functions (AMI Refresh 2-phase state machine)
+- EventBridge (AMI SSM parameter change trigger)
+- Bedrock ConverseCommand (self-healing agent inference)
+- SSM Run Command (remediation execution)
+
+**Observability**
+- CloudWatch (dashboards, alarms, metrics, Logs Insights)
+- Grafana + Prometheus + Loki (on K8s, deployed via Helm from kubernetes-bootstrap)
+
+**CI/CD**
+- GitHub Actions (11 workflow files — CI, CDK deploy, K8s day-1 orchestration)
+- ArgoCD + Argo Rollouts (GitOps delivery, Blue/Green with Prometheus gates)
+
+---
+
+## Key design decisions
+
+| # | Decision | One-line rationale |
+|:--|:---------|:-------------------|
+| [ADR-001](docs/decisions/0001-self-managed-k8s-vs-eks.md) | Self-managed K8s over EKS | Eliminates ~$73/mo EKS control plane cost; demonstrates kubeadm and cluster lifecycle depth |
+| [ADR-002](docs/decisions/0002-tucaken-architecture-migration.md) | K8s Jobs over Lambda/Step Functions for pipelines | Eliminates NAT Gateway costs and cold-start S3 staging overhead; uniform job execution environment |
+| [ADR-003](docs/decisions/0003-ssm-over-cloudformation-exports.md) | SSM Parameters over CloudFormation cross-stack exports | `Fn::ImportValue` prevents stack deletion and couples deploy order; SSM decouples all cross-stack and cross-repo discovery |
+| [ADR-004](docs/decisions/0004-crossplane-over-terraform-modules.md) | Crossplane over Terraform modules for in-cluster AWS resources | Kubernetes-native GitOps lifecycle for AWS resources declared by workloads; no separate Terraform state |
+| [ADR-005](docs/decisions/0005-cognito-over-auth0.md) | Amazon Cognito over Auth0 | Eliminates Auth0 monthly cost; PKCE flow, JWKS validation, and Cognito Plus threat protection at pennies per MAU |
+| [ADR-006](docs/decisions/0006-nlb-over-eip-failover-lambda.md) | NLB over EIP-failover Lambda | NLB SubnetMapping permanently binds EIP; TCP health checks route to healthy targets without Lambda-triggered re-association |
+| [ADR-007](docs/decisions/0007-gitops-over-direct-k8s-deploy.md) | ArgoCD Image Updater over direct K8s deploy in CI | GitOps delivery survives CI downtime; ArgoCD polls ECR and writes new image tags to Git — no cluster credentials in GitHub secrets |
+| [ADR-008](docs/decisions/0008-k8s-job-images-from-configmap-files.md) | Job image URIs from ConfigMap file mounts | ESO syncs ECR image tags to in-cluster ConfigMap; admin-api reads from `/etc/admin-api/images/*` with 30s TTL — no Rollout required on image tag change |
+| [ADR-009](docs/decisions/0009-argo-rollouts-blue-green-prometheus.md) | Argo Rollouts Blue/Green with Prometheus pre-promotion analysis | Automated canary analysis gates Blue/Green promotion; manual `kubectl argo rollouts promote` preserves human sign-off before traffic cut |
+
+---
+
+## Repository structure
 
 ```
 cdk-monitoring/
-├── bin/
-│   └── app.ts                  # CDK entry point (105 lines) — project/env routing
-├── lib/
-│   ├── aspects/                # Cross-cutting concerns (3 aspects)
-│   │   ├── tagging-aspect.ts
-│   │   ├── cdk-nag-aspect.ts
-│   │   └── enforce-readonly-dynamodb-aspect.ts
-│   ├── common/                 # Shared constructs (Blueprints)
-│   │   ├── compute/            # EC2, ECS Cluster, ECS Task, Lambda
-│   │   ├── networking/         # VPC, CloudFront, ALB, WAF
-│   │   ├── security/           # IAM, Security Groups, ACM
-│   │   ├── storage/            # S3, EBS, ECR, DynamoDB
-│   │   ├── events/             # EventBridge rules
-│   │   ├── iam/                # IAM constructs
-│   │   └── ssm/                # SSM Parameter constructs
-│   ├── config/                 # Configuration hierarchy
-│   │   ├── defaults.ts         # Global baselines
-│   │   ├── environments.ts     # Environment personality (dev/staging/prod)
-│   │   ├── ssm-paths.ts        # SSM path conventions
-│   │   ├── projects.ts         # Project registry config
-│   │   ├── monitoring/         # Monitoring-specific config
-│   │   └── nextjs/             # Next.js-specific config
-│   ├── factories/              # Project Factory registry
-│   │   ├── project-registry.ts # Factory lookup + registration
-│   │   └── project-interfaces.ts # IProjectFactory interface
-│   ├── projects/               # Project factory implementations
-│   │   ├── monitoring/         # MonitoringFactory
-│   │   ├── nextjs/             # NextJsFactory
-│   │   ├── org/                # OrgFactory
-│   │   └── shared/             # SharedFactory
-│   ├── stacks/                 # Stack implementations (Orchestrators)
-│   │   ├── monitoring/         # 3 stacks: Compute, Storage, SSM
-│   │   ├── nextjs/             # 6 stacks: Data, Compute, Networking, Application, API, Edge
-│   │   ├── org/                # 1 stack: DNS Role
-│   │   └── shared/             # 1 stack: VPC
-│   ├── shared/                 # Shared stack base classes
-│   └── utilities/              # Helper utilities
-├── lambda/                     # Lambda function handlers
-│   ├── articles/               # Articles API Lambda
-│   ├── dns/                    # Cross-account DNS validation
-│   ├── ebs-detach/             # EBS volume lifecycle
-│   ├── ecr-deploy/             # Auto-deploy from ECR push
-│   ├── ecs-service-discovery/  # ECS Cloud Map integration
-│   └── subscriptions/          # SNS subscription handlers
-├── .checkov/
-│   ├── config.yaml             # Checkov configuration
-│   └── custom_checks/          # 33 custom Python security checks (26 files)
-├── .github/workflows/          # 19 GitHub Actions workflows
-│   ├── ci.yml                  #   CI pipeline (lint, test, synth, Checkov IaC scan)
-│   ├── _smoke-tests-nextjs.yml #   Reusable: post-deploy smoke tests
-│   ├── _verify-stack.yml       #   Reusable: CloudFormation status verification
-│   ├── deploy-*-dev.yml        #   Environment-specific triggers
-│   ├── deploy-*-staging.yml
-│   ├── deploy-*-prod.yml
-│   └── sync-monitoring-configs.yml #   Monitoring config sync to S3 + EC2
-├── scripts/
-│   ├── deployment/             # 20 deployment scripts
-│   │   ├── cli.ts              #   Interactive CLI (33,000 lines)
-│   │   ├── smoke-tests-nextjs.ts # Post-deploy smoke tests (1,150 lines, 9 checks)
-│   │   ├── drift-detection.ts  #   CloudFormation drift detection
-│   │   ├── rollback.ts         #   Stack rollback automation
-│   │   ├── sync-monitoring-configs.ts #   Monitoring config S3 sync + reload
-│   │   ├── verify-deployment.ts
-│   │   └── verify-nextjs.ts
-│   ├── bootstrap/              # CDK bootstrapping scripts
-│   └── monitoring/             # Monitoring instance scripts
-├── tests/
-│   ├── fixtures/               # 5 reusable test helpers (95 + 128 lines)
-│   └── unit/                   # 20 test files across 4 domains
-├── monitoring/                 # Grafana dashboards, Prometheus config
-├── docs/
-│   ├── portfolio/              # Portfolio article sources (.mdx)
-│   ├── troubleshooting/        # Operational runbooks
-│   └── *.svg                   # Dependency graphs (auto-generated)
-└── docker/                     # Dockerfiles
-```
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Node.js (see `.nvmrc`)
-- Yarn 4 (`corepack enable`)
-- AWS CLI configured with credentials
-- AWS CDK CLI (`npm install -g aws-cdk`)
-
-### Installation
-
-```bash
-# Install dependencies
-yarn install
-
-# Build TypeScript
-yarn build
-
-# Run tests
-yarn test
-```
-
-### Interactive CLI (Recommended)
-
-The repository includes an interactive CLI that guides you through project selection, environment targeting, stack operations, and deployment:
-
-```bash
-yarn cli                    # Interactive mode — project/environment picker
-yarn cli:synth              # Synthesize stacks
-yarn cli:deploy             # Deploy stacks
-yarn cli:diff               # Show changes vs. deployed
-yarn cli:destroy            # Destroy stacks
-yarn cli:list               # List all stacks
-yarn cli:sync-configs       # Sync monitoring configs to S3 + EC2
-```
-
-### Direct CDK Commands
-
-```bash
-# Synthesize specific project + environment
-npx cdk synth -c project=monitoring -c environment=dev
-npx cdk synth -c project=nextjs -c environment=prod
-
-# Deploy
-npx cdk deploy -c project=nextjs -c environment=dev --all
-
-# Diff
-npx cdk diff -c project=monitoring -c environment=staging
-```
-
----
-
-## Testing
-
-### Test Strategy (3 Layers)
-
-| Layer            | Tool                  | Files | Scope                                       |
-| :--------------- | :-------------------- | :---: | :------------------------------------------ |
-| **Unit**         | Jest + CDK Assertions |  20   | CloudFormation template property validation |
-| **Smoke**        | TypeScript + tsx      |   1   | 9 live infrastructure checks post-deploy    |
-| **Verification** | Reusable workflow     |   1   | CloudFormation stack status gates           |
-
-### Running Tests
-
-```bash
-# All unit tests
-yarn test
-
-# Watch mode
-yarn test:watch
-
-# With coverage
-yarn test:coverage
-
-# Specific domain
-yarn test:vpc
-```
-
-### Test Organization
-
-```
-tests/
-├── fixtures/           # createTestApp, createStackWithHelper, createMockVpc, etc.
-└── unit/
-    ├── common/         # Shared construct tests (ECS cluster, task definition, ECR)
-    ├── factories/      # Project registry tests
-    ├── lambda/         # Lambda handler tests (ACM DNS validation)
-    ├── projects/       # Factory integration tests (full stack tree synthesis)
-    ├── shared/         # Shared stack tests (VPC)
-    └── stacks/         # Per-stack tests (monitoring + nextjs)
-```
-
----
-
-## Security
-
-### Custom Checkov Rules (33 Checks)
-
-The `.checkov/custom_checks/` directory contains 33 Python check classes across 26 files, organized by security domain:
-
-| Category      | Checks | Examples                                   |
-| :------------ | :----: | :----------------------------------------- |
-| IAM           |   6    | Permissions boundary, no wildcard actions  |
-| Networking    |   4    | No SSH ingress, scoped egress              |
-| Compute       |   4    | IMDSv2 UserData, ASG health checks         |
-| Encryption    |   3    | CMK enforcement, KMS rotation              |
-| Observability |   3    | Log retention, encryption, deletion policy |
-| Lambda        |   3    | DLQ, reserved concurrency, error alerting  |
-| Network       |   3    | No auto-public IPs, endpoint policies      |
-| Messaging     |   3    | SNS/SQS encryption, TLS enforcement        |
-| Storage       |   2    | Backup validation, volume limits           |
-| Secrets       |   2    | No hardcoded credentials                   |
-
-### Severity Gating
-
-- **Development/Staging**: LOW and MEDIUM findings are non-blocking warnings
-- **Production**: CRITICAL and HIGH findings block the pipeline
-
-### CDK-Nag Compliance
-
-4 compliance packs available (AWS Solutions enabled by default):
-
-- AWS Solutions (general best practices)
-- HIPAA Security (healthcare compliance)
-- NIST 800-53 R5 (federal security)
-- PCI DSS 3.2.1 (payment card security)
-
----
-
-## CI/CD Pipeline
-
-### Workflow Architecture
-
-| Workflow                      | Type     | Purpose                                  |
-| :---------------------------- | :------- | :--------------------------------------- |
-| `ci.yml`                      | Trigger  | Lint, test, synth, Checkov IaC scan      |
-| `_deploy-monitoring.yml`      | Reusable | Monitoring project deployment            |
-| `_deploy-nextjs.yml`          | Reusable | Next.js project deployment (6 stacks)    |
-| `_deploy-stack.yml`           | Reusable | Generic single-stack deployment          |
-| `_smoke-tests-nextjs.yml`     | Reusable | Post-deploy smoke tests (9 checks)       |
-| `_verify-stack.yml`           | Reusable | CloudFormation status verification       |
-| `deploy-*-{dev,staging,prod}` | Trigger  | Environment-specific deployment triggers |
-| `sync-monitoring-configs.yml` | Trigger  | Monitoring config sync to S3 + EC2       |
-
-### Authentication
-
-All workflows use **OIDC federation** — no static AWS credentials stored in GitHub Secrets. The `AWS_OIDC_ROLE` secret contains the role ARN for `aws-actions/configure-aws-credentials`.
-
----
-
-## Code Quality
-
-```bash
-# Linting
-yarn lint                   # ESLint with max 50 warnings
-yarn lint:fix               # Auto-fix lint issues
-yarn typecheck              # TypeScript type checking (no emit)
-
-# Health check (lint + unused exports + dependency rules)
-yarn health
-
-# Dependency analysis
-yarn deps:check             # Validate architecture rules
-yarn deps:graph             # Generate dependency graph (SVG)
-yarn find:unused            # Find unused exports (Knip)
-
-# Generate all dependency graphs
-yarn deps:graphs            # Produces 5 SVGs + HTML report in docs/
+├── infra/
+│   ├── bin/app.ts                    # CDK entry — parses -c project= -c environment=
+│   ├── lib/
+│   │   ├── projects/                 # KubernetesProjectFactory, SharedProjectFactory, OrgProjectFactory
+│   │   ├── factories/                # IProjectFactory interface + projectFactoryRegistry
+│   │   ├── stacks/
+│   │   │   ├── kubernetes/           # 10 stacks: Base, ControlPlane, WorkerAsg ×2, Data,
+│   │   │   │                         #   PlatformRds, AppIam, Api, Edge, Observability
+│   │   │   ├── shared/               # 5 stacks: SharedVpc, SecurityBaseline, FinOps,
+│   │   │   │                         #   Crossplane, CognitoAuth
+│   │   │   └── org/                  # 1 stack: CrossAccountDnsRole
+│   │   ├── constructs/               # Reusable L3 CDK constructs
+│   │   │   ├── compute/              # LaunchTemplateConstruct, ASG helpers
+│   │   │   ├── events/ami-refresh/   # AmiRefreshConstruct + 3 Lambda handlers
+│   │   │   ├── networking/           # CloudFrontConstruct, NlbConstruct
+│   │   │   ├── observability/        # CloudWatch dashboards, Bedrock observability
+│   │   │   └── security/             # Account security baseline
+│   │   └── aspects/                  # TaggingAspect, EnforceReadOnlyDynamoDbAspect, cdk-nag
+│   ├── lambda/                       # 4 utility Lambdas: dns, ecr-deploy, subscriptions ×2
+│   ├── scripts/bootstrap/            # CDKCloudFormationEx.json + bootstrap automation
+│   └── tests/                        # 32 Jest test files (unit + integration)
+├── api/
+│   └── admin-api/                    # Hono BFF (Node 22): Cognito JWKS auth, K8s Job dispatch,
+│                                     #   PgBouncer pool, FinOps routes
+├── packages/
+│   └── cdk-governance-aspects/       # @nelsonlamounier/cdk-governance-aspects v1.0.0 (MIT)
+├── docs/                             # 79 knowledge-base documents
+│   ├── decisions/                    # 9 ADRs
+│   ├── concepts/                     # 18 concept docs
+│   ├── projects/                     # 5 project docs
+│   ├── patterns/                     # 4 pattern docs
+│   ├── tools/                        # 4 tool docs
+│   ├── runbooks/                     # 5 operational runbooks
+│   └── troubleshooting/              # 21 troubleshooting docs
+├── .github/workflows/                # 11 workflow files (7 user-facing + 4 reusable callees)
+└── .checkov/custom_checks/           # 12 custom Checkov security rules
 ```
 
 ---
 
 ## Documentation
 
-> **📚 [Full Documentation Index →](docs/README.md)**
+Structured knowledge base: 79 documents across 7 categories. Entry points:
 
-### TypeDoc API Documentation
+| Document | What it covers |
+|:---------|:---------------|
+| [cdk-monitoring Platform](docs/projects/cdk-monitoring-platform.md) | **Canonical entry point** — what this repo owns, 16-stack inventory, SSM integration bus, sibling repo relationships |
+| [CDK Platform Stacks](docs/projects/cdk-platform-stacks.md) | Full reference for all 16 stacks: regions, dependencies, CDK project membership |
+| [Self-Healing Platform](docs/projects/self-healing-platform.md) | Bedrock Agent + AMI Refresh pipelines: failure modes, remediation flows, manual intervention matrix |
+| [CDK Construct Architecture](docs/concepts/cdk-construct-architecture.md) | L1/L2/L3 hierarchy, custom L3 constructs, Project Factory pattern, CDK Aspects |
+| [CDK Aspects Governance](docs/concepts/cdk-aspects-governance.md) | `TaggingAspect`, `EnforceReadOnlyDynamoDbAspect`, cdk-nag, published npm package, Aspect testing patterns |
+| [Request Lifecycle: Viewer to Pod](docs/concepts/request-lifecycle-viewer-to-pod.md) | End-to-end path: DNS → CloudFront → WAF → NLB → Traefik → kube-proxy → Pod, per-hop failure modes |
+| [docs/README.md](docs/README.md) | Full index: all 9 ADRs, 18 concepts, 5 projects, 4 patterns, 5 runbooks, 21 troubleshooting docs |
+
+---
+
+## Running locally
 
 ```bash
-yarn docs                   # Full API docs → docs/api/
-yarn docs:monitoring        # Monitoring stack → docs/monitoring/
-yarn docs:compute           # Compute constructs → docs/compute/
-yarn docs:nextjs            # Next.js stack → docs/nextjs/
-yarn docs:serve             # Serve at localhost:3000
+# Install dependencies
+yarn install
+
+# Synthesise a project (no AWS credentials needed for synth)
+npx cdk synth -c project=kubernetes -c environment=dev
+
+# Diff against deployed stack
+npx cdk diff -c project=kubernetes -c environment=dev
+
+# Run all tests
+yarn test
+
+# Run linting
+yarn lint
 ```
 
-### Documentation by Domain
+Available projects: `kubernetes` · `shared` · `org`
 
-| Category | Documents | Description |
-|:---------|:---------:|:------------|
-| **Architecture Decisions** | 3 | ADRs: CDK vs Terraform, self-managed K8s vs EKS, MCP for ops |
-| **Kubernetes Operations** | 11 | Troubleshooting guides, deployment pipeline, verification |
-| **Networking & Edge** | 3 | NLB rules, observability, ArgoCD networking |
-| **AI & Content Pipeline** | 4 | Bedrock article generation, MCP integration |
-| **Reference** | 4 | Review reports, CloudWatch paths, frontend API guide |
-
-### Portfolio Articles
-
-Portfolio articles documenting design decisions and implementation details are in `docs/portfolio/`:
-
-| Article                                       | Topic                               |
-| :-------------------------------------------- | :---------------------------------- |
-| `cdk-project-factory-pattern.mdx`             | Project Factory architecture        |
-| `nextjs-ecs-cloudfront-aws-deployment.mdx`    | Next.js 6-stack deployment          |
-| `devsecops-pipeline-checkov-cdk-nag.mdx`      | Security pipeline (33 custom rules) |
-| `automated-testing-verification-strategy.mdx` | 3-layer testing strategy            |
-| `enterprise-cicd-pipeline-github-actions.mdx` | CI/CD pipeline architecture         |
+Available environments: `dev` · `staging` · `prod`
 
 ---
 
-## Tech Stack
+## Deploying
 
-| Category             | Technology                                               |
-| :------------------- | :------------------------------------------------------- |
-| **IaC Framework**    | AWS CDK v2.232.1 (TypeScript 5.9.3)                      |
-| **Language**         | TypeScript (constructs, tests, scripts, Lambda handlers) |
-| **Testing**          | Jest 30.2.0 + ts-jest + CDK Assertions                   |
-| **Security**         | Checkov (33 custom Python checks) + CDK-Nag (4 packs)    |
-| **CI/CD**            | GitHub Actions (19 workflows, OIDC authentication)       |
-| **Linting**          | ESLint 9 + TypeScript ESLint + custom local rules        |
-| **Unused Detection** | Knip                                                     |
-| **Architecture**     | dependency-cruiser (validation + graph generation)       |
-| **Documentation**    | TypeDoc + portfolio .mdx articles                        |
-| **Package Manager**  | Yarn 4.12.0                                              |
-| **Runtime Scripts**  | tsx (TypeScript execution without compilation)           |
-| **Lambda Bundling**  | esbuild                                                  |
+Deployments run via GitHub Actions. The `_deploy-kubernetes.yml`, `_deploy-stack.yml`, `_verify-stack.yml`, and `_build-push-image.yml` workflows are reusable callees — not triggered directly.
+
+| Workflow | Trigger | What it deploys |
+|:---------|:--------|:----------------|
+| [`ci.yml`](.github/workflows/ci.yml) | Every push | Lint, test, CDK synth validation, Checkov scan |
+| [`deploy-shared.yml`](.github/workflows/deploy-shared.yml) | Push to `main` | SharedVpc, Cognito, Crossplane, SecurityBaseline, FinOps |
+| [`deploy-kubernetes.yml`](.github/workflows/deploy-kubernetes.yml) | Push to `main` | All 10 K8s platform stacks + AMI Refresh Lambda smoke test |
+| [`deploy-api.yml`](.github/workflows/deploy-api.yml) | Push to `main` (api/admin-api/**) | admin-api Docker image → ECR; ArgoCD Image Updater handles rollout |
+| [`deploy-org.yml`](.github/workflows/deploy-org.yml) | Push to `main` | Cross-account DNS role (us-east-1) |
+| [`day-1-orchestration.yml`](.github/workflows/day-1-orchestration.yml) | Manual dispatch | Bootstrap new K8s nodes via SSM Automation |
+| [`build-ci-image.yml`](.github/workflows/build-ci-image.yml) | Manual dispatch | Rebuild the CI Docker image used by deploy workflows |
+
+Application workloads are deployed separately by ArgoCD from [`kubernetes-bootstrap`](https://github.com/Nelson-Lamounier/kubernetes-bootstrap) — CDK does not manage pod deployments.
 
 ---
 
-## Environments
+## Related projects
 
-| Environment     | Purpose                       | Security Posture                      |
-| :-------------- | :---------------------------- | :------------------------------------ |
-| **Development** | Fast iteration, local testing | Non-blocking security warnings        |
-| **Staging**     | Pre-production validation     | Non-blocking warnings, smoke tests    |
-| **Production**  | Live traffic                  | CRITICAL/HIGH findings block pipeline |
+| Repository | Role |
+|:-----------|:-----|
+| [`kubernetes-bootstrap`](https://github.com/Nelson-Lamounier/kubernetes-bootstrap) | EC2 bootstrap Python scripts (kubeadm day-1), ArgoCD app-of-apps, Helm charts for all platform and application workloads |
+| [`ai-applications`](https://github.com/Nelson-Lamounier/ai-applications) | Bedrock self-healing Lambda handlers, article ingestion pipeline, job-strategist, pgvector KB sync |
+| [`frontend-portfolio`](https://github.com/Nelson-Lamounier/frontend-portfolio) | Next.js 15 frontend, start-admin TanStack dashboard, Grafana Faro RUM client |
+
+CDK-to-sibling handoffs use SSM Parameter Store: this repo publishes parameters (ECR URIs, RDS endpoint, EIP address, Cognito pool IDs, security group ID, IAM role ARN) that are consumed by kubernetes-bootstrap and ai-applications without CloudFormation export coupling ([ADR-003](docs/decisions/0003-ssm-over-cloudformation-exports.md)).
 
 ---
 
 ## License
 
-Private
+Private — see [LICENSE](./LICENSE).
+
+<!--
+Evidence trail (auto-generated):
+- Source: infra/bin/app.ts (read on 2026-04-29)
+- Source: infra/lib/factories/project-registry.ts (read on 2026-04-29) — 3 projects: SHARED, ORG, KUBERNETES
+- Source: infra/lib/projects/kubernetes/factory.ts (read on 2026-04-29) — 10 stack push() calls
+- Source: infra/lib/projects/shared/factory.ts (read on 2026-04-29) — 5 stack push() calls
+- Source: infra/lib/projects/org/factory.ts (read on 2026-04-29) — 1 stack push() call
+- Source: infra/package.json (read on 2026-04-29) — aws-cdk-lib 2.232.1, typescript 5.9.3
+- Source: .nvmrc (read on 2026-04-29) — Node 22
+- Source: packages/cdk-governance-aspects/package.json (read on 2026-04-29) — v1.0.0, MIT
+- Source: .github/workflows/ (listed on 2026-04-29) — 11 YAML workflow files
+- Source: .checkov/custom_checks/ (listed on 2026-04-29) — 12 rules
+- Source: find infra packages -name "*.test.ts" (run on 2026-04-29) — 34 test files
+- Source: infra/lib/constructs/events/ami-refresh/ (listed on 2026-04-29) — 3 Lambda handlers
+- Source: infra/lambda/ (listed on 2026-04-29) — 4 active utility Lambdas (eip-failover deprecated)
+- Source: docs/decisions/ (listed on 2026-04-29) — 9 ADR files
+- Source: docs/ subdirectories (counted on 2026-04-29) — 79 total documents
+-->

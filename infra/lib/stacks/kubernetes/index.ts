@@ -1,20 +1,12 @@
 /** @format */
 export { KubernetesBaseStack } from './base-stack';
 export type { KubernetesBaseStackProps } from './base-stack';
-export { GoldenAmiStack } from './golden-ami-stack';
-export type { GoldenAmiStackProps } from './golden-ami-stack';
-export { K8sSsmAutomationStack } from './ssm-automation-stack';
-export type { K8sSsmAutomationStackProps } from './ssm-automation-stack';
+
 export { KubernetesAppIamStack } from './app-iam-stack';
 export type { KubernetesAppIamStackProps } from './app-iam-stack';
 export { KubernetesControlPlaneStack } from './control-plane-stack';
 export type { KubernetesControlPlaneStackProps } from './control-plane-stack';
-export { KubernetesAppWorkerStack } from './app-worker-stack';
-export type { KubernetesAppWorkerStackProps } from './app-worker-stack';
-export { KubernetesMonitoringWorkerStack } from './monitoring-worker-stack';
-export type { KubernetesMonitoringWorkerStackProps } from './monitoring-worker-stack';
-export { KubernetesArgocdWorkerStack } from './argocd-worker-stack';
-export type { KubernetesArgocdWorkerStackProps } from './argocd-worker-stack';
+
 export { KubernetesEdgeStack } from './edge-stack';
 export type { KubernetesEdgeStackProps } from './edge-stack';
 export { KubernetesDataStack } from './data-stack';
@@ -23,3 +15,9 @@ export { NextJsApiStack } from './api-stack';
 export type { NextJsApiStackProps } from './api-stack';
 export { KubernetesObservabilityStack } from './observability-stack';
 export type { KubernetesObservabilityStackProps } from './observability-stack';
+
+// New generic parameterised worker pool (replaces AppWorker, MonitoringWorker, ArgocdWorker)
+export { KubernetesWorkerAsgStack } from './worker-asg-stack';
+export type { KubernetesWorkerAsgStackProps, WorkerPoolType } from './worker-asg-stack';
+export { PlatformRdsStack } from './platform-rds-stack';
+export type { PlatformRdsStackProps } from './platform-rds-stack';

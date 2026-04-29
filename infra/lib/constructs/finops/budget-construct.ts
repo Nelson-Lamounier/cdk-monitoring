@@ -22,7 +22,7 @@
 
 import * as budgets from 'aws-cdk-lib/aws-budgets';
 import * as sns from 'aws-cdk-lib/aws-sns';
-import * as cdk from 'aws-cdk-lib/core';
+
 
 import { Construct } from 'constructs';
 
@@ -173,7 +173,5 @@ export class BudgetConstruct extends Construct {
             `Notifications: ${props.alertsTopic.topicArn}`,
         ].join(' | '));
 
-        // Tag the budget itself
-        cdk.Tags.of(this).add('managed-by', 'cdk');
     }
 }

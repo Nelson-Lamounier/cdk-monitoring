@@ -1,8 +1,0 @@
-{
-  "metadataAttributes": {
-    "doc_type": "code-analysis",
-    "domain": "kubernetes",
-    "tags": "crossplane,xrd,platform-engineering,s3,sqs,iam,golden-path",
-    "status": "accepted"
-  }
-}

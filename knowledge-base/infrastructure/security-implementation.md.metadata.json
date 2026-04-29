@@ -1,8 +1,0 @@
-{
-  "metadataAttributes": {
-    "doc_type": "code-analysis",
-    "domain": "infrastructure",
-    "tags": "iam,guardduty,kms,imdsv2,cdk-nag,ssm,network-policy,security",
-    "status": "accepted"
-  }
-}

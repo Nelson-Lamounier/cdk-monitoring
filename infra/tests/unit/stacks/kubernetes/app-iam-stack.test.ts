@@ -73,6 +73,7 @@ function createAppIamStack(
 
     const stack = new KubernetesAppIamStack(app, 'TestK8sAppIamStack', {
         controlPlaneStack,
+        workerRoleSsmPath: '/k8s/development/general-instance-role-arn',
         env: TEST_ENV_EU,
         targetEnvironment: Environment.DEVELOPMENT,
         configs: TEST_CONFIGS,

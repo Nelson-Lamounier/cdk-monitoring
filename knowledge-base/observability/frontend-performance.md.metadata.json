@@ -1,8 +1,0 @@
-{
-  "metadataAttributes": {
-    "doc_type": "implementation",
-    "domain": "observability",
-    "tags": "traefik,prometheus,grafana,frontend-performance,golden-signals,latency,sli",
-    "status": "accepted"
-  }
-}

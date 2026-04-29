@@ -17,10 +17,6 @@ export enum Project {
 
     /** Kubernetes cluster for unified workloads */
     KUBERNETES = 'kubernetes',
-    /** Amazon Bedrock AI agent */
-    BEDROCK = 'bedrock',
-    /** Agentic self-healing pipeline using AgentCore Gateway and Strands Agents */
-    SELF_HEALING = 'self-healing',
 }
 
 /**
@@ -59,18 +55,6 @@ export const PROJECT_CONFIGS: Record<Project, ProjectConfig> = {
         description: 'Kubernetes cluster for unified workloads',
         namespace: '',
         requiresSharedVpc: true,
-    },
-    [Project.BEDROCK]: {
-        displayName: 'Bedrock',
-        description: 'Amazon Bedrock AI agent with Knowledge Bases and API Gateway',
-        namespace: 'Bedrock',
-        requiresSharedVpc: false, // Bedrock is fully managed serverless
-    },
-    [Project.SELF_HEALING]: {
-        displayName: 'Self-Healing',
-        description: 'Agentic self-healing pipeline using AgentCore Gateway and Strands Agents',
-        namespace: 'SelfHealing',
-        requiresSharedVpc: false, // Fully managed serverless
     },
 } as const;
 

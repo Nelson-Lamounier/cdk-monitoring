@@ -65,7 +65,7 @@ import {
     CLOUDFRONT_PATH_PATTERNS,
     CLOUDFRONT_ERROR_RESPONSES,
 } from '../../config/nextjs';
-import { nextjsSsmPaths } from '../../config/ssm-paths';
+import { k8sSsmPaths, nextjsSsmPaths, bedrockSsmPaths } from '../../config/ssm-paths';
 import { LambdaFunctionConstruct } from '../../constructs/compute';
 import { CloudFrontConstruct } from '../../constructs/networking/cloudfront';
 import { AcmCertificateDnsValidationConstruct } from '../../constructs/security/acm-certificate';
@@ -183,6 +183,14 @@ export interface KubernetesEdgeStackProps extends cdk.StackProps {
      * Required when opsSubdomain is set.
      */
     readonly baseDomain?: string;
+
+    /**
+     * Subdomain for the GitHub Actions ARC webhook endpoint (e.g., 'runners').
+     * Creates an A record (runners.domain.com) pointing to the EIP.
+     * Traefik routes GitHub webhook events by Host header to the ARC controller.
+     * Required when using ARC webhook mode for faster scale-up.
+     */
+    readonly runnersSubdomain?: string;
 }
 
 // =============================================================================
@@ -299,6 +307,12 @@ export class KubernetesEdgeStack extends cdk.Stack {
                 crossAccountRoleArn: props.crossAccountRoleArn,
                 validationFunction: this.validationLambda.function,
                 namePrefix,
+                // Force Certificate Lambda to run on every deploy so it can
+                // reconcile CloudFormation state drift (e.g. ghost cert ARNs
+                // left by failed deploys). The Lambda's isCertificateValid +
+                // findExistingIssuedCertificate checks make this a fast no-op
+                // when the cert is already ISSUED — no new cert is created.
+                forceUpdate: process.env.GITHUB_SHA ?? new Date().toISOString(),
             }
         );
 
@@ -337,14 +351,21 @@ export class KubernetesEdgeStack extends cdk.Stack {
         // =================================================================
         const ssmRegion = props.eipSsmRegion ?? 'eu-west-1';
 
+        const k8sPaths = k8sSsmPaths(envName);
+
         const ssmParameterArns = [
             `arn:aws:ssm:${ssmRegion}:${this.account}:parameter${props.eipSsmPath}`,
             `arn:aws:ssm:${props.assetsBucketSsmRegion ?? ssmRegion}:${this.account}:parameter${props.assetsBucketSsmPath}`,
+            `arn:aws:ssm:${ssmRegion}:${this.account}:parameter${k8sPaths.cloudfrontOriginSecret}`,
         ];
         const ssmReaderPolicy = cr.AwsCustomResourcePolicy.fromStatements([
             new iam.PolicyStatement({
                 actions: ['ssm:GetParameter'],
                 resources: ssmParameterArns,
+            }),
+            new iam.PolicyStatement({
+                actions: ['kms:Decrypt'],
+                resources: ['*'], // We only need this if using a CMK, but good practice for SecureStrings
             }),
         ]);
 
@@ -370,6 +391,35 @@ export class KubernetesEdgeStack extends cdk.Stack {
                 region: bucketRegion,
                 bucketRegionalDomainName: `${bucketName}.s3.${bucketRegion}.amazonaws.com`,
             }
+        );
+
+        // Read Origin Secret
+        //
+        // PREREQUISITE: /k8s/{env}/cloudfront-origin-secret must exist in
+        // eu-west-1 SSM as a SecureString BEFORE this stack deploys.
+        //
+        // The CI pipeline's `seed-cloudfront-secret` job ensures this by
+        // creating the parameter with a fresh `openssl rand -hex 32` value
+        // if it doesn't already exist.  If the parameter is missing, the
+        // AwsCustomResource Lambda receives ParameterNotFound from the AWS
+        // SDK, which CloudFormation surfaces as an opaque "UnknownError"
+        // on the ReadCloudfrontOriginSecret custom resource.
+        //
+        // ── Secret Rotation (zero-downtime) ───────────────────────────
+        // 1. Generate:  NEW=$(openssl rand -hex 32)
+        // 2. Update SSM with NEW (--overwrite), run deploy-edge
+        //    → CloudFront begins forwarding the new header value
+        // 3. While CloudFront propagates (≤15 min), patch Traefik to
+        //    accept both values via deploy.py which sets the ArgoCD
+        //    Application's cloudfront.originSecret helm parameter to
+        //    the regex "OLD_HEX|NEW_HEX"  (HeadersRegexp accepts regex)
+        // 4. After propagation: re-run deploy.py with NEW_HEX only
+        const originSecret = this.readSsmParameter(
+            'ReadCloudfrontOriginSecret',
+            k8sPaths.cloudfrontOriginSecret,
+            ssmRegion,
+            ssmReaderPolicy,
+            true, // withDecryption — SecureString requires KMS decrypt
         );
 
         // S3 origin for static assets (OAC)
@@ -412,7 +462,7 @@ export class KubernetesEdgeStack extends cdk.Stack {
             connectionTimeout: cfConfig.albOriginTimeouts.connectionTimeout,
             readTimeout: cfConfig.albOriginTimeouts.readTimeout,
             keepaliveTimeout: cfConfig.albOriginTimeouts.keepaliveTimeout,
-            customHeaders: { 'X-CloudFront-Origin': envName },
+            customHeaders: { 'X-CloudFront-Origin-Secret': originSecret },
         });
 
         // Cache Policies
@@ -456,6 +506,10 @@ export class KubernetesEdgeStack extends cdk.Stack {
         // difference from CACHING_DISABLED is that CookieBehavior.ALL causes
         // CloudFront to forward Set-Cookie response headers back to the viewer,
         // which is required for the Auth.js CSRF double-submit flow.
+        //
+        // Authorization is included in the cache key (required by CloudFront —
+        // it cannot go in OriginRequestPolicy) so admin-api receives the Bearer
+        // token. With TTL=0 the cache key is never used for actual caching.
         const authNoCachePolicy = new cloudfront.CachePolicy(this, 'AuthNoCachePolicy', {
             comment: 'No caching — passes Set-Cookie headers for Auth.js CSRF/session flow',
             defaultTtl: cdk.Duration.seconds(0),
@@ -463,7 +517,7 @@ export class KubernetesEdgeStack extends cdk.Stack {
             minTtl: cdk.Duration.seconds(0),
             cookieBehavior: cloudfront.CacheCookieBehavior.all(),
             queryStringBehavior: cloudfront.CacheQueryStringBehavior.all(),
-            headerBehavior: cloudfront.CacheHeaderBehavior.none(),
+            headerBehavior: cloudfront.CacheHeaderBehavior.allowList('Authorization'),
             enableAcceptEncodingGzip: false,
             enableAcceptEncodingBrotli: false,
         });
@@ -688,6 +742,28 @@ export class KubernetesEdgeStack extends cdk.Stack {
         );
 
         // =====================================================================
+        // ARC RUNNERS DNS A RECORD (runners.domain.com → EIP)
+        // =====================================================================
+        // Same pattern as ops: plain A record to EIP, Traefik routes by Host header.
+        // GitHub sends POST /webhook → NLB or EIP → Traefik → ARC webhook service.
+        // No Lambda changes needed — reuses the existing RecordValue (A record) path.
+        if (props.runnersSubdomain && props.baseDomain) {
+            const runnersDomainName = `${props.runnersSubdomain}.${props.baseDomain}`;
+            new cdk.CustomResource(this, 'RunnersDnsRecord', {
+                serviceToken: dnsAliasProvider.serviceToken,
+                properties: {
+                    DomainName: runnersDomainName,
+                    HostedZoneId: props.hostedZoneId,
+                    CrossAccountRoleArn: props.crossAccountRoleArn,
+                    Environment: envName,
+                    SkipCertificateCreation: 'true',
+                    RecordValue: eipAddress,
+                },
+                removalPolicy: logRemovalPolicy,
+            });
+        }
+
+        // =====================================================================
         // SSM PARAMETERS
         // =====================================================================
         const ssmPaths = nextjsSsmPaths(envName, namePrefix);
@@ -719,6 +795,45 @@ export class KubernetesEdgeStack extends cdk.Stack {
             description: 'CloudFront distribution ID for cache invalidation',
             tier: ssm.ParameterTier.STANDARD,
         });
+
+        // BFF Service URL Parameters
+        //
+        // These are written here (Edge Stack, us-east-1) because this is the
+        // canonical place where domain names are resolved. Downstream consumers
+        // (deploy.py for start-admin / site ConfigMaps) read these paths via
+        // the AWS CLI to avoid hardcoding hostnames in environment-specific
+        // scripts.
+        //
+        // Path convention: /bedrock-{shortEnv}/admin-api-url
+        //                  /bedrock-{shortEnv}/public-api-url
+        //
+        // The bedrock prefix is intentional — these BFF services sit alongside
+        // Bedrock AI pipelines in the same "application services" SSM namespace.
+        // If baseDomain is not provided, these parameters are skipped (e.g. CI
+        // synth runs that only validate CloudFormation templates).
+        if (props.baseDomain) {
+            const bffSsmPaths = bedrockSsmPaths(props.targetEnvironment);
+
+            // In-cluster Kubernetes service DNS is used for server-to-server calls.
+            // admin-api and public-api are BFF services — only reachable within the
+            // cluster, not via public subdomains. Using in-cluster DNS avoids the
+            // need for external DNS records (admin-api.nelsonlamounier.com /
+            // api.nelsonlamounier.com do not exist) and keeps BFF traffic off the
+            // public internet.
+            new ssm.StringParameter(this, 'AdminApiUrlParameter', {
+                parameterName: bffSsmPaths.adminApiUrl,
+                stringValue: `http://admin-api.admin-api:3002`,
+                description: `admin-api BFF in-cluster URL (start-admin ADMIN_API_URL)`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'PublicApiUrlParameter', {
+                parameterName: bffSsmPaths.publicApiUrl,
+                stringValue: `http://public-api.public-api:3001`,
+                description: `public-api BFF in-cluster URL (site PUBLIC_API_URL)`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+        }
 
         // Suppress cdk-nag for AwsCustomResource Lambda (SSM cross-region readers)
         NagSuppressions.addResourceSuppressionsByPath(
@@ -782,33 +897,57 @@ export class KubernetesEdgeStack extends cdk.Stack {
     /**
      * Reads an SSM parameter from a remote region via AwsCustomResource.
      *
-     * IMPORTANT: The onUpdate handler uses a timestamp-based physicalResourceId
-     * so that every `cdk deploy` triggers a fresh SSM read. Without this,
-     * CloudFormation caches the value from the first deploy — if the underlying
-     * SSM parameter changes (e.g., EIP re-allocation), CloudFront would continue
-     * using the stale origin until the custom resource is manually deleted.
+     * ## Physical Resource ID strategy
+     *
+     * - **onCreate**: uses `Parameter.ARN` — stable across versions, guarantees
+     *   idempotent stack creation (CloudFormation only calls onCreate once).
+     * - **onUpdate**: uses a synthesise-time ISO-8601 timestamp (`DEPLOY_TIME`).
+     *   Because the timestamp changes on every `cdk deploy` invocation, CloudFormation
+     *   always sees a different physical ID and therefore always calls the Lambda,
+     *   forcing a fresh `ssm:GetParameter` read on every deploy.
+     *
+     * Without this fix, `Parameter.ARN` never changes between SSM parameter versions
+     * so CloudFormation skips the update entirely — CloudFront ends up reading a
+     * stale value (e.g., a rotated `cloudfront-origin-secret`) until the custom
+     * resource is manually deleted and re-created.
+     *
+     * @param id              - CDK construct id (must be unique in the stack).
+     * @param parameterPath   - SSM parameter path (e.g. `/k8s/development/elastic-ip`).
+     * @param region          - AWS region where the parameter lives (e.g. `eu-west-1`).
+     * @param policy          - IAM policy granting `ssm:GetParameter` on the target ARN.
+     * @param withDecryption  - Set `true` for SecureString parameters. @default false
+     * @returns The resolved parameter value as a CloudFormation token.
      */
     private readSsmParameter(
         id: string,
         parameterPath: string,
         region: string,
         policy: cr.AwsCustomResourcePolicy,
+        withDecryption: boolean = false,
     ): string {
+        // Synthesise-time timestamp — changes on every `cdk deploy`, causing
+        // CloudFormation to treat this as a changed physical resource and
+        // invoke the onUpdate handler unconditionally.
+        const deployTimestamp = new Date().toISOString();
+
         const reader = new cr.AwsCustomResource(this, id, {
             onCreate: {
                 service: 'SSM',
                 action: 'getParameter',
-                parameters: { Name: parameterPath },
+                parameters: { Name: parameterPath, WithDecryption: withDecryption },
                 region,
-                physicalResourceId: cr.PhysicalResourceId.of(`read-${parameterPath}`),
+                // Stable ID for first-time creation — avoids replacement on Day-0.
+                physicalResourceId: cr.PhysicalResourceId.fromResponse('Parameter.ARN'),
             },
             onUpdate: {
                 service: 'SSM',
                 action: 'getParameter',
-                parameters: { Name: parameterPath },
+                parameters: { Name: parameterPath, WithDecryption: withDecryption },
                 region,
+                // Timestamp-based ID: always different → CloudFormation always
+                // re-invokes the Lambda → SSM value is always fresh on every deploy.
                 physicalResourceId: cr.PhysicalResourceId.of(
-                    `read-${parameterPath}-${Date.now()}`
+                    `${parameterPath}@${deployTimestamp}`,
                 ),
             },
             policy,

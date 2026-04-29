@@ -5,7 +5,8 @@
 # Deploys CDK stacks, syncs bootstrap scripts, builds Golden AMI,
 # and runs verification — all in one pipeline.
 #
-# 8-Stack Architecture: Data → Base → Compute → AppIam → Api → Edge.
+# 9-Stack Architecture: Data → Base → Compute → AppIam → Api → Edge → PlatformRds.
+# Control Plane stack includes AMI-refresh automation (EventBridge + Step Functions).
 # Application workloads (traefik, metrics-server) are managed by
 # ArgoCD via Pipeline B (gitops-k8s.yml).
 #

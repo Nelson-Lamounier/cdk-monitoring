@@ -35,6 +35,7 @@ import {
   RequestCertificateCommand,
   DescribeCertificateCommand,
   DeleteCertificateCommand,
+  ListCertificatesCommand,
   CertificateStatus,
 } from "@aws-sdk/client-acm";
 import {
@@ -348,39 +349,129 @@ async function handleCreate(
 /**
  * Handle Update events
  *
- * For certificate updates, we create a new certificate first, then delete the old one.
- * This ensures zero downtime during certificate updates.
+ * Strategy:
+ *  - If the domain name has NOT changed, reuse the existing certificate ARN.
+ *    CloudFront distributions can take 5–15 minutes to update; deleting the
+ *    old cert while CloudFront is mid-update causes a 400 "SSL certificate
+ *    doesn't exist" error (UPDATE_FAILED on the distribution resource).
+ *  - If the domain name HAS changed, request a new certificate and leave the
+ *    old one intact. CloudFront must finish its update before the old cert can
+ *    safely be deleted. Manual cleanup (or the Delete handler) handles removal.
+ *
+ * NOTE: We deliberately NEVER delete the old certificate inside handleUpdate.
+ * The Delete handler is responsible for cert cleanup on stack teardown.
  */
 async function handleUpdate(
   event: CloudFormationCustomResourceEvent,
   context: Context,
 ): Promise<CrProviderResponse> {
-  const oldCertificateArn =
+  const oldPhysicalId =
     "PhysicalResourceId" in event ? event.PhysicalResourceId : undefined;
 
-  console.log("Updating certificate (create new, delete old pattern)");
-  if (oldCertificateArn) {
-    console.log(`Old certificate: ${oldCertificateArn}`);
+  const newProps = event.ResourceProperties as unknown as AcmCertificateProperties;
+  const oldProps = "OldResourceProperties" in event
+    ? (event.OldResourceProperties as unknown as AcmCertificateProperties)
+    : undefined;
+
+  console.log("Certificate update requested");
+  console.log(`Old physical resource ID: ${oldPhysicalId ?? "none"}`);
+
+  // ── DNS-only / A-record modes ─────────────────────────────────────────────
+  // These don't involve ACM certificates; delegate directly to handleCreate
+  // (which is idempotent for alias / A-record resources).
+  const skipCert = newProps.SkipCertificateCreation === "true";
+  if (skipCert) {
+    console.log("DNS-only / A-record mode: delegating to handleCreate");
+    return handleCreate(event, context);
   }
 
-  // Create new certificate
-  const createResponse = await handleCreate(event, context);
+  // ── Full certificate mode ─────────────────────────────────────────────
+  const domainChanged =
+    oldProps?.DomainName !== newProps.DomainName ||
+    JSON.stringify(oldProps?.SubjectAlternativeNames ?? []) !==
+      JSON.stringify(newProps.SubjectAlternativeNames ?? []);
 
-  // If creation succeeded and we have an old certificate, delete it
-  if (oldCertificateArn) {
-    try {
-      console.log(`Deleting old certificate: ${oldCertificateArn}`);
-      await deleteCertificate(oldCertificateArn);
-      console.log("Old certificate deleted successfully");
-    } catch (error) {
-      // Log error but don't fail the update
-      console.error("Failed to delete old certificate:", error);
+  if (!domainChanged && oldPhysicalId?.startsWith("arn:aws:acm:")) {
+    // Domain is unchanged — check whether the existing cert is still alive
+    // before reusing it. A previous failed deploy may have deleted it, leaving
+    // CloudFormation's stored physical ID pointing to a ghost ARN.
+    const certIsValid = await isCertificateValid(oldPhysicalId);
+
+    if (certIsValid) {
+      // Cert exists and is ISSUED — safe to reuse. Returning the same ARN
+      // means CloudFormation does not update the CloudFront distribution's
+      // ViewerCertificate, avoiding the 5–15 min propagation window entirely.
       console.log(
-        "Continuing with update - old certificate may need manual cleanup",
+        `Domain unchanged (${newProps.DomainName}) and cert is ISSUED. ` +
+        `Reusing existing certificate: ${oldPhysicalId}`,
       );
+      return {
+        PhysicalResourceId: oldPhysicalId,
+        Data: {
+          CertificateArn: oldPhysicalId,
+          DomainName: newProps.DomainName,
+          ValidationStatus: "REUSED",
+          HostedZoneId: newProps.HostedZoneId,
+          Environment: newProps.Environment,
+          CloudFrontAliasCreated: newProps.CloudFrontDomainName ? "true" : "false",
+        },
+      };
+    }
+
+    // Cert is gone (deleted by a previous failed deploy).
+    // Before creating a brand-new certificate (which triggers another
+    // 10-minute DNS validation wait), scan ACM for an already-ISSUED cert
+    // that covers this domain. This reconciles CloudFormation state drift
+    // where CFN's stored physicalResourceId points to a deleted cert but a
+    // valid cert for the same domain still exists (e.g. cc20522d is live on
+    // CloudFront while CFN thinks the cert is 2c56f8f7).
+    console.warn(
+      `Certificate ${oldPhysicalId} no longer exists in ACM (deleted by a ` +
+      "previous failed deploy). Scanning ACM for an existing ISSUED cert before creating a new one.",
+    );
+
+    const existingCert = await findExistingIssuedCertificate(newProps.DomainName);
+    if (existingCert) {
+      console.log(
+        `Found existing ISSUED certificate for ${newProps.DomainName}: ${existingCert}. ` +
+        "Reusing it to reconcile CloudFormation state drift — no new cert needed.",
+      );
+      return {
+        PhysicalResourceId: existingCert,
+        Data: {
+          CertificateArn: existingCert,
+          DomainName: newProps.DomainName,
+          ValidationStatus: "RECONCILED",
+          HostedZoneId: newProps.HostedZoneId,
+          Environment: newProps.Environment,
+          CloudFrontAliasCreated: newProps.CloudFrontDomainName ? "true" : "false",
+        },
+      };
     }
   }
 
+  // A new certificate is needed — either because the domain changed, or because
+  // the existing cert was deleted by a previous failed deploy (recovery path).
+  // IMPORTANT: Do NOT delete the old certificate here.
+  // CloudFront distributions take 5–15 min to update; any surviving old cert
+  // must remain valid for the entire duration. Deleting it immediately causes
+  // CloudFront to return a 400 "SSL certificate doesn't exist" error, putting
+  // the distribution into UPDATE_FAILED.
+  //
+  // Old certificates will be cleaned up by the Delete handler on stack teardown,
+  // or can be removed manually from the ACM console once CloudFront confirms
+  // the update is complete.
+  const reason = domainChanged
+    ? `domain changed from "${oldProps?.DomainName ?? "unknown"}" to "${newProps.DomainName}"`
+    : `existing certificate ${oldPhysicalId} is no longer valid in ACM (recovery path)`;
+  console.log(`Requesting new certificate: ${reason}.`);
+  if (oldPhysicalId && !domainChanged) {
+    console.log(
+      "Old cert was deleted by a previous failed deploy — creating fresh cert for the same domain.",
+    );
+  }
+
+  const createResponse = await handleCreate(event, context);
   return createResponse;
 }
 
@@ -653,6 +744,86 @@ async function deleteCertificate(certificateArn: string): Promise<void> {
 
   await acmClient.send(command);
 }
+
+/**
+ * Check whether an ACM certificate exists and is in ISSUED state.
+ *
+ * Returns `true`  — cert exists and is ISSUED (safe to reuse for CloudFront).
+ * Returns `false` — cert is missing, deleted, FAILED, or EXPIRED.
+ *
+ * Used by handleUpdate to detect certificates that were deleted by a previous
+ * failed deploy before blindly reusing the stored physical resource ID.
+ *
+ * @param certificateArn - Full ACM certificate ARN to validate.
+ * @returns Whether the certificate is valid and usable.
+ */
+async function isCertificateValid(certificateArn: string): Promise<boolean> {
+  if (!certificateArn.startsWith("arn:aws:acm:")) {
+    return false;
+  }
+
+  try {
+    const command = new DescribeCertificateCommand({
+      CertificateArn: certificateArn,
+    });
+    const response = await acmClient.send(command);
+    const status = response.Certificate?.Status;
+
+    const isValid = status === CertificateStatus.ISSUED;
+    console.log(`Certificate ${certificateArn} status: ${status ?? "unknown"} → ${isValid ? "valid" : "invalid"}`);
+    return isValid;
+  } catch (error: unknown) {
+    // ResourceNotFoundException → cert was deleted; any other error → treat as invalid.
+    const errName = (error as { name?: string })?.name ?? "Unknown";
+    console.warn(`isCertificateValid check failed (${errName}) for ${certificateArn} → treating as invalid`);
+    return false;
+  }
+}
+
+/**
+ * Scan ACM for an already-ISSUED certificate covering the given domain.
+ *
+ * Used as a reconciliation step when CloudFormation's stored physical resource
+ * ID points to a deleted certificate but a valid cert for the same domain still
+ * exists in ACM (e.g. left over from a previous successful deploy). Returning
+ * the existing ARN avoids a full 10-minute DNS re-validation cycle and prevents
+ * an unnecessary CloudFront certificate swap.
+ *
+ * Pagination is handled automatically. Returns the first matching ISSUED cert,
+ * or `undefined` if none is found.
+ *
+ * @param domainName - The primary domain to match (e.g. 'nelsonlamounier.com').
+ * @returns The ARN of a matching ISSUED certificate, or `undefined`.
+ */
+async function findExistingIssuedCertificate(domainName: string): Promise<string | undefined> {
+  console.log(`Scanning ACM for existing ISSUED certificate for domain: ${domainName}`);
+
+  let nextToken: string | undefined;
+
+  do {
+    const command = new ListCertificatesCommand({
+      CertificateStatuses: [CertificateStatus.ISSUED],
+      NextToken: nextToken,
+      MaxItems: 100,
+    });
+
+    const response = await acmClient.send(command);
+    const matches = (response.CertificateSummaryList ?? []).filter(
+      (cert) => cert.DomainName === domainName && cert.CertificateArn,
+    );
+
+    if (matches.length > 0 && matches[0].CertificateArn) {
+      console.log(`Found ISSUED certificate ${matches[0].CertificateArn} for ${domainName}`);
+      return matches[0].CertificateArn;
+    }
+
+    nextToken = response.NextToken;
+  } while (nextToken);
+
+  console.log(`No existing ISSUED certificate found for ${domainName}`);
+  return undefined;
+}
+
 
 /**
  * DNS validation record structure

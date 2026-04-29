@@ -205,6 +205,17 @@ export class AutoScalingGroupConstruct extends Construct {
     public readonly autoScalingGroup: autoscaling.AutoScalingGroup;
 
     /**
+     * Concrete ASG name (e.g. `k8s-development-general-pool-asg`).
+     *
+     * Unlike `autoScalingGroup.autoScalingGroupName` (which CDK resolves as
+     * `this.physicalName` — a token that becomes a CloudFormation Ref at synth),
+     * this is a plain TypeScript string resolved at synth time.
+     * Use this instead of `.autoScalingGroupName` when passing across stack
+     * boundaries to avoid emitting Fn::ImportValue cross-stack exports.
+     */
+    public readonly concreteAsgName: string;
+
+    /**
      * SNS topic for ASG scaling notifications (AwsSolutions-AS3).
      * Exposed so consuming stacks can add subscriptions (email, Lambda, etc.).
      * Without a subscription, scaling events go nowhere.
@@ -302,6 +313,15 @@ export class AutoScalingGroupConstruct extends Construct {
                 },
             ],
         });
+
+        // Expose the concrete ASG name (synth-time string, not a CloudFormation token).
+        // CDK's AutoScalingGroup.autoScalingGroupName is resolved as this.physicalName,
+        // which becomes a CloudFormation Ref at synth even when an explicit name is set.
+        // Build the string directly to avoid cross-stack Fn::ImportValue exports.
+        this.concreteAsgName = `${namePrefix}-asg`;
+        // Note: CloudFormation rejects $Latest/$Default as LT version in ASG resources.
+        // The AMI refresh Lambda updates the ASG version via UpdateAutoScalingGroup API
+        // (which does allow $Default), so no override is needed here.
 
         // Configure scaling policy (unless disabled)
         if (!props.disableScalingPolicy) {

@@ -1,10 +1,14 @@
 # ── Compiled Output ──────────────────────────────────────────────────────────
 dist/
+tsconfig.tsbuildinfo
 *.js
 !jest.config.js
 !jest.integration.config.js
 !.eslint-local-rules.mjs
 !eslint.config.mjs
+!infra/tests/jest-worker-setup.js
+# CI patch files committed to .github/patches/ must be tracked despite *.js
+!.github/patches/*.js
 *.d.ts
 !lib/**/*.d.ts
 
@@ -78,6 +82,7 @@ bedrock-generated.md
 certification.md
 cognito_infrastructure_review.md
 PROMPT.md
+articles-draft/
 
 # ── Build Benchmarks ────────────────────────────────────────────────────────
 install-timer.*
@@ -88,3 +93,4 @@ docker-compose.mcp.yml
 # ── MCP Server Build Artefacts ───────────────────────────────────────────────
 mcp-servers/*/dist/
 mcp-servers/*/build/
+CI-FrontEnd.yml

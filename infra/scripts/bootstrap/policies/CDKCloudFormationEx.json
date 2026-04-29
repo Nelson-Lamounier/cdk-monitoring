@@ -186,6 +186,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "RelationalDatabaseServices",
+      "Effect": "Allow",
+      "Action": "rds:*",
+      "Resource": "*"
+    },
+    {
       "Sid": "FinOpsServices",
       "Effect": "Allow",
       "Action": "budgets:*",

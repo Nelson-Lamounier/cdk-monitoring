@@ -4,17 +4,16 @@
  * Kubernetes Infrastructure Smoke Tests
  *
  * Validates the full kubeadm Kubernetes deployment after a CDK deploy.
- * Covers all stacks (Data, Base, ControlPlane, AppWorker, MonitoringWorker,
- * AppIam, API, Edge) and their resources.
+ * Covers all stacks (Data, Base, ControlPlane, GeneralPool, MonitoringPool,
+ * AppIam, API, Edge, Observability) and their resources.
  *
  * Checks performed:
- *   1. CloudFormation Stack Status (all 8 stacks)
- *   2. Golden AMI SSM Parameter (AMI ID is resolved, not PENDING_FIRST_BUILD)
- *   3. EIP HTTP Health (Traefik/Ingress controller responding on control plane)
- *   4. SSM Parameters (/k8s/{env}/*)
- *   5. S3 Scripts Bucket (k8s manifests bucket accessible)
- *   6. API Gateway (subscription endpoint responds)
- *   7. CloudFront HTTPS (edge distribution responds)
+ *   1. CloudFormation Stack Status (all 10 stacks)
+ *   2. EIP HTTP Health (Traefik/Ingress controller responding on control plane)
+ *   3. SSM Parameters (/k8s/{env}/*)
+ *   4. S3 Scripts Bucket (k8s manifests bucket accessible)
+ *   5. API Gateway (subscription endpoint responds)
+ *   6. CloudFront HTTPS (edge distribution responds)
  *
  * Usage:
  *   npx tsx scripts/deployment/smoke-tests-kubernetes.ts development
@@ -34,8 +33,8 @@ import {
 } from '@aws-sdk/client-cloudformation';
 import { HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import { GetParametersCommand, SSMClient } from '@aws-sdk/client-ssm';
-import { setOutput, writeSummary } from '@repo/script-utils/github.js';
-import logger from '@repo/script-utils/logger.js';
+import { setOutput, writeSummary } from '@nelsonlamounier/cdk-deploy-scripts/github.js';
+import logger from '@nelsonlamounier/cdk-deploy-scripts/logger.js';
 import { Agent, fetch as undiciFetch } from 'undici';
 
 import { getProject, type Environment } from '../shared/stacks.js';
@@ -310,59 +309,6 @@ async function checkCloudFormationStacks(): Promise<CheckResult> {
     critical: true,
     details: details.join('; '),
   };
-}
-
-// ==========================================================================
-// CHECK 2: Golden AMI SSM Parameter
-// ==========================================================================
-async function checkGoldenAmiSsm(): Promise<CheckResult> {
-  logger.task('Checking Golden AMI SSM parameter...');
-
-  const amiSsmPath = `${k8sSsmPrefix}/golden-ami/latest`;
-
-  try {
-    const response = await ssm.send(
-      new GetParametersCommand({ Names: [amiSsmPath] }),
-    );
-    const value = response.Parameters?.[0]?.Value;
-
-    if (!value) {
-      logger.error(`Golden AMI SSM param not found: ${amiSsmPath}`);
-      return {
-        name: 'Golden AMI SSM',
-        status: 'unhealthy',
-        critical: true,
-        details: `${amiSsmPath} not found`,
-      };
-    }
-
-    if (value === 'PENDING_FIRST_BUILD') {
-      logger.error(`Golden AMI still pending: ${amiSsmPath} = PENDING_FIRST_BUILD`);
-      return {
-        name: 'Golden AMI SSM',
-        status: 'unhealthy',
-        critical: true,
-        details: 'AMI ID is PENDING_FIRST_BUILD — Image Builder has not completed a build',
-      };
-    }
-
-    // Should be an AMI ID like ami-0123456789abcdef0
-    if (value.startsWith('ami-')) {
-      logger.success(`Golden AMI: ${value}`);
-      return { name: 'Golden AMI SSM', status: 'healthy', critical: true, details: value };
-    }
-
-    logger.warn(`Golden AMI SSM has unexpected value: ${value}`);
-    return {
-      name: 'Golden AMI SSM',
-      status: 'degraded',
-      critical: true,
-      details: `Unexpected value: ${value}`,
-    };
-  } catch (err) {
-    logger.warn(`Golden AMI SSM check failed: ${(err as Error).message}`);
-    return { name: 'Golden AMI SSM', status: 'skipped', critical: true };
-  }
 }
 
 // ==========================================================================
@@ -721,7 +667,6 @@ async function main(): Promise<void> {
   // Run all checks
   const results = await Promise.all([
     checkCloudFormationStacks(),
-    checkGoldenAmiSsm(),
     checkEipHealth(),
     checkSsmParameters(),
     checkS3Bucket(),
@@ -748,7 +693,6 @@ async function main(): Promise<void> {
     `**Environment**: \`${environment}\``,
     `**Region**: \`${region}\` | **Edge**: \`${edgeRegion}\``,
     `**EIP**: \`${eipAddress || 'N/A'}\``,
-    `**Golden AMI SSM**: \`${k8sSsmPrefix}/golden-ami/latest\``,
     `**Overall**: ${overall === 'success' ? '✅' : overall === 'degraded' ? '⚠️' : '❌'} ${overall}`,
     '',
     '### Service Health',

@@ -6,9 +6,7 @@
  * bootstrap / deploy scripts to S3.
  *
  * Sync targets:
- *   1. k8s-bootstrap/     → s3://{bucket}/k8s-bootstrap/
- *   2. workloads/charts/nextjs/  → s3://{bucket}/app-deploy/nextjs/   (excl. chart/, nextjs-values.yaml)
- *   3. platform/charts/monitoring/ → s3://{bucket}/app-deploy/monitoring/ (excl. chart/)
+ *   1. k8s-bootstrap/ → s3://{bucket}/k8s-bootstrap/
  *
  * Usage:
  *   npx tsx sync-bootstrap-scripts.ts \
@@ -27,10 +25,10 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { parseArgs, buildAwsConfig, getSSMParameter } from '@repo/script-utils/aws.js';
-import { runCommand } from '@repo/script-utils/exec.js';
-import { writeSummary, emitAnnotation } from '@repo/script-utils/github.js';
-import logger from '@repo/script-utils/logger.js';
+import { parseArgs, buildAwsConfig, getSSMParameter } from '@nelsonlamounier/cdk-deploy-scripts/aws.js';
+import { runCommand } from '@nelsonlamounier/cdk-deploy-scripts/exec.js';
+import { writeSummary, emitAnnotation } from '@nelsonlamounier/cdk-deploy-scripts/github.js';
+import logger from '@nelsonlamounier/cdk-deploy-scripts/logger.js';
 
 // =============================================================================
 // CLI argument parsing
@@ -49,6 +47,12 @@ const args = parseArgs(
             hasValue: true,
             default: process.env.AWS_REGION ?? 'eu-west-1',
         },
+        {
+            name: 'profile',
+            description: 'AWS named profile (local use only; omit in CI where OIDC credentials are ambient)',
+            hasValue: true,
+            default: process.env.AWS_PROFILE ?? '',
+        },
     ],
     'Sync bootstrap and deploy scripts to S3',
 );
@@ -61,7 +65,13 @@ if (!args.environment) {
 }
 
 const environment = args.environment as string;
-const awsConfig = buildAwsConfig(args);
+const awsConfig = buildAwsConfig({ ...args, env: args.environment });
+
+// AWS_PROFILE to inject into the `aws s3 sync` subprocess.
+// When --profile is provided or the SDK falls back to dev-account, the CLI
+// subprocess must see the same profile so it can resolve credentials.
+const subprocessProfile: string | undefined =
+    (args.profile as string) || (!process.env.AWS_ACCESS_KEY_ID ? 'dev-account' : undefined);
 
 // =============================================================================
 // Resolve workspace root (two levels up from this script)
@@ -91,20 +101,6 @@ const SYNC_TARGETS: SyncTarget[] = [
         s3Prefix: 'k8s-bootstrap/',
         excludes: [],
         optional: false,
-    },
-    {
-        label: 'Next.js App Deploy Scripts',
-        sourceDir: 'kubernetes-app/workloads/charts/nextjs',
-        s3Prefix: 'app-deploy/nextjs/',
-        excludes: ['chart/*', 'nextjs-values.yaml', '__pycache__/*'],
-        optional: true,
-    },
-    {
-        label: 'Monitoring Deploy Scripts',
-        sourceDir: 'kubernetes-app/platform/charts/monitoring',
-        s3Prefix: 'app-deploy/monitoring/',
-        excludes: ['chart/*', '__pycache__/*'],
-        optional: true,
     },
 ];
 
@@ -172,8 +168,17 @@ async function syncTarget(
 
     logger.info(`Syncing ${fileCount} files from ${target.sourceDir} to ${s3Destination}`);
 
+    // Inject AWS_PROFILE into the subprocess so the `aws` CLI binary resolves
+    // the same credentials as the SDK (which uses resolveAuth / fromIni).
+    // In CI, AWS_ACCESS_KEY_ID is set via OIDC so subprocessProfile is undefined
+    // and process.env carries the credentials automatically.
+    const subprocessEnv: NodeJS.ProcessEnv | undefined = subprocessProfile
+        ? { AWS_PROFILE: subprocessProfile }
+        : undefined;
+
     const result = await runCommand('aws', syncArgs, {
         captureOutput: false, // stream the output
+        env: subprocessEnv,
     });
 
     if (result.exitCode !== 0) {

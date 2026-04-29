@@ -44,6 +44,12 @@ import {
     DescribeInstancesCommand,
     DescribeVolumesCommand,
 } from '@aws-sdk/client-ec2';
+import {
+    CloudWatchLogsClient,
+    DescribeLogGroupsCommand,
+    DescribeLogStreamsCommand,
+    GetLogEventsCommand,
+} from '@aws-sdk/client-cloudwatch-logs';
 import type { AwsCredentialIdentityProvider } from '@aws-sdk/types';
 import * as log from '../lib/logger.js';
 import { startFileLogging, stopFileLogging } from '../lib/logger.js';
@@ -61,6 +67,9 @@ const args = parseArgs(
         { name: 'fix', description: 'Attempt automatic certificate and config repair', hasValue: false, default: false },
         { name: 'last', description: 'Number of SSM Automation executions to inspect', hasValue: true, default: '3' },
         { name: 'skip-k8s', description: 'Skip Kubernetes cluster diagnostics (useful if instance is unreachable)', hasValue: false, default: false },
+        { name: 'skip-cw', description: 'Skip CloudWatch bootstrap log diagnostics', hasValue: false, default: false },
+        { name: 'cw-streams', description: 'Number of recent bootstrap log streams to inspect', hasValue: true, default: '3' },
+        { name: 'cw-log-group', description: 'Override the bootstrap CloudWatch log group name', hasValue: true },
     ],
     'Control Plane Troubleshooter — diagnose and optionally repair K8s control plane after ASG replacement',
 );
@@ -80,6 +89,12 @@ const SSM_POLL_INTERVAL_MS = 3_000;
 
 /** Statuses that indicate SSM Automation failure */
 const FAILURE_STATUSES: ReadonlySet<string> = new Set(['Failed', 'TimedOut', 'Cancelled']);
+
+/** CloudWatch log group written by the SSM bootstrap automation */
+const BOOTSTRAP_LOG_GROUP_TEMPLATE = (env: string) => `/ssm/k8s/${env}/bootstrap`;
+
+/** Max log events to fetch per stream — enough to cover a full bootstrap run */
+const CW_MAX_EVENTS_PER_STREAM = 500;
 
 // ============================================================================
 // Types
@@ -147,12 +162,14 @@ function createClients(
     ssm: SSMClient;
     ec2: EC2Client;
     asg: AutoScalingClient;
+    cw: CloudWatchLogsClient;
 } {
     const config = { region, credentials };
     return {
         ssm: new SSMClient(config),
         ec2: new EC2Client(config),
         asg: new AutoScalingClient(config),
+        cw: new CloudWatchLogsClient(config),
     };
 }
 
@@ -646,7 +663,6 @@ async function diagnoseDRAndCerts(
         'kubectl get cm kubeadm-config -n kube-system -o jsonpath="{.data.ClusterConfiguration}" 2>&1 || echo "KUBEADM_CONFIG_MISSING"',
     ].join('\n');
 
-    log.step(3, 5, 'Running DR & certificate diagnostics on instance...');
     const result = await runOnInstance(ssm, instanceId, [drScript]);
 
     if (result.status !== 'Success') {
@@ -854,7 +870,6 @@ async function diagnoseKubernetes(
         'helm list -A 2>&1',
     ].join('\n');
 
-    log.step(4, 5, 'Running Kubernetes cluster diagnostics...');
     const result = await runOnInstance(ssm, instanceId, [k8sScript], 180);
 
     if (result.status !== 'Success') {
@@ -1128,6 +1143,230 @@ async function attemptRepair(
 }
 
 // ============================================================================
+// Phase 5: CloudWatch Bootstrap Log Diagnostics
+// ============================================================================
+
+/** A parsed bootstrap log event (JSON lines emitted by control_plane.py) */
+interface BootstrapLogEvent {
+    timestamp: string;
+    level: 'INFO' | 'WARN' | 'ERROR' | 'FATAL';
+    message: string;
+    step?: string;
+    marker?: string;
+}
+
+/**
+ * Parse a single raw CloudWatch log message into a structured BootstrapLogEvent.
+ * The bootstrap script emits JSON lines; non-JSON lines are treated as INFO.
+ */
+function parseBootstrapEvent(raw: string): BootstrapLogEvent {
+    try {
+        const parsed = JSON.parse(raw.trim());
+        return {
+            timestamp: parsed.timestamp ?? '',
+            level:     parsed.level   ?? 'INFO',
+            message:   parsed.message ?? raw,
+            step:      parsed.step,
+            marker:    parsed.marker,
+        };
+    } catch {
+        return { timestamp: '', level: 'INFO', message: raw };
+    }
+}
+
+/**
+ * Fetch and analyse the most recent streams in the bootstrap CloudWatch log group.
+ *
+ * For each stream it:
+ *  - Identifies ERROR/FATAL events and surfaces them as critical check failures
+ *  - Identifies WARN events and surfaces them as warnings
+ *  - Reports which step was executing when the failure occurred
+ *  - Detects the specific failure messages we know about (podSubnet, CCM taint)
+ *
+ * @param cw         - CloudWatch Logs SDK client
+ * @param logGroup   - Log group name (e.g. /ssm/k8s/development/bootstrap)
+ * @param maxStreams  - Number of recent streams to inspect
+ * @returns Check results for the CW phase
+ */
+async function diagnoseBootstrapLogs(
+    cw: CloudWatchLogsClient,
+    logGroup: string,
+    maxStreams: number,
+): Promise<CheckResult[]> {
+    const checks: CheckResult[] = [];
+
+    // ── Verify the log group exists ──────────────────────────────────────
+    try {
+        const groupResult = await cw.send(
+            new DescribeLogGroupsCommand({ logGroupNamePrefix: logGroup, limit: 1 }),
+        );
+        const found = (groupResult.logGroups ?? []).some(
+            (g) => g.logGroupName === logGroup,
+        );
+        if (!found) {
+            checks.push({
+                name: 'CW: Log group',
+                passed: false,
+                detail: `Log group not found: ${logGroup} — bootstrap may not have run, or the log group name differs`,
+                severity: 'warning',
+            });
+            return checks;
+        }
+        checks.push({
+            name: 'CW: Log group',
+            passed: true,
+            detail: `Found: ${logGroup}`,
+        });
+    } catch (err) {
+        checks.push({
+            name: 'CW: Log group',
+            passed: false,
+            detail: `Could not query CloudWatch: ${(err as Error).message}`,
+            severity: 'warning',
+        });
+        return checks;
+    }
+
+    // ── Fetch recent streams ─────────────────────────────────────────────
+    let streams: { logStreamName?: string; lastEventTimestamp?: number }[] = [];
+    try {
+        const streamsResult = await cw.send(
+            new DescribeLogStreamsCommand({
+                logGroupName: logGroup,
+                orderBy:      'LastEventTime',
+                descending:   true,
+                limit:        maxStreams,
+            }),
+        );
+        streams = streamsResult.logStreams ?? [];
+    } catch (err) {
+        checks.push({
+            name: 'CW: Streams',
+            passed: false,
+            detail: `Failed to list streams: ${(err as Error).message}`,
+            severity: 'warning',
+        });
+        return checks;
+    }
+
+    if (streams.length === 0) {
+        checks.push({
+            name: 'CW: Streams',
+            passed: false,
+            detail: 'No log streams found — bootstrap has not produced output yet',
+            severity: 'warning',
+        });
+        return checks;
+    }
+
+    checks.push({
+        name: 'CW: Streams',
+        passed: true,
+        detail: `Found ${streams.length} stream(s) — inspecting last ${maxStreams}`,
+    });
+
+    // ── Inspect each stream ──────────────────────────────────────────────
+    for (const stream of streams) {
+        const streamName = stream.logStreamName ?? 'unknown';
+        const streamAge  = stream.lastEventTimestamp
+            ? Math.round((Date.now() - stream.lastEventTimestamp) / 60_000)
+            : undefined;
+        const ageLabel = streamAge !== undefined ? `${streamAge}m ago` : 'unknown age';
+
+        let events: { message?: string; timestamp?: number }[] = [];
+        try {
+            const eventsResult = await cw.send(
+                new GetLogEventsCommand({
+                    logGroupName:  logGroup,
+                    logStreamName: streamName,
+                    limit:         CW_MAX_EVENTS_PER_STREAM,
+                    startFromHead: true,
+                }),
+            );
+            events = eventsResult.events ?? [];
+        } catch {
+            checks.push({
+                name:   `CW: Stream ${streamName.slice(-40)}`,
+                passed: false,
+                detail: 'Failed to fetch events',
+                severity: 'warning',
+            });
+            continue;
+        }
+
+        const parsed = events
+            .map((e) => parseBootstrapEvent(e.message ?? ''))
+            .filter((e) => e.message.trim().length > 0);
+
+        const errors  = parsed.filter((e) => e.level === 'ERROR' || e.level === 'FATAL');
+        const warns   = parsed.filter((e) => e.level === 'WARN');
+
+        // Find the last step that was executing when the failure occurred
+        const stepMessages = parsed.filter((e) => e.message.includes('Starting step:'));
+        const lastStep = stepMessages.at(-1)?.message
+            .replace(/.*Starting step:\s*/, '')
+            .replace(/\s*===.*/, '')
+            .trim() ?? 'unknown';
+
+        // Determine overall stream health
+        const hasErrors  = errors.length > 0;
+        const completed  = parsed.some((e) => e.message.includes('bootstrap complete'));
+
+        checks.push({
+            name:   `CW: Stream (${ageLabel})`,
+            passed: completed && !hasErrors,
+            detail: completed && !hasErrors
+                ? `Bootstrap completed successfully (${parsed.length} events)`
+                : hasErrors
+                  ? `Bootstrap failed at step '${lastStep}' — ${errors.length} error(s), ${warns.length} warning(s)`
+                  : `Bootstrap incomplete — last step: '${lastStep}', ${warns.length} warning(s)`,
+            severity: hasErrors ? 'critical' : completed ? undefined : 'warning',
+        });
+
+        // Surface each distinct error as its own check
+        // De-duplicate by message prefix to avoid flooding on retry loops
+        const seenMessages = new Set<string>();
+        for (const err of errors) {
+            const key = err.message.substring(0, 80);
+            if (seenMessages.has(key)) continue;
+            seenMessages.add(key);
+
+            checks.push({
+                name:     `CW: Error — step '${lastStep}'`,
+                passed:   false,
+                detail:   err.message.length > 200
+                    ? err.message.substring(0, 200) + '…'
+                    : err.message,
+                severity: 'critical',
+            });
+        }
+
+        // Surface WARN-level messages that indicate known issues
+        const knownWarnPatterns = [
+            'podSubnet',
+            'taint not removed',
+            'HOSTED_ZONE_ID not set',
+            'CCM installed but',
+            'certificate',
+        ];
+        for (const warn of warns) {
+            if (knownWarnPatterns.some((p) => warn.message.includes(p))) {
+                checks.push({
+                    name:     `CW: Warning — step '${lastStep}'`,
+                    passed:   false,
+                    detail:   warn.message.length > 200
+                        ? warn.message.substring(0, 200) + '…'
+                        : warn.message,
+                    severity: 'warning',
+                });
+            }
+        }
+    }
+
+    return checks;
+}
+
+// ============================================================================
 // Report Generation
 // ============================================================================
 
@@ -1186,6 +1425,32 @@ function generateRecommendations(report: DiagnosticReport): string[] {
             'Bootstrap automation failed. Check /opt/k8s-bootstrap/run_summary.json for details, ' +
             'and use: npx tsx scripts/local/ssm-automation.ts for step-level logs.',
         );
+    }
+
+    // CloudWatch log errors
+    if (failedNames.some((n) => n.startsWith('CW: Error'))) {
+        const cwErrorChecks = report.checks.filter(
+            (c) => !c.passed && c.name.startsWith('CW: Error'),
+        );
+        const stepNames = [...new Set(cwErrorChecks.map((c) => c.name.replace('CW: Error — step ', '')))];
+        recommendations.push(
+            `CloudWatch bootstrap logs contain errors at step(s): ${stepNames.join(', ')}. ` +
+            'Run: yarn tsx scripts/local/cloudwatch-logs.ts --log-group /ssm/k8s/development/bootstrap ' +
+            'for the full stream, or re-run with --fix to attempt automatic repair.',
+        );
+    }
+
+    // CloudWatch warning patterns (known non-fatal issues surfaced from logs)
+    if (failedNames.some((n) => n.startsWith('CW: Warning'))) {
+        const cwWarnChecks = report.checks.filter(
+            (c) => !c.passed && c.name.startsWith('CW: Warning'),
+        );
+        if (cwWarnChecks.some((c) => c.detail.includes('podSubnet'))) {
+            recommendations.push(
+                'CloudWatch logs confirm podSubnet warning was emitted during bootstrap. ' +
+                'This is now fixed in control_plane.py — ensure the latest code is deployed to S3.',
+            );
+        }
     }
 
     // Static pods missing
@@ -1357,6 +1622,10 @@ async function main(): Promise<void> {
     const shouldFix = args.fix === true;
     const maxAutomationResults = Math.min(Number.parseInt(args.last as string, 10), 50);
     const skipK8s = args['skip-k8s'] === true;
+    const skipCw  = args['skip-cw']  === true;
+    const cwStreams = Math.min(Number.parseInt(args['cw-streams'] as string, 10), 10);
+    const cwLogGroup = (args['cw-log-group'] as string | undefined)
+        ?? BOOTSTRAP_LOG_GROUP_TEMPLATE(env);
 
     log.header('  🔧 Control Plane Troubleshooter');
     log.config('Configuration', {
@@ -1366,6 +1635,7 @@ async function main(): Promise<void> {
         'Auto-fix': shouldFix ? 'ENABLED' : 'disabled',
         'Automation history': `last ${maxAutomationResults}`,
         'Skip K8s': skipK8s ? 'YES' : 'no',
+        'CW log group': skipCw ? 'skipped' : cwLogGroup,
     });
 
     const clients = createClients(awsConfig.region, awsConfig.credentials);
@@ -1380,7 +1650,7 @@ async function main(): Promise<void> {
     };
 
     // ── Phase 1: Infrastructure ──────────────────────────────────────────
-    log.step(1, 5, 'Checking SSM parameters and infrastructure...');
+    log.step(1, 6, 'Checking SSM parameters and infrastructure...');
 
     const { params, checks: ssmChecks } = await diagnoseSSMParameters(clients.ssm, env);
     report.instanceId = params.instanceId;
@@ -1393,13 +1663,14 @@ async function main(): Promise<void> {
     report.checks.push(...asgChecks);
 
     // ── Phase 2: SSM Automation History ──────────────────────────────────
-    log.step(2, 5, 'Inspecting SSM Automation execution history...');
+    log.step(2, 6, 'Inspecting SSM Automation execution history...');
 
     const { checks: autoChecks, failures } = await diagnoseAutomation(clients.ssm, maxAutomationResults);
     report.checks.push(...autoChecks);
     report.automationFailures = failures;
 
     // ── Phase 3: DR & Certificate Diagnostics ────────────────────────────
+    log.step(3, 6, 'Running DR & certificate diagnostics on instance...');
     const { checks: drChecks, metadata } = await diagnoseDRAndCerts(
         clients.ssm,
         params.instanceId,
@@ -1411,11 +1682,21 @@ async function main(): Promise<void> {
     if (skipK8s) {
         log.warn('Skipping Kubernetes diagnostics (--skip-k8s)');
     } else {
+        log.step(4, 6, 'Running Kubernetes cluster diagnostics...');
         const k8sChecks = await diagnoseKubernetes(clients.ssm, params.instanceId);
         report.checks.push(...k8sChecks);
     }
 
-    // ── Phase 5: Automatic Repair ────────────────────────────────────────
+    // ── Phase 5: CloudWatch Bootstrap Logs ──────────────────────────────
+    if (skipCw) {
+        log.warn('Skipping CloudWatch log diagnostics (--skip-cw)');
+    } else {
+        log.step(5, 6, `Inspecting CloudWatch bootstrap logs (${cwLogGroup})...`);
+        const cwChecks = await diagnoseBootstrapLogs(clients.cw, cwLogGroup, cwStreams);
+        report.checks.push(...cwChecks);
+    }
+
+    // ── Phase 6: Automatic Repair ────────────────────────────────────────
     if (shouldFix && metadata) {
         const criticalFailures = report.checks.filter(
             (c) => !c.passed && c.severity === 'critical',

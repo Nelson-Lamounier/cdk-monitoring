@@ -3,9 +3,9 @@
  *
  * Defines actual stack arrays with `getStackName` lambdas that call into
  * `getStackId()` from CDK's naming utility. Registers each project into
- * the shared `@repo/script-utils/stacks.js` registry at import time.
+ * the shared `@nelsonlamounier/cdk-deploy-scripts/stacks.js` registry at import time.
  *
- * Consumer scripts import from this file (or from `@repo/script-utils/stacks.js`
+ * Consumer scripts import from this file (or from `@nelsonlamounier/cdk-deploy-scripts/stacks.js`
  * for pure types). This file re-exports everything from the shared module
  * so existing `./stacks.js` imports continue to work unchanged.
  */
@@ -28,14 +28,14 @@ export {
   isCloudFrontStack,
   profileMap,
   projectsMap,
-} from '@repo/script-utils/stacks.js';
+} from '@nelsonlamounier/cdk-deploy-scripts/stacks.js';
 
 import {
   registerProject,
   type Environment,
   type ExtraContext,
   type StackConfig,
-} from '@repo/script-utils/stacks.js';
+} from '@nelsonlamounier/cdk-deploy-scripts/stacks.js';
 
 import { Project } from '../../lib/config/projects.js';
 import { getStackId } from '../../lib/utilities/naming.js';
@@ -110,10 +110,15 @@ registerProject({
 });
 
 // =============================================================================
-// K8S PROJECT (kubeadm Kubernetes Cluster — 12-Stack Architecture)
-// Synth outputs all 12 stacks. Infra pipeline deploys Data→Base→GoldenAmi→SSM→Compute→Workers→AppIam→Edge→Observability.
+// K8S PROJECT (kubeadm Kubernetes Cluster — 10-Stack Architecture)
+// Synth outputs all 10 stacks. Infra pipeline deploys Data→Base→
+// Compute→GeneralPool→MonitoringPool→AppIam→Edge→Observability→PlatformRds.
 // API stack is deployed separately from core infrastructure.
 // Bootstrap/app manifests synced by independent S3 sync pipelines.
+//
+// Worker nodes are Kubernetes-native (ASG pools managed by the Cluster Autoscaler):
+//   - generalPool:    general-purpose ASG (Next.js, ArgoCD, system components)
+//   - monitoringPool: observability ASG (Prometheus, Grafana, Loki, Tempo)
 // =============================================================================
 
 const k8sStacks: StackConfig[] = [
@@ -132,55 +137,30 @@ const k8sStacks: StackConfig[] = [
     dependsOn: ['data'],
   },
   {
-    id: 'goldenAmi',
-    name: 'Golden AMI Stack',
-    getStackName: (env) => getStackId(Project.KUBERNETES, 'goldenAmi', env),
-    description:
-      'EC2 Image Builder pipeline for baking Kubernetes Golden AMI',
-    dependsOn: ['base'],
-  },
-  {
-    id: 'ssmAutomation',
-    name: 'SSM Automation Stack',
-    getStackName: (env) =>
-      getStackId(Project.KUBERNETES, 'ssmAutomation', env),
-    description:
-      'SSM Automation documents for K8s bootstrap orchestration (control plane + worker)',
-    dependsOn: ['base'],
-  },
-  {
     id: 'controlPlane',
     name: 'Control Plane Stack',
     getStackName: (env) =>
       getStackId(Project.KUBERNETES, 'controlPlane', env),
     description:
       'kubeadm Kubernetes control plane: EC2 + ASG + SSM documents + S3 scripts bucket',
-    dependsOn: ['base', 'ssmAutomation'],
+    dependsOn: ['base'],
   },
   {
-    id: 'appWorker',
-    name: 'App Worker Stack',
-    getStackName: (env) => getStackId(Project.KUBERNETES, 'appWorker', env),
+    id: 'generalPool',
+    name: 'General Pool ASG Stack',
+    getStackName: (env) =>
+      getStackId(Project.KUBERNETES, 'generalPool', env),
     description:
-      'Application worker node: kubeadm join + role=application label/taint',
+      'General-purpose ASG pool (Next.js, ArgoCD, system components) — no taint',
     dependsOn: ['controlPlane'],
   },
   {
-    id: 'monitoringWorker',
-    name: 'Monitoring Worker Stack',
+    id: 'monitoringPool',
+    name: 'Monitoring Pool ASG Stack',
     getStackName: (env) =>
-      getStackId(Project.KUBERNETES, 'monitoringWorker', env),
+      getStackId(Project.KUBERNETES, 'monitoringPool', env),
     description:
-      'Monitoring worker node: kubeadm join + role=monitoring label/taint',
-    dependsOn: ['controlPlane'],
-  },
-  {
-    id: 'argocdWorker',
-    name: 'ArgoCD Worker Stack',
-    getStackName: (env) =>
-      getStackId(Project.KUBERNETES, 'argocdWorker', env),
-    description:
-      'ArgoCD worker node: kubeadm join + role=argocd label/taint (Spot)',
+      'Monitoring ASG pool (Prometheus, Grafana, Loki, Tempo) — dedicated=monitoring:NoSchedule taint',
     dependsOn: ['controlPlane'],
   },
   {
@@ -215,6 +195,14 @@ const k8sStacks: StackConfig[] = [
     getStackName: (env) => getStackId(Project.KUBERNETES, 'observability', env),
     description:
       'CloudWatch pre-deployment dashboard for infrastructure monitoring',
+    dependsOn: ['base'],
+  },
+  {
+    id: 'platformRds',
+    name: 'Platform RDS Stack',
+    getStackName: (env) => getStackId(Project.KUBERNETES, 'platformRds', env),
+    description:
+      'PostgreSQL 16.6 RDS instance for platform data (articles, identity, career) with PgBouncer via K8s',
     dependsOn: ['base'],
   },
 ];

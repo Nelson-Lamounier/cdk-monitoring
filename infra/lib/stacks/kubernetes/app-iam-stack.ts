@@ -15,6 +15,7 @@
  */
 
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -37,6 +38,19 @@ import { KubernetesControlPlaneStack } from './control-plane-stack';
 export interface KubernetesAppIamStackProps extends cdk.StackProps {
     /** Reference to the control plane stack (for instance role) */
     readonly controlPlaneStack: KubernetesControlPlaneStack;
+
+    /**
+     * SSM parameter path holding the general-pool worker instance role ARN.
+     *
+     * Written by KubernetesWorkerAsgStack (general pool) at:
+     *   /k8s/{env}/general-instance-role-arn
+     *
+     * Application pods (admin-api, public-api, start-admin) run on worker nodes,
+     * not the control plane. DynamoDB, S3, and Lambda grants must be attached to
+     * the worker node instance role so pods can reach AWS services via IMDS.
+     * Using SSM avoids a CloudFormation cross-stack export dependency.
+     */
+    readonly workerRoleSsmPath: string;
 
     /** Target deployment environment */
     readonly targetEnvironment: Environment;
@@ -96,6 +110,37 @@ export interface KubernetesAppIamStackProps extends cdk.StackProps {
 
     /** Secrets Manager path pattern for Next.js auth secrets */
     readonly secretsManagerPathPattern?: string;
+
+    /**
+     * Secrets Manager path pattern for Bedrock infrastructure secrets.
+     *
+     * Grants `secretsmanager:GetSecretValue` on this pattern so the
+     * public-api BFF proxy can retrieve the Bedrock chatbot API key
+     * via the EC2 instance profile — no static credentials in K8s.
+     *
+     * @example 'bedrock-development/bedrock-api-key*'
+     */
+    readonly bedrockSecretsManagerPath?: string;
+
+    /**
+     * Lambda function ARNs to grant invocation access.
+     *
+     * Grants `lambda:InvokeFunction` for the admin-api BFF to trigger
+     * the Bedrock publish, article, and strategist pipeline functions
+     * via the EC2 instance role — no static Lambda credentials stored
+     * in Kubernetes Secrets.
+     *
+     * @example ['arn:aws:lambda:eu-west-1:123:function:bedrock-dev-publish']
+     */
+    readonly lambdaInvokeArns?: string[];
+
+    /**
+     * Additional Secrets Manager ARN path patterns to grant GetSecretValue on.
+     * Use for secrets that don't fit the existing path patterns.
+     *
+     * @example ['k8s-development/platform-rds/credentials-??????']
+     */
+    readonly additionalSecretArns?: string[];
 }
 
 // =============================================================================
@@ -114,17 +159,22 @@ export class KubernetesAppIamStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props: KubernetesAppIamStackProps) {
         super(scope, id, props);
 
-        // Import the instance role from the control plane stack
-        const instanceRole = props.controlPlaneStack.instanceRole;
+        // Import the instance roles from the control plane and worker pool stacks.
+        // Application pods (admin-api, public-api, start-admin) run on worker nodes —
+        // grants must land on the worker role. The control plane role also receives
+        // the same grants for deploy.py bootstrap scripts (S3/SSM access).
+        const controlPlaneRole = props.controlPlaneStack.instanceRole;
+        // valueFromLookup() returns "dummy-value-for-<path>" when the SSM parameter
+        // doesn't exist yet (first synth before GeneralPool is deployed). Substitute a
+        // valid-format placeholder so CDK can synthesize without error — the real ARN
+        // is resolved on the next synth after GeneralPool writes the parameter.
+        const rawWorkerRoleArn = ssm.StringParameter.valueFromLookup(this, props.workerRoleSsmPath);
+        const workerRoleArn = rawWorkerRoleArn.startsWith('dummy-value-for-')
+            ? `arn:aws:iam::${cdk.Stack.of(this).account}:role/dummy-worker-role-placeholder`
+            : rawWorkerRoleArn;
+        const workerRole = iam.Role.fromRoleArn(this, 'WorkerRole', workerRoleArn, { mutable: true });
 
-        // =====================================================================
-        // Application-tier IAM grants
-        //
-        // All grants are conditional — no-op if the corresponding props
-        // are absent. This allows the stack to be deployed in
-        // monitoring-only mode without any application-tier permissions.
-        // =====================================================================
-        grantApplicationPermissions(instanceRole, {
+        const grantProps = {
             region: this.region,
             account: this.account,
             dynamoTableArns: props.dynamoTableArns,
@@ -135,14 +185,35 @@ export class KubernetesAppIamStack extends cdk.Stack {
             ssmParameterPath: props.ssmParameterPath,
             bedrockSsmPath: props.bedrockSsmPath,
             secretsManagerPathPattern: props.secretsManagerPathPattern,
-        });
+            bedrockSecretsManagerPath: props.bedrockSecretsManagerPath,
+            lambdaInvokeArns: props.lambdaInvokeArns,
+            additionalSecretArns: props.additionalSecretArns,
+        };
+
+        // =====================================================================
+        // Application-tier IAM grants
+        //
+        // Granted to both roles:
+        //   - Worker node role  — pods (admin-api, public-api) use IMDS to access
+        //                         DynamoDB, S3, and Lambda via the worker role.
+        //   - Control plane role — deploy.py bootstrap scripts running via SSM
+        //                          Automation need S3/SSM access on the control plane.
+        //
+        // All grants are conditional — no-op if the corresponding props are absent.
+        // =====================================================================
+        grantApplicationPermissions(workerRole, grantProps);
+        grantApplicationPermissions(controlPlaneRole, grantProps);
 
         // =====================================================================
         // Stack Outputs
         // =====================================================================
         new cdk.CfnOutput(this, 'InstanceRoleArn', {
-            value: instanceRole.roleArn,
-            description: 'Instance role ARN receiving application-tier grants',
+            value: controlPlaneRole.roleArn,
+            description: 'Control plane instance role ARN receiving application-tier grants',
+        });
+        new cdk.CfnOutput(this, 'WorkerRoleArn', {
+            value: workerRole.roleArn,
+            description: 'Worker node instance role ARN receiving application-tier grants',
         });
     }
 }
@@ -162,6 +233,11 @@ interface ApplicationIamGrantsProps {
     readonly ssmParameterPath?: string;
     readonly bedrockSsmPath?: string;
     readonly secretsManagerPathPattern?: string;
+    /** Bedrock secrets path pattern — grants BFF proxy access to the chatbot API key. */
+    readonly bedrockSecretsManagerPath?: string;
+    /** Lambda ARNs granted invocation access (admin-api BFF pipeline triggers). */
+    readonly lambdaInvokeArns?: string[];
+    readonly additionalSecretArns?: string[];
 }
 
 /**
@@ -232,6 +308,7 @@ function grantApplicationPermissions(
             sid: 'DynamoDbAdminWrite',
             effect: iam.Effect.ALLOW,
             actions: [
+                'dynamodb:PutItem',
                 'dynamodb:UpdateItem',
                 'dynamodb:DeleteItem',
             ],
@@ -298,6 +375,48 @@ function grantApplicationPermissions(
             resources: [
                 `arn:aws:secretsmanager:${region}:${account}:secret:${props.secretsManagerPathPattern}`,
             ],
+        }));
+    }
+
+    // Gap S2: BFF proxy API key — grants public-api to read the Bedrock
+    // chatbot API key from Secrets Manager via the EC2 instance profile.
+    // Secrets Manager ARNs have a 6-char random suffix, so the path pattern
+    // must end with '*' (e.g. 'bedrock-development/bedrock-api-key*').
+    if (props.bedrockSecretsManagerPath) {
+        role.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'BedrockSecretsManagerRead',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'secretsmanager:GetSecretValue',
+            ],
+            resources: [
+                `arn:aws:secretsmanager:${region}:${account}:secret:${props.bedrockSecretsManagerPath}`,
+            ],
+        }));
+    }
+
+    if (props.lambdaInvokeArns && props.lambdaInvokeArns.length > 0) {
+        role.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'AdminApiBffLambdaInvoke',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                // Synchronous invocation for online requests
+                'lambda:InvokeFunction',
+                // Async (Event) invocation used by article publish pipeline
+                'lambda:InvokeAsync',
+            ],
+            resources: props.lambdaInvokeArns,
+        }));
+    }
+
+    if (props.additionalSecretArns && props.additionalSecretArns.length > 0) {
+        role.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'AdditionalSecretsManagerRead',
+            effect: iam.Effect.ALLOW,
+            actions: ['secretsmanager:GetSecretValue'],
+            resources: props.additionalSecretArns.map(
+                arn => `arn:aws:secretsmanager:${region}:${account}:secret:${arn}`,
+            ),
         }));
     }
 }

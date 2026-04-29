@@ -118,6 +118,21 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
     /** The Auto Scaling Group */
     public readonly autoScalingGroup: autoscaling.AutoScalingGroup;
 
+    /**
+     * The Launch Template name (concrete string — not a CDK token).
+     * Using the name instead of the ID avoids a cross-stack CloudFormation
+     * Fn::ImportValue export, which would be needed if the ID (a CDK token)
+     * were consumed by a construct scoped to a different stack.
+     */
+    public readonly launchTemplateName: string;
+
+    /**
+     * The ASG name (concrete string — not a CDK token).
+     * CDK's autoScalingGroup.autoScalingGroupName resolves as this.physicalName,
+     * a CloudFormation Ref token even when an explicit name is set.
+     */
+    public readonly concreteAsgName: string;
+
     /** The IAM role for the Kubernetes nodes */
     public readonly instanceRole: iam.IRole;
 
@@ -174,9 +189,10 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
             userData,
             namePrefix,
             logGroupKmsKey,
-            // Resolve AMI from SSM parameter written by Image Builder pipeline.
-            // On Day-0, this points to the parent AL2023 AMI (boot script handles
-            // missing software). On Day-1+, it resolves to the baked Golden AMI.
+            // Resolve AMI via CloudFormation SSM parameter type at deploy time.
+            // The AMI refresh Step Function owns subsequent rotations by calling
+            // CreateLaunchTemplateVersion directly — CDK does not need to bake
+            // the AMI ID at synth time, which would require credentials in CI.
             machineImage: ec2.MachineImage.fromSsmParameter(configs.image.amiSsmPath),
             // Required: Kubernetes pod overlay networking (Calico) uses pod IPs
             // that don't match ENI IPs — AWS drops this traffic unless disabled.
@@ -225,15 +241,6 @@ export class KubernetesControlPlaneStack extends cdk.Stack {
 
 
 
-
-        // =====================================================================
-        // Golden AMI Pipeline — MOVED to dedicated GoldenAmiStack
-        //
-        // The Image Builder pipeline was decoupled into its own stack to
-        // eliminate the Day-1 chicken-and-egg: the pipeline must exist before
-        // the AMI build job runs, but both used to live in this stack.
-        // See: golden-ami-stack.ts
-        // =====================================================================
 
         // =====================================================================
         // SSM State Manager (Layer 3 — post-boot configuration)
@@ -348,6 +355,13 @@ echo "SSM Automation will be triggered by the CI pipeline"
 `);
 
         this.autoScalingGroup = asgConstruct.autoScalingGroup;
+        // Use concreteTemplateName / concreteAsgName (synth-time strings) rather than
+        // launchTemplateId / autoScalingGroupName (CDK tokens / CloudFormation Refs only
+        // known at deploy time). Passing tokens across stack boundaries forces CDK to emit
+        // Fn::ImportValue cross-stack exports. The EC2 API accepts LaunchTemplateName
+        // wherever LaunchTemplateId is accepted.
+        this.launchTemplateName = launchTemplateConstruct.concreteTemplateName;
+        this.concreteAsgName = asgConstruct.concreteAsgName;
         this.instanceRole = launchTemplateConstruct.instanceRole;
         this.logGroup = launchTemplateConstruct.logGroup;
 
@@ -373,14 +387,84 @@ echo "SSM Automation will be triggered by the CI pipeline"
             ],
         }));
 
-        // Grant SSM PutParameter for publishing execution ID
+        // Grant SSM PutParameter for:
+        //   1. bootstrap/*   — execution ID published during user-data stub
+        //   2. admin-kubeconfig-b64 — base64-encoded admin.conf published by
+        //      _publish_kubeconfig_to_ssm() so worker nodes can fetch full
+        //      RBAC access for label self-healing in verify_membership.py.
+        //      Without this, workers permanently fall back to kubelet.conf
+        //      (read-only Node authoriser) and cannot self-correct label drift.
         this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
-            sid: 'SsmPublishExecutionId',
+            sid: 'SsmPublishBootstrapAndKubeconfig',
             effect: iam.Effect.ALLOW,
             actions: ['ssm:PutParameter'],
             resources: [
                 `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/bootstrap/*`,
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/admin-kubeconfig-b64`,
             ],
+        }));
+
+        // Grant SSM parameter read access — bootstrap scripts read cluster config,
+        // credentials, and runtime state from SSM at node boot. Scoped to the
+        // environment-specific prefix (e.g. /k8s/development/*).
+        // Note: DescribeParameters uses a wildcard resource (IAM limitation —
+        // the API does not support resource-level restrictions).
+
+        // Intentionally redundant with the grant in grantMonitoringPermissions().
+        // Bootstrap Step 10 (token regeneration) needs GetParameter before
+        // grantMonitoringPermissions() is ever called, and this grant must
+        // remain here if that method becomes conditional.
+
+        this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SsmParameterRead',
+            effect: iam.Effect.ALLOW,
+            actions: [
+                'ssm:GetParameter',
+                'ssm:GetParameters',
+                'ssm:GetParametersByPath',
+                // Required by deploy.py for zero-downtime CloudFront secret rotation:
+                // get_paginator("get_parameter_history") is called to build the dual-
+                // secret regex (OLD|NEW) during the ~20-min CloudFront propagation window.
+                'ssm:GetParameterHistory',
+            ],
+            resources: [
+                `arn:aws:ssm:${this.region}:${this.account}:parameter${props.ssmPrefix}/*`,
+            ],
+        }));
+
+        // DescribeParameters must target '*' — the SSM API does not support
+        // resource-level restrictions for this action.
+        this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SsmDescribeParameters',
+            effect: iam.Effect.ALLOW,
+            actions: ['ssm:DescribeParameters'],
+            resources: ['*'],
+        }));
+
+        // Grant kms:Decrypt for SSM SecureString parameters.
+        //
+        // `aws ssm get-parameter --with-decryption` requires kms:Decrypt on the
+        // KMS key used to encrypt the SecureString — even when ssm:GetParameter
+        // is already allowed. Without this, AWS returns AccessDeniedException.
+        //
+        // This covers:
+        //   - /k8s/{env}/argocd-admin-password  (Steps 10 + 10b in bootstrap_argocd.py)
+        //   - /k8s/{env}/argocd/server-secret-key (Step 10d: signing key backup/restore)
+        //   - Any other SecureString stored under the ssmPrefix hierarchy
+        //
+        // Scoped to `kms:ViaService: ssm.{region}.amazonaws.com` so the grant
+        // covers SSM decryption only — not arbitrary KMS usage on the same key.
+        // This is the same pattern used by all worker stacks (see app-worker-stack.ts).
+        this.instanceRole.addToPrincipalPolicy(new iam.PolicyStatement({
+            sid: 'SsmSecureStringDecrypt',
+            effect: iam.Effect.ALLOW,
+            actions: ['kms:Decrypt'],
+            resources: ['*'],
+            conditions: {
+                StringEquals: {
+                    'kms:ViaService': `ssm.${this.region}.amazonaws.com`,
+                },
+            },
         }));
 
         // Grant iam:PassRole for the SSM Automation execution role
@@ -510,8 +594,6 @@ echo "SSM Automation will be triggered by the CI pipeline"
             description: 'S3 bucket containing k8s scripts and manifests',
         });
 
-        // Golden AMI outputs are now in GoldenAmiStack
-
         new cdk.CfnOutput(this, 'SsmDocumentName', {
             value: stateManager.document.ref,
             description: 'SSM Document name for post-boot Kubernetes configuration',
@@ -634,6 +716,7 @@ function grantMonitoringPermissions(
             'ssm:GetParameter',
             'ssm:GetParameters',
             'ssm:GetParametersByPath',
+            'ssm:AddTagsToResource',
         ],
         resources: [
             `arn:aws:ssm:${region}:${account}:parameter${ssmPrefix}/*`,

@@ -4,6 +4,16 @@
  *
  * Creates shared infrastructure (VPC, Security Baseline, FinOps) used by multiple
  * projects. This project should be deployed first before other projects.
+ *
+ * Stack 1 (Shared-Infra) provisions five ECR repositories:
+ *   - nextjs-frontend  → used by the public-facing Next.js site
+ *   - start-admin      → used by the TanStack Start admin panel
+ *   - public-api       → BFF for portfolio visitors (read-only)
+ *   - admin-api        → BFF for internal ops (write-heavy / authenticated)
+ *   - wiki-mcp         → FastMCP K8s pod serving the portfolio knowledge base
+ *
+ * All repository URIs, ARNs, and names are published to SSM under:
+ *   /shared/ecr-{service}/{env}/{repository-uri|repository-arn|repository-name}
  */
 
 import * as cdk from 'aws-cdk-lib/core';
@@ -102,7 +112,17 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
         cdk.Annotations.of(scope).addInfo(`Creating Shared infrastructure for ${env}`);
 
         // =================================================================
-        // Stack 1: Infrastructure — VPC + ECR shared by all projects
+        // Stack 1: Infrastructure — VPC + ECR repositories
+        //
+        // Creates five ECR repositories:
+        //   - nextjs-frontend  (public-facing Next.js site)
+        //   - start-admin      (TanStack Start admin panel)
+        //   - public-api       (BFF — portfolio visitor read-only API)
+        //   - admin-api        (BFF — internal ops write-heavy API)
+        //   - wiki-mcp         (FastMCP K8s pod — portfolio KB, opt-in via createWikiMcpEcrRepository)
+        //
+        // All repository metadata is published to SSM for CI/CD discovery:
+        //   /shared/ecr-{service}/{env}/{repository-uri|repository-arn|repository-name}
         // =================================================================
         const infraStackName = stackId(this.namespace, 'Infra', env);
         const infraStack = new SharedVpcStack(scope, infraStackName, {
@@ -112,6 +132,21 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
                 createEncryptionKey: env !== Environment.DEVELOPMENT,
             },
             env: cdkEnvironment(this.environment),
+            // ── ECR: Next.js frontend ─────────────────────────────────
+            createEcrRepository: true,
+            ecrRepositoryName: 'nextjs-frontend',
+            // ── ECR: TanStack Start admin panel ──────────────────────
+            createAdminEcrRepository: true,
+            adminEcrRepositoryName: 'start-admin',
+            // ── ECR: public-api BFF (portfolio visitors — read-only) ─
+            createPublicApiEcrRepository: true,
+            publicApiEcrRepositoryName: 'public-api',
+            // ── ECR: admin-api BFF (internal ops — write-heavy) ──────
+            createAdminApiEcrRepository: true,
+            adminApiEcrRepositoryName: 'admin-api',
+            // ── ECR: wiki-mcp (FastMCP K8s pod — portfolio KB) ───────
+            createWikiMcpEcrRepository: true,
+            wikiMcpEcrRepositoryName: 'wiki-mcp',
         });
 
         stacks.push(infraStack);

@@ -200,6 +200,18 @@ export class LaunchTemplateConstruct extends Construct {
     /** The Launch Template */
     public readonly launchTemplate: ec2.LaunchTemplate;
 
+    /**
+     * Concrete Launch Template name (e.g. `k8s-development-general-pool-lt`).
+     *
+     * Unlike `launchTemplate.launchTemplateId` (a CDK token / CloudFormation Ref
+     * that is only known at deploy time), this is resolved at synth time.
+     * Use this instead of `.launchTemplateId` when passing across stack boundaries
+     * to avoid emitting Fn::ImportValue cross-stack exports.
+     *
+     * The EC2 API accepts `LaunchTemplateName` wherever `LaunchTemplateId` is accepted.
+     */
+    public readonly concreteTemplateName: string;
+
     /** IAM role attached to instances */
     public readonly instanceRole: iam.IRole;
 
@@ -299,6 +311,11 @@ export class LaunchTemplateConstruct extends Construct {
             // UserData.forLinux() would add a shebang-only script to every instance.
             userData: props.userData,
         });
+
+        // Expose the concrete LT name (synth-time string, not a CloudFormation token).
+        // CDK's LaunchTemplate L2 does not populate `.launchTemplateName` even when the
+        // prop is set — using it would give `undefined`. Build the string directly here.
+        this.concreteTemplateName = `${namePrefix}-lt`;
 
         // Attach role-specific security groups (e.g., ingress, monitoring)
         for (const sg of props.additionalSecurityGroups ?? []) {
