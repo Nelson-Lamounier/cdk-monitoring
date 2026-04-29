@@ -2,6 +2,10 @@
  * @format
  * Lazy Pool singleton — connects via PgBouncer (transaction mode).
  * Max 5 client connections: PgBouncer multiplexes these into ≤20 server connections.
+ *
+ * No TLS on the client→pgbouncer hop: traffic is intra-cluster only and
+ * pgbouncer is configured for plain TCP. PgBouncer terminates client
+ * connections and opens its own TLS-enabled pool to RDS on the egress hop.
  */
 import { Pool } from 'pg';
 
@@ -17,7 +21,6 @@ export function getPool(config: AdminApiConfig): Pool {
             database: config.pgDatabase,
             user:     config.pgUser,
             password: config.pgPassword,
-            ssl:      { rejectUnauthorized: false },
             max:      5,
             idleTimeoutMillis:       30_000,
             connectionTimeoutMillis:  5_000,

@@ -82,6 +82,17 @@
 |:---------|:--------|
 | [AMI Refresh IAM Permissions](troubleshooting/ami-refresh-iam-permissions.md) | Six-commit IAM debugging series: ec2:RunInstances → CalledVia → PassRole → Describe* → CreateTags |
 | [JWT userId Source — Ingestion Security Fix](troubleshooting/jwt-userid-source-security-fix.md) | userId taken from request body allowed impersonation; fix: always read from JWT payload |
+| [K8s Bootstrap Failure Modes](troubleshooting/k8s-bootstrap-failure-modes.md) | Missing podSubnet, CCM taint timeout, stale idempotency markers — three SSM Automation failure modes |
+| [NLB SG Rule Limit and Route53 A Record Drift](troubleshooting/nlb-sg-rule-limit-and-route53-drift.md) | CloudFront prefix list × 2 ports = 110 rules > 60-rule SG limit; Route53 A record drift after control plane IP change |
+| [CloudFormation Rejects $Latest/$Default in ASG LT Version](troubleshooting/cfn-asg-launch-template-version-latest-rejected.md) | CloudFormation hard-rejects $Latest/$Default as ASG LaunchTemplate Version at resource definition level |
+| [CloudFront Behaviour First-Match Auth Failure](troubleshooting/cloudfront-behaviour-first-match-auth-failure.md) | /api/auth/* listed after /api/* — auth callbacks matched wrong behaviour, session cookies stripped |
+| [etcd Restore SAN Mismatch](troubleshooting/etcd-restore-san-mismatch.md) | API server cert SANs reference old IP after cross-AZ control plane migration |
+| [CDK valueFromLookup vs fromSsmParameter](troubleshooting/cdk-value-from-lookup-vs-ssm-parameter.md) | valueFromLookup() bakes AMI at synth time, breaks CI --no-lookups; use fromSsmParameter() instead |
+| [CloudFront OriginRequestPolicy Blocks Authorization Header](troubleshooting/cloudfront-authorization-header-origin-request-policy.md) | UnscopedValidationError — Authorization must go in CachePolicy with TTL=0, not OriginRequestPolicy |
+| [CloudFront OriginRequestPolicy 10-Cookie Limit](troubleshooting/cloudfront-origin-request-policy-10-cookie-limit.md) | Adding Cognito cookies exceeded 10-cookie hard limit; trailing cookies silently dropped |
+| [CDK LaunchTemplate.launchTemplateName Always Undefined](troubleshooting/cdk-launch-template-name-undefined.md) | CDK L2 LaunchTemplate.launchTemplateName is always undefined — build concrete name string directly |
+| [NLB Target Registration Propagation Delay](troubleshooting/nlb-target-registration-propagation-delay.md) | Integration tests fail after Spot replacement — new instance absent from DescribeTargetHealth for up to 2.5 min |
+| [RDS allowMajorVersionUpgrade Required](troubleshooting/rds-allow-major-version-upgrade.md) | CloudFormation blocks PostgreSQL major version upgrade without allowMajorVersionUpgrade: true |
 
 ---
 
