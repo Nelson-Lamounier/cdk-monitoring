@@ -1,29 +1,24 @@
 /**
  * @format
- * admin-api — Cognito JWT authentication + admin group enforcement middleware.
+ * admin-api — Cognito JWT authentication middleware.
  *
  * Validates Cognito-issued JWTs using JWKS from the User Pool's well-known
- * endpoint, then enforces membership in the Cognito 'admin' group.
+ * endpoint. Any valid, unexpired token from the correct User Pool is accepted —
+ * both SaaS end users and staff (role distinction lives in users.role in RDS).
  *
  * Flow:
  *   Authorization: Bearer <cognito-id-token>
  *     → Extract token
  *     → Fetch JWKS from Cognito (cached by jose)
  *     → Verify signature, issuer, audience, expiry
- *     → Check cognito:groups includes 'admin'  ← 403 if not a member
  *     → Attach decoded payload to ctx.set('jwtPayload', payload)
  *     → Continue to handler
  *
- * Why Cognito Groups instead of a DB role check:
- *   Group membership travels in the signed JWT — no extra DB round-trip on
- *   every request. Adding/removing an admin is a single Cognito API call;
- *   the next token refresh automatically reflects the change.
+ * For staff-only routes, apply requireAdminGroup() as additional middleware.
  */
 
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import type { Context, MiddlewareHandler, Next } from 'hono';
-
-const REQUIRED_GROUP = 'admin';
 
 /** JWKS caches per pool ID to avoid redundant HTTP fetches. */
 const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
@@ -42,7 +37,7 @@ function getJwks(userPoolId: string, region: string): ReturnType<typeof createRe
  * Cognito JWT bearer middleware for Hono.
  *
  * Attaches the decoded JWT payload to `ctx.get('jwtPayload')` for use
- * by downstream route handlers. Rejects tokens not in the 'admin' group.
+ * by downstream route handlers and userProvisionMiddleware.
  *
  * @param userPoolId - Cognito User Pool ID (COGNITO_USER_POOL_ID env var).
  * @param clientId   - Cognito app client ID (COGNITO_CLIENT_ID env var).
@@ -84,17 +79,27 @@ export function cognitoJwtAuth(
       return;
     }
 
-    // Enforce Cognito group membership — admin-api is staff-only.
-    const groups = (payload['cognito:groups'] as string[] | undefined) ?? [];
-    if (!groups.includes(REQUIRED_GROUP)) {
+    ctx.set('jwtPayload', payload);
+    await next();
+  };
+}
+
+/**
+ * Optional middleware for staff-only routes.
+ * Apply after cognitoJwtAuth on any route that must be restricted to users
+ * in the Cognito 'admin' group (e.g. user management, billing overrides).
+ */
+export function requireAdminGroup(): MiddlewareHandler {
+  return async (ctx: Context, next: Next): Promise<void> => {
+    const payload = ctx.get('jwtPayload') as JWTPayload | undefined;
+    const groups  = (payload?.['cognito:groups'] as string[] | undefined) ?? [];
+    if (!groups.includes('admin')) {
       ctx.res = new Response(
-        JSON.stringify({ error: 'Forbidden', detail: `Requires '${REQUIRED_GROUP}' group membership` }),
+        JSON.stringify({ error: 'Forbidden', detail: "Requires 'admin' group membership" }),
         { status: 403, headers: { 'Content-Type': 'application/json' } },
       );
       return;
     }
-
-    ctx.set('jwtPayload', payload);
     await next();
   };
 }
