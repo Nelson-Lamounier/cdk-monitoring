@@ -60,7 +60,7 @@ const ALLOWED_CONTENT_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ]);
 
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 const PRESIGN_EXPIRY_SECONDS = 300;      // 5 minutes
 const FREE_TIER_IMPORTS_PER_MONTH = 1;
 
