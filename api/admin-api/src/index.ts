@@ -21,7 +21,9 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { loadConfig } from './lib/config.js';
+import { getPool } from './lib/pg.js';
 import { cognitoJwtAuth } from './middleware/auth.js';
+import { userProvisionMiddleware } from './middleware/user-provision.js';
 import { createHealthRouter } from './routes/health.js';
 import { createArticlesRouter } from './routes/articles.js';
 import { createApplicationsRouter } from './routes/applications.js';
@@ -86,6 +88,11 @@ const jwtMiddleware = cognitoJwtAuth(
 );
 
 app.use('/api/admin/*', jwtMiddleware);
+
+// ── User provisioning — runs after JWT auth, before route handlers ────────────
+// Upserts the users row on first request per Cognito sub, then caches the
+// resolved users.id UUID in ctx for downstream handlers.
+app.use('/api/admin/*', userProvisionMiddleware(getPool(config)));
 
 // ── Protected routes ─────────────────────────────────────────────────────────
 app.route('/api/admin/github', createGitHubRouter(config));
