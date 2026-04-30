@@ -4,7 +4,7 @@
  *
  * All routes require a valid Cognito JWT. User isolation is enforced at two
  * layers: the DB schema (UNIQUE(user_id, provider) / UNIQUE(user_id, provider,
- * full_name) constraints) and every SQL query (user_id = $userId from JWT sub).
+ * full_name) constraints) and every SQL query (user_id = $userId from users.id).
  *
  * Routes:
  *   GET    /github/installation              — check if GitHub App is installed
@@ -20,13 +20,23 @@
  *   Installation tokens (1-hour, read-only) are generated on the fly from the
  *   App private key for repo listing and ingestion Job dispatch.
  *   No long-lived PAT is ever persisted.
+ *
+ * Quota model:
+ *   Free plan: 3 ingestion jobs per calendar month ('ingestion_jobs' feature in usage_quotas).
+ *   Pro plan: unlimited.
+ *   All three dispatch paths (POST /installation auto-sync, POST /connected-repos,
+ *   and push webhook) enforce the same quota via checkAndIncrementQuota().
+ *
+ * Push debounce:
+ *   repo_sync_state.last_sync_triggered_at — skip push re-index if triggered
+ *   within the last PUSH_COOLDOWN_MS (30 minutes) or if a job is already running.
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
-import type { JWTPayload } from 'jose';
 import type { Pool } from 'pg';
 import type { AdminApiConfig } from '../lib/config.js';
+import { AdminApiBindings, requireUserId } from '../lib/types.js';
 import { getPool } from '../lib/pg.js';
 import { getBatchApi } from '../lib/k8s.js';
 import { getJobImage, isImageConfigured } from '../lib/config.js';
@@ -36,10 +46,14 @@ import {
     listInstallationRepos,
 } from '../lib/github-app.js';
 
-type AdminApiBindings = { Variables: { jwtPayload: JWTPayload } };
+// Push events: skip re-index if a job was already triggered within this window.
+const PUSH_COOLDOWN_MS = 30 * 60 * 1000;
+
+// Free-tier monthly ingestion job cap.
+const FREE_PLAN_LIMIT = 3;
 
 // =============================================================================
-// DB HELPERS — all queries are scoped to userId from JWT
+// DB HELPERS — all queries are scoped to userId (users.id UUID)
 // =============================================================================
 
 interface OAuthRow {
@@ -53,7 +67,7 @@ async function getConnection(pool: Pool, userId: string): Promise<OAuthRow | nul
     const { rows } = await pool.query<OAuthRow>(
         `SELECT installation_id, username, avatar_url, connected_at
          FROM oauth_connections
-         WHERE user_id = $1 AND provider = 'github'`,
+         WHERE user_id = $1::uuid AND provider = 'github'`,
         [userId],
     );
     return rows[0] ?? null;
@@ -69,7 +83,7 @@ async function upsertConnection(
     await pool.query(
         `INSERT INTO oauth_connections
            (user_id, provider, provider_user_id, username, access_token_enc, installation_id, avatar_url)
-         VALUES ($1, 'github', $2, $3, '', $4, $5)
+         VALUES ($1::uuid, 'github', $2, $3, '', $4, $5)
          ON CONFLICT (user_id, provider)
          DO UPDATE SET
            installation_id = EXCLUDED.installation_id,
@@ -85,26 +99,26 @@ async function deleteConnection(pool: Pool, userId: string): Promise<void> {
     // Ordering matters — FK-free tables first, then oauth_connections.
     await pool.query(
         `DELETE FROM document_embeddings
-         WHERE user_id = $1
+         WHERE user_id = $1::uuid
            AND repo_full_name IN (
-             SELECT full_name FROM repositories WHERE user_id = $1 AND provider = 'github'
+             SELECT full_name FROM repositories WHERE user_id = $1::uuid AND provider = 'github'
            )`,
         [userId],
     );
     await pool.query(
         `DELETE FROM repo_sync_state
-         WHERE user_id = $1
+         WHERE user_id = $1::uuid
            AND repo_full_name IN (
-             SELECT full_name FROM repositories WHERE user_id = $1 AND provider = 'github'
+             SELECT full_name FROM repositories WHERE user_id = $1::uuid AND provider = 'github'
            )`,
         [userId],
     );
     await pool.query(
-        `DELETE FROM repositories WHERE user_id = $1 AND provider = 'github'`,
+        `DELETE FROM repositories WHERE user_id = $1::uuid AND provider = 'github'`,
         [userId],
     );
     await pool.query(
-        `DELETE FROM oauth_connections WHERE user_id = $1 AND provider = 'github'`,
+        `DELETE FROM oauth_connections WHERE user_id = $1::uuid AND provider = 'github'`,
         [userId],
     );
 }
@@ -128,7 +142,7 @@ async function listConnectedRepos(pool: Pool, userId: string): Promise<Connected
          FROM repositories r
          LEFT JOIN repo_sync_state s
            ON s.user_id = r.user_id AND s.repo_full_name = r.full_name
-         WHERE r.user_id = $1 AND r.provider = 'github'
+         WHERE r.user_id = $1::uuid AND r.provider = 'github'
          ORDER BY r.added_at DESC`,
         [userId],
     );
@@ -143,7 +157,7 @@ async function insertRepository(
 ): Promise<void> {
     await pool.query(
         `INSERT INTO repositories (user_id, provider, full_name, default_branch, index_status)
-         VALUES ($1, 'github', $2, $3, 'pending')
+         VALUES ($1::uuid, 'github', $2, $3, 'pending')
          ON CONFLICT (user_id, provider, full_name) DO NOTHING`,
         [userId, fullName, defaultBranch],
     );
@@ -152,7 +166,7 @@ async function insertRepository(
 async function markRepoPending(pool: Pool, userId: string, fullName: string): Promise<void> {
     await pool.query(
         `INSERT INTO repo_sync_state (user_id, repo_full_name, sync_status)
-         VALUES ($1, $2, 'pending')
+         VALUES ($1::uuid, $2, 'pending')
          ON CONFLICT (user_id, repo_full_name)
          DO UPDATE SET sync_status = 'pending', error_message = NULL`,
         [userId, fullName],
@@ -161,18 +175,134 @@ async function markRepoPending(pool: Pool, userId: string, fullName: string): Pr
 
 async function deleteRepository(pool: Pool, userId: string, fullName: string): Promise<void> {
     await pool.query(
-        `DELETE FROM document_embeddings WHERE user_id = $1 AND repo_full_name = $2`,
+        `DELETE FROM document_embeddings WHERE user_id = $1::uuid AND repo_full_name = $2`,
         [userId, fullName],
     );
     await pool.query(
-        `DELETE FROM repo_sync_state WHERE user_id = $1 AND repo_full_name = $2`,
+        `DELETE FROM repo_sync_state WHERE user_id = $1::uuid AND repo_full_name = $2`,
         [userId, fullName],
     );
     await pool.query(
         `DELETE FROM repositories
-         WHERE user_id = $1 AND provider = 'github' AND full_name = $2`,
+         WHERE user_id = $1::uuid AND provider = 'github' AND full_name = $2`,
         [userId, fullName],
     );
+}
+
+// =============================================================================
+// QUOTA + DEBOUNCE HELPERS
+// =============================================================================
+
+function getPlanLimit(plan: string): number {
+    return plan === 'pro' ? Infinity : FREE_PLAN_LIMIT;
+}
+
+/**
+ * Atomically checks and increments the monthly ingestion job counter.
+ * Returns true if the job is allowed (quota not exceeded), false otherwise.
+ * Pro plan bypasses the check entirely.
+ *
+ * Uses a single INSERT … ON CONFLICT DO UPDATE … WHERE count < limit RETURNING count
+ * so the check and increment are one atomic operation with no TOCTOU window.
+ * If RETURNING yields no rows, the WHERE guard rejected the update → quota full.
+ */
+async function checkAndIncrementQuota(
+    pool: Pool,
+    userId: string,
+    limit: number,
+): Promise<boolean> {
+    if (!isFinite(limit)) return true;
+
+    const { rows } = await pool.query<{ count: number }>(
+        `INSERT INTO usage_quotas (user_id, feature, period_month, count)
+         VALUES ($1::uuid, 'ingestion_jobs', DATE_TRUNC('month', NOW()), 1)
+         ON CONFLICT (user_id, feature, period_month)
+         DO UPDATE SET count      = usage_quotas.count + 1,
+                       updated_at = NOW()
+         WHERE usage_quotas.count < $2
+         RETURNING count`,
+        [userId, limit],
+    );
+    // Empty RETURNING → WHERE clause was false → quota already at or above limit.
+    return rows.length > 0;
+}
+
+/**
+ * Stamp last_sync_triggered_at on a repo so the push cooldown is enforced.
+ * Called immediately before dispatching any ingestion job.
+ */
+async function markSyncTriggered(
+    pool: Pool,
+    userId: string,
+    repoFullName: string,
+): Promise<void> {
+    await pool.query(
+        `UPDATE repo_sync_state
+         SET last_sync_triggered_at = NOW()
+         WHERE user_id = $1::uuid AND repo_full_name = $2`,
+        [userId, repoFullName],
+    );
+}
+
+/**
+ * Resolve user_id (users.id UUID) and plan from a GitHub App installation_id.
+ * Used by the webhook handler which has no Cognito JWT to pull user context from.
+ */
+async function lookupUserByInstallation(
+    pool: Pool,
+    installationId: string,
+): Promise<{ userId: string; plan: string } | null> {
+    const { rows } = await pool.query<{ user_id: string; plan: string }>(
+        `SELECT oc.user_id::text, u.plan
+         FROM oauth_connections oc
+         JOIN users u ON u.id = oc.user_id
+         WHERE oc.provider = 'github' AND oc.installation_id = $1`,
+        [installationId],
+    );
+    const row = rows[0];
+    return row ? { userId: row.user_id, plan: row.plan } : null;
+}
+
+/**
+ * Dispatch ingestion Jobs for a list of repos, respecting the user's plan quota.
+ * Stops as soon as the quota is exhausted — does not wrap around to the next month.
+ *
+ * forceReindex=true on re-installs so the full index is rebuilt even for repos
+ * whose content_hashes are already in RDS.
+ */
+async function autoDispatchRepos(
+    config:       AdminApiConfig,
+    pool:         Pool,
+    userId:       string,
+    plan:         string,
+    repos:        Array<{ full_name: string; default_branch: string }>,
+    token:        string,
+    forceReindex: boolean,
+): Promise<string[]> {
+    const limit   = getPlanLimit(plan);
+    const queued: string[] = [];
+
+    for (const repo of repos) {
+        const allowed = await checkAndIncrementQuota(pool, userId, limit);
+        if (!allowed) {
+            console.log(`[github/auto-dispatch] quota reached for user ${userId} — stopping`);
+            break;
+        }
+
+        await insertRepository(pool, userId, repo.full_name, repo.default_branch ?? 'main');
+        await markRepoPending(pool, userId, repo.full_name);
+        await markSyncTriggered(pool, userId, repo.full_name);
+
+        try {
+            await dispatchIngestionJob(config, userId, repo.full_name, token, forceReindex);
+            queued.push(repo.full_name);
+            console.log(`[github/auto-dispatch] queued ${repo.full_name} (forceReindex=${forceReindex})`);
+        } catch (err) {
+            console.error(`[github/auto-dispatch] dispatch failed for ${repo.full_name}`, (err as Error).message);
+        }
+    }
+
+    return queued;
 }
 
 // =============================================================================
@@ -253,11 +383,6 @@ async function dispatchIngestionJob(
 // ROUTER
 // =============================================================================
 
-/** Extract userId from JWT sub or return empty string (caller must guard). */
-function extractUserId(payload: JWTPayload | undefined): string {
-    return typeof payload?.sub === 'string' ? payload.sub : '';
-}
-
 /** Return [appId, privateKey] or throw 503. */
 function requireGitHubConfig(config: AdminApiConfig): [string, string] {
     const { githubAppId, githubPrivateKey } = config;
@@ -287,7 +412,7 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
     // -------------------------------------------------------------------------
     router.get('/installation', async (ctx) => {
         const pool = getPool(config);
-        const uid  = extractUserId(ctx.get('jwtPayload'));
+        const uid  = requireUserId(ctx);
         if (!uid) return ctx.json({ error: 'Authenticated subject missing' }, 401);
         const conn = await getConnection(pool, uid);
         if (!conn?.installation_id) return ctx.json({ error: 'Not connected' }, 404);
@@ -309,12 +434,19 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
     });
 
     // -------------------------------------------------------------------------
-    // POST /installation — store installation_id from GitHub redirect
+    // POST /installation — store installation_id from GitHub redirect.
+    //
+    // Auto-sync behaviour:
+    //   Fresh install  — just store the connection. UI picker adds repos.
+    //   Re-install     — re-dispatch all previously connected repos with
+    //                    FORCE_REINDEX=true so RDS embeddings are rebuilt.
+    //                    Counted against the monthly quota.
+    //
     // Body: { installationId: string }
     // -------------------------------------------------------------------------
     router.post('/installation', async (ctx) => {
         const pool = getPool(config);
-        const uid  = extractUserId(ctx.get('jwtPayload'));
+        const uid  = requireUserId(ctx);
         if (!uid) return ctx.json({ error: 'Authenticated subject missing' }, 401);
         const [appId, key] = requireGitHubConfig(config);
 
@@ -325,10 +457,43 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
         const installationId = body.installationId?.trim();
         if (!installationId) return ctx.json({ error: '"installationId" is required' }, 400);
 
+        // Detect re-install BEFORE upsert so isReinstall is accurate.
+        // Require an existing installation_id: a row with no installation_id is a
+        // partial/failed prior connect, not a real previous session.
+        const existing    = await getConnection(pool, uid);
+        const isReinstall = existing !== null && existing.installation_id !== null;
+
         const info = await getInstallationInfo(appId, key, installationId);
         await upsertConnection(pool, uid, installationId, info.accountLogin, info.accountAvatarUrl);
 
-        return ctx.json({ success: true });
+        if (!isReinstall) {
+            // Fresh install — return immediately; user picks repos via the UI picker.
+            return ctx.json({ success: true, queued: [] });
+        }
+
+        // Re-install: re-dispatch previously connected repos with full re-index.
+        const connected = await listConnectedRepos(pool, uid);
+        if (connected.length === 0) {
+            return ctx.json({ success: true, queued: [] });
+        }
+
+        const token = await generateInstallationToken(appId, key, installationId);
+
+        const { rows: planRows } = await pool.query<{ plan: string }>(
+            `SELECT plan FROM users WHERE id = $1::uuid`,
+            [uid],
+        );
+        const plan = planRows[0]?.plan ?? 'free';
+
+        const queued = await autoDispatchRepos(
+            config, pool, uid, plan,
+            connected.map(r => ({ full_name: r.full_name, default_branch: r.default_branch })),
+            token,
+            true, // forceReindex
+        );
+
+        console.log(`[github/installation] re-install for ${uid}: queued ${queued.length}/${connected.length} repos`);
+        return ctx.json({ success: true, queued });
     });
 
     // -------------------------------------------------------------------------
@@ -336,7 +501,7 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
     // -------------------------------------------------------------------------
     router.delete('/installation', async (ctx) => {
         const pool = getPool(config);
-        const uid  = extractUserId(ctx.get('jwtPayload'));
+        const uid  = requireUserId(ctx);
         if (!uid) return ctx.json({ error: 'Authenticated subject missing' }, 401);
         const conn = await getConnection(pool, uid);
         if (!conn) return ctx.json({ error: 'Not connected' }, 404);
@@ -350,7 +515,7 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
     // -------------------------------------------------------------------------
     router.get('/repos', async (ctx) => {
         const pool = getPool(config);
-        const uid  = extractUserId(ctx.get('jwtPayload'));
+        const uid  = requireUserId(ctx);
         if (!uid) return ctx.json({ error: 'Authenticated subject missing' }, 401);
         const conn = await getConnection(pool, uid);
         if (!conn?.installation_id) return ctx.json({ error: 'GitHub not connected' }, 404);
@@ -377,7 +542,7 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
     // -------------------------------------------------------------------------
     router.get('/connected-repos', async (ctx) => {
         const pool = getPool(config);
-        const uid  = extractUserId(ctx.get('jwtPayload'));
+        const uid  = requireUserId(ctx);
         if (!uid) return ctx.json({ error: 'Authenticated subject missing' }, 401);
         const rows = await listConnectedRepos(pool, uid);
 
@@ -402,16 +567,16 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
 
     // -------------------------------------------------------------------------
     // POST /connected-repos — add repo to KB + write pending + dispatch Job
-    // Body: { repoFullName: string, defaultBranch?: string }
+    // Body: { repoFullName: string, defaultBranch?: string, forceReindex?: boolean }
     // -------------------------------------------------------------------------
     router.post('/connected-repos', async (ctx) => {
         const pool = getPool(config);
-        const uid  = extractUserId(ctx.get('jwtPayload'));
+        const uid  = requireUserId(ctx);
         if (!uid) return ctx.json({ error: 'Authenticated subject missing' }, 401);
         const conn = await getConnection(pool, uid);
         if (!conn?.installation_id) return ctx.json({ error: 'GitHub not connected' }, 400);
 
-        let body: { repoFullName?: string; defaultBranch?: string };
+        let body: { repoFullName?: string; defaultBranch?: string; forceReindex?: boolean };
         try { body = await ctx.req.json(); }
         catch { return ctx.json({ error: 'Body must be valid JSON' }, 400); }
 
@@ -420,17 +585,31 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
             return ctx.json({ error: '"repoFullName" must match owner/repo' }, 400);
         }
         const defaultBranch = body.defaultBranch?.trim() || 'main';
+        const forceReindex  = body.forceReindex === true;
 
         const [appId, key] = requireGitHubConfig(config);
+
+        // Quota check before any DB write — fail fast without side effects.
+        const { rows: planRows } = await pool.query<{ plan: string }>(
+            `SELECT plan FROM users WHERE id = $1::uuid`,
+            [uid],
+        );
+        const plan  = planRows[0]?.plan ?? 'free';
+        const limit = getPlanLimit(plan);
+        const allowed = await checkAndIncrementQuota(pool, uid, limit);
+        if (!allowed) {
+            return ctx.json({ error: `Monthly ingestion limit of ${FREE_PLAN_LIMIT} reached. Upgrade to Pro for unlimited syncs.` }, 429);
+        }
 
         // Insert repo row + mark pending before Job dispatch so the UI
         // shows "Queued" immediately even if pod startup takes a few seconds.
         await insertRepository(pool, uid, repoFullName, defaultBranch);
         await markRepoPending(pool, uid, repoFullName);
+        await markSyncTriggered(pool, uid, repoFullName);
 
         // Generate a fresh installation token scoped to this user's repos.
         const githubToken = await generateInstallationToken(appId, key, conn.installation_id);
-        const { jobName } = await dispatchIngestionJob(config, uid, repoFullName, githubToken);
+        const { jobName } = await dispatchIngestionJob(config, uid, repoFullName, githubToken, forceReindex);
 
         return ctx.json({ status: 'queued', repoFullName, jobName }, 202);
     });
@@ -441,7 +620,7 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
     // -------------------------------------------------------------------------
     router.delete('/connected-repos/:fullName', async (ctx) => {
         const pool        = getPool(config);
-        const uid         = extractUserId(ctx.get('jwtPayload'));
+        const uid         = requireUserId(ctx);
         if (!uid) return ctx.json({ error: 'Authenticated subject missing' }, 401);
         const repoFullName = decodeURIComponent(ctx.req.param('fullName'));
 
@@ -467,10 +646,15 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
  * payloads with HMAC-SHA256 using the webhook secret instead.
  *
  * Handled events:
- *   installation.deleted — remove oauth_connections row(s) for the installation
+ *   installation.created  — Option B: if user already known, auto-sync repos
+ *                           in payload (safety net for GitHub-initiated installs).
+ *                           Fresh installs: no-op (user goes through UI redirect
+ *                           which triggers POST /installation = Option A).
+ *   installation.deleted  — remove oauth_connections row(s) for the installation
  *   installation.suspend / installation.unsuspend — no-op (acknowledged)
- *   push — no-op (future: trigger incremental re-index)
- *   * — acknowledged with 200, not processed
+ *   push                  — incremental re-index for connected repos (debounced,
+ *                           quota-checked, 30-minute cooldown per repo)
+ *   *                     — acknowledged with 200, not processed
  *
  * GitHub retries on any non-2xx. Always return 200 once signature is verified,
  * even for unhandled event types, to avoid spurious retries.
@@ -495,7 +679,8 @@ export function createGitHubWebhookRouter(config: AdminApiConfig): Hono {
             .update(rawBody)
             .digest('hex');
 
-        const sigBuf = Buffer.from(sigHeader.padEnd(expected.length));
+        // Compare raw buffers — no padding. Length mismatch is itself a rejection signal.
+        const sigBuf = Buffer.from(sigHeader);
         const expBuf = Buffer.from(expected);
         const valid  = sigBuf.length === expBuf.length &&
                        timingSafeEqual(sigBuf, expBuf);
@@ -515,22 +700,148 @@ export function createGitHubWebhookRouter(config: AdminApiConfig): Hono {
 
         console.log(`[github/webhook] event=${eventType} action=${action}`);
 
-        // ── 4. Handle installation.deleted ────────────────────────────────────
+        // ── 4. installation.deleted — cascade-remove user data ────────────────
         if (eventType === 'installation' && action === 'deleted') {
             const inst = payload['installation'] as Record<string, unknown> | undefined;
             const installationId = String(inst?.['id'] ?? '');
 
             if (installationId) {
                 const pool = getPool(config);
-                await pool.query(
-                    `DELETE FROM oauth_connections
-                     WHERE provider = 'github' AND installation_id = $1`,
-                    [installationId],
-                );
-                console.log(`[github/webhook] removed installation ${installationId}`);
+                // Resolve user first so we can cascade via the same deleteConnection helper.
+                const user = await lookupUserByInstallation(pool, installationId);
+                if (user) {
+                    await deleteConnection(pool, user.userId);
+                    console.log(`[github/webhook] deleted installation ${installationId} for user ${user.userId}`);
+                } else {
+                    // Fallback: direct delete by installation_id (no cascades through app helpers).
+                    await pool.query(
+                        `DELETE FROM oauth_connections
+                         WHERE provider = 'github' AND installation_id = $1`,
+                        [installationId],
+                    );
+                    console.log(`[github/webhook] removed installation ${installationId} (user not found — direct delete)`);
+                }
             }
+            return ctx.json({ ok: true });
         }
 
+        // ── 5. installation.created — Option B safety net ─────────────────────
+        // Fires immediately after GitHub App install. The UI redirect (Option A)
+        // usually wins the race for fresh installs. This handler only acts when
+        // the user is ALREADY known (e.g. GitHub-initiated reinstall bypassing the UI).
+        //
+        // Dispatches for repos already in the KB (not for payload.repositories),
+        // so we never create new KB entries or dispatch jobs for repos the user
+        // never explicitly added.
+        if (eventType === 'installation' && action === 'created') {
+            const inst           = payload['installation'] as Record<string, unknown> | undefined;
+            const installationId = String(inst?.['id'] ?? '');
+
+            if (installationId) {
+                const pool = getPool(config);
+                const user = await lookupUserByInstallation(pool, installationId);
+
+                if (user) {
+                    // User already linked — re-dispatch their existing KB repos.
+                    const connected = await listConnectedRepos(pool, user.userId);
+                    if (connected.length > 0) {
+                        const [appId, key] = requireGitHubConfig(config);
+                        const token = await generateInstallationToken(appId, key, installationId);
+                        const queued = await autoDispatchRepos(
+                            config, pool, user.userId, user.plan,
+                            connected.map(r => ({ full_name: r.full_name, default_branch: r.default_branch })),
+                            token,
+                            false,
+                        );
+                        console.log(`[github/webhook] installation.created: queued ${queued.length} KB repos for user ${user.userId}`);
+                    }
+                } else {
+                    // Fresh install — user not yet linked. Option A (POST /installation) handles this.
+                    console.log(`[github/webhook] installation.created: user not yet linked for ${installationId} — awaiting UI redirect`);
+                }
+            }
+            return ctx.json({ ok: true });
+        }
+
+        // ── 6. push — incremental re-index (debounced, quota-enforced) ────────
+        if (eventType === 'push') {
+            const inst         = payload['installation'] as Record<string, unknown> | undefined;
+            const repo         = payload['repository']   as Record<string, unknown> | undefined;
+            const installationId  = String(inst?.['id']       ?? '');
+            const repoFullName    = String(repo?.['full_name'] ?? '');
+
+            if (!installationId || !repoFullName) {
+                return ctx.json({ ok: true });
+            }
+
+            const pool = getPool(config);
+
+            // Resolve user
+            const user = await lookupUserByInstallation(pool, installationId);
+            if (!user) return ctx.json({ ok: true });
+
+            // Check repo is actively connected to the KB
+            const { rows: repoRows } = await pool.query<{ full_name: string }>(
+                `SELECT full_name FROM repositories
+                 WHERE user_id = $1::uuid AND provider = 'github' AND full_name = $2`,
+                [user.userId, repoFullName],
+            );
+            if (!repoRows[0]) return ctx.json({ ok: true });
+
+            // Debounce: skip if already running or within cooldown window
+            const { rows: syncRows } = await pool.query<{
+                sync_status:          string | null;
+                last_sync_triggered_at: Date | null;
+            }>(
+                `SELECT sync_status, last_sync_triggered_at
+                 FROM repo_sync_state
+                 WHERE user_id = $1::uuid AND repo_full_name = $2`,
+                [user.userId, repoFullName],
+            );
+            const syncState = syncRows[0];
+
+            if (syncState?.sync_status === 'pending' || syncState?.sync_status === 'syncing') {
+                console.log(`[github/webhook] push skipped — job already running for ${repoFullName}`);
+                return ctx.json({ ok: true });
+            }
+
+            if (syncState?.last_sync_triggered_at) {
+                const elapsed = Date.now() - new Date(syncState.last_sync_triggered_at).getTime();
+                if (elapsed < PUSH_COOLDOWN_MS) {
+                    console.log(`[github/webhook] push skipped — cooldown active for ${repoFullName} (${Math.round(elapsed / 60000)}m elapsed)`);
+                    return ctx.json({ ok: true });
+                }
+            }
+
+            // Quota check
+            const limit   = getPlanLimit(user.plan);
+            const allowed = await checkAndIncrementQuota(pool, user.userId, limit);
+            if (!allowed) {
+                console.log(`[github/webhook] push skipped — quota exceeded for user ${user.userId}`);
+                return ctx.json({ ok: true });
+            }
+
+            // Dispatch incremental re-index
+            const [appId, key] = requireGitHubConfig(config);
+            const token = await generateInstallationToken(appId, key, installationId);
+
+            await markRepoPending(pool, user.userId, repoFullName);
+            await markSyncTriggered(pool, user.userId, repoFullName);
+
+            try {
+                const { jobName } = await dispatchIngestionJob(
+                    config, user.userId, repoFullName, token,
+                    false, // incremental — hash-dedup skips unchanged chunks
+                );
+                console.log(`[github/webhook] push re-index queued for ${repoFullName}: job=${jobName}`);
+            } catch (err) {
+                console.error(`[github/webhook] push dispatch failed for ${repoFullName}`, (err as Error).message);
+            }
+
+            return ctx.json({ ok: true });
+        }
+
+        // ── 7. All other events — acknowledge without processing ──────────────
         return ctx.json({ ok: true });
     });
 

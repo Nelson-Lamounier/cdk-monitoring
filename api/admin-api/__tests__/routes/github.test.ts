@@ -104,11 +104,17 @@ const testConfig = {
     strategistPipelineServiceAccount: 'job-strategist-sa',
 } as const;
 
+// Stable users.id UUID used across all test assertions.
+const TEST_USER_UUID = 'a1b2c3d4-0000-0000-0000-000000000001';
+
 function buildApp() {
     const app = new Hono();
     app.use('*', async (ctx, next) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (ctx as any).set('jwtPayload', { sub: 'user-cognito-sub-123' });
+        // userProvisionMiddleware sets users.id UUID on every authenticated request.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (ctx as any).set('userId', TEST_USER_UUID);
         await next();
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -212,7 +218,9 @@ describe('POST /installation', () => {
         expect(mockGetInstallationInfo).not.toHaveBeenCalled();
     });
 
-    it('fetches account info and upserts connection', async () => {
+    it('fetches account info and upserts connection (fresh install — no auto-dispatch)', async () => {
+        // Fresh install: getConnection → null, then upsertConnection.
+        // No auto-dispatch on fresh install (user picks repos via UI picker).
         const res = await buildApp().request('/installation', {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -225,10 +233,13 @@ describe('POST /installation', () => {
             testConfig.githubPrivateKey,
             '12345',
         );
-        // upsertConnection calls pool.query once
-        expect(poolQueryMock).toHaveBeenCalledTimes(1);
-        const body = await res.json() as { success: boolean };
+        // getConnection (1) + upsertConnection (1)
+        expect(poolQueryMock).toHaveBeenCalledTimes(2);
+        const body = await res.json() as { success: boolean; queued: string[] };
         expect(body.success).toBe(true);
+        expect(body.queued).toEqual([]);
+        // No jobs dispatched on fresh install
+        expect(createNamespacedJobMock).not.toHaveBeenCalled();
     });
 });
 
@@ -357,7 +368,10 @@ describe('POST /connected-repos', () => {
     });
 
     it('inserts repo, marks pending, generates token, dispatches Job', async () => {
-        seedQuery([connectedRow]);   // getConnection
+        seedQuery([connectedRow]);       // 1. getConnection
+        seedQuery([]);                   // 2. plan SELECT (empty rows → defaults to 'free')
+        seedQuery([{ count: 1 }]);       // 3. quota INSERT…RETURNING: count=1 → allowed
+        // 4. insertRepository, 5. markRepoPending, 6. markSyncTriggered → default { rows: [] }
 
         const res  = await buildApp().request('/connected-repos', {
             method:  'POST',
@@ -372,8 +386,9 @@ describe('POST /connected-repos', () => {
         expect(body.jobName).toMatch(/^ingestion-/);
         expect(body.jobName.length).toBeLessThanOrEqual(63);
 
-        // 1 getConnection + 2 inserts (repositories + repo_sync_state)
-        expect(poolQueryMock).toHaveBeenCalledTimes(3);
+        // getConnection (1) + plan SELECT (1) + quota INSERT…RETURNING (1, atomic)
+        // + insertRepository (1) + markRepoPending (1) + markSyncTriggered (1)
+        expect(poolQueryMock).toHaveBeenCalledTimes(6);
 
         // Installation token generated for this user's installation
         expect(mockGenerateInstallationToken).toHaveBeenCalledWith('999999', testConfig.githubPrivateKey, '12345');
@@ -387,7 +402,9 @@ describe('POST /connected-repos', () => {
             jobArg.body.spec.template.spec.containers[0]!.env.map(e => [e.name, e.value]),
         );
         expect(envMap['GITHUB_TOKEN']).toBe('ghs_test_token');
-        expect(envMap['USER_ID']).toBe('user-cognito-sub-123');
+        // USER_ID is now the resolved users.id UUID (set by userProvisionMiddleware),
+        // not the Cognito sub. All DB FK constraints use users.id.
+        expect(envMap['USER_ID']).toBe(TEST_USER_UUID);
         expect(envMap['REPO_FULL_NAME']).toBe('Nelson-Lamounier/cdk-monitoring');
     });
 });
