@@ -68,20 +68,26 @@ async function getCognitoIdToken(): Promise<{ idToken: string; sub: string }> {
   return { idToken, sub };
 }
 
-async function callMe(token: string): Promise<Response> {
+interface MeResult {
+  res:  Response;
+  body: unknown;
+}
+
+async function callMe(token: string): Promise<MeResult> {
   const url = `${ADMIN_API}/api/admin/me`;
   console.log(`[http] GET ${url}`);
 
-  const res = await fetch(url, {
+  const res  = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
   });
+  // Read body once — fetch body streams can only be consumed once.
+  const body = await res.json().catch(() => null);
 
   console.log(`[http] → ${res.status} ${res.statusText}`);
   if (!res.ok) {
-    const body = await res.text();
-    console.error(`[http] Response body: ${body}`);
+    console.error(`[http] Response body:`, body);
   }
-  return res;
+  return { res, body };
 }
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -143,13 +149,12 @@ afterAll(async () => {
 
 describe('GET /api/admin/me', () => {
   it('returns 200 with valid Cognito token', async () => {
-    const res = await callMe(idToken);
+    const { res } = await callMe(idToken);
     expect(res.status).toBe(200);
   });
 
   it('response body has id, email, and plan fields', async () => {
-    const res  = await callMe(idToken);
-    const body = await res.json() as Record<string, unknown>;
+    const { body } = await callMe(idToken);
 
     console.log('[me] Response:', JSON.stringify(body, null, 2));
 
@@ -164,12 +169,10 @@ describe('GET /api/admin/me', () => {
   });
 
   it('is idempotent — second call returns same users.id', async () => {
-    const res1 = await callMe(idToken);
-    const res2 = await callMe(idToken);
-    const b1   = await res1.json() as { id: string };
-    const b2   = await res2.json() as { id: string };
+    const { body: b1 } = await callMe(idToken);
+    const { body: b2 } = await callMe(idToken);
 
-    expect(b1.id).toBe(b2.id);
+    expect((b1 as { id: string }).id).toBe((b2 as { id: string }).id);
   });
 
   it('returns 401 with no Authorization header', async () => {
