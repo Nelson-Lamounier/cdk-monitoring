@@ -2863,6 +2863,46 @@ db-migrations:
 db-run sql:
     PGPASSWORD={{PG_PASS}} psql -h {{PG_HOST}} -p {{PG_PORT}} -U {{PG_USER}} -d {{PG_DB}} -c {{sql}}
 
+# Apply a SQL migration file. Usage: just db-migrate ../ai-applications/applications/platform-rds-bootstrap/migrations/007_reverse_trial.sql
+[group('db')]
+db-migrate file:
+    PGPASSWORD={{PG_PASS}} psql -h {{PG_HOST}} -p {{PG_PORT}} -U {{PG_USER}} -d {{PG_DB}} -f {{file}}
+
+# Watch new user signups + plan state in real time (refreshes every 2s). Ctrl-C to stop.
+[group('db')]
+db-watch-users:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cat > /tmp/db_watch_users.sql <<'SQL'
+    SELECT
+      u.id, u.email, u.auth_provider, u.role, u.plan,
+      u.trial_started_at::date AS trial_start,
+      u.trial_ends_at::date   AS trial_end,
+      CASE
+        WHEN u.plan = 'pro'  AND u.subscription_status = 'active' THEN 'pro'
+        WHEN u.plan = 'free' AND u.trial_ends_at > NOW()           THEN 'trial'
+        ELSE 'free'
+      END AS effective_plan,
+      u.created_at
+    FROM users u
+    ORDER BY u.created_at DESC
+    LIMIT 10;
+
+    SELECT ui.provider, ui.cognito_sub, ui.provider_user_id, ui.created_at
+    FROM user_identities ui
+    JOIN users u ON u.id = ui.user_id
+    ORDER BY ui.created_at DESC
+    LIMIT 10;
+
+    SELECT pe.event_type, pe.from_plan, pe.to_plan, pe.reason, pe.created_at
+    FROM plan_events pe
+    ORDER BY pe.created_at DESC
+    LIMIT 10;
+
+    \watch 2
+    SQL
+    PGPASSWORD={{PG_PASS}} psql -h {{PG_HOST}} -p {{PG_PORT}} -U {{PG_USER}} -d {{PG_DB}} -x -f /tmp/db_watch_users.sql
+
 # Describe a single table. Usage: just db-describe resumes
 [group('db')]
 db-describe table:
