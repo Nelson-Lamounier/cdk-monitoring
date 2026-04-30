@@ -32,6 +32,7 @@ import { createFinopsRouter } from './routes/finops.js';
 import { createGitHubRouter, createGitHubWebhookRouter } from './routes/github.js';
 import { createIngestionRouter } from './routes/ingestion.js';
 import { createPipelinesRouter } from './routes/pipelines.js';
+import { createMeRouter } from './routes/me.js';
 import { createResumesRouter } from './routes/resumes.js';
 
 // ── Startup Validation ───────────────────────────────────────────────────────
@@ -99,7 +100,8 @@ app.use('/api/admin/finops/*',    requireAdminGroup());
 app.use('/api/admin/ingestion/*', requireAdminGroup());
 
 // ── Protected routes ─────────────────────────────────────────────────────────
-app.route('/api/admin/github', createGitHubRouter(config));
+app.route('/api/admin/me',      createMeRouter(config));
+app.route('/api/admin/github',  createGitHubRouter(config));
 app.route('/api/admin/articles', createArticlesRouter(config));
 app.route('/api/admin/applications', createApplicationsRouter(config));
 app.route('/api/admin/assets', createAssetsRouter(config));
