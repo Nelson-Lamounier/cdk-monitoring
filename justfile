@@ -758,6 +758,34 @@ helm-verify-selectors:
 pf-admin-api:
     kubectl port-forward svc/admin-api 3002:3002 -n admin-api
 
+# Restore the ArgoCD Image Updater writeback secret from SSM.
+# Run this whenever Image Updater logs "secrets argocd-image-updater-writeback-key not found".
+# SSM source: /k8s/{env}/argocd/image-updater-deploy-key (SecureString)
+# Usage: just argocd-restore-writeback-key
+[group('k8s')]
+argocd-restore-writeback-key env="development" region="eu-west-1" profile="dev-account":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SSM_PATH="/k8s/{{env}}/argocd/image-updater-deploy-key"
+    echo "→ Fetching SSH key from SSM: ${SSM_PATH}"
+    KEY=$(aws ssm get-parameter \
+      --name "${SSM_PATH}" \
+      --with-decryption \
+      --query 'Parameter.Value' \
+      --output text \
+      --region {{region}} \
+      --profile {{profile}})
+    if [ -z "$KEY" ] || [ "$KEY" = "None" ]; then
+      echo "✗ Key not found at ${SSM_PATH} — store the write-enabled deploy key there first"
+      exit 1
+    fi
+    kubectl create secret generic argocd-image-updater-writeback-key \
+      --namespace argocd \
+      --from-literal=sshPrivateKey="${KEY}" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    echo "✓ argocd/argocd-image-updater-writeback-key restored"
+    echo "  Image Updater will pick it up on the next poll cycle (≤2 min)"
+
 # Check SourceDestCheck status on all K8s compute instances
 # Filters by Stack tag to show only K8s nodes (control-plane, app-worker, mon-worker).
 # SourceDestCheck must be false for Calico pod networking (required even with VXLANAlways).
