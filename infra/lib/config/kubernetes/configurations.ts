@@ -259,7 +259,7 @@ export interface KubernetesWorkerPoolConfig {
  * Configuration for both generic ASG worker pools.
  */
 export interface KubernetesWorkerPoolsConfig {
-    /** General-purpose pool: Next.js, start-admin, ArgoCD, system components */
+    /** General-purpose pool: Next.js, tucaken-app, ArgoCD, system components */
     readonly general: KubernetesWorkerPoolConfig;
     /** Monitoring pool: Prometheus, Grafana, Loki, Tempo, Alloy */
     readonly monitoring: KubernetesWorkerPoolConfig;

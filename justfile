@@ -420,24 +420,6 @@ ci-trigger-bootstrap *ARGS:
 ci-observe-bootstrap *ARGS:
     npx tsx infra/scripts/cd/observe-bootstrap.ts {{ARGS}}
 
-# CI deploy-monitoring-secrets: deploy monitoring secrets via SSM Automation
-[group('ci')]
-ci-deploy-monitoring-secrets *ARGS:
-    npx tsx infra/scripts/cd/deploy-monitoring-secrets.ts {{ARGS}}
-
-# CI deploy-nextjs-secrets: deploy Next.js secrets via SSM Automation
-[group('ci')]
-ci-deploy-nextjs-secrets *ARGS:
-    npx tsx infra/scripts/cd/deploy-nextjs-secrets.ts {{ARGS}}
-
-# CI deploy-admin-secrets: deploy start-admin secrets via SSM Automation
-# Runs deploy.py on the control-plane to create/update the start-admin-secrets
-# K8s Secret in the start-admin namespace. Uses the same consolidated
-# k8s-deploy-secrets SSM Automation document as nextjs and monitoring.
-[group('ci')]
-ci-deploy-admin-secrets *ARGS:
-    npx tsx infra/scripts/cd/deploy-admin-secrets.ts {{ARGS}}
-
 # CI finalize: collect outputs, write summary, save artifacts
 [group('ci')]
 ci-finalize-deployment *ARGS:
@@ -1388,70 +1370,6 @@ bootstrap-test instance-id env="development" region="eu-west-1" profile="dev-acc
     echo "     just bootstrap-run {{instance-id}}"
     echo "═══════════════════════════════════════════════════════════"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Config Orchestrator (SM-B) — local developer recipes
-#
-# SM-B injects all application secrets into K8s without re-running bootstrap.
-# It is triggered automatically by EventBridge when SM-A succeeds, but you
-# can also invoke it manually via these recipes during:
-#   - Local secret rotation testing
-#   - Standalone config re-injection after a partial failure
-#   - Verifying new deploy.py scripts before committing to CI
-#
-# Pre-requisites:
-#   1. SsmAutomation CDK stack deployed  (just deploy-stack SsmAutomation-development)
-#   2. SM-A has run at least once  (SSM param control-plane-instance-id populated)
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Trigger Config Orchestrator (SM-B) — injects all app secrets into K8s
-# Usage: just config-run development
-# Usage: just config-run development eu-west-1
-[group('k8s')]
-config-run env="development" region="eu-west-1" profile="dev-account":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    echo "═══════════════════════════════════════════════════════════"
-    echo "  🔑  Config Orchestrator (SM-B)"
-    echo "  Environment : {{env}}"
-    echo "  Region      : {{region}}"
-    echo "═══════════════════════════════════════════════════════════"
-    echo ""
-    npx tsx infra/scripts/cd/trigger-config.ts \
-        --environment {{env}} \
-        --region {{region}} \
-        --max-wait 3600
-    echo ""
-    echo "═══════════════════════════════════════════════════════════"
-    echo "  ✅  Config injection complete"
-    echo "═══════════════════════════════════════════════════════════"
-
-# Show recent Config Orchestrator (SM-B) execution history
-# Usage: just config-status
-# Usage: just config-status 5 staging eu-west-1 dev-account
-[group('k8s')]
-config-status count="3" env="development" region="eu-west-1" profile="dev-account":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    SSM_PREFIX="/k8s/{{env}}"
-    CONFIG_SM_ARN=$(aws ssm get-parameter \
-        --name "${SSM_PREFIX}/bootstrap/config-state-machine-arn" \
-        --query Parameter.Value --output text \
-        --region {{region}} --profile {{profile}} 2>/dev/null || echo "")
-    if [ -z "$CONFIG_SM_ARN" ] || [ "$CONFIG_SM_ARN" = "None" ]; then
-        echo "❌  Config SM ARN not found at ${SSM_PREFIX}/bootstrap/config-state-machine-arn"
-        echo "    Run: just deploy-stack SsmAutomation-{{env}} kubernetes {{env}}"
-        exit 1
-    fi
-    echo "Config Orchestrator (SM-B) — last {{count}} executions"
-    echo "ARN: $CONFIG_SM_ARN"
-    echo ""
-    aws stepfunctions list-executions \
-        --state-machine-arn "$CONFIG_SM_ARN" \
-        --max-results {{count}} \
-        --query "executions[].{Name:name,Status:status,Start:startDate,Stop:stopDate}" \
-        --output table \
-        --region {{region}} --profile {{profile}}
-
 # Run k8s-bootstrap Python tests locally (unit + static validation)
 # Usage: just bootstrap-pytest
 # Usage: just bootstrap-pytest tests/system/test_dr_scripts.py   (specific file)
@@ -1492,85 +1410,6 @@ deploy-test-local *args:
     echo "═══════════════════════════════════════════════════════════"
     cd kubernetes-app/k8s-bootstrap
     python -m pytest tests/deploy/ -v {{args}}
-
-# Run deploy.py on a live instance via SSM RunCommand (dry-run by default)
-# Prerequisites: just bootstrap-sync && just bootstrap-pull <id>
-# Usage: just deploy-test-live i-0f1491fd3dc63fd66 nextjs
-# Usage: just deploy-test-live i-0f1491fd3dc63fd66 monitoring
-# Usage: just deploy-test-live i-0f1491fd3dc63fd66 nextjs --no-dry-run
-[group('test')]
-deploy-test-live instance-id app="nextjs" dry_run="--dry-run" env="development" region="eu-west-1" profile="dev-account":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    LOG_DIR="kubernetes-app/k8s-bootstrap/logs"
-    mkdir -p "${LOG_DIR}"
-    TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
-    LOG_FILE="${LOG_DIR}/deploy-{{app}}-${TIMESTAMP}.log"
-
-    # Determine script path based on app
-    if [[ "{{app}}" == "nextjs" ]]; then
-      SCRIPT_PATH="/data/app-deploy/nextjs/deploy.py"
-    elif [[ "{{app}}" == "monitoring" ]]; then
-      SCRIPT_PATH="/data/app-deploy/monitoring/deploy.py"
-    else
-      echo "❌ Unknown app: {{app}} (expected 'nextjs' or 'monitoring')"
-      exit 1
-    fi
-
-    # Build command (dry-run by default)
-    DRY_FLAG=""
-    if [[ "{{dry_run}}" == "--dry-run" ]]; then
-      DRY_FLAG="--dry-run"
-      echo "  🧪 Dry-run mode (use --no-dry-run for real deployment)"
-    else
-      echo "  ⚠ LIVE mode — will apply real changes!"
-    fi
-
-    echo "═══════════════════════════════════════════════════════════"
-    echo "  🚀  Deploy Live Test — {{app}}"
-    echo "  Instance: {{instance-id}}"
-    echo "  Script:   ${SCRIPT_PATH}"
-    echo "  Mode:     ${DRY_FLAG:-LIVE}"
-    echo "  📄 Log:   ${LOG_FILE}"
-    echo "═══════════════════════════════════════════════════════════"
-    echo ""
-
-    {
-      echo "=== Deploy Live Test ==="
-      echo "App:         {{app}}"
-      echo "Instance:    {{instance-id}}"
-      echo "Environment: {{env}}"
-      echo "Region:      {{region}}"
-      echo "Dry-run:     {{dry_run}}"
-      echo "Timestamp:   ${TIMESTAMP}"
-      echo ""
-    } | tee "${LOG_FILE}"
-
-    COMMAND_ID=$(aws ssm send-command \
-      --instance-ids "{{instance-id}}" \
-      --document-name "AWS-RunShellScript" \
-      --parameters "commands=['source /etc/profile.d/k8s-env.sh 2>/dev/null || true && KUBECONFIG=/etc/kubernetes/admin.conf python3 ${SCRIPT_PATH} ${DRY_FLAG}']" \
-      --timeout-seconds 300 \
-      --region {{region}} --profile {{profile}} \
-      --query "Command.CommandId" --output text)
-
-    echo "  Command ID: ${COMMAND_ID}" | tee -a "${LOG_FILE}"
-    echo "  Waiting for completion (up to 5 min)..." | tee -a "${LOG_FILE}"
-
-    aws ssm wait command-executed \
-      --command-id "${COMMAND_ID}" \
-      --instance-id "{{instance-id}}" \
-      --region {{region}} --profile {{profile}} 2>/dev/null || true
-
-    aws ssm get-command-invocation \
-      --command-id "${COMMAND_ID}" \
-      --instance-id "{{instance-id}}" \
-      --query "{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}" \
-      --output yaml \
-      --region {{region}} --profile {{profile}} | tee -a "${LOG_FILE}"
-
-    echo ""
-    echo "✅ Log saved to: ${LOG_FILE}"
 
 # Run control plane bootstrap on a live instance via SSM RunCommand
 # Prerequisites: just bootstrap-sync && just bootstrap-pull <id>
@@ -2220,107 +2059,12 @@ k8s-etcd-backup env="development" region="eu-west-1" profile="dev-account":
 # locally without pushing code or triggering GitHub Actions.
 # =============================================================================
 
-# Sync a single deploy script (or entire chart directory) directly to S3.
-# Bypasses the full CI pipeline — push a local change and immediately test it
-# via `just ssm-shell` or `just deploy-script` without committing first.
-#
-# HOW IT WORKS:
-#   1. Resolves the scripts S3 bucket from SSM (same param as CI uses)
-#   2. Uploads deploy.py only (mode=file) or entire directory (mode=full)
-#   3. Prints the EC2 path and the commands to pull and run it interactively
-#
-# SINGLE FILE  — fastest, for iterating on deploy.py:
-#   just deploy-sync admin-api
-#   just deploy-sync public-api
-#
-# FULL DIRECTORY — when helpers or other files also changed:
-#   just deploy-sync admin-api development full
-#   just deploy-sync public-api development full
-#
-# THEN TEST — open a shell and run the synced script directly:
-#   just ssm-shell
-#   > aws s3 cp s3://<bucket>/app-deploy/admin-api/deploy.py /data/app-deploy/admin-api/deploy.py
-#   > KUBECONFIG=/etc/kubernetes/admin.conf python3 /data/app-deploy/admin-api/deploy.py --dry-run
-[group('k8s')]
-deploy-sync script env="development" mode="file" region="eu-west-1" profile="dev-account":
-    #!/usr/bin/env bash
-    set -exo pipefail
-    export HOME="${HOME:-/root}"
-    SSM_PREFIX="/k8s/{{env}}"
-    LOCAL_DIR="kubernetes-app/workloads/charts/{{script}}"
-    if [ ! -f "${LOCAL_DIR}/deploy.py" ]; then
-      echo "✗ deploy.py not found at ${LOCAL_DIR}/deploy.py"
-      echo "  Supported scripts: admin-api, public-api, nextjs, monitoring, start-admin"
-      exit 1
-    fi
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  deploy-sync  :  {{script}} → S3  (mode: {{mode}})"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    BUCKET=$(aws ssm get-parameter \
-      --name "${SSM_PREFIX}/scripts-bucket" \
-      --region {{region}} --profile {{profile}} \
-      --query "Parameter.Value" --output text)
-    if [ -z "${BUCKET}" ] || [ "${BUCKET}" = "None" ]; then
-      echo "✗ Could not resolve scripts bucket from ${SSM_PREFIX}/scripts-bucket"
-      exit 1
-    fi
-    S3_PREFIX="app-deploy/{{script}}"
-    S3_DEST="s3://${BUCKET}/${S3_PREFIX}"
-    echo "  Local source : ${LOCAL_DIR}/"
-    echo "  S3 dest      : ${S3_DEST}/"
-    echo "  Bucket       : ${BUCKET}"
-    echo ""
-    if [ "{{mode}}" = "full" ]; then
-      echo "  Mode: FULL — syncing entire directory (with --delete)"
-      aws s3 sync \
-        "${LOCAL_DIR}/" \
-        "${S3_DEST}/" \
-        --delete \
-        --exclude "chart/*" \
-        --exclude "__pycache__/*" \
-        --exclude "*.pyc" \
-        --exclude "test_*" \
-        --region {{region}} \
-        --profile {{profile}}
-    else
-      echo "  Mode: FILE — uploading deploy.py only"
-      aws s3 cp \
-        "${LOCAL_DIR}/deploy.py" \
-        "${S3_DEST}/deploy.py" \
-        --region {{region}} \
-        --profile {{profile}}
-    fi
-    EC2_PATH="/data/${S3_PREFIX}/deploy.py"
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  ✅  Sync complete → ${S3_DEST}/deploy.py"
-    echo ""
-    echo "  ── Interactive (recommended): open shell, then run ────────"
-    echo "    just ssm-shell {{env}}"
-    echo ""
-    echo "  Inside the shell — paste each line individually:"
-    echo "    aws s3 cp ${S3_DEST}/deploy.py ${EC2_PATH} --region {{region}}"
-    echo ""
-    echo "    KUBECONFIG=/etc/kubernetes/admin.conf SSM_PREFIX=${SSM_PREFIX} /opt/k8s-venv/bin/python3 ${EC2_PATH} --dry-run"
-    echo ""
-    echo "    # Live run (applies K8s resources):"
-    echo "    KUBECONFIG=/etc/kubernetes/admin.conf SSM_PREFIX=${SSM_PREFIX} /opt/k8s-venv/bin/python3 ${EC2_PATH}"
-    echo ""
-    echo "  ── One-shot: trigger via SSM + tail CloudWatch ─────────────"
-    echo "    just deploy-script {{script}} {{env}}"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
 # Open an interactive SSM Session Manager shell on the control-plane node.
 # Connects as ROOT — no sudo password needed, no SSH key required.
-# Use this for real-time debugging: sync scripts, inspect logs, run deploy.py.
+# Use this for real-time debugging: inspect logs, run kubectl, etc.
 #
-# Why root: /data/app-deploy/ is owned by root (created during bootstrap).
 # AWS-StartInteractiveCommand runs sudo su - before handing you the prompt,
 # so you land directly in a root shell regardless of ssm-user sudo config.
-#
-# After entering the shell:
-#   aws s3 cp s3://... /data/app-deploy/admin-api/deploy.py   # no sudo needed
-#   /opt/k8s-venv/bin/python3 /data/app-deploy/admin-api/deploy.py
 #
 # Usage:
 #   just ssm-shell                              # control-plane (default)
@@ -2346,7 +2090,6 @@ ssm-shell env="development" instance-id="" region="eu-west-1" profile="dev-accou
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "  SSM Root Shell → ${INSTANCE_ID}  ({{env}})"
     echo "  Python: /opt/k8s-venv/bin/python3"
-    echo "  Scripts: /data/app-deploy/<service>/deploy.py"
     echo "  Ctrl-D to exit"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     aws ssm start-session \
@@ -2354,139 +2097,6 @@ ssm-shell env="development" instance-id="" region="eu-west-1" profile="dev-accou
       --document-name AWS-StartInteractiveCommand \
       --parameters '{"command":["sudo su -"]}' \
       --region {{region}} --profile {{profile}}
-
-# Trigger a single deploy.py script via the deploy-runner SSM document and
-# tail the CloudWatch output in real-time — no pipeline, no Step Functions.
-# The script pulled from S3 is whatever was last synced by ci-sync-scripts.
-#
-# Usage:
-#   just deploy-script admin-api               # deploy admin-api
-#   just deploy-script public-api              # deploy public-api
-#   just deploy-script nextjs development      # specify env
-[group('k8s')]
-deploy-script script env="development" region="eu-west-1" profile="dev-account":
-    #!/usr/bin/env bash
-    set -exo pipefail
-    export HOME="${HOME:-/root}"
-    SSM_PREFIX="/k8s/{{env}}"
-    LOG_GROUP="/ssm/k8s/{{env}}/deploy"
-
-    INSTANCE_ID=$(aws ssm get-parameter \
-      --name "${SSM_PREFIX}/bootstrap/control-plane-instance-id" \
-      --region {{region}} --profile {{profile}} \
-      --query "Parameter.Value" --output text)
-
-    S3_BUCKET=$(aws ssm get-parameter \
-      --name "${SSM_PREFIX}/scripts-bucket" \
-      --region {{region}} --profile {{profile}} \
-      --query "Parameter.Value" --output text)
-
-    DOC_NAME=$(aws ssm get-parameter \
-      --name "${SSM_PREFIX}/ssm/deploy-runner-document-name" \
-      --region {{region}} --profile {{profile}} \
-      --query "Parameter.Value" --output text 2>/dev/null \
-      || echo "k8s-dev-deploy-runner")
-
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  Deploy script : app-deploy/{{script}}/deploy.py"
-    echo "  Instance      : ${INSTANCE_ID}"
-    echo "  S3 bucket     : ${S3_BUCKET}"
-    echo "  Document      : ${DOC_NAME}"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-    CMD_ID=$(aws ssm send-command \
-      --instance-ids "${INSTANCE_ID}" \
-      --document-name "${DOC_NAME}" \
-      --parameters "{
-        \"ScriptPath\": [\"app-deploy/{{script}}/deploy.py\"],
-        \"SsmPrefix\": [\"${SSM_PREFIX}\"],
-        \"S3Bucket\":  [\"${S3_BUCKET}\"],
-        \"Region\":    [\"{{region}}\"]
-      }" \
-      --cloud-watch-output-config "{
-        \"CloudWatchLogGroupName\": \"${LOG_GROUP}\",
-        \"CloudWatchOutputEnabled\": true
-      }" \
-      --region {{region}} --profile {{profile}} \
-      --query "Command.CommandId" --output text)
-
-    echo "CommandId: ${CMD_ID}"
-    echo "Tailing CloudWatch logs (Ctrl-C to stop, script continues on EC2)..."
-    echo ""
-
-    aws logs tail "${LOG_GROUP}" \
-      --region {{region}} --profile {{profile}} \
-      --follow --format short &
-    TAIL_PID=$!
-
-    # Poll until done, then kill the tail
-    for i in $(seq 1 60); do
-      STATUS=$(aws ssm get-command-invocation \
-        --command-id "${CMD_ID}" --instance-id "${INSTANCE_ID}" \
-        --region {{region}} --profile {{profile}} \
-        --query "Status" --output text 2>/dev/null || echo "Pending")
-      if [[ "${STATUS}" == "Success" || "${STATUS}" == "Failed" || "${STATUS}" == "Cancelled" || "${STATUS}" == "TimedOut" ]]; then
-        sleep 2  # let CW flush final lines
-        kill "${TAIL_PID}" 2>/dev/null || true
-        echo ""
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "  Status: ${STATUS}"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        [[ "${STATUS}" != "Success" ]] && exit 1
-        break
-      fi
-      sleep 5
-    done
-
-# Run deploy.py unit tests locally — no AWS credentials, no cluster required.
-# Uses env-var overrides to bypass all boto3 and kubectl calls.
-# Tests: config defaults, SSM env bypass, Secret/ConfigMap split, dry-run, errors.
-#
-# Usage:
-#   just deploy-test admin-api        # test admin-api deploy.py
-#   just deploy-test public-api       # test public-api deploy.py
-[group('k8s')]
-deploy-test script:
-    #!/usr/bin/env bash
-    set -exo pipefail
-    SCRIPT_DIR="kubernetes-app/workloads/charts/{{script}}"
-    TEST_FILE="${SCRIPT_DIR}/test_deploy_local.py"
-    if [ ! -f "${TEST_FILE}" ]; then
-      echo "✗ No local test file found at ${TEST_FILE}"
-      echo "  Expected: test_deploy_local.py alongside deploy.py"
-      exit 1
-    fi
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  Running local tests for {{script}}/deploy.py"
-    echo "  No AWS credentials or cluster required"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    cd "${SCRIPT_DIR}" && python3 test_deploy_local.py -v
-
-# Simulate the SSM deploy-runner shell preamble locally.
-# Validates the bash script that wraps deploy.py — the exact commands the
-# SSM document runs on EC2 — without touching AWS or the cluster.
-# Useful for testing the 'set -u' fix and HOME export in isolation.
-#
-# Usage:
-#   just ssm-preamble-test            # test the preamble only (no Python)
-[group('k8s')]
-ssm-preamble-test:
-    #!/usr/bin/env bash
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  Simulating SSM deploy-runner preamble locally"
-    echo "  (matches what SsmRunCommandDocument generates)"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    bash -c '
-      set -exo pipefail
-      export HOME="${HOME:-/root}"
-      echo "=== SSM Step: runScript started at $(date) ==="
-      export PATH="/opt/k8s-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-      echo "HOME   = ${HOME}"
-      echo "PATH   = ${PATH}"
-      echo "USER   = ${USER:-<not set>}"
-      echo "SHELL  = ${SHELL:-<not set>}"
-      echo "=== Preamble OK — no \$HOME error ==="
-    '
 
 # Build all MCP server Docker images (multi-stage Alpine builds) — run from my-mcp repo
 [group('mcp')]
@@ -2812,19 +2422,23 @@ admin-api-test token slug="test-smoke-slug-$(date +%s)":
 
 
 # =============================================================================
-# LOCAL DOCKER TESTING — frontend images (start-admin + site)
+# LOCAL DOCKER TESTING — frontend images (tucaken-app + site)
 #
 # Builds and runs the frontend images against the already-running admin-api.
 # Admin-api must be started first with `just admin-api-up`.
 #
 # Network wiring (matches production):
-#   K8s:   start-admin → http://admin-api.admin-api:3002
-#   Local: start-admin → http://admin-api:3002  (Docker DNS alias)
+#   K8s:   tucaken-app → http://admin-api.admin-api:3002
+#   Local: tucaken-app → http://admin-api:3002  (Docker DNS alias)
 #
 # Requirements:
 #   - admin-api running locally (just admin-api-up)
 #   - ~/.aws credentials for the dev-account profile
-#   - ../frontend-portfolio/apps/start-admin/.env.local with Cognito vars
+#   - ../tucaken-app/.env.local with Cognito vars
+#
+# NOTE: The FRONTEND_REPO path and local-dev.ts script below still point at
+# the legacy ../frontend-portfolio monorepo. Update these to ../tucaken-app
+# when re-introducing local docker testing for the renamed app.
 #
 # Usage:
 #   just cluster-up              # Stop → build → start frontend images
@@ -2835,7 +2449,7 @@ admin-api-test token slug="test-smoke-slug-$(date +%s)":
 
 FRONTEND_REPO := justfile_directory() + "/../frontend-portfolio"
 
-# Stop → build → start frontend images (start-admin + site) against local admin-api.
+# Stop → build → start frontend images (tucaken-app + site) against local admin-api.
 [group('local-dev')]
 cluster-up profile="dev-account" *flags="":
     #!/usr/bin/env bash
@@ -2856,7 +2470,7 @@ cluster-logs profile="dev-account":
     set -euo pipefail
     AWS_PROFILE={{profile}} npx tsx "{{FRONTEND_REPO}}/scripts/local-dev.ts" --logs
 
-# Build and start only start-admin (skip site).
+# Build and start only tucaken-app (skip site).
 [group('local-dev')]
 cluster-admin profile="dev-account":
     #!/usr/bin/env bash

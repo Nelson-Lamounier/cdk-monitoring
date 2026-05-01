@@ -2,7 +2,7 @@
  * @format
  * admin-api — Hono application entrypoint.
  *
- * BFF (Backend for Frontend) for the start-admin TanStack application.
+ * BFF (Backend for Frontend) for the tucaken-app TanStack application.
  *
  * Architecture:
  *   - All routes under /api/admin/* are protected by Cognito JWT middleware
@@ -49,21 +49,22 @@ const app = new Hono();
 // Request logging — structured output consumed by Loki via Alloy.
 app.use('*', logger());
 
-// CORS — allow only the start-admin TanStack origin.
+// CORS — allow only the tucaken-app TanStack origin.
 // The public-api has its own CORS configuration for portfolio visitors.
 app.use(
   '/api/admin/*',
   cors({
     origin: [
-      // start-admin TanStack application — served at /admin sub-path on the main domain.
-      // NOT a subdomain (admin.nelsonlamounier.com). CloudFront routes /admin/* to the
-      // start-admin pod; the browser origin is always https://nelsonlamounier.com.
+      // tucaken-app TanStack application — served at the canonical domain.
+      // CloudFront's tucaken.com distribution 301-redirects to tucaken.io at the
+      // edge, so browsers never send cross-origin requests from .com after the
+      // first hop. www.tucaken.io is also redirected at CloudFront.
       //
       // Note: after the BFF migration all API calls originate from server functions
       // (pod-to-pod), so the browser never sends cross-origin requests to admin-api.
       // This origin config is enforced as a defence-in-depth measure for any future
       // client-side fetch, not for the current server-function pattern.
-      'https://nelsonlamounier.com',
+      'https://tucaken.io',
       // local TanStack dev server
       'http://localhost:3000',
       'http://localhost:5001',

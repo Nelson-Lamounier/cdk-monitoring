@@ -719,7 +719,7 @@ jobs:
   # Deploy General Pool ASG Stack (3b) — General-Purpose ASG Pool
   #
   # Kubernetes-native KubernetesWorkerAsgStack (no taint).
-  # Hosts Next.js, start-admin, ArgoCD, and system components.
+  # Hosts Next.js, tucaken-app, ArgoCD, and system components.
   # ===========================================================================
   deploy-general-pool:
     name: Deploy General Pool ASG

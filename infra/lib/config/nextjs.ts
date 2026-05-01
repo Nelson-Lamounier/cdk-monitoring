@@ -59,7 +59,7 @@ export const ASSETS_BUCKET_STEM = 'article-assets';
  * CloudFront OriginRequestPolicy has a hard limit of **10 cookies**.
  *
  * This list contains cookies for two authentication systems:
- * - **Cognito PKCE** (start-admin) — `__session`, `oauth_state`, `pkce_verifier`
+ * - **Cognito PKCE** (tucaken-app) — `__session`, `oauth_state`, `pkce_verifier`
  * - **NextAuth.js v5** (retained for future use) — session, CSRF, callback cookies
  *
  * We include both `__Secure-`/`__Host-` prefixed variants (used when
@@ -74,7 +74,7 @@ export const ASSETS_BUCKET_STEM = 'article-assets';
  * @see https://authjs.dev/getting-started/deployment#cookies
  */
 export const AUTH_COOKIES = [
-    // ── Active: Cognito PKCE (start-admin) ──────────────────────────
+    // ── Active: Cognito PKCE (tucaken-app) ──────────────────────────
     '__session',                         // JWT access token
     'oauth_state',                       // PKCE state parameter
     'pkce_verifier',                     // PKCE code verifier

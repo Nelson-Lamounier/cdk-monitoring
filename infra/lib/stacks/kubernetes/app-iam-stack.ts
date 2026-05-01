@@ -45,7 +45,7 @@ export interface KubernetesAppIamStackProps extends cdk.StackProps {
      * Written by KubernetesWorkerAsgStack (general pool) at:
      *   /k8s/{env}/general-instance-role-arn
      *
-     * Application pods (admin-api, public-api, start-admin) run on worker nodes,
+     * Application pods (admin-api, public-api, tucaken-app) run on worker nodes,
      * not the control plane. DynamoDB, S3, and Lambda grants must be attached to
      * the worker node instance role so pods can reach AWS services via IMDS.
      * Using SSM avoids a CloudFormation cross-stack export dependency.
@@ -160,9 +160,10 @@ export class KubernetesAppIamStack extends cdk.Stack {
         super(scope, id, props);
 
         // Import the instance roles from the control plane and worker pool stacks.
-        // Application pods (admin-api, public-api, start-admin) run on worker nodes —
-        // grants must land on the worker role. The control plane role also receives
-        // the same grants for deploy.py bootstrap scripts (S3/SSM access).
+        // Application pods (admin-api, public-api, tucaken-app) run on worker nodes —
+        // grants must land on the worker role. The control plane role receives the
+        // same grants so on-node operator tooling (kubectl, ad-hoc scripts) can
+        // read the same SSM/S3/DynamoDB resources without IAM updates.
         const controlPlaneRole = props.controlPlaneStack.instanceRole;
         // valueFromLookup() returns "dummy-value-for-<path>" when the SSM parameter
         // doesn't exist yet (first synth before GeneralPool is deployed). Substitute a
@@ -196,8 +197,8 @@ export class KubernetesAppIamStack extends cdk.Stack {
         // Granted to both roles:
         //   - Worker node role  — pods (admin-api, public-api) use IMDS to access
         //                         DynamoDB, S3, and Lambda via the worker role.
-        //   - Control plane role — deploy.py bootstrap scripts running via SSM
-        //                          Automation need S3/SSM access on the control plane.
+        //   - Control plane role — on-node operator tooling and any ad-hoc
+        //                          maintenance scripts that need S3/SSM access.
         //
         // All grants are conditional — no-op if the corresponding props are absent.
         // =====================================================================

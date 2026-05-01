@@ -468,7 +468,7 @@ export interface BedrockSsmPaths {
      *
      * Written by {@link KubernetesEdgeStack} from `baseDomain` configuration.
      * Read by K8s deploy scripts to inject `ADMIN_API_URL` into the
-     * `start-admin` ConfigMap without hardcoding the hostname.
+     * `tucaken-app` ConfigMap without hardcoding the hostname.
      *
      * @example '/bedrock-dev/admin-api-url' → 'https://admin-api.nelsonlamounier.com'
      */

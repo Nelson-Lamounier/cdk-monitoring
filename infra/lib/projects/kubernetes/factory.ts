@@ -284,7 +284,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // =================================================================
         // Stack 3b: GENERAL POOL ASG (Kubernetes-Native Worker — general)
         //
-        // Hosts: Next.js, start-admin, ArgoCD, system components.
+        // Hosts: Next.js, tucaken-app, ArgoCD, system components.
 
         // No taint — accepts all pods without toleration.
         //

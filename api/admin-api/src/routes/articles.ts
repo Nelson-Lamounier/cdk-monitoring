@@ -14,7 +14,7 @@
  *   POST   /api/admin/articles/:slug/publish — Flip status to 'published' in PG
  *
  * BFF note:
- *   This BFF is the sole write path for the start-admin TanStack application.
+ *   This BFF is the sole write path for the tucaken-app TanStack application.
  *   The public-api service exposes the corresponding read-only endpoints for
  *   portfolio visitors — these admin routes must never be exposed publicly.
  */

@@ -340,7 +340,7 @@ function parseSinceDuration(raw: string): number {
  *
  * The SSM construct writes RunCommand output to two groups:
  *   - `<base>/bootstrap` — k8s-bootstrap-control-plane / k8s-bootstrap-worker
- *   - `<base>/deploy`    — k8s-dev-deploy-secrets (nextjs, monitoring, start-admin)
+ *   - `<base>/deploy`    — k8s-dev-deploy-secrets (nextjs, monitoring, tucaken-app)
  *
  * When `--log-group` is given as a full path (contains a trailing segment after
  * the base), it is used as-is (explicit override). Otherwise the suffix is

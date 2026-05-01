@@ -320,7 +320,7 @@ export class TucakenEdgeStack extends cdk.Stack {
         //   /                → ISR (origin honours Cache-Control)
         //
         // No /admin or /api/admin/* — tucaken-app does not have an admin
-        // surface; that responsibility lives in start-admin (separate edge).
+        // surface; that responsibility lives in tucaken-app (separate edge).
         // =====================================================================
         const staticAssetsCachePolicy = new cloudfront.CachePolicy(this, 'StaticAssetsCachePolicy', {
             comment: 'Immutable Next.js build assets (1y TTL)',

@@ -422,9 +422,11 @@ echo "SSM Automation will be triggered by the CI pipeline"
                 'ssm:GetParameter',
                 'ssm:GetParameters',
                 'ssm:GetParametersByPath',
-                // Required by deploy.py for zero-downtime CloudFront secret rotation:
-                // get_paginator("get_parameter_history") is called to build the dual-
-                // secret regex (OLD|NEW) during the ~20-min CloudFront propagation window.
+                // Reserved for zero-downtime CloudFront secret rotation tooling that
+                // builds the dual-secret regex (OLD|NEW) during the ~20-min CloudFront
+                // propagation window. Currently no code path uses this — keep granted
+                // so future rotation scripts on the control plane can read history
+                // without an IAM update.
                 'ssm:GetParameterHistory',
             ],
             resources: [

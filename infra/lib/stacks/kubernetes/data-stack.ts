@@ -287,8 +287,9 @@ export class KubernetesDataStack extends cdk.Stack {
     //
     // NOTE: DynamoDB table name SSM param is no longer written here.
     // It now lives at /bedrock-{env}/content-table-name, written by
-    // AiContentStack. The deploy.py reads /nextjs/{env}/dynamodb-table-name
-    // which was updated at runtime to point to bedrock-dev-ai-content.
+    // AiContentStack. ExternalSecrets in nextjs / tucaken-app namespaces
+    // resolve this path via the aws-ssm ClusterSecretStore and inject the
+    // table name into the pod's ConfigMap-backed Secret.
     //
     // Consumer stacks discover these via nextjsSsmPaths().
     // =================================================================

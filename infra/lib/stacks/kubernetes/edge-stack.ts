@@ -407,13 +407,16 @@ export class KubernetesEdgeStack extends cdk.Stack {
         //
         // ── Secret Rotation (zero-downtime) ───────────────────────────
         // 1. Generate:  NEW=$(openssl rand -hex 32)
-        // 2. Update SSM with NEW (--overwrite), run deploy-edge
-        //    → CloudFront begins forwarding the new header value
-        // 3. While CloudFront propagates (≤15 min), patch Traefik to
-        //    accept both values via deploy.py which sets the ArgoCD
-        //    Application's cloudfront.originSecret helm parameter to
-        //    the regex "OLD_HEX|NEW_HEX"  (HeadersRegexp accepts regex)
-        // 4. After propagation: re-run deploy.py with NEW_HEX only
+        // 2. Update SSM with NEW (--overwrite); ESO refreshes the K8s
+        //    Secret `nextjs-cloudfront-origin-secret` within 5m. Trigger
+        //    an ArgoCD sync of the nextjs Application — the PostSync hook
+        //    Job re-patches the IngressRoute matchRule with the new value.
+        // 3. Run deploy-edge → CloudFront begins forwarding the new header
+        //    value. Until propagation completes (≤15 min), CloudFront may
+        //    still send the OLD value; transiently set the SSM parameter
+        //    to the regex "OLD_HEX|NEW_HEX" and re-sync ArgoCD so Traefik
+        //    accepts both during the window. (HeadersRegexp accepts regex.)
+        // 4. After propagation: set SSM back to NEW_HEX only and re-sync.
         const originSecret = this.readSsmParameter(
             'ReadCloudfrontOriginSecret',
             k8sPaths.cloudfrontOriginSecret,
@@ -800,9 +803,9 @@ export class KubernetesEdgeStack extends cdk.Stack {
         //
         // These are written here (Edge Stack, us-east-1) because this is the
         // canonical place where domain names are resolved. Downstream consumers
-        // (deploy.py for start-admin / site ConfigMaps) read these paths via
-        // the AWS CLI to avoid hardcoding hostnames in environment-specific
-        // scripts.
+        // (ExternalSecrets in tucaken-app / nextjs ConfigMaps) read these
+        // paths via the aws-ssm ClusterSecretStore to avoid hardcoding
+        // hostnames in environment-specific manifests.
         //
         // Path convention: /bedrock-{shortEnv}/admin-api-url
         //                  /bedrock-{shortEnv}/public-api-url
@@ -823,7 +826,7 @@ export class KubernetesEdgeStack extends cdk.Stack {
             new ssm.StringParameter(this, 'AdminApiUrlParameter', {
                 parameterName: bffSsmPaths.adminApiUrl,
                 stringValue: `http://admin-api.admin-api:3002`,
-                description: `admin-api BFF in-cluster URL (start-admin ADMIN_API_URL)`,
+                description: `admin-api BFF in-cluster URL (tucaken-app ADMIN_API_URL)`,
                 tier: ssm.ParameterTier.STANDARD,
             });
 

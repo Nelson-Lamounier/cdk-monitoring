@@ -54,7 +54,7 @@ export interface SharedVpcStackProps extends cdk.StackProps {
     readonly ecrRepositoryName?: string;
     /** Enable ECR repository creation @default true */
     readonly createEcrRepository?: boolean;
-    /** Admin ECR repository name @default 'start-admin' */
+    /** Admin/tucaken-app ECR repository name @default 'tucaken-app' */
     readonly adminEcrRepositoryName?: string;
     /** Enable admin ECR repository creation @default true */
     readonly createAdminEcrRepository?: boolean;
@@ -114,7 +114,7 @@ export class SharedVpcStack extends cdk.Stack {
     public readonly dynamoDbEndpoint?: ec2.GatewayVpcEndpoint;
     /** ECR Repository for container images (nextjs-frontend) */
     public readonly ecrRepository?: ecr.Repository;
-    /** ECR Repository for admin container images (start-admin) */
+    /** ECR Repository for the tucaken-app container images */
     public readonly adminEcrRepository?: ecr.Repository;
     /** ECR Repository for the public-api BFF */
     public readonly publicApiEcrRepository?: ecr.Repository;
@@ -235,12 +235,16 @@ export class SharedVpcStack extends cdk.Stack {
         }
 
         // =====================================================================
-        // ECR Repository (Admin) — Separate container registry for start-admin
+        // ECR Repository (Admin/Tucaken-app) — Separate container registry for
+        // the customer-facing TanStack Start application (tucaken-app).
         // Uses the same lifecycle rules and encryption as the frontend repo.
-        // SSM params stored under /shared/ecr-admin/{env}/ for CI discovery.
+        //
+        // SSM key prefix `/shared/ecr-admin/{env}/` is preserved for backward
+        // compatibility with existing workflow consumers — only the value (the
+        // ECR repo name/URI) changes when this prop's default flips.
         // =====================================================================
         if (props.createAdminEcrRepository !== false) {
-            const adminRepoName = props.adminEcrRepositoryName ?? 'start-admin';
+            const adminRepoName = props.adminEcrRepositoryName ?? 'tucaken-app';
             const isProduction = props.targetEnvironment === Environment.PRODUCTION;
 
             this.adminEcrRepository = new ecr.Repository(this, 'AdminEcrRepository', {
@@ -289,15 +293,15 @@ export class SharedVpcStack extends cdk.Stack {
                 tier: ssm.ParameterTier.STANDARD,
             });
 
-            // Admin ECR Outputs
+            // Admin/tucaken-app ECR Outputs
             new cdk.CfnOutput(this, 'AdminEcrRepositoryUri', {
                 value: this.adminEcrRepository.repositoryUri,
-                description: 'Admin ECR Repository URI for docker push/pull (start-admin)',
+                description: 'tucaken-app ECR Repository URI for docker push/pull',
             });
 
             new cdk.CfnOutput(this, 'AdminEcrRepositoryArn', {
                 value: this.adminEcrRepository.repositoryArn,
-                description: 'Admin ECR Repository ARN (start-admin)',
+                description: 'tucaken-app ECR Repository ARN',
             });
         }
 

@@ -7,7 +7,7 @@
  *
  * Stack 1 (Shared-Infra) provisions five ECR repositories:
  *   - nextjs-frontend  → used by the public-facing Next.js site
- *   - start-admin      → used by the TanStack Start admin panel
+ *   - tucaken-app      → used by the TanStack Start customer-facing SaaS
  *   - public-api       → BFF for portfolio visitors (read-only)
  *   - admin-api        → BFF for internal ops (write-heavy / authenticated)
  *   - wiki-mcp         → FastMCP K8s pod serving the portfolio knowledge base
@@ -116,7 +116,7 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
         //
         // Creates five ECR repositories:
         //   - nextjs-frontend  (public-facing Next.js site)
-        //   - start-admin      (TanStack Start admin panel)
+        //   - tucaken-app      (TanStack Start customer-facing SaaS)
         //   - public-api       (BFF — portfolio visitor read-only API)
         //   - admin-api        (BFF — internal ops write-heavy API)
         //   - wiki-mcp         (FastMCP K8s pod — portfolio KB, opt-in via createWikiMcpEcrRepository)
@@ -135,9 +135,9 @@ export class SharedProjectFactory implements IProjectFactory<SharedFactoryContex
             // ── ECR: Next.js frontend ─────────────────────────────────
             createEcrRepository: true,
             ecrRepositoryName: 'nextjs-frontend',
-            // ── ECR: TanStack Start admin panel ──────────────────────
+            // ── ECR: TanStack Start tucaken-app (customer-facing SaaS) ─
             createAdminEcrRepository: true,
-            adminEcrRepositoryName: 'start-admin',
+            adminEcrRepositoryName: 'tucaken-app',
             // ── ECR: public-api BFF (portfolio visitors — read-only) ─
             createPublicApiEcrRepository: true,
             publicApiEcrRepositoryName: 'public-api',

@@ -9,7 +9,7 @@
  *   DELETE /api/admin/assets/:key  — Delete an asset from S3 by key.
  *
  * Pre-signed URL design:
- *   The TanStack start-admin frontend requests a signed URL, then puts
+ *   The TanStack tucaken-app frontend requests a signed URL, then puts
  *   the file directly to S3 from the browser. This avoids routing
  *   binary content through the Kubernetes pod, drastically reducing
  *   memory pressure and upload latency.
