@@ -373,6 +373,9 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                     `arn:aws:s3:::${resourceNames.assetsBucketName}`,
                     // Bedrock content pipeline — published MDX blobs
                     `arn:aws:s3:::bedrock-${environment}-kb-data`,
+                    // Resume import processor K8s Job — reads uploaded PDF/DOCX
+                    // Bucket name is CDK-generated; wildcard covers the random suffix
+                    `arn:aws:s3:::bedrock-data-${environment}-assets*`,
                 ],
                 dynamoTableArns: [
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/${resourceNames.dynamoTableName}`,
@@ -387,9 +390,11 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                     // Resumes are stored in the strategist table (migrated 2026-03)
                     `arn:aws:dynamodb:${env.region}:${env.account}:table/${bedrockNamePrefix}-job-strategist`,
                 ],
-                // Admin S3 write — article image and video uploads from admin panel
+                // Admin S3 write — article image/video uploads + resume import presigned PUTs
                 s3WriteBucketArns: [
                     `arn:aws:s3:::${resourceNames.assetsBucketName}`,
+                    // Resume upload: presigned PUT signed by node role — role must have PutObject
+                    `arn:aws:s3:::bedrock-data-${environment}-assets*`,
                 ],
                 // Bedrock pipeline SSM — resolve infrastructure for admin publish
                 bedrockSsmPath: `/${bedrockNamePrefix}/*`,
