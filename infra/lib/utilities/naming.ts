@@ -40,6 +40,7 @@ export const STACK_REGISTRY = {
         appIam: 'AppIam',
         api: 'Api',
         edge: 'Edge',
+        tucakenEdge: 'TucakenEdge',
         observability: 'Observability',
         platformRds: 'PlatformRds',
     },

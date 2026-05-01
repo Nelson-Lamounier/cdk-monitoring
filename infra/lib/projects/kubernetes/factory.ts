@@ -54,6 +54,7 @@ import {
     KubernetesObservabilityStack,
     KubernetesWorkerAsgStack,
     PlatformRdsStack,
+    TucakenEdgeStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId, flatName } from '../../utilities/naming';
@@ -80,6 +81,24 @@ export interface KubernetesFactoryContext extends ProjectFactoryContext {
 
     /** Additional domains for certificate SANs */
     readonly subjectAlternativeNames?: string[];
+
+    // =========================================================================
+    // Tucaken edge configuration
+    //
+    // Tucaken is a separate customer-facing SaaS hosted on the same K8s
+    // cluster but with its own edge (CloudFront, WAF, ACM cert, origin
+    // secret). Hosted zones live in the root account alongside
+    // nelsonlamounier.com — same crossAccountRoleArn is reused.
+    //
+    // Source: GitHub Environment secrets/vars
+    //   TUCAKEN_IO_HOSTED_ZONE_ID, TUCAKEN_COM_HOSTED_ZONE_ID
+    //   TUCAKEN_IO_DOMAIN (default 'tucaken.io')
+    //   TUCAKEN_COM_DOMAIN (default 'tucaken.com')
+    // =========================================================================
+    readonly tucakenIoDomain?: string;
+    readonly tucakenComDomain?: string;
+    readonly tucakenIoHostedZoneId?: string;
+    readonly tucakenComHostedZoneId?: string;
 
     // API stack email configuration
     /** Override notification email from config */
@@ -525,6 +544,65 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         edgeStack.addDependency(apiStack);
         stacks.push(edgeStack);
         stackMap.edge = edgeStack;
+
+        // =================================================================
+        // Stack 6b: TUCAKEN EDGE STACK (us-east-1)
+        //
+        // Independent CloudFront + WAF + ACM for the tucaken-app SaaS.
+        // Lives in us-east-1 alongside the portfolio edge stack but ships
+        // its own resources end-to-end. Reads the SAME EIP from SSM (shared
+        // Traefik origin) but a SEPARATE origin secret so rotation is
+        // independent from the portfolio.
+        //
+        // Soft-skip: if tucaken hosted zones aren't configured, skip the
+        // stack rather than fail synth — lets non-tucaken environments
+        // continue to deploy unchanged.
+        // =================================================================
+        const tucakenIoDomain = context.tucakenIoDomain
+            ?? process.env.TUCAKEN_IO_DOMAIN
+            ?? 'tucaken.io';
+        const tucakenComDomain = context.tucakenComDomain
+            ?? process.env.TUCAKEN_COM_DOMAIN
+            ?? 'tucaken.com';
+        const tucakenIoHostedZoneId = context.tucakenIoHostedZoneId
+            ?? process.env.TUCAKEN_IO_HOSTED_ZONE_ID;
+        const tucakenComHostedZoneId = context.tucakenComHostedZoneId
+            ?? process.env.TUCAKEN_COM_HOSTED_ZONE_ID;
+
+        if (tucakenIoHostedZoneId && tucakenComHostedZoneId && edgeConfig.crossAccountRoleArn) {
+            const tucakenEdgeStack = new TucakenEdgeStack(
+                scope,
+                stackId(this.namespace, 'TucakenEdge', environment),
+                {
+                    targetEnvironment: environment,
+                    ioDomain: tucakenIoDomain,
+                    comDomain: tucakenComDomain,
+                    ioHostedZoneId: tucakenIoHostedZoneId,
+                    comHostedZoneId: tucakenComHostedZoneId,
+                    crossAccountRoleArn: edgeConfig.crossAccountRoleArn,
+                    eipSsmPath,
+                    eipSsmRegion: env.region,
+                    rateLimitPerIp: 5000,
+                    enableIpReputationList: true,
+                    enableRateLimiting: true,
+                    namePrefix: 'tucaken',
+                    // Pre-launch IP gate — re-uses the same allowlist as the
+                    // portfolio. Flip RESTRICT_ACCESS=false to go public.
+                    restrictAccess: nextjsConfig.restrictAccess,
+                    allowedIps: nextjsConfig.allowedIpv4 ? [nextjsConfig.allowedIpv4] : [],
+                    allowedIpv6s: nextjsConfig.allowedIpv6 ? [nextjsConfig.allowedIpv6] : [],
+                    env: edgeEnv,
+                },
+            );
+            tucakenEdgeStack.addDependency(controlPlaneStack);
+            stacks.push(tucakenEdgeStack);
+            stackMap.tucakenEdge = tucakenEdgeStack;
+        } else {
+            cdk.Annotations.of(scope).addInfo(
+                'Tucaken edge stack skipped: TUCAKEN_IO_HOSTED_ZONE_ID, ' +
+                'TUCAKEN_COM_HOSTED_ZONE_ID, or CROSS_ACCOUNT_ROLE_ARN not set.',
+            );
+        }
 
         // =================================================================
         // Stack 7: OBSERVABILITY STACK (CloudWatch Dashboard)

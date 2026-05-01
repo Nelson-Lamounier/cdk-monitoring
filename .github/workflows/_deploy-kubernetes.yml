@@ -83,6 +83,12 @@ on:
       ALLOW_IPV6:
         description: "IPv6 CIDR to allowlist in WAF (e.g., 2a02:8084::/128)"
         required: false
+      TUCAKEN_IO_HOSTED_ZONE_ID:
+        description: "Route53 hosted zone ID for tucaken.io (only required when vars.TUCAKEN_EDGE_ENABLED=true)"
+        required: false
+      TUCAKEN_COM_HOSTED_ZONE_ID:
+        description: "Route53 hosted zone ID for tucaken.com (only required when vars.TUCAKEN_EDGE_ENABLED=true)"
+        required: false
 
 env:
   NODE_VERSION: "22"
@@ -116,6 +122,7 @@ jobs:
       appiam-stack: ${{ steps.synth.outputs.appIam }}
       api-stack: ${{ steps.synth.outputs.api }}
       edge-stack: ${{ steps.synth.outputs.edge }}
+      tucaken-edge-stack: ${{ steps.synth.outputs.tucakenEdge }}
       observability-stack: ${{ steps.synth.outputs.observability }}
       platform-rds-stack: ${{ steps.synth.outputs.platformRds }}
 
@@ -178,6 +185,14 @@ jobs:
           RESTRICT_ACCESS: ${{ vars.RESTRICT_ACCESS }}
           ALLOW_IPV4: ${{ secrets.ALLOW_IPV4 }}
           ALLOW_IPV6: ${{ secrets.ALLOW_IPV6 }}
+          # ── Tucaken Edge (independent SaaS edge — tucaken.io / tucaken.com) ─
+          # When all four are set, the kubernetes factory instantiates
+          # TucakenEdgeStack alongside the portfolio Edge stack. Missing any
+          # value is a soft-skip (factory logs an info annotation).
+          TUCAKEN_IO_DOMAIN: ${{ vars.TUCAKEN_IO_DOMAIN }}
+          TUCAKEN_COM_DOMAIN: ${{ vars.TUCAKEN_COM_DOMAIN }}
+          TUCAKEN_IO_HOSTED_ZONE_ID: ${{ secrets.TUCAKEN_IO_HOSTED_ZONE_ID }}
+          TUCAKEN_COM_HOSTED_ZONE_ID: ${{ secrets.TUCAKEN_COM_HOSTED_ZONE_ID }}
         run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
 
       - name: Cache Synthesized Templates
@@ -950,6 +965,194 @@ jobs:
         run: just ci-integration-test kubernetes/edge-stack $CDK_ENV --verbose
 
   # ===========================================================================
+  # Seed Tucaken CloudFront Origin Secret (5c)
+  #
+  # Idempotently provisions /k8s/{env}/tucaken-cloudfront-origin-secret as a
+  # SecureString in eu-west-1 BEFORE deploy-tucaken-edge runs. CloudFront
+  # forwards this secret as the X-CloudFront-Origin-Secret header; Traefik
+  # validates it on the tucaken-app IngressRoute. Independent from the
+  # portfolio origin secret — separate rotation lifecycle.
+  #
+  # Behaviour:
+  #   - If parameter exists: leave value unchanged, log + skip
+  #   - If missing: generate `openssl rand -hex 32` and create as SecureString
+  #
+  # Gated on vars.TUCAKEN_EDGE_ENABLED == 'true' so environments that don't
+  # run tucaken (e.g. legacy staging) are unaffected.
+  # ===========================================================================
+  seed-tucaken-secret:
+    name: Seed Tucaken Origin Secret
+    needs: [setup]
+    if: |
+      always()
+      && needs.setup.result == 'success'
+      && vars.TUCAKEN_EDGE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+      - name: Ensure tucaken-cloudfront-origin-secret exists
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PARAM_NAME="/k8s/${CDK_ENV}/tucaken-cloudfront-origin-secret"
+          echo "Checking SSM parameter: ${PARAM_NAME}"
+
+          if aws ssm get-parameter \
+               --name "${PARAM_NAME}" \
+               --region "${AWS_REGION}" \
+               --with-decryption \
+               --query 'Parameter.Name' \
+               --output text >/dev/null 2>&1; then
+            echo "[OK] Parameter already exists — leaving value unchanged"
+            exit 0
+          fi
+
+          echo "[INFO] Parameter missing — generating new value"
+          NEW_SECRET="$(openssl rand -hex 32)"
+          # Mask before any potential echo path could reveal it
+          echo "::add-mask::$NEW_SECRET"
+
+          aws ssm put-parameter \
+            --name "${PARAM_NAME}" \
+            --value "${NEW_SECRET}" \
+            --type SecureString \
+            --description "Tucaken CloudFront origin secret — validated by Traefik HeadersRegexp on tucaken-app IngressRoute" \
+            --tier Standard \
+            --region "${AWS_REGION}" \
+            --no-overwrite >/dev/null
+
+          echo "[OK] Seeded ${PARAM_NAME} (SecureString)"
+
+  # ===========================================================================
+  # Deploy Tucaken Edge Stack (5d) — CloudFront + ACM + WAF (us-east-1)
+  #
+  # Independent customer-facing SaaS edge for tucaken.io / tucaken.com.
+  # Two distributions: primary (.io) + redirect (.com → .io).
+  # Origin: same Elastic IP as portfolio Edge — Traefik routes by Host header.
+  #
+  # Depends on:
+  #   - deploy-base (writes EIP SSM in eu-west-1)
+  #   - seed-tucaken-secret (writes origin secret SSM in eu-west-1)
+  #
+  # Gated on vars.TUCAKEN_EDGE_ENABLED == 'true'.
+  # ===========================================================================
+  deploy-tucaken-edge:
+    name: Deploy Tucaken Edge
+    needs: [setup, deploy-base, seed-tucaken-secret]
+    if: |
+      always()
+      && needs.deploy-base.result == 'success'
+      && needs.seed-tucaken-secret.result == 'success'
+      && vars.TUCAKEN_EDGE_ENABLED == 'true'
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.tucaken-edge-stack }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-region: ${{ vars.ROUTE53_REGION || 'us-east-1' }}
+      require-approval: ${{ inputs.require-approval }}
+      outputs-directory: "deployment-outputs"
+      restrict-access: ${{ vars.RESTRICT_ACCESS }}
+    secrets: inherit
+
+  # ===========================================================================
+  # Verify Tucaken Edge Stack (5e)
+  #
+  # Lightweight post-deploy check: confirms both distributions exist, ACM
+  # certs are ISSUED, and the redirect distribution returns 301 → tucaken.io.
+  # ===========================================================================
+  verify-tucaken-edge:
+    name: Verify Tucaken Edge
+    needs: [setup, deploy-tucaken-edge]
+    if: |
+      always()
+      && needs.deploy-tucaken-edge.result == 'success'
+      && vars.TUCAKEN_EDGE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify Tucaken edge resources
+        env:
+          CDK_ENV: ${{ inputs.cdk-environment }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+          TUCAKEN_IO_DOMAIN: ${{ vars.TUCAKEN_IO_DOMAIN || 'tucaken.io' }}
+          TUCAKEN_COM_DOMAIN: ${{ vars.TUCAKEN_COM_DOMAIN || 'tucaken.com' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IO_DIST_PARAM="/tucaken/${CDK_ENV}/edge/io-distribution-id"
+          COM_DIST_PARAM="/tucaken/${CDK_ENV}/edge/com-distribution-id"
+          IO_CERT_PARAM="/tucaken/${CDK_ENV}/edge/io-certificate-arn"
+          COM_CERT_PARAM="/tucaken/${CDK_ENV}/edge/com-certificate-arn"
+
+          echo "── SSM outputs ─────────────────────────────────────"
+          for p in "$IO_DIST_PARAM" "$COM_DIST_PARAM" "$IO_CERT_PARAM" "$COM_CERT_PARAM"; do
+            VAL=$(aws ssm get-parameter --name "$p" --region "$AWS_REGION" \
+              --query 'Parameter.Value' --output text)
+            echo "  $p = $VAL"
+            [[ -n "$VAL" ]] || { echo "ERROR: missing $p"; exit 1; }
+          done
+
+          IO_DIST_ID=$(aws ssm get-parameter --name "$IO_DIST_PARAM" \
+            --region "$AWS_REGION" --query 'Parameter.Value' --output text)
+          COM_DIST_ID=$(aws ssm get-parameter --name "$COM_DIST_PARAM" \
+            --region "$AWS_REGION" --query 'Parameter.Value' --output text)
+
+          echo "── CloudFront distribution states ──────────────────"
+          for ID in "$IO_DIST_ID" "$COM_DIST_ID"; do
+            STATUS=$(aws cloudfront get-distribution --id "$ID" \
+              --query 'Distribution.Status' --output text)
+            ENABLED=$(aws cloudfront get-distribution --id "$ID" \
+              --query 'Distribution.DistributionConfig.Enabled' --output text)
+            echo "  $ID  status=$STATUS  enabled=$ENABLED"
+            [[ "$ENABLED" == "True" ]] || { echo "ERROR: distribution $ID disabled"; exit 1; }
+          done
+
+          echo "── ACM certificate states (us-east-1) ──────────────"
+          IO_CERT_ARN=$(aws ssm get-parameter --name "$IO_CERT_PARAM" \
+            --region "$AWS_REGION" --query 'Parameter.Value' --output text)
+          COM_CERT_ARN=$(aws ssm get-parameter --name "$COM_CERT_PARAM" \
+            --region "$AWS_REGION" --query 'Parameter.Value' --output text)
+          for ARN in "$IO_CERT_ARN" "$COM_CERT_ARN"; do
+            STATUS=$(aws acm describe-certificate --certificate-arn "$ARN" \
+              --region us-east-1 --query 'Certificate.Status' --output text)
+            echo "  $ARN  status=$STATUS"
+            [[ "$STATUS" == "ISSUED" ]] || { echo "ERROR: cert $ARN not ISSUED"; exit 1; }
+          done
+
+          echo "[OK] Tucaken edge resources healthy"
+
+  # ===========================================================================
   # Deploy Observability Stack (2f) — CloudWatch Pre-Deployment Dashboard
   #
   # Runs in parallel with Golden AMI, SSM Automation, and API stacks.
@@ -1022,6 +1225,9 @@ jobs:
         deploy-api,
         deploy-edge,
         verify-edge-stack,
+        seed-tucaken-secret,
+        deploy-tucaken-edge,
+        verify-tucaken-edge,
         deploy-observability,
         deploy-platform-rds,
         verify-launch-template-ami,
@@ -1040,6 +1246,9 @@ jobs:
         || needs.deploy-api.result == 'failure'
         || needs.deploy-edge.result == 'failure'
         || needs.verify-edge-stack.result == 'failure'
+        || needs.seed-tucaken-secret.result == 'failure'
+        || needs.deploy-tucaken-edge.result == 'failure'
+        || needs.verify-tucaken-edge.result == 'failure'
         || needs.deploy-observability.result == 'failure'
         || needs.deploy-platform-rds.result == 'failure'
         || needs.verify-launch-template-ami.result == 'failure'
@@ -1102,6 +1311,9 @@ jobs:
       - deploy-api
       - deploy-edge
       - verify-edge-stack
+      - seed-tucaken-secret
+      - deploy-tucaken-edge
+      - verify-tucaken-edge
       - deploy-observability
       - deploy-platform-rds
       - verify-launch-template-ami
@@ -1172,6 +1384,9 @@ jobs:
           DEPLOY_API_RESULT: ${{ needs.deploy-api.result || 'skipped' }}
           DEPLOY_EDGE_RESULT: ${{ needs.deploy-edge.result || 'skipped' }}
           VERIFY_EDGE_RESULT: ${{ needs.verify-edge-stack.result || 'skipped' }}
+          SEED_TUCAKEN_SECRET_RESULT: ${{ needs.seed-tucaken-secret.result || 'skipped' }}
+          DEPLOY_TUCAKEN_EDGE_RESULT: ${{ needs.deploy-tucaken-edge.result || 'skipped' }}
+          VERIFY_TUCAKEN_EDGE_RESULT: ${{ needs.verify-tucaken-edge.result || 'skipped' }}
           DEPLOY_OBSERVABILITY_RESULT: ${{ needs.deploy-observability.result || 'skipped' }}
           DEPLOY_PLATFORM_RDS_RESULT: ${{ needs.deploy-platform-rds.result || 'skipped' }}
           VERIFY_RESULT: "moved-to-ssm-pipeline"

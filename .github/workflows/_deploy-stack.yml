@@ -127,6 +127,12 @@ on:
       ALLOW_IPV6:
         description: "Admin IPv6 CIDR for SG ingress (e.g., 2a02:8084::/128)"
         required: false
+      TUCAKEN_IO_HOSTED_ZONE_ID:
+        description: "Route53 hosted zone ID for tucaken.io (scoped — only needed for TucakenEdge)"
+        required: false
+      TUCAKEN_COM_HOSTED_ZONE_ID:
+        description: "Route53 hosted zone ID for tucaken.com (scoped — only needed for TucakenEdge)"
+        required: false
     outputs:
       deployment-status:
         description: "Deployment status (success/failure)"
@@ -225,6 +231,17 @@ jobs:
           [[ -n "$GRAFANA_ADMIN_PASSWORD" ]] && printf '%s\n' "GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD" >> "$GITHUB_ENV"
           [[ -n "$ALLOW_IPV4"             ]] && printf '%s\n' "ALLOW_IPV4=$ALLOW_IPV4"                       >> "$GITHUB_ENV"
           [[ -n "$ALLOW_IPV6"             ]] && printf '%s\n' "ALLOW_IPV6=$ALLOW_IPV6"                       >> "$GITHUB_ENV"
+
+          # ── Tucaken Edge configuration (scoped — only set for TucakenEdge stack) ──
+          # Hosted zone IDs flow via secrets (treated as sensitive identifiers,
+          # consistent with HOSTED_ZONE_ID handling). Domain names are non-secret
+          # GitHub Actions vars with safe defaults.
+          [[ -n "$TUCAKEN_IO_HOSTED_ZONE_ID"  ]] && echo "::add-mask::$TUCAKEN_IO_HOSTED_ZONE_ID"
+          [[ -n "$TUCAKEN_COM_HOSTED_ZONE_ID" ]] && echo "::add-mask::$TUCAKEN_COM_HOSTED_ZONE_ID"
+          [[ -n "$TUCAKEN_IO_HOSTED_ZONE_ID"  ]] && printf '%s\n' "TUCAKEN_IO_HOSTED_ZONE_ID=$TUCAKEN_IO_HOSTED_ZONE_ID"   >> "$GITHUB_ENV"
+          [[ -n "$TUCAKEN_COM_HOSTED_ZONE_ID" ]] && printf '%s\n' "TUCAKEN_COM_HOSTED_ZONE_ID=$TUCAKEN_COM_HOSTED_ZONE_ID" >> "$GITHUB_ENV"
+          [[ -n "$TUCAKEN_IO_DOMAIN"          ]] && echo "TUCAKEN_IO_DOMAIN=$TUCAKEN_IO_DOMAIN"   >> "$GITHUB_ENV"
+          [[ -n "$TUCAKEN_COM_DOMAIN"         ]] && echo "TUCAKEN_COM_DOMAIN=$TUCAKEN_COM_DOMAIN" >> "$GITHUB_ENV"
           echo "[OK] Scoped config applied"
         env:
           DOMAIN_NAME: ${{ inputs.domain-name || vars.DOMAIN_NAME }}
@@ -241,6 +258,10 @@ jobs:
           ROOT_ACCOUNT: ${{ inputs.root-account-id }}
           RESTRICT_ACCESS: ${{ inputs.restrict-access }}
           TRUSTED_ACCOUNT_IDS: ${{ vars.DEV_ACCOUNT_ID }}
+          TUCAKEN_IO_HOSTED_ZONE_ID: ${{ secrets.TUCAKEN_IO_HOSTED_ZONE_ID }}
+          TUCAKEN_COM_HOSTED_ZONE_ID: ${{ secrets.TUCAKEN_COM_HOSTED_ZONE_ID }}
+          TUCAKEN_IO_DOMAIN: ${{ vars.TUCAKEN_IO_DOMAIN }}
+          TUCAKEN_COM_DOMAIN: ${{ vars.TUCAKEN_COM_DOMAIN }}
 
       # ── Pre-flight Checks ──
       - name: Pre-flight Checks

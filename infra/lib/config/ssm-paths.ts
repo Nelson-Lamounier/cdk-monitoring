@@ -285,8 +285,16 @@ export interface K8sSsmPaths {
     readonly instanceId: string;
 
     // --- Security / Edge Validation ---
-    /** CloudFront Origin Secret (for authenticating edge traffic) */
+    /** CloudFront Origin Secret for the portfolio edge (nelsonlamounier.com) */
     readonly cloudfrontOriginSecret: string;
+    /**
+     * Tucaken CloudFront Origin Secret.
+     *
+     * Independent from the portfolio secret — separate rotation lifecycle,
+     * separate WAF, separate distribution. Validated by a dedicated Traefik
+     * HeadersRegexp middleware on the tucaken-app IngressRoute.
+     */
+    readonly tucakenCloudfrontOriginSecret: string;
     /** Prometheus basic auth secret (htpasswd hash) */
     readonly prometheusBasicAuth: string;
 
@@ -334,9 +342,69 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
 
         // Security / Edge Validation
         cloudfrontOriginSecret: `${prefix}/cloudfront-origin-secret`,
+        tucakenCloudfrontOriginSecret: `${prefix}/tucaken-cloudfront-origin-secret`,
         prometheusBasicAuth: `${prefix}/prometheus-basic-auth`,
 
         // IAM
+        wildcard: `${prefix}/*`,
+    };
+}
+
+// =============================================================================
+// TUCAKEN SSM PATHS
+// =============================================================================
+
+/** Tucaken SSM prefix: /tucaken/{environment} */
+export function tucakenSsmPrefix(environment: Environment): string {
+    return `/tucaken/${environment}`;
+}
+
+/**
+ * SSM parameter paths for the Tucaken SaaS application.
+ *
+ * Tucaken runs in the `tucaken-app` namespace on the shared kubeadm cluster
+ * but maintains independent edge infrastructure (own CloudFront distributions,
+ * own WAF, own ACM certificate, own origin secret).
+ */
+export interface TucakenSsmPaths {
+    /** The prefix itself: /tucaken/{environment} */
+    readonly prefix: string;
+
+    // --- Edge / CloudFront (written by TucakenEdgeStack) ---
+    /** ACM Certificate ARN (us-east-1) for tucaken.io + www */
+    readonly ioCertificateArn: string;
+    /** ACM Certificate ARN (us-east-1) for tucaken.com + www (redirect) */
+    readonly comCertificateArn: string;
+    /** Tucaken WAF Web ACL ARN (CLOUDFRONT scope) */
+    readonly wafArn: string;
+    /** Primary (.io) CloudFront distribution ID */
+    readonly ioDistributionId: string;
+    /** Primary (.io) CloudFront distribution domain (xxxxx.cloudfront.net) */
+    readonly ioDistributionDomain: string;
+    /** Redirect (.com) CloudFront distribution ID */
+    readonly comDistributionId: string;
+    /** Redirect (.com) CloudFront distribution domain */
+    readonly comDistributionDomain: string;
+
+    /** Wildcard path for IAM: /tucaken/{environment}/* */
+    readonly wildcard: string;
+}
+
+/**
+ * Get Tucaken SSM parameter paths for a given environment.
+ */
+export function tucakenSsmPaths(environment: Environment): TucakenSsmPaths {
+    const prefix = tucakenSsmPrefix(environment);
+
+    return {
+        prefix,
+        ioCertificateArn: `${prefix}/edge/io-certificate-arn`,
+        comCertificateArn: `${prefix}/edge/com-certificate-arn`,
+        wafArn: `${prefix}/edge/waf-arn`,
+        ioDistributionId: `${prefix}/edge/io-distribution-id`,
+        ioDistributionDomain: `${prefix}/edge/io-distribution-domain`,
+        comDistributionId: `${prefix}/edge/com-distribution-id`,
+        comDistributionDomain: `${prefix}/edge/com-distribution-domain`,
         wildcard: `${prefix}/*`,
     };
 }
