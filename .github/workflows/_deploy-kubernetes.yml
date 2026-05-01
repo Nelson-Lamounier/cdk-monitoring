@@ -123,6 +123,7 @@ jobs:
       api-stack: ${{ steps.synth.outputs.api }}
       edge-stack: ${{ steps.synth.outputs.edge }}
       tucaken-edge-stack: ${{ steps.synth.outputs.tucakenEdge }}
+      tucaken-enabled: ${{ steps.detect-tucaken.outputs.enabled }}
       observability-stack: ${{ steps.synth.outputs.observability }}
       platform-rds-stack: ${{ steps.synth.outputs.platformRds }}
 
@@ -194,6 +195,48 @@ jobs:
           TUCAKEN_IO_HOSTED_ZONE_ID: ${{ secrets.TUCAKEN_IO_HOSTED_ZONE_ID }}
           TUCAKEN_COM_HOSTED_ZONE_ID: ${{ secrets.TUCAKEN_COM_HOSTED_ZONE_ID }}
         run: just ci-synth kubernetes ${{ inputs.cdk-environment }}
+
+      # Detect whether the Tucaken edge stack was actually emitted by synth.
+      # The synth output `tucakenEdge` always contains the stack name from the
+      # registry (unconditional), so we can't gate on it. Instead, check for
+      # the synthesized template file — present only when the factory created
+      # the stack (i.e. TUCAKEN_*_HOSTED_ZONE_ID secrets were resolved).
+      #
+      # The diagnostic block prints whether each secret/var was non-empty when
+      # the synth step ran — without leaking values. If the template is missing
+      # but secrets show as "set", check the factory soft-skip criteria
+      # (CROSS_ACCOUNT_ROLE_ARN must also be set).
+      - name: Detect Tucaken Edge enablement
+        id: detect-tucaken
+        shell: bash
+        env:
+          TUCAKEN_STACK_NAME: ${{ steps.synth.outputs.tucakenEdge }}
+          DIAG_IO_ZONE: ${{ secrets.TUCAKEN_IO_HOSTED_ZONE_ID != '' && 'set' || 'unset' }}
+          DIAG_COM_ZONE: ${{ secrets.TUCAKEN_COM_HOSTED_ZONE_ID != '' && 'set' || 'unset' }}
+          DIAG_DNS_ROLE: ${{ vars.DNS_VALIDATION_ROLE != '' && 'set' || 'unset' }}
+          DIAG_IO_DOMAIN: ${{ vars.TUCAKEN_IO_DOMAIN != '' && 'set (overridden)' || 'unset (uses default tucaken.io)' }}
+          DIAG_COM_DOMAIN: ${{ vars.TUCAKEN_COM_DOMAIN != '' && 'set (overridden)' || 'unset (uses default tucaken.com)' }}
+        run: |
+          set -euo pipefail
+          echo "── Tucaken Edge inputs (presence-only diagnostic) ──"
+          echo "  TUCAKEN_IO_HOSTED_ZONE_ID  : ${DIAG_IO_ZONE}"
+          echo "  TUCAKEN_COM_HOSTED_ZONE_ID : ${DIAG_COM_ZONE}"
+          echo "  DNS_VALIDATION_ROLE (var)  : ${DIAG_DNS_ROLE}"
+          echo "  TUCAKEN_IO_DOMAIN          : ${DIAG_IO_DOMAIN}"
+          echo "  TUCAKEN_COM_DOMAIN         : ${DIAG_COM_DOMAIN}"
+          echo ""
+
+          TEMPLATE="infra/cdk.out/${TUCAKEN_STACK_NAME}.template.json"
+          if [[ -f "$TEMPLATE" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "[OK] Found ${TEMPLATE} → enabled=true"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "[INFO] ${TEMPLATE} not found → enabled=false"
+            echo "       (factory soft-skipped because at least one of:"
+            echo "         TUCAKEN_IO_HOSTED_ZONE_ID, TUCAKEN_COM_HOSTED_ZONE_ID,"
+            echo "         CROSS_ACCOUNT_ROLE_ARN was empty at synth time)"
+          fi
 
       - name: Cache Synthesized Templates
         uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
@@ -986,7 +1029,7 @@ jobs:
     if: |
       always()
       && needs.setup.result == 'success'
-      && vars.TUCAKEN_EDGE_ENABLED == 'true'
+      && needs.setup.outputs.tucaken-enabled == 'true'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
@@ -1059,7 +1102,7 @@ jobs:
       always()
       && needs.deploy-base.result == 'success'
       && needs.seed-tucaken-secret.result == 'success'
-      && vars.TUCAKEN_EDGE_ENABLED == 'true'
+      && needs.setup.outputs.tucaken-enabled == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.tucaken-edge-stack }}
@@ -1083,7 +1126,7 @@ jobs:
     if: |
       always()
       && needs.deploy-tucaken-edge.result == 'success'
-      && vars.TUCAKEN_EDGE_ENABLED == 'true'
+      && needs.setup.outputs.tucaken-enabled == 'true'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
