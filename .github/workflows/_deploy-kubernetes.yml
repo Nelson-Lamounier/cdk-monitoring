@@ -1230,57 +1230,20 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify Tucaken edge resources
+      - name: Setup Environment and Dependencies
+        uses: ./.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+
+      - name: Install Dependencies
+        run: yarn install --immutable
+        working-directory: infra
+
+      - name: Run Tucaken Edge Stack Integration Tests
         env:
           CDK_ENV: ${{ inputs.cdk-environment }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-          TUCAKEN_IO_DOMAIN: ${{ vars.TUCAKEN_IO_DOMAIN || 'tucaken.io' }}
-          TUCAKEN_COM_DOMAIN: ${{ vars.TUCAKEN_COM_DOMAIN || 'tucaken.com' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          IO_DIST_PARAM="/tucaken/${CDK_ENV}/edge/io-distribution-id"
-          COM_DIST_PARAM="/tucaken/${CDK_ENV}/edge/com-distribution-id"
-          IO_CERT_PARAM="/tucaken/${CDK_ENV}/edge/io-certificate-arn"
-          COM_CERT_PARAM="/tucaken/${CDK_ENV}/edge/com-certificate-arn"
-
-          echo "── SSM outputs ─────────────────────────────────────"
-          for p in "$IO_DIST_PARAM" "$COM_DIST_PARAM" "$IO_CERT_PARAM" "$COM_CERT_PARAM"; do
-            VAL=$(aws ssm get-parameter --name "$p" --region "$AWS_REGION" \
-              --query 'Parameter.Value' --output text)
-            echo "  $p = $VAL"
-            [[ -n "$VAL" ]] || { echo "ERROR: missing $p"; exit 1; }
-          done
-
-          IO_DIST_ID=$(aws ssm get-parameter --name "$IO_DIST_PARAM" \
-            --region "$AWS_REGION" --query 'Parameter.Value' --output text)
-          COM_DIST_ID=$(aws ssm get-parameter --name "$COM_DIST_PARAM" \
-            --region "$AWS_REGION" --query 'Parameter.Value' --output text)
-
-          echo "── CloudFront distribution states ──────────────────"
-          for ID in "$IO_DIST_ID" "$COM_DIST_ID"; do
-            STATUS=$(aws cloudfront get-distribution --id "$ID" \
-              --query 'Distribution.Status' --output text)
-            ENABLED=$(aws cloudfront get-distribution --id "$ID" \
-              --query 'Distribution.DistributionConfig.Enabled' --output text)
-            echo "  $ID  status=$STATUS  enabled=$ENABLED"
-            [[ "$ENABLED" == "True" ]] || { echo "ERROR: distribution $ID disabled"; exit 1; }
-          done
-
-          echo "── ACM certificate states (us-east-1) ──────────────"
-          IO_CERT_ARN=$(aws ssm get-parameter --name "$IO_CERT_PARAM" \
-            --region "$AWS_REGION" --query 'Parameter.Value' --output text)
-          COM_CERT_ARN=$(aws ssm get-parameter --name "$COM_CERT_PARAM" \
-            --region "$AWS_REGION" --query 'Parameter.Value' --output text)
-          for ARN in "$IO_CERT_ARN" "$COM_CERT_ARN"; do
-            STATUS=$(aws acm describe-certificate --certificate-arn "$ARN" \
-              --region us-east-1 --query 'Certificate.Status' --output text)
-            echo "  $ARN  status=$STATUS"
-            [[ "$STATUS" == "ISSUED" ]] || { echo "ERROR: cert $ARN not ISSUED"; exit 1; }
-          done
-
-          echo "[OK] Tucaken edge resources healthy"
+        run: just ci-integration-test kubernetes/tucaken-edge-stack $CDK_ENV --verbose
 
   # ===========================================================================
   # Deploy Observability Stack (2f) — CloudWatch Pre-Deployment Dashboard
