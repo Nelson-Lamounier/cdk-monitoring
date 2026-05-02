@@ -322,9 +322,10 @@ export class AmiRefreshConstruct extends Construct {
       enforceSSL: true,
       masterKey: kms.Alias.fromAliasName(this, 'AmiRefreshAlertsKey', 'alias/aws/sns'),
     });
-    if (props.notificationEmail) {
-      alertsTopic.addSubscription(new sns_subscriptions.EmailSubscription(props.notificationEmail));
-    }
+    const alertsEmail: string =
+      props.notificationEmail ||
+      ssm.StringParameter.valueForStringParameter(this, `${props.ssmPrefix}/ops-email`);
+    alertsTopic.addSubscription(new sns_subscriptions.EmailSubscription(alertsEmail));
 
     new cw.Alarm(this, 'AmiRefreshFailedAlarm', {
       alarmName: `${props.ssmPrefix.replace(/\//g, '-').replace(/^-/, '')}-ami-refresh-failed`,
