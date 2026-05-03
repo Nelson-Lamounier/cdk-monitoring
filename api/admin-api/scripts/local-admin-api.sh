@@ -79,6 +79,7 @@ fi
 # ---------------------------------------------------------------------------
 log_info "Building ${IMAGE_NAME} from repo root..."
 docker build \
+  --platform linux/amd64 \
   --file "${ADMIN_API_DIR}/Dockerfile" \
   --tag "${IMAGE_NAME}" \
   "${REPO_ROOT}"

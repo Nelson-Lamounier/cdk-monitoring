@@ -740,6 +740,12 @@ helm-verify-selectors:
 pf-admin-api:
     kubectl port-forward svc/admin-api 3002:3002 -n admin-api
 
+# Port-forward admin-api pod to localhost:5001 (use when tucaken-app dev server runs locally)
+# Usage: just pf-admin-api-dev
+[group('k8s')]
+pf-admin-api-dev:
+    kubectl port-forward svc/admin-api 5001:3002 -n admin-api
+
 # Store GitHub App credentials in AWS Secrets Manager + SSM so ESO can sync
 # them into the admin-api-github K8s Secret automatically.
 #
