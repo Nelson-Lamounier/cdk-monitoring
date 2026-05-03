@@ -86,6 +86,10 @@ export interface SharedVpcStackProps extends cdk.StackProps {
     readonly resumeImportProcessorEcrRepositoryName?: string;
     /** Enable resume-import-processor ECR repository creation @default true */
     readonly createResumeImportProcessorEcrRepository?: boolean;
+    /** platform-job-watcher ECR repository name @default 'platform-job-watcher' */
+    readonly platformJobWatcherEcrRepositoryName?: string;
+    /** Enable platform-job-watcher ECR repository creation @default true */
+    readonly enablePlatformJobWatcherEcrRepository?: boolean;
 }
 
 
@@ -130,6 +134,8 @@ export class SharedVpcStack extends cdk.Stack {
     public readonly jobStrategistEcrRepository?: ecr.Repository;
     /** ECR Repository for the resume-import-processor K8s Job */
     public readonly resumeImportProcessorEcrRepository?: ecr.Repository;
+    /** ECR Repository for the platform-job-watcher Deployment */
+    public readonly platformJobWatcherEcrRepository?: ecr.Repository;
 
     constructor(scope: Construct, id: string, props: SharedVpcStackProps) {
         super(scope, id, props);
@@ -681,6 +687,66 @@ export class SharedVpcStack extends cdk.Stack {
             new cdk.CfnOutput(this, 'ResumeImportProcessorEcrRepositoryUri', {
                 value: this.resumeImportProcessorEcrRepository.repositoryUri,
                 description: 'resume-import-processor K8s Job ECR Repository URI for docker push/pull',
+            });
+        }
+
+        // =====================================================================
+        // ECR Repository (platform-job-watcher) — K8s Deployment
+        // Image is consumed by the platform-job-watcher Deployment.
+        // SSM params stored under /shared/ecr-platform-job-watcher/{env}/ for CI discovery.
+        // =====================================================================
+        if (props.enablePlatformJobWatcherEcrRepository !== false) {
+            const repoName = props.platformJobWatcherEcrRepositoryName ?? 'platform-job-watcher';
+            const isProduction = props.targetEnvironment === Environment.PRODUCTION;
+
+            this.platformJobWatcherEcrRepository = new ecr.Repository(this, 'PlatformJobWatcherEcrRepository', {
+                repositoryName: repoName,
+                imageScanOnPush: true,
+                imageTagMutability: ecr.TagMutability.MUTABLE,
+                encryption: ecr.RepositoryEncryption.AES_256,
+                removalPolicy: isProduction ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+                lifecycleRules: [
+                    {
+                        rulePriority: 1,
+                        description: 'Remove untagged images after 30 days',
+                        tagStatus: ecr.TagStatus.UNTAGGED,
+                        maxImageAge: cdk.Duration.days(30),
+                    },
+                    {
+                        rulePriority: 2,
+                        description: 'Keep only 50 most recent tagged images',
+                        tagStatus: ecr.TagStatus.ANY,
+                        maxImageCount: 50,
+                    },
+                ],
+            });
+
+            const ssmPrefix = `/shared/ecr-platform-job-watcher/${props.targetEnvironment}`;
+
+            new ssm.StringParameter(this, 'SsmPlatformJobWatcherEcrRepositoryUri', {
+                parameterName: `${ssmPrefix}/repository-uri`,
+                stringValue: this.platformJobWatcherEcrRepository.repositoryUri,
+                description: `platform-job-watcher ECR repository URI for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmPlatformJobWatcherEcrRepositoryArn', {
+                parameterName: `${ssmPrefix}/repository-arn`,
+                stringValue: this.platformJobWatcherEcrRepository.repositoryArn,
+                description: `platform-job-watcher ECR repository ARN for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmPlatformJobWatcherEcrRepositoryName', {
+                parameterName: `${ssmPrefix}/repository-name`,
+                stringValue: this.platformJobWatcherEcrRepository.repositoryName,
+                description: `platform-job-watcher ECR repository name for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new cdk.CfnOutput(this, 'PlatformJobWatcherEcrRepositoryUri', {
+                value: this.platformJobWatcherEcrRepository.repositoryUri,
+                description: 'platform-job-watcher K8s Deployment ECR Repository URI for docker push/pull',
             });
         }
 
