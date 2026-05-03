@@ -85,14 +85,14 @@ function buildJobSpec(
     metadata: {
       name:      jobName,
       namespace: cfg.resumeImportNamespace,
-      labels: { app: 'resume-import-processor', userId: safeUserId },
+      labels: { app: 'resume-import-processor', userId: safeUserId, 'import-id': importId },
     },
     spec: {
       ttlSecondsAfterFinished: 3600,
       backoffLimit:            1,
       activeDeadlineSeconds:   600, // 10-minute max (extraction + enrichment)
       template: {
-        metadata: { labels: { app: 'resume-import-processor', userId: safeUserId } },
+        metadata: { labels: { app: 'resume-import-processor', userId: safeUserId, 'import-id': importId } },
         spec: {
           restartPolicy:      'Never',
           serviceAccountName: cfg.resumeImportServiceAccount,
