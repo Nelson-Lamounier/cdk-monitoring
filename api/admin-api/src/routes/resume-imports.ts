@@ -27,15 +27,16 @@
  *   DELETE /career-entries/:eid — delete entry (cascades embeddings)
  */
 import crypto from 'node:crypto';
-import { Hono } from 'hono';
+
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { V1Job } from '@kubernetes/client-node';
+import { Hono } from 'hono';
+
 import type { AdminApiConfig } from '../lib/config.js';
 import { getJobImage, isImageConfigured, isAssetsBucketConfigured } from '../lib/config.js';
 import { getBatchApi } from '../lib/k8s.js';
 import { getPool } from '../lib/pg.js';
-import { getUserPlanStatus } from '../lib/repositories/users.js';
 import {
   createResumeImport,
   markUploadComplete,
@@ -48,6 +49,7 @@ import {
   updateCareerEntry,
   deleteCareerEntry,
 } from '../lib/repositories/career-history.js';
+import { getUserPlanStatus } from '../lib/repositories/users.js';
 import { requireUserId } from '../lib/types.js';
 import type { AdminApiBindings } from '../lib/types.js';
 
@@ -106,6 +108,15 @@ function buildJobSpec(
               { name: 'USER_ID',      value: userId },
               { name: 'S3_KEY',       value: s3Key },
               { name: 'CONTENT_TYPE', value: contentType },
+              // ── Observability — propagated to the Job pod so it joins
+              // the same trace, logs to Loki, pushes terminal counters.
+              { name: 'OTEL_SERVICE_NAME',           value: 'resume-import-processor' },
+              { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://alloy.monitoring.svc.cluster.local:4318' },
+              { name: 'OTEL_RESOURCE_ATTRIBUTES',    value: `deployment.environment=${process.env['DEPLOY_ENV'] ?? 'dev'},k8s.namespace.name=resume-import,resume.import_id=${importId}` },
+              { name: 'PYROSCOPE_SERVER_ADDRESS',    value: 'http://pyroscope.monitoring.svc.cluster.local:4040' },
+              { name: 'PUSHGATEWAY_URL',             value: 'http://pushgateway.monitoring.svc.cluster.local:9091' },
+              { name: 'DEPLOY_ENV',                  value: process.env['DEPLOY_ENV'] ?? 'dev' },
+              { name: 'LOG_LEVEL',                   value: 'info' },
             ],
             envFrom: [
               // PG_HOST/PORT/DATABASE/USER/PASSWORD

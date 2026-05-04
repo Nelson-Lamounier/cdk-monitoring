@@ -10,8 +10,10 @@ import { dirname } from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Load custom rules (ES module import)
-import localRules from "./.eslint-local-rules.mjs";
+// Load custom rules (ES module import).
+// Local rules live under infra/ alongside the rest of the CDK app; the path
+// here is relative to this config, not to wherever the linter is invoked.
+import localRules from "./infra/.eslint-local-rules.mjs";
 
 export default [
     // Base configurations
@@ -67,8 +69,16 @@ export default [
                 ecmaVersion: "latest",
                 sourceType: "module",
                 tsconfigRootDir: __dirname,
-                // Support multiple tsconfig files common in CDK projects
-                project: ["./tsconfig.json", "./tsconfig.dev.json"],
+                // Monorepo workspaces each ship their own tsconfig. List the
+                // active ones so the parser can resolve files from any
+                // package the root lint sweep touches. Add new workspace
+                // tsconfigs here when introducing new packages.
+                project: [
+                    "./tsconfig.json",
+                    "./infra/tsconfig.json",
+                    "./api/admin-api/tsconfig.json",
+                    "./packages/cdk-governance-aspects/tsconfig.json",
+                ],
             },
         },
         plugins: {
@@ -227,14 +237,21 @@ export default [
 
     // Test files configuration with Jest plugin
     {
-        files: ["**/*.test.ts", "**/*.test.tsx", "tests/**/*.ts", "test/**/*.ts"],
+        files: ["**/*.test.ts", "**/*.test.tsx", "tests/**/*.ts", "test/**/*.ts", "**/__tests__/**/*.ts"],
         languageOptions: {
             parser: tseslint.parser,
             parserOptions: {
                 ecmaVersion: "latest",
                 sourceType: "module",
                 tsconfigRootDir: __dirname,
-                project: "./tsconfig.json",
+                // Same workspace fan-out as the main TS block so tests in
+                // any package resolve through their own tsconfig include.
+                project: [
+                    "./tsconfig.json",
+                    "./infra/tsconfig.json",
+                    "./api/admin-api/tsconfig.json",
+                    "./packages/cdk-governance-aspects/tsconfig.json",
+                ],
             },
             globals: {
                 // Jest globals
@@ -332,9 +349,12 @@ export default [
                         describe: "template\\.",
                         test: "^test$",
                     },
-                    mustMatch: {
-                        it: "^should",
-                    },
+                    // No `mustMatch.it` constraint — the repo has two valid
+                    // conventions: infra tests use `it('should …')` while
+                    // admin-api tests use descriptive titles like
+                    // `it('returns 200 with summaries from PG')`. Forcing
+                    // one over the other would mass-rewrite hundreds of
+                    // existing tests with no behaviour change.
                 },
             ],
 

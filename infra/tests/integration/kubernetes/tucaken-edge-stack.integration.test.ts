@@ -16,8 +16,11 @@
  *   - Guarantees we're testing the SAME resources the stack created
  *
  * Environment Variables:
- *   CDK_ENV    — Target environment (default: development)
- *   AWS_REGION — AWS region (default: eu-west-1)
+ *   CDK_ENV — Target environment (default: development)
+ *
+ * Note: AWS_REGION is intentionally ignored. TucakenEdgeStack is pinned to
+ * us-east-1 (CloudFront + CLOUDFRONT-scope WAF require it), so every SSM,
+ * CloudFront, and ACM client in this suite hardcodes that region.
  *
  * @example CI invocation:
  *   just ci-integration-test kubernetes/tucaken-edge-stack development --verbose
@@ -54,16 +57,22 @@ function parseEnvironment(raw: string): DeployableEnvironment {
 }
 
 const CDK_ENV = parseEnvironment(process.env.CDK_ENV ?? 'development');
-const REGION = process.env.AWS_REGION ?? 'eu-west-1';
+// TucakenEdgeStack is pinned to us-east-1 (CloudFront + CLOUDFRONT-scope WAF
+// require it). All SSM, CloudFront, and ACM resources live there — including
+// the `/tucaken/{env}/edge/*` parameters this suite reads. AWS_REGION
+// (typically eu-west-1) is irrelevant for this stack and must be ignored.
 const CLOUDFRONT_REGION = 'us-east-1';
 
 const SSM_PATHS = tucakenSsmPaths(CDK_ENV);
 
 // =============================================================================
 // AWS SDK Clients
+//
+// All three clients target us-east-1 — the SSM, CloudFront, and ACM resources
+// owned by TucakenEdgeStack live in the CloudFront home region.
 // =============================================================================
 
-const ssm = new SSMClient({ region: REGION });
+const ssm = new SSMClient({ region: CLOUDFRONT_REGION });
 const cloudfront = new CloudFrontClient({ region: CLOUDFRONT_REGION });
 const acm = new ACMClient({ region: CLOUDFRONT_REGION });
 

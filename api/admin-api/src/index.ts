@@ -19,24 +19,27 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { logger } from 'hono/logger';
+
 import { loadConfig } from './lib/config.js';
+import { logger as appLogger } from './lib/observability/logger.js';
 import { getPool } from './lib/pg.js';
 import { cognitoJwtAuth, requireAdminGroup } from './middleware/auth.js';
+import { observabilityMiddleware } from './middleware/observability.js';
 import { userProvisionMiddleware } from './middleware/user-provision.js';
-import { createHealthRouter } from './routes/health.js';
-import { createArticlesRouter } from './routes/articles.js';
 import { createApplicationsRouter } from './routes/applications.js';
+import { createArticlesRouter } from './routes/articles.js';
 import { createAssetsRouter } from './routes/assets.js';
 import { createFinopsRouter } from './routes/finops.js';
 import { createGitHubRouter, createGitHubWebhookRouter } from './routes/github.js';
+import { createHealthRouter } from './routes/health.js';
 import { createIngestionRouter } from './routes/ingestion.js';
-import { createPipelinesRouter } from './routes/pipelines.js';
 import { createMeRouter } from './routes/me.js';
-import { createResumesRouter } from './routes/resumes.js';
-import { createResumeImportsRouter } from './routes/resume-imports.js';
+import { createObservabilityRouter } from './routes/observability.js';
+import { createPipelinesRouter } from './routes/pipelines.js';
 import { createPromptFeedbackRouter } from './routes/prompt-feedback.js';
 import { createPublicRouter } from './routes/public.js';
+import { createResumeImportsRouter } from './routes/resume-imports.js';
+import { createResumesRouter } from './routes/resumes.js';
 
 // ── Startup Validation ───────────────────────────────────────────────────────
 // loadConfig() throws immediately if any required env var is absent.
@@ -47,8 +50,10 @@ const config = loadConfig();
 // ── Application ──────────────────────────────────────────────────────────────
 const app = new Hono();
 
-// Request logging — structured output consumed by Loki via Alloy.
-app.use('*', logger());
+// Structured logging + RED metrics + request_id + Server-Timing.
+// Replaces hono/logger — emits pino JSON with trace_id/span_id from
+// the active OTel span, recorded as one line per request at completion.
+app.use('*', observabilityMiddleware);
 
 // CORS — allow only the tucaken-app TanStack origin.
 // The public-api has its own CORS configuration for portfolio visitors.
@@ -76,8 +81,13 @@ app.use(
   }),
 );
 
-// ── Health check (unauthenticated) ───────────────────────────────────────────
+// ── Health + observability endpoints (unauthenticated) ──────────────────────
+// /healthz   — legacy, kept for existing Dockerfile HEALTHCHECK
+// /livez     — K8s liveness probe (process alive)
+// /readyz    — K8s readiness probe (DB reachable)
+// /metrics   — Prometheus scrape target (NetworkPolicy restrict to monitoring ns)
 app.route('/healthz', createHealthRouter());
+app.route('/',        createObservabilityRouter(getPool(config)));
 
 // ── GitHub webhook (unauthenticated — HMAC-verified) ─────────────────────────
 // Must be registered BEFORE the JWT middleware which guards /api/admin/*.
@@ -126,7 +136,10 @@ app.notFound((ctx) => ctx.json({ error: 'Not found' }, 404));
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.onError((err, ctx) => {
-  console.error('[admin-api] unhandled error', { path: ctx.req.path, error: err });
+  // Use the request-bound logger when available so trace_id + request_id
+  // are attached automatically; fall back to root logger pre-middleware.
+  const log = ctx.get('logger') ?? appLogger;
+  log.error({ err, path: ctx.req.path }, 'unhandled error');
   return ctx.json({ error: 'Internal server error' }, 500);
 });
 
@@ -137,7 +150,6 @@ serve(
     port: config.port,
   },
   (info) => {
-    console.log(`[admin-api] Listening on http://0.0.0.0:${info.port}`);
-    console.log(`[admin-api] Cognito pool: ${config.cognitoUserPoolId}`);
+    appLogger.info({ port: info.port, cognito_pool: config.cognitoUserPoolId }, 'admin-api listening');
   },
 );

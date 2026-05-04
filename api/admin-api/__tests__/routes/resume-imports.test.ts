@@ -77,11 +77,11 @@ const TEST_IMAGE      = '123456789.dkr.ecr.eu-west-1.amazonaws.com/resume-import
 function buildApp() {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (c as any).set('userId', TEST_USER_ID);
     await next();
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   app.route('/', createResumeImportsRouter(testConfig as any));
   return app;
 }
@@ -145,7 +145,7 @@ describe('POST /:id/retry', () => {
 
   it('returns 401 when request is unauthenticated', async () => {
     const app = new Hono();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     app.route('/', createResumeImportsRouter(testConfig as any));
 
     const res = await app.request(`/${VALID_IMPORT_ID}/retry`, { method: 'POST' });

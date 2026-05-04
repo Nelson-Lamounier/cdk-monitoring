@@ -53,4 +53,7 @@ EXPOSE 3002
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- http://localhost:3002/healthz || exit 1
 
-CMD ["node", "dist/index.js"]
+# --import preloads the OTel SDK before any instrumented module evaluates.
+# A regular `import` from index.ts wouldn't work: ESM hoists all imports
+# (including http/pg/aws-sdk), and the SDK must monkey-patch them first.
+CMD ["node", "--import", "./dist/lib/observability/telemetry.js", "dist/index.js"]

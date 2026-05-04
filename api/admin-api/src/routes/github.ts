@@ -33,18 +33,20 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
+
 import { Hono } from 'hono';
 import type { Pool } from 'pg';
+
 import type { AdminApiConfig } from '../lib/config.js';
-import { AdminApiBindings, requireUserId } from '../lib/types.js';
-import { getPool } from '../lib/pg.js';
-import { getBatchApi } from '../lib/k8s.js';
 import { getJobImage, isImageConfigured } from '../lib/config.js';
 import {
     generateInstallationToken,
     getInstallationInfo,
     listInstallationRepos,
 } from '../lib/github-app.js';
+import { getBatchApi } from '../lib/k8s.js';
+import { getPool } from '../lib/pg.js';
+import { AdminApiBindings, requireUserId } from '../lib/types.js';
 
 // Push events: skip re-index if a job was already triggered within this window.
 const PUSH_COOLDOWN_MS = 30 * 60 * 1000;

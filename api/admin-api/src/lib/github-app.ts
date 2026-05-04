@@ -15,8 +15,9 @@
  * the network layer consistent.
  */
 
-import https from 'node:https';
 import { createPrivateKey } from 'node:crypto';
+import https from 'node:https';
+
 import { SignJWT, importPKCS8 } from 'jose';
 
 // =============================================================================

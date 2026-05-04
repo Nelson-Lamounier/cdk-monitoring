@@ -385,6 +385,20 @@ export interface TucakenSsmPaths {
     readonly comDistributionId: string;
     /** Redirect (.com) CloudFront distribution domain */
     readonly comDistributionDomain: string;
+    /**
+     * Expected `Authorization` header value for the edge basic-auth gate.
+     * Format: `Basic <base64(user:pass)>`.
+     *
+     * Read at synth time by `TucakenEdgeStack` when the env opts in (currently
+     * STAGING only). Absence disables the gate gracefully.
+     *
+     * Manual setup:
+     *   aws ssm put-parameter \
+     *     --name /tucaken/staging/edge/auth-expected \
+     *     --type String \
+     *     --value "Basic $(echo -n 'user:pass' | base64)"
+     */
+    readonly edgeAuthExpected: string;
 
     /** Wildcard path for IAM: /tucaken/{environment}/* */
     readonly wildcard: string;
@@ -405,6 +419,7 @@ export function tucakenSsmPaths(environment: Environment): TucakenSsmPaths {
         ioDistributionDomain: `${prefix}/edge/io-distribution-domain`,
         comDistributionId: `${prefix}/edge/com-distribution-id`,
         comDistributionDomain: `${prefix}/edge/com-distribution-domain`,
+        edgeAuthExpected: `${prefix}/edge/auth-expected`,
         wildcard: `${prefix}/*`,
     };
 }

@@ -9,17 +9,17 @@ import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 // Repository mocks
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgListResumesMock     = jest.fn() as jest.Mock<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgGetResumeMock       = jest.fn() as jest.Mock<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgGetActiveResumeMock = jest.fn() as jest.Mock<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgUpsertResumeMock    = jest.fn() as jest.Mock<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgDeleteResumeMock    = jest.fn() as jest.Mock<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgSetActiveResumeMock = jest.fn() as jest.Mock<any>;
 pgListResumesMock.mockResolvedValue([]);
 pgGetResumeMock.mockResolvedValue(null);
@@ -38,7 +38,9 @@ jest.unstable_mockModule('../../src/lib/repositories/resumes.js', () => ({
 }));
 
 jest.unstable_mockModule('../../src/lib/pg.js', () => ({
-  getPool: jest.fn(() => ({})),
+  getPool:  jest.fn(() => ({})),
+  withUser: async (_pool: unknown, _userId: string, fn: (db: { query: jest.Mock }) => Promise<unknown>) =>
+    fn({ query: jest.fn() }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -68,11 +70,13 @@ const testConfig = {
 function buildApp() {
   const app = new Hono();
   app.use('*', async (ctx, next) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (ctx as any).set('jwtPayload', { sub: 'test-user-sub' });
+     
+    (ctx as any).set('userId', 'test-user-sub');
     await next();
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   app.route('/', createResumesRouter(testConfig as any));
   return app;
 }
@@ -409,8 +413,10 @@ describe('POST /:id/activate — activate resume', () => {
     expect(pgSetActiveResumeMock).not.toHaveBeenCalled();
   });
 
-  it('calls setActiveResume with current active id and target id', async () => {
-    // First get for target, then second get returns activated resume after switch
+  it('calls setActiveResume with the userId and target id', async () => {
+    // setActiveResume's signature is (pool, userId, newActiveId) — RLS scopes
+    // the FALSE-flip to the user's own rows, so the route only needs to know
+    // *who* is activating, not which resume was previously active.
     pgGetResumeMock
       .mockResolvedValueOnce(PG_RESUME)
       .mockResolvedValueOnce({ ...PG_RESUME, isActive: true });
@@ -420,12 +426,12 @@ describe('POST /:id/activate — activate resume', () => {
     expect(res.status).toBe(200);
     expect(pgSetActiveResumeMock).toHaveBeenCalledWith(
       expect.anything(),
-      'active-uuid',
+      'test-user-sub',
       'resume-uuid-1',
     );
   });
 
-  it('passes null for current active when no resume is active', async () => {
+  it('forwards the userId regardless of whether a resume is currently active', async () => {
     pgGetResumeMock
       .mockResolvedValueOnce(PG_RESUME)
       .mockResolvedValueOnce({ ...PG_RESUME, isActive: true });
@@ -434,7 +440,7 @@ describe('POST /:id/activate — activate resume', () => {
     await buildApp().request('/resume-uuid-1/activate', { method: 'POST' });
     expect(pgSetActiveResumeMock).toHaveBeenCalledWith(
       expect.anything(),
-      null,
+      'test-user-sub',
       'resume-uuid-1',
     );
   });

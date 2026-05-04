@@ -23,7 +23,7 @@ const pgGetApplicationMock       = jest.fn<() => Promise<unknown>>().mockResolve
 const pgDeleteApplicationMock    = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
 const pgUpdateApplicationStatusMock = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const poolQueryMock = jest.fn() as jest.Mock<any>;
 poolQueryMock.mockResolvedValue({ rows: [] });
 
@@ -46,6 +46,8 @@ jest.unstable_mockModule('../../src/lib/k8s.js', () => ({
 
 jest.unstable_mockModule('../../src/lib/pg.js', () => ({
   getPool:    () => ({ query: poolQueryMock }),
+  withUser:   async (_pool: unknown, _userId: string, fn: (db: { query: typeof poolQueryMock }) => Promise<unknown>) =>
+    fn({ query: poolQueryMock }),
   _resetPool: () => {},
 }));
 
@@ -79,11 +81,12 @@ const testConfig = {
 function buildApp() {
   const app = new Hono();
   app.use('*', async (ctx, next) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (ctx as any).set('jwtPayload', { sub: 'test-user' });
+    (ctx as any).set('userId', 'test-user');
     await next();
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   app.route('/', createApplicationsRouter(testConfig as any));
   return app;
 }

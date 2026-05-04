@@ -54,11 +54,11 @@ const testConfig = {
 function buildApp() {
   const app = new Hono();
   app.use('*', async (ctx, next) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (ctx as any).set('jwtPayload', { sub: 'test-user' });
     await next();
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   app.route('/', createIngestionRouter(testConfig as any));
   return app;
 }

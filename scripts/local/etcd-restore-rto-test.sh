@@ -86,6 +86,30 @@ echo ""
 echo "=== RESULT ==="
 echo "Restore RTO: ${ELAPSED} seconds ($(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec)"
 echo "Finished: $(date)"
+
+# ── Push to Pushgateway so the result lands in Grafana automatically ─────
+# Set PUSHGATEWAY_URL + (optional) PUSHGATEWAY_AUTH before running. When unset
+# the script just prints the result like before.
+#
+# Metrics emitted:
+#   etcd_restore_rto_seconds      — gauge, last measured RTO
+#   etcd_restore_rto_test_total   — counter, incremented per run
+#
+# Group key: cluster (so multi-cluster results don't overwrite each other).
+if [[ -n "${PUSHGATEWAY_URL:-}" ]]; then
+  CLUSTER="${CLUSTER:-portfolio-development}"
+  AUTH_FLAGS=()
+  if [[ -n "${PUSHGATEWAY_AUTH:-}" ]]; then AUTH_FLAGS=(--user "${PUSHGATEWAY_AUTH}"); fi
+  BODY=$(printf '# TYPE etcd_restore_rto_seconds gauge\netcd_restore_rto_seconds %s\n# TYPE etcd_restore_rto_test_total counter\netcd_restore_rto_test_total 1\n' "${ELAPSED}")
+  echo ""
+  echo "Pushing to ${PUSHGATEWAY_URL}/metrics/job/etcd-restore-rto/cluster/${CLUSTER}"
+  curl --silent --show-error --fail --max-time 10 \
+       "${AUTH_FLAGS[@]}" \
+       --data-binary "${BODY}" \
+       "${PUSHGATEWAY_URL}/metrics/job/etcd-restore-rto/cluster/${CLUSTER}" \
+    || echo "WARN: Pushgateway push failed (RTO already printed above)"
+fi
+
 echo ""
 echo "Next step: update reasearch-brain/local/dora-metrics-*.md with this number."
 echo "Rollback available at: ${BACKUP_DIR}"

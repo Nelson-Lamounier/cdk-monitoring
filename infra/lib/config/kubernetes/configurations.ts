@@ -340,6 +340,24 @@ export interface K8sEdgeConfig {
     readonly baseDomain?: string;
     /** GitHub Actions ARC webhook subdomain (e.g., 'runners' -> runners.nelsonlamounier.com → EIP) */
     readonly runnersSubdomain?: string;
+    /**
+     * Loki push endpoint subdomain (e.g., 'loki-push' -> loki-push.nelsonlamounier.com → EIP).
+     * Set on a single env (dev) — that cluster is the canonical log sink for
+     * all environments. Staging/prod log shippers push to the same hostname.
+     */
+    readonly lokiPushSubdomain?: string;
+    /**
+     * Prometheus Pushgateway subdomain (e.g., 'pushgateway' -> pushgateway.nelsonlamounier.com → EIP).
+     * Same single-env (dev) ownership rule as lokiPushSubdomain — that
+     * cluster is the canonical metrics sink for all environments.
+     */
+    readonly pushgatewaySubdomain?: string;
+    /**
+     * MTTR webhook subdomain (e.g., 'mttr-webhook' -> mttr-webhook.nelsonlamounier.com → EIP).
+     * Same single-env (dev) ownership rule — the cluster that owns this DNS
+     * is the canonical incident-ingest endpoint for all environments.
+     */
+    readonly mttrWebhookSubdomain?: string;
 }
 
 /**
@@ -506,6 +524,13 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
             opsSubdomain: 'ops',
             baseDomain: 'nelsonlamounier.com',
             runnersSubdomain: 'runners',
+            // DEV cluster owns the loki-push DNS — staging/prod log shippers
+            // push to the same hostname. Leave undefined in higher envs.
+            lokiPushSubdomain: 'loki-push',
+            // Same single-owner rule for the Prometheus Pushgateway.
+            pushgatewaySubdomain: 'pushgateway',
+            // Same single-owner rule for the MTTR webhook receiver.
+            mttrWebhookSubdomain: 'mttr-webhook',
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),

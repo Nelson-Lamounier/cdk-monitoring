@@ -22,7 +22,9 @@ jest.unstable_mockModule('../../src/lib/k8s.js', () => ({
 }));
 
 jest.unstable_mockModule('../../src/lib/pg.js', () => ({
-  getPool:   () => ({}),
+  getPool:    () => ({}),
+  withUser:   async (_pool: unknown, _userId: string, fn: (db: { query: jest.Mock }) => Promise<unknown>) =>
+    fn({ query: jest.fn() }),
   _resetPool: () => {},
 }));
 
@@ -67,12 +69,17 @@ async function buildAuthedApp(jwtSub: string | null = 'test-user') {
   const app = new Hono();
   if (jwtSub !== null) {
     app.use('*', async (c, next) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       (c as any).set('jwtPayload', { sub: jwtSub });
+
+      (c as any).set('userId', jwtSub);
       await next();
     });
+  } else {
+    // Simulate the JWT-verify middleware blocking unauthenticated requests.
+    app.use('*', async (c) => c.json({ error: 'Unauthorized' }, 401));
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   app.route('/', createPipelinesRouter(testConfig as any));
   return app;
 }

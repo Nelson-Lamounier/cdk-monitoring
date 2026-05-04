@@ -15,7 +15,7 @@ const pgGetArticleBySlugMock = jest.fn<() => Promise<unknown>>().mockResolvedVal
 const pgListArticlesByStatusMock = jest.fn<() => Promise<never[]>>().mockResolvedValue([]);
 const pgListAllArticlesMock = jest.fn<() => Promise<never[]>>().mockResolvedValue([]);
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const poolQueryMock = jest.fn() as jest.Mock<any>;
 poolQueryMock.mockResolvedValue({ rows: [] });
 
@@ -29,6 +29,8 @@ jest.unstable_mockModule('../../src/lib/repositories/articles.js', () => ({
 
 jest.unstable_mockModule('../../src/lib/pg.js', () => ({
     getPool: jest.fn(() => ({ query: poolQueryMock })),
+    withUser: async (_pool: unknown, _userId: string, fn: (db: { query: typeof poolQueryMock }) => Promise<unknown>) =>
+        fn({ query: poolQueryMock }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -64,11 +66,13 @@ const testConfig = {
 function buildApp() {
   const app = new Hono();
   app.use('*', async (ctx, next) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (ctx as any).set('jwtPayload', { sub: 'test-user-sub' });
+     
+    (ctx as any).set('userId', 'test-user-sub');
     await next();
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   app.route('/', createArticlesRouter(testConfig as any));
   return app;
 }

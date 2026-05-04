@@ -377,15 +377,53 @@ export class TucakenEdgeStack extends cdk.Stack {
         });
 
         // =====================================================================
-        // CLOUDFRONT FUNCTION — apex/www normalization + .com → .io redirect
+        // CLOUDFRONT FUNCTION — apex/www normalization + (gated) basic-auth gate
         //
-        // Runs at the viewer-request stage on BOTH distributions. Cheap (~$0
-        // for typical SaaS scale) and faster than origin redirects.
+        // Runs at viewer-request on BOTH distributions. Order:
+        //   1. If host !== canonical apex → 301 to https://<apex><uri>
+        //      (handles www.tucaken.io, tucaken.com, www.tucaken.com)
+        //   2. (STAGING only) If `Authorization` header missing/wrong →
+        //      401 with `WWW-Authenticate: Basic realm="tucaken-staging"`
+        //   3. Pass-through to origin
+        //
+        // The auth gate is intentionally enabled on STAGING only — public
+        // users see a browser credential prompt; prod stays open. Removing
+        // the gate later is a one-line config change (set
+        // `enableEdgeAuth=false` or rotate envs out of the gate list).
+        //
+        // Credentials are read from SSM at synth time:
+        //   /tucaken/{env}/edge/auth-expected = "Basic <base64(user:pass)>"
+        //
+        // Rotation today = update SSM + `cdk deploy`. For zero-deploy rotation,
+        // migrate to CloudFront KeyValueStore (deferred — see commit history).
         // =====================================================================
         const ioDomain = props.ioDomain;
-        const redirectFunction = new cloudfront.Function(this, 'RedirectFunction', {
-            functionName: `${namePrefix}-redirect-${envName}`,
-            comment: 'Redirect www.tucaken.io / tucaken.com / www.tucaken.com to https://tucaken.io',
+        const enableEdgeAuth = envName === Environment.STAGING;
+        const expectedAuthHeader = enableEdgeAuth
+            ? ssm.StringParameter.valueFromLookup(this, tucakenPaths.edgeAuthExpected)
+            : '';
+
+        const authBlock = enableEdgeAuth
+            ? `
+    var expected = '${expectedAuthHeader}';
+    var auth = req.headers.authorization && req.headers.authorization.value;
+    if (auth !== expected) {
+        return {
+            statusCode: 401,
+            statusDescription: 'Unauthorized',
+            headers: {
+                'www-authenticate': { value: 'Basic realm="tucaken-staging"' },
+                'cache-control': { value: 'no-store' }
+            }
+        };
+    }`
+            : '';
+
+        const edgeFunction = new cloudfront.Function(this, 'EdgeFunction', {
+            functionName: `${namePrefix}-edge-${envName}`,
+            comment: enableEdgeAuth
+                ? 'Host normalize → 301; then basic-auth gate (STAGING)'
+                : 'Host normalize: redirect www/.com variants to https://tucaken.io',
             code: cloudfront.FunctionCode.fromInline(`
 function handler(event) {
     var req = event.request;
@@ -399,11 +437,15 @@ function handler(event) {
                 'location': { value: 'https://' + canonical + req.uri }
             }
         };
-    }
+    }${authBlock}
     return req;
 }
             `.trim()),
         });
+
+        const edgeFunctionAssociations: cloudfront.FunctionAssociation[] = [
+            { function: edgeFunction, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
+        ];
 
         // =====================================================================
         // PRIMARY DISTRIBUTION (.io)
@@ -432,6 +474,7 @@ function handler(event) {
                     viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
                     compress: true,
+                    functionAssociations: edgeFunctionAssociations,
                 },
                 {
                     pathPattern: '/_next/data/*',
@@ -440,6 +483,7 @@ function handler(event) {
                     viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
                     compress: true,
+                    functionAssociations: edgeFunctionAssociations,
                 },
                 // NextAuth.js callbacks — listed BEFORE /api/* (first-match-wins).
                 {
@@ -450,6 +494,7 @@ function handler(event) {
                     viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
                     compress: false,
+                    functionAssociations: edgeFunctionAssociations,
                 },
                 {
                     pathPattern: '/api/*',
@@ -459,6 +504,7 @@ function handler(event) {
                     viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
                     compress: false,
+                    functionAssociations: edgeFunctionAssociations,
                 },
             ],
             enableLogging: loggingEnabled,
@@ -470,14 +516,15 @@ function handler(event) {
             webAclId: this.webAclArn,
         });
 
-        // Attach the redirect function to the .io default behavior so
-        // www.tucaken.io is normalized to apex. Mutating after construction
-        // because BehaviorOptions doesn't expose functionAssociations through
-        // the wrapper construct — going direct on the underlying Distribution.
+        // Attach the edge function to the .io default behavior. The wrapper
+        // construct doesn't expose `functionAssociations` for the default
+        // behavior, so we go direct on the underlying CfnDistribution.
+        // (additionalBehaviors[] receive the function via BehaviorOptions
+        // above; this override only covers the default cache behavior.)
         const ioCfn = this.ioDistribution.distribution.node.defaultChild as cloudfront.CfnDistribution;
         ioCfn.addPropertyOverride(
             'DistributionConfig.DefaultCacheBehavior.FunctionAssociations',
-            [{ EventType: 'viewer-request', FunctionARN: redirectFunction.functionArn }],
+            [{ EventType: 'viewer-request', FunctionARN: edgeFunction.functionArn }],
         );
 
         // =====================================================================
@@ -516,7 +563,7 @@ function handler(event) {
         const comCfn = this.comDistribution.distribution.node.defaultChild as cloudfront.CfnDistribution;
         comCfn.addPropertyOverride(
             'DistributionConfig.DefaultCacheBehavior.FunctionAssociations',
-            [{ EventType: 'viewer-request', FunctionARN: redirectFunction.functionArn }],
+            [{ EventType: 'viewer-request', FunctionARN: edgeFunction.functionArn }],
         );
 
         // CFR3: logging may be intentionally disabled in non-prod
