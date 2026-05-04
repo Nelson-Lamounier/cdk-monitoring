@@ -248,6 +248,9 @@ export class LaunchTemplateConstruct extends Construct {
             const role = new iam.Role(this, 'InstanceRole', {
                 assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
                 description: `IAM role for ${namePrefix} EC2 instances`,
+                // GENERATE_IF_NEEDED lets this role be referenced cross-environment
+                // (e.g. from the OIDC stack in us-east-1) without a CDK synth error.
+                roleName: cdk.PhysicalName.GENERATE_IF_NEEDED,
                 managedPolicies: [
                     iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
                     iam.ManagedPolicy.fromAwsManagedPolicyName('CloudWatchAgentServerPolicy'),

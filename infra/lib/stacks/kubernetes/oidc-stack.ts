@@ -179,6 +179,15 @@ export class KubernetesOidcStack extends cdk.Stack {
         const jwksBucket = jwksBucketConstruct.bucket;
         this.jwksBucket = jwksBucket;
 
+        // JWKS bucket serves static, non-sensitive discovery docs. Access
+        // logging would require a separate log bucket in the same region,
+        // adding cost and operational overhead for no security benefit.
+        NagSuppressions.addResourceSuppressions(
+            jwksBucketConstruct,
+            [{ id: 'AwsSolutions-S1', reason: 'JWKS bucket holds public OIDC discovery docs — access logs add cost without value.' }],
+            true,
+        );
+
         // Grant the control-plane node IAM role write access — bootstrap
         // publishes the discovery doc + JWKS during cluster formation.
         if (props.controlPlaneNodeRoleArn) {
