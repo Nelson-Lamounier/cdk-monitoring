@@ -1455,6 +1455,16 @@ jobs:
         run: yarn install --immutable
         working-directory: infra
 
+      # cdk-finalize loads the compiled project registry from
+      # infra/dist/scripts/shared/stacks.js via require(); without this build
+      # step the registry is empty on the fresh runner and ci-summary fails
+      # with "Unknown project: kubernetes". Other jobs in this workflow run
+      # cdk deploy, which synthesises via tsx and does not need a prebuild.
+      - name: Build infra (compile registry for cdk-finalize)
+        if: steps.prereqs.outputs.skip != 'true'
+        run: yarn build
+        working-directory: infra
+
       - name: Configure AWS Credentials
         if: steps.prereqs.outputs.skip != 'true'
         uses: ./.github/actions/configure-aws
