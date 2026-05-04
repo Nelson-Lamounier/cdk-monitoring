@@ -582,11 +582,12 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 oidcDomain,
                 hostedZoneId: edgeConfig.hostedZoneId ?? '',
                 crossAccountRoleArn: edgeConfig.crossAccountRoleArn ?? '',
-                // Bootstrap on the control plane writes JWKS into the
-                // bucket — grant the control-plane node IAM role
-                // s3:PutObject. The role is exposed via the
-                // ControlPlaneStack's instanceRole property.
-                controlPlaneNodeRoleArn: controlPlaneStack.instanceRole?.roleArn,
+                // controlPlaneNodeRoleArn omitted intentionally: passing
+                // instanceRole.roleArn across a region boundary (eu-west-1 →
+                // us-east-1) creates a CDK cross-environment Token reference
+                // that changes the ControlPlane CloudFormation export key and
+                // breaks AppIam's import. The bootstrap script grants itself
+                // s3:PutObject via the SSM-stored bucket ARN instead.
                 namePrefix,
                 env: edgeEnv,
             },
