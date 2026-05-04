@@ -788,12 +788,14 @@ jobs:
   # ===========================================================================
   deploy-monitoring-pool:
     name: Deploy Monitoring Pool ASG
-    needs: [setup, deploy-controlplane, verify-controlplane-stack, smoke-test-ami-refresh]
+    needs: [setup, deploy-controlplane, verify-controlplane-stack, smoke-test-ami-refresh, deploy-general-pool, verify-general-pool-stack]
     if: >-
       always()
       && needs.deploy-controlplane.result == 'success'
       && needs.verify-controlplane-stack.result == 'success'
       && needs.smoke-test-ami-refresh.result == 'success'
+      && needs.deploy-general-pool.result == 'success'
+      && needs.verify-general-pool-stack.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.monitoring-pool-stack }}
