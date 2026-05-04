@@ -40,7 +40,10 @@ inputs:
     description: Deploy environment (development | staging | production)
     required: true
   status:
-    description: Deploy outcome (succeeded | failed). Pass ${{ job.status }}.
+    # NOTE: do not embed expression syntax in this description — the action
+    # manifest loader template-validates it, and the `job` context is not
+    # available inside composite actions (only workflow steps see it).
+    description: Deploy outcome (succeeded or failed). Pass job.status from the calling workflow.
     required: true
   git-sha:
     description: Commit SHA being deployed
