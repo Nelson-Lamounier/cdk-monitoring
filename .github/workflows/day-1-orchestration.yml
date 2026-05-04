@@ -245,6 +245,8 @@ jobs:
         env:
           LOKI_PUSH_URL:        ${{ secrets.LOKI_PUSH_URL }}
           LOKI_PUSH_BASIC_AUTH: ${{ secrets.LOKI_PUSH_BASIC_AUTH }}
+          PUSHGATEWAY_URL: ${{ secrets.PUSHGATEWAY_URL }}
+          PUSHGATEWAY_BASIC_AUTH: ${{ secrets.PUSHGATEWAY_BASIC_AUTH }}
         with:
           service:     cdk-day-1
           environment: development
