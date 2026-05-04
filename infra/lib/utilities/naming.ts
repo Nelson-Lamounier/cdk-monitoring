@@ -43,6 +43,7 @@ export const STACK_REGISTRY = {
         tucakenEdge: 'TucakenEdge',
         observability: 'Observability',
         platformRds: 'PlatformRds',
+        oidc: 'Oidc',
     },
     org: {
         dnsRole: 'DnsRole',

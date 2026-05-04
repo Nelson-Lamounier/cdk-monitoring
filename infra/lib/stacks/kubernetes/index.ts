@@ -23,3 +23,5 @@ export { KubernetesWorkerAsgStack } from './worker-asg-stack';
 export type { KubernetesWorkerAsgStackProps, WorkerPoolType } from './worker-asg-stack';
 export { PlatformRdsStack } from './platform-rds-stack';
 export type { PlatformRdsStackProps } from './platform-rds-stack';
+export { KubernetesOidcStack } from './oidc-stack';
+export type { KubernetesOidcStackProps } from './oidc-stack';

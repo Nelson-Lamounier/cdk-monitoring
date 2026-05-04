@@ -298,6 +298,30 @@ export interface K8sSsmPaths {
     /** Prometheus basic auth secret (htpasswd hash) */
     readonly prometheusBasicAuth: string;
 
+    // --- IRSA / OIDC ---
+    /**
+     * OIDC issuer URL — the value passed to kube-apiserver
+     * `--service-account-issuer` and used as `iss` in pod-projected JWTs.
+     *
+     * Path-scoped per env (`https://oidc.nelsonlamounier.com/k8s-dev`)
+     * so a single CloudFront distribution can host every cluster's
+     * discovery docs without subdomain collisions.
+     */
+    readonly oidcIssuerUrl: string;
+    /**
+     * IAM OpenIdConnectProvider ARN — referenced in role trust policies
+     * for IRSA-enabled ServiceAccounts.
+     */
+    readonly oidcProviderArn: string;
+    /**
+     * S3 bucket name where the kubernetes-bootstrap control-plane
+     * publishes openid-configuration + JWKS. Read by IAM principals that
+     * need to verify pod tokens out-of-band (rare).
+     */
+    readonly oidcJwksBucketName: string;
+    /** S3 bucket ARN — for IAM-policy scoping. */
+    readonly oidcJwksBucketArn: string;
+
     // --- Node Termination Handler (NTH) ---
     /**
      * SQS queue URL consumed by aws-node-termination-handler.
@@ -363,6 +387,12 @@ export function k8sSsmPaths(environment: Environment): K8sSsmPaths {
         cloudfrontOriginSecret: `${prefix}/cloudfront-origin-secret`,
         tucakenCloudfrontOriginSecret: `${prefix}/tucaken-cloudfront-origin-secret`,
         prometheusBasicAuth: `${prefix}/prometheus-basic-auth`,
+
+        // IRSA / OIDC
+        oidcIssuerUrl: `${prefix}/oidc/issuer-url`,
+        oidcProviderArn: `${prefix}/oidc/provider-arn`,
+        oidcJwksBucketName: `${prefix}/oidc/jwks-bucket-name`,
+        oidcJwksBucketArn: `${prefix}/oidc/jwks-bucket-arn`,
 
         // Node Termination Handler
         nthQueueUrl: `${prefix}/nth/queue-url`,

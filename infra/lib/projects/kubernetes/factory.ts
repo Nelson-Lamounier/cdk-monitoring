@@ -52,6 +52,7 @@ import {
     KubernetesDataStack,
     KubernetesEdgeStack,
     KubernetesObservabilityStack,
+    KubernetesOidcStack,
     KubernetesWorkerAsgStack,
     PlatformRdsStack,
     TucakenEdgeStack,
@@ -99,6 +100,14 @@ export interface KubernetesFactoryContext extends ProjectFactoryContext {
     readonly tucakenComDomain?: string;
     readonly tucakenIoHostedZoneId?: string;
     readonly tucakenComHostedZoneId?: string;
+
+    /**
+     * Public domain hosting the OIDC discovery endpoint for IRSA on the
+     * self-hosted kubeadm cluster. Single CloudFront distribution serves
+     * every env via path-based separation (`/k8s-{shortEnv}`).
+     * @default 'oidc.nelsonlamounier.com'
+     */
+    readonly oidcDomain?: string;
 
     // API stack email configuration
     /** Override notification email from config */
@@ -548,6 +557,43 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         edgeStack.addDependency(apiStack);
         stacks.push(edgeStack);
         stackMap.edge = edgeStack;
+
+        // =================================================================
+        // Stack 6c: OIDC STACK (us-east-1)
+        //
+        // S3 + CloudFront + IAM OpenIdConnectProvider for IRSA on the
+        // self-hosted kubeadm cluster. The kubernetes-bootstrap repo
+        // populates the bucket with the cluster's JWKS during control-
+        // plane init.
+        //
+        // Lives in us-east-1 alongside the edge stacks because
+        // CloudFront + ACM-for-CloudFront require it. Soft-skips when
+        // hosted-zone / cross-account-role config is missing.
+        // =================================================================
+        const oidcDomain = context.oidcDomain
+            ?? process.env.OIDC_DOMAIN
+            ?? 'oidc.nelsonlamounier.com';
+
+        const oidcStack = new KubernetesOidcStack(
+            scope,
+            stackId(this.namespace, 'Oidc', environment),
+            {
+                targetEnvironment: environment,
+                oidcDomain,
+                hostedZoneId: edgeConfig.hostedZoneId ?? '',
+                crossAccountRoleArn: edgeConfig.crossAccountRoleArn ?? '',
+                // Bootstrap on the control plane writes JWKS into the
+                // bucket — grant the control-plane node IAM role
+                // s3:PutObject. The role is exposed via the
+                // ControlPlaneStack's instanceRole property.
+                controlPlaneNodeRoleArn: controlPlaneStack.instanceRole?.roleArn,
+                namePrefix,
+                env: edgeEnv,
+            },
+        );
+        oidcStack.addDependency(controlPlaneStack);
+        stacks.push(oidcStack);
+        stackMap.oidc = oidcStack;
 
         // =================================================================
         // Stack 6b: TUCAKEN EDGE STACK (us-east-1)

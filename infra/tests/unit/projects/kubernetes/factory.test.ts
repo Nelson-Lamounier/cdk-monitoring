@@ -3,9 +3,9 @@
  * KubernetesProjectFactory Unit Tests
  *
  * Tests for the factory that creates shared kubeadm Kubernetes infrastructure.
- * Current architecture (10 stacks, cattle-model ASG pools):
+ * Current architecture (11 stacks, cattle-model ASG pools):
  *   Data, Base, ControlPlane,
- *   GeneralPool (ASG), MonitoringPool (ASG), AppIam, PlatformRds, Api, Edge, Observability.
+ *   GeneralPool (ASG), MonitoringPool (ASG), AppIam, PlatformRds, Api, Edge, Oidc, Observability.
  *
  * The legacy named worker stacks (Worker, MonitoringWorker) have been fully
  * decommissioned and replaced by the Kubernetes-native ASG pool model.
@@ -71,14 +71,14 @@ describe('KubernetesProjectFactory', () => {
             app = new cdk.App();
         });
 
-        it('should create 10 stacks: Data, Base, ControlPlane, GeneralPool, MonitoringPool, AppIam, PlatformRds, Api, Edge, Observability', () => {
+        it('should create 11 stacks: Data, Base, ControlPlane, GeneralPool, MonitoringPool, AppIam, PlatformRds, Api, Edge, Oidc, Observability', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
             const { stacks, stackMap } = factory.createAllStacks(app, context);
 
-            // 10 stacks: ssm-automation migrated to kubernetes-bootstrap repo; ASG pools replaced legacy workers.
-            expect(stacks).toHaveLength(10);
+            // 11 stacks: ssm-automation migrated to kubernetes-bootstrap repo; ASG pools replaced legacy workers; OIDC added for IRSA.
+            expect(stacks).toHaveLength(11);
 
             // Core infrastructure stacks
             expect(stackMap).toHaveProperty('data');
@@ -88,6 +88,7 @@ describe('KubernetesProjectFactory', () => {
             expect(stackMap).toHaveProperty('platformRds');
             expect(stackMap).toHaveProperty('api');
             expect(stackMap).toHaveProperty('edge');
+            expect(stackMap).toHaveProperty('oidc');
             expect(stackMap).toHaveProperty('observability');
 
             // Cattle-model ASG pools (replaced legacy named worker stacks)
@@ -99,7 +100,7 @@ describe('KubernetesProjectFactory', () => {
             expect(stackMap).not.toHaveProperty('monitoringWorker');
         });
 
-        it('should order stacks: Data → Base → ControlPlane → GeneralPool → MonitoringPool → AppIam → PlatformRds → Api → Edge → Observability', () => {
+        it('should order stacks: Data → Base → ControlPlane → GeneralPool → MonitoringPool → AppIam → PlatformRds → Api → Edge → Oidc → Observability', () => {
             const factory = new KubernetesProjectFactory(Environment.DEVELOPMENT);
             const context = createFactoryContext();
 
@@ -116,7 +117,8 @@ describe('KubernetesProjectFactory', () => {
             expect(stackNames[6]).toContain('PlatformRds');
             expect(stackNames[7]).toContain('Api');
             expect(stackNames[8]).toContain('Edge');
-            expect(stackNames[9]).toContain('Observability');
+            expect(stackNames[9]).toContain('Oidc');
+            expect(stackNames[10]).toContain('Observability');
         });
 
         it('should name stacks correctly with environment suffix', () => {
