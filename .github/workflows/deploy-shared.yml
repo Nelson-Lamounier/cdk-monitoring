@@ -9,24 +9,22 @@
 #
 # All four stacks are independent and deploy in parallel.
 # Must be deployed BEFORE kubernetes/bedrock stacks.
+#
+# Trigger chain:
+#   push → main → CI ("Continuous Integration") completes
+#                 ↓  workflow_run [completed, conclusion=success, branch=main]
+#               Deploy Shared (this workflow)
+#                 ↓  gate job — only proceeds if shared-infra paths changed
+#               Deploy K8s (deploy-kubernetes.yml, triggered by this workflow's completion)
 
 name: Deploy Shared (Dev)
 
 on:
-  workflow_dispatch: # Manual trigger
-  # push:
-  #   branches: [develop]
-  #   paths:
-  #     - "infra/lib/shared/**"
-  #     - "infra/lib/stacks/shared/**"
-  #     - "infra/lib/common/finops/**"
-  #     - "infra/lib/common/security/**"
-  #     - "infra/lib/common/iam/**"
-  #     - "infra/bin/app.ts"
-  #     - "scripts/deployment/stacks.ts"
-  #     - ".github/workflows/deploy-shared.yml"
-  #     - ".github/workflows/_deploy-stack.yml"
-  #     - ".github/actions/**"
+  workflow_dispatch: # Manual trigger — always deploys regardless of changed paths
+  workflow_run:
+    workflows: ["Continuous Integration"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   id-token: write
@@ -38,10 +36,69 @@ concurrency:
 
 jobs:
   # ===========================================================================
+  # Gate — CI must have succeeded + relevant paths must have changed.
+  # Skips all deploy jobs on pushes that didn't touch shared-infra files.
+  # workflow_dispatch bypasses the paths check and always deploys.
+  # ===========================================================================
+  gate:
+    name: Check CI result + changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.decide.outputs.deploy }}
+    steps:
+      - name: Abort if CI did not succeed
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'
+        run: |
+          echo "CI concluded: ${{ github.event.workflow_run.conclusion }} — skipping deploy."
+          exit 1
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Check out the commit that triggered CI, not the workflow file HEAD.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 2  # HEAD + HEAD~1 required for the diff below
+
+      - name: Detect changed paths
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: paths
+        if: github.event_name == 'workflow_run'
+        with:
+          base: HEAD~1
+          filters: |
+            relevant:
+              - "infra/lib/shared/**"
+              - "infra/lib/stacks/shared/**"
+              - "infra/lib/common/finops/**"
+              - "infra/lib/common/security/**"
+              - "infra/lib/common/iam/**"
+              - "infra/lib/common/cognito/**"
+              - "infra/bin/app.ts"
+              - "scripts/deployment/stacks.ts"
+              - ".github/workflows/deploy-shared.yml"
+              - ".github/workflows/_deploy-stack.yml"
+              - ".github/actions/**"
+
+      - name: Decide whether to deploy
+        id: decide
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "Manual trigger — deploying."
+          elif [[ "${{ steps.paths.outputs.relevant }}" == "true" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "Shared-infra paths changed — deploying."
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "No shared-infra paths changed — skipping deploy."
+          fi
+
+  # ===========================================================================
   # Stack 1: VPC + ECR — Foundation for all projects
   # ===========================================================================
   deploy-infra:
     name: Deploy VPC + ECR
+    needs: [gate]
+    if: needs.gate.outputs.deploy == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-Infra-development
@@ -59,6 +116,8 @@ jobs:
   # ===========================================================================
   deploy-security:
     name: Deploy Security Baseline
+    needs: [gate]
+    if: needs.gate.outputs.deploy == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-SecurityBaseline-development
@@ -78,6 +137,8 @@ jobs:
   # ===========================================================================
   deploy-finops:
     name: Deploy FinOps
+    needs: [gate]
+    if: needs.gate.outputs.deploy == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-FinOps-development
@@ -97,6 +158,8 @@ jobs:
   # ===========================================================================
   deploy-crossplane:
     name: Deploy Crossplane IAM
+    needs: [gate]
+    if: needs.gate.outputs.deploy == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-Crossplane-development
@@ -115,6 +178,8 @@ jobs:
   # ===========================================================================
   deploy-cognito:
     name: Deploy Cognito Auth
+    needs: [gate]
+    if: needs.gate.outputs.deploy == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-CognitoAuth-development
@@ -126,11 +191,10 @@ jobs:
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
-
   deploy-marker:
     name: Loki deploy marker
-    needs: [deploy-infra, deploy-security, deploy-finops, deploy-crossplane, deploy-cognito]
-    if: always()
+    needs: [gate, deploy-infra, deploy-security, deploy-finops, deploy-crossplane, deploy-cognito]
+    if: always() && needs.gate.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:
