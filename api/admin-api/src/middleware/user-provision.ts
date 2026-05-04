@@ -22,8 +22,9 @@
  */
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import type { Pool } from 'pg';
-import type { AdminApiBindings } from '../lib/types.js';
+
 import { upsertUser } from '../lib/repositories/users.js';
+import type { AdminApiBindings } from '../lib/types.js';
 
 interface CognitoIdentity {
   providerName:     string;

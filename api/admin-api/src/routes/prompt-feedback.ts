@@ -7,14 +7,15 @@
  *   GET  /stats      — aggregated quality metrics for the admin dashboard
  */
 import { Hono } from 'hono';
+
 import type { AdminApiConfig } from '../lib/config.js';
 import { getPool } from '../lib/pg.js';
-import { requireUserId } from '../lib/types.js';
-import type { AdminApiBindings } from '../lib/types.js';
 import {
   createPromptFeedback,
   getPromptQualityStats,
 } from '../lib/repositories/prompt-observability.js';
+import { requireUserId } from '../lib/types.js';
+import type { AdminApiBindings } from '../lib/types.js';
 
 export function createPromptFeedbackRouter(config: AdminApiConfig): Hono<AdminApiBindings> {
   const router = new Hono<AdminApiBindings>();

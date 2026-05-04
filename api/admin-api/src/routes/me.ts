@@ -7,10 +7,11 @@
  * userProvisionMiddleware makes the upsert idempotent.
  */
 import { Hono } from 'hono';
+
 import type { AdminApiConfig } from '../lib/config.js';
-import type { AdminApiBindings } from '../lib/types.js';
 import { getPool } from '../lib/pg.js';
 import { getUserPlanStatus } from '../lib/repositories/users.js';
+import type { AdminApiBindings } from '../lib/types.js';
 
 export function createMeRouter(config: AdminApiConfig): Hono<AdminApiBindings> {
   const router = new Hono<AdminApiBindings>();

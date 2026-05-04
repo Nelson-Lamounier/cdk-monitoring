@@ -17,9 +17,10 @@
  *   URL expiry: 5 minutes — sufficient for a direct upload.
  */
 
-import { Hono } from 'hono';
 import { S3Client, DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { Hono } from 'hono';
+
 import type { AdminApiConfig } from '../lib/config.js';
 import { isAssetsBucketConfigured } from '../lib/config.js';
 

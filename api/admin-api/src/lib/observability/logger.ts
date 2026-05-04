@@ -11,8 +11,8 @@
  *   default 'info' in prod, 'debug' in dev.
  */
 
-import { pino, type Logger } from 'pino';
 import { context, trace } from '@opentelemetry/api';
+import { pino, type Logger } from 'pino';
 
 const level = process.env['LOG_LEVEL'] ?? (process.env['NODE_ENV'] === 'production' ? 'info' : 'debug');
 

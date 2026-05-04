@@ -12,9 +12,11 @@
  *                                       returns 202 { status, jobName }.
  */
 import { createHash } from 'node:crypto';
+
+import type { V1Job } from '@kubernetes/client-node';
 import { Hono } from 'hono';
 import type { JWTPayload } from 'jose';
-import type { V1Job } from '@kubernetes/client-node';
+
 import type { AdminApiConfig } from '../lib/config.js';
 import { getJobImage, isImageConfigured } from '../lib/config.js';
 import { getBatchApi } from '../lib/k8s.js';

@@ -20,9 +20,9 @@
  */
 
 import { Hono } from 'hono';
+
 import type { AdminApiConfig } from '../lib/config.js';
 import { getPool, withUser } from '../lib/pg.js';
-import type { AdminApiBindings } from '../lib/types.js';
 import {
     upsertArticle,
     deleteArticle as pgDeleteArticle,
@@ -30,6 +30,7 @@ import {
     listArticlesByStatus,
     listAllArticles,
 } from '../lib/repositories/articles.js';
+import type { AdminApiBindings } from '../lib/types.js';
 
 /**
  * Create the articles admin router.

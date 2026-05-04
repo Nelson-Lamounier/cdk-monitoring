@@ -17,8 +17,8 @@
  * For staff-only routes, apply requireAdminGroup() as additional middleware.
  */
 
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import type { Context, MiddlewareHandler, Next } from 'hono';
+import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 
 /** JWKS caches per pool ID to avoid redundant HTTP fetches. */
 const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();

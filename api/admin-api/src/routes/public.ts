@@ -11,6 +11,7 @@
  *   email/password) before Cognito creates a conflicting native user.
  */
 import { Hono } from 'hono';
+
 import type { AdminApiConfig } from '../lib/config.js';
 import { getPool } from '../lib/pg.js';
 import { userExistsByEmail } from '../lib/repositories/users.js';

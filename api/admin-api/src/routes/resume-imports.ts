@@ -27,15 +27,16 @@
  *   DELETE /career-entries/:eid — delete entry (cascades embeddings)
  */
 import crypto from 'node:crypto';
-import { Hono } from 'hono';
+
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { V1Job } from '@kubernetes/client-node';
+import { Hono } from 'hono';
+
 import type { AdminApiConfig } from '../lib/config.js';
 import { getJobImage, isImageConfigured, isAssetsBucketConfigured } from '../lib/config.js';
 import { getBatchApi } from '../lib/k8s.js';
 import { getPool } from '../lib/pg.js';
-import { getUserPlanStatus } from '../lib/repositories/users.js';
 import {
   createResumeImport,
   markUploadComplete,
@@ -48,6 +49,7 @@ import {
   updateCareerEntry,
   deleteCareerEntry,
 } from '../lib/repositories/career-history.js';
+import { getUserPlanStatus } from '../lib/repositories/users.js';
 import { requireUserId } from '../lib/types.js';
 import type { AdminApiBindings } from '../lib/types.js';
 

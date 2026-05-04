@@ -19,26 +19,27 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+
 import { loadConfig } from './lib/config.js';
-import { getPool } from './lib/pg.js';
 import { logger as appLogger } from './lib/observability/logger.js';
-import { observabilityMiddleware } from './middleware/observability.js';
+import { getPool } from './lib/pg.js';
 import { cognitoJwtAuth, requireAdminGroup } from './middleware/auth.js';
+import { observabilityMiddleware } from './middleware/observability.js';
 import { userProvisionMiddleware } from './middleware/user-provision.js';
-import { createHealthRouter } from './routes/health.js';
-import { createObservabilityRouter } from './routes/observability.js';
-import { createArticlesRouter } from './routes/articles.js';
 import { createApplicationsRouter } from './routes/applications.js';
+import { createArticlesRouter } from './routes/articles.js';
 import { createAssetsRouter } from './routes/assets.js';
 import { createFinopsRouter } from './routes/finops.js';
 import { createGitHubRouter, createGitHubWebhookRouter } from './routes/github.js';
+import { createHealthRouter } from './routes/health.js';
 import { createIngestionRouter } from './routes/ingestion.js';
-import { createPipelinesRouter } from './routes/pipelines.js';
 import { createMeRouter } from './routes/me.js';
-import { createResumesRouter } from './routes/resumes.js';
-import { createResumeImportsRouter } from './routes/resume-imports.js';
+import { createObservabilityRouter } from './routes/observability.js';
+import { createPipelinesRouter } from './routes/pipelines.js';
 import { createPromptFeedbackRouter } from './routes/prompt-feedback.js';
 import { createPublicRouter } from './routes/public.js';
+import { createResumeImportsRouter } from './routes/resume-imports.js';
+import { createResumesRouter } from './routes/resumes.js';
 
 // ── Startup Validation ───────────────────────────────────────────────────────
 // loadConfig() throws immediately if any required env var is absent.

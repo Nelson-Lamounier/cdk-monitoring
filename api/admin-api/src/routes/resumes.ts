@@ -20,10 +20,11 @@
  */
 
 import { randomUUID } from 'node:crypto';
+
 import { Hono } from 'hono';
+
 import type { AdminApiConfig } from '../lib/config.js';
 import { getPool, withUser } from '../lib/pg.js';
-import type { AdminApiBindings } from '../lib/types.js';
 import {
     upsertResume,
     getResume as pgGetResume,
@@ -32,6 +33,7 @@ import {
     deleteResume as pgDeleteResume,
     setActiveResume,
 } from '../lib/repositories/resumes.js';
+import type { AdminApiBindings } from '../lib/types.js';
 
 export function createResumesRouter(config: AdminApiConfig): Hono<AdminApiBindings> {
   const router = new Hono<AdminApiBindings>();

@@ -15,6 +15,7 @@
 
 import { Hono } from 'hono';
 import type { Pool } from 'pg';
+
 import { registry } from '../lib/observability/metrics.js';
 
 export function createObservabilityRouter(pool: Pool): Hono {

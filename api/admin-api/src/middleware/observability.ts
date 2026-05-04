@@ -11,10 +11,12 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { MiddlewareHandler } from 'hono';
+
 import { trace } from '@opentelemetry/api';
-import { httpRequestsTotal, httpRequestDurationSeconds } from '../lib/observability/metrics.js';
+import type { MiddlewareHandler } from 'hono';
+
 import { logger as rootLogger } from '../lib/observability/logger.js';
+import { httpRequestsTotal, httpRequestDurationSeconds } from '../lib/observability/metrics.js';
 
 declare module 'hono' {
   interface ContextVariableMap {
