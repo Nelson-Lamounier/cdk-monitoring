@@ -44,6 +44,29 @@ const DEFAULT_RESOURCES = {
     limits:   { memory: '2Gi',   cpu: '1000m' },
 };
 
+/**
+ * Returns the standard observability env vars every K8s Job pod inherits.
+ * Centralised here so all dispatch routes (ingestion, article-pipeline,
+ * job-strategist, resume-import) carry identical OTel + Pyroscope +
+ * Pushgateway wiring without per-route copy-paste drift.
+ *
+ * @param serviceName  service.name on every span and Pushgateway group key.
+ * @param suffixInput  unique-per-run identifier (e.g. importId, pipelineRunId)
+ *                     — flows into trace resource attributes for searchability.
+ */
+export function observabilityEnv(serviceName: string, suffixInput: string): { name: string; value: string }[] {
+    const env = process.env['DEPLOY_ENV'] ?? 'dev';
+    return [
+        { name: 'OTEL_SERVICE_NAME',           value: serviceName },
+        { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://alloy.monitoring.svc.cluster.local:4318' },
+        { name: 'OTEL_RESOURCE_ATTRIBUTES',    value: `deployment.environment=${env},k8s.cluster=portfolio,run.id=${suffixInput}` },
+        { name: 'PYROSCOPE_SERVER_ADDRESS',    value: 'http://pyroscope.monitoring.svc.cluster.local:4040' },
+        { name: 'PUSHGATEWAY_URL',             value: 'http://pushgateway.monitoring.svc.cluster.local:9091' },
+        { name: 'DEPLOY_ENV',                  value: env },
+        { name: 'LOG_LEVEL',                   value: 'info' },
+    ];
+}
+
 export function buildPipelineJob(input: BuildJobInput): V1Job {
     const suffix  = createHash('sha1').update(input.suffixInput).digest('hex').slice(0, 8);
     const stem    = sanitizeLabel(input.nameStem).slice(0, 50);
@@ -51,6 +74,17 @@ export function buildPipelineJob(input: BuildJobInput): V1Job {
     const sanitisedLabels = Object.fromEntries(
         Object.entries(input.labels).map(([k, v]) => [k, sanitizeLabel(v).slice(0, 63) || 'unknown']),
     );
+
+    // Auto-merge observability env. Caller's env wins on conflict — the
+    // default merge order (spread caller last) is intentional so a route
+    // can override OTEL_SERVICE_NAME for nested operations (e.g. coach
+    // sub-pipeline) without losing the rest.
+    const obsName = sanitizeLabel(input.nameStem.split('-').slice(0, -1).join('-')) || input.nameStem;
+    const env = [
+        ...observabilityEnv(obsName, input.suffixInput),
+        ...input.env,
+    ];
+
     return {
         apiVersion: 'batch/v1',
         kind:       'Job',
@@ -68,7 +102,7 @@ export function buildPipelineJob(input: BuildJobInput): V1Job {
                         name:    'pipeline',
                         image:   input.image,
                         command: input.command,
-                        env:     input.env,
+                        env,
                         envFrom: input.envFromSecretRefs.map(name => ({ secretRef: { name } })),
                         resources: input.resources ?? DEFAULT_RESOURCES,
                     }],
