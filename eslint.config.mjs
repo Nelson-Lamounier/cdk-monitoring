@@ -10,8 +10,10 @@ import { dirname } from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Load custom rules (ES module import)
-import localRules from "./.eslint-local-rules.mjs";
+// Load custom rules (ES module import).
+// Local rules live under infra/ alongside the rest of the CDK app; the path
+// here is relative to this config, not to wherever the linter is invoked.
+import localRules from "./infra/.eslint-local-rules.mjs";
 
 export default [
     // Base configurations
@@ -67,8 +69,16 @@ export default [
                 ecmaVersion: "latest",
                 sourceType: "module",
                 tsconfigRootDir: __dirname,
-                // Support multiple tsconfig files common in CDK projects
-                project: ["./tsconfig.json", "./tsconfig.dev.json"],
+                // Monorepo workspaces each ship their own tsconfig. List the
+                // active ones so the parser can resolve files from any
+                // package the root lint sweep touches. Add new workspace
+                // tsconfigs here when introducing new packages.
+                project: [
+                    "./tsconfig.json",
+                    "./infra/tsconfig.json",
+                    "./api/admin-api/tsconfig.json",
+                    "./packages/cdk-governance-aspects/tsconfig.json",
+                ],
             },
         },
         plugins: {
