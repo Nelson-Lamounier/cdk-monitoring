@@ -46,6 +46,8 @@ jest.unstable_mockModule('../../src/lib/k8s.js', () => ({
 
 jest.unstable_mockModule('../../src/lib/pg.js', () => ({
   getPool:    () => ({ query: poolQueryMock }),
+  withUser:   async (_pool: unknown, _userId: string, fn: (db: { query: typeof poolQueryMock }) => Promise<unknown>) =>
+    fn({ query: poolQueryMock }),
   _resetPool: () => {},
 }));
 
@@ -81,6 +83,7 @@ function buildApp() {
   app.use('*', async (ctx, next) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (ctx as any).set('jwtPayload', { sub: 'test-user' });
+    (ctx as any).set('userId', 'test-user');
     await next();
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
