@@ -1,7 +1,16 @@
 #!/bin/bash
-# DORA Metrics Snapshot
+# DORA Metrics Snapshot — cdk-monitoring repo only.
 # Computes CI/CD lead time, deployment frequency, and CFR from GitHub Actions history.
 # Run from repo root. Requires: gh CLI authenticated, jq.
+#
+# ─── DEPRECATED for continuous tracking ───────────────────────────────────────
+# Continuous DORA metrics now flow from the deploy-marker GitHub Actions
+# composite Action → Pushgateway → Prometheus → Grafana `dora.json` dashboard:
+#   https://grafana.nelsonlamounier.com/d/dora
+#
+# Use this script ONLY for ad-hoc one-off snapshots against a SINGLE repo's
+# GitHub Actions history (CI duration averages, workflow audit, etc.). For
+# recurring tracking, the dashboard supersedes it.
 #
 # Note: durationMs is not available in gh run list — duration is computed from
 # startedAt and updatedAt fields. Workflow names must match the display name
