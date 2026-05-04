@@ -9,17 +9,17 @@ import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 // Repository mocks
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgListResumesMock     = jest.fn() as jest.Mock<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgGetResumeMock       = jest.fn() as jest.Mock<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgGetActiveResumeMock = jest.fn() as jest.Mock<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgUpsertResumeMock    = jest.fn() as jest.Mock<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgDeleteResumeMock    = jest.fn() as jest.Mock<any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const pgSetActiveResumeMock = jest.fn() as jest.Mock<any>;
 pgListResumesMock.mockResolvedValue([]);
 pgGetResumeMock.mockResolvedValue(null);
@@ -70,13 +70,13 @@ const testConfig = {
 function buildApp() {
   const app = new Hono();
   app.use('*', async (ctx, next) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (ctx as any).set('jwtPayload', { sub: 'test-user-sub' });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (ctx as any).set('userId', 'test-user-sub');
     await next();
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   app.route('/', createResumesRouter(testConfig as any));
   return app;
 }

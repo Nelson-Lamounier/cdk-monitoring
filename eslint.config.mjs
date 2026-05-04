@@ -237,14 +237,21 @@ export default [
 
     // Test files configuration with Jest plugin
     {
-        files: ["**/*.test.ts", "**/*.test.tsx", "tests/**/*.ts", "test/**/*.ts"],
+        files: ["**/*.test.ts", "**/*.test.tsx", "tests/**/*.ts", "test/**/*.ts", "**/__tests__/**/*.ts"],
         languageOptions: {
             parser: tseslint.parser,
             parserOptions: {
                 ecmaVersion: "latest",
                 sourceType: "module",
                 tsconfigRootDir: __dirname,
-                project: "./tsconfig.json",
+                // Same workspace fan-out as the main TS block so tests in
+                // any package resolve through their own tsconfig include.
+                project: [
+                    "./tsconfig.json",
+                    "./infra/tsconfig.json",
+                    "./api/admin-api/tsconfig.json",
+                    "./packages/cdk-governance-aspects/tsconfig.json",
+                ],
             },
             globals: {
                 // Jest globals
@@ -342,9 +349,12 @@ export default [
                         describe: "template\\.",
                         test: "^test$",
                     },
-                    mustMatch: {
-                        it: "^should",
-                    },
+                    // No `mustMatch.it` constraint — the repo has two valid
+                    // conventions: infra tests use `it('should …')` while
+                    // admin-api tests use descriptive titles like
+                    // `it('returns 200 with summaries from PG')`. Forcing
+                    // one over the other would mass-rewrite hundreds of
+                    // existing tests with no behaviour change.
                 },
             ],
 

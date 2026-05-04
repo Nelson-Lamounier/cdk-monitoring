@@ -8,6 +8,7 @@
  */
 
 import { Hono } from 'hono';
+
 import { createHealthRouter } from '../../src/routes/health.js';
 
 // ---------------------------------------------------------------------------

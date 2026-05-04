@@ -74,14 +74,14 @@ async function buildAuthedApp(jwtSub: string | null = 'test-user') {
   const app = new Hono();
   if (jwtSub !== null) {
     app.use('*', async (c, next) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       (c as any).set('jwtPayload', { sub: jwtSub });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       (c as any).set('userId', jwtSub);
       await next();
     });
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   app.route('/', createApplicationsRouter(testConfig as any));
   return app;
 }

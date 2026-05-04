@@ -110,14 +110,14 @@ const TEST_USER_UUID = 'a1b2c3d4-0000-0000-0000-000000000001';
 function buildApp() {
     const app = new Hono();
     app.use('*', async (ctx, next) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         (ctx as any).set('jwtPayload', { sub: 'user-cognito-sub-123' });
         // userProvisionMiddleware sets users.id UUID on every authenticated request.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         (ctx as any).set('userId', TEST_USER_UUID);
         await next();
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     app.route('/', createGitHubRouter(testConfig as any));
     return app;
 }
@@ -154,6 +154,7 @@ const connectedRepoRow: Row = {
     error_message:  null,
 };
 
+// eslint-disable-next-line jest/require-top-level-describe -- shared reset across all suites in this file; intentional global hook
 beforeEach(() => {
     jest.clearAllMocks();
     poolQueryMock.mockResolvedValue({ rows: [] });
