@@ -191,6 +191,18 @@ export interface KubernetesEdgeStackProps extends cdk.StackProps {
      * Required when using ARC webhook mode for faster scale-up.
      */
     readonly runnersSubdomain?: string;
+
+    /**
+     * Subdomain for the Loki push endpoint (e.g., 'loki-push').
+     * Creates an A record (loki-push.domain.com) pointing to the EIP.
+     * Traefik routes by Host header + PathPrefix(/loki/api/v1/push) to the
+     * loki Service, gated by the loki-push-basic-auth middleware.
+     *
+     * Set on a single environment only — the cluster that owns this DNS
+     * record acts as the canonical log sink for all environments
+     * (dev/staging/prod log shippers push to the same hostname).
+     */
+    readonly lokiPushSubdomain?: string;
 }
 
 // =============================================================================
@@ -756,6 +768,31 @@ export class KubernetesEdgeStack extends cdk.Stack {
                 serviceToken: dnsAliasProvider.serviceToken,
                 properties: {
                     DomainName: runnersDomainName,
+                    HostedZoneId: props.hostedZoneId,
+                    CrossAccountRoleArn: props.crossAccountRoleArn,
+                    Environment: envName,
+                    SkipCertificateCreation: 'true',
+                    RecordValue: eipAddress,
+                },
+                removalPolicy: logRemovalPolicy,
+            });
+        }
+
+        // =====================================================================
+        // LOKI PUSH DNS A RECORD (loki-push.domain.com → EIP)
+        // =====================================================================
+        // Same pattern as ops / runners: plain A record to EIP, Traefik routes
+        // by Host header + PathPrefix(/loki/api/v1/push) to the loki Service,
+        // gated by the loki-push-basic-auth middleware (htpasswd in SSM).
+        //
+        // The cluster that owns this record is the canonical log sink for all
+        // environments — dev/staging/prod log shippers push here.
+        if (props.lokiPushSubdomain && props.baseDomain) {
+            const lokiPushDomainName = `${props.lokiPushSubdomain}.${props.baseDomain}`;
+            new cdk.CustomResource(this, 'LokiPushDnsRecord', {
+                serviceToken: dnsAliasProvider.serviceToken,
+                properties: {
+                    DomainName: lokiPushDomainName,
                     HostedZoneId: props.hostedZoneId,
                     CrossAccountRoleArn: props.crossAccountRoleArn,
                     Environment: envName,

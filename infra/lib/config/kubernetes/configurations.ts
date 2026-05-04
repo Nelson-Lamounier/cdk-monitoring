@@ -340,6 +340,12 @@ export interface K8sEdgeConfig {
     readonly baseDomain?: string;
     /** GitHub Actions ARC webhook subdomain (e.g., 'runners' -> runners.nelsonlamounier.com → EIP) */
     readonly runnersSubdomain?: string;
+    /**
+     * Loki push endpoint subdomain (e.g., 'loki-push' -> loki-push.nelsonlamounier.com → EIP).
+     * Set on a single env (dev) — that cluster is the canonical log sink for
+     * all environments. Staging/prod log shippers push to the same hostname.
+     */
+    readonly lokiPushSubdomain?: string;
 }
 
 /**
@@ -506,6 +512,9 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
             opsSubdomain: 'ops',
             baseDomain: 'nelsonlamounier.com',
             runnersSubdomain: 'runners',
+            // DEV cluster owns the loki-push DNS — staging/prod log shippers
+            // push to the same hostname. Leave undefined in higher envs.
+            lokiPushSubdomain: 'loki-push',
         },
         monitoringWorker: {
             instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
