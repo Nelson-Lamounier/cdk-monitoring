@@ -373,9 +373,30 @@ export class KubernetesOidcStack extends cdk.Stack {
         // ---------------------------------------------------------------------
         NagSuppressions.addResourceSuppressions(
             distribution,
+            [
+                {
+                    id: 'AwsSolutions-CFR1',
+                    reason: 'OIDC discovery must be globally reachable — Geo restrictions break IRSA for workloads in any AWS region.',
+                },
+                {
+                    id: 'AwsSolutions-CFR2',
+                    reason: 'OIDC discovery is static public data; WAF adds cost without meaningful security benefit.',
+                },
+                {
+                    id: 'AwsSolutions-CFR3',
+                    reason: 'OIDC discovery is public, low-traffic, static. Logging adds cost without value.',
+                },
+            ],
+            true,
+        );
+
+        // cr.Provider creates a framework-onEvent Lambda internally; its
+        // runtime is CDK-managed and cannot be set from user code.
+        NagSuppressions.addResourceSuppressions(
+            dnsAliasProvider,
             [{
-                id: 'AwsSolutions-CFR3',
-                reason: 'OIDC discovery is public, low-traffic, static. Logging adds cost without value.',
+                id: 'AwsSolutions-L1',
+                reason: 'CDK custom resource framework Lambda — runtime version is managed by CDK, not configurable by user code.',
             }],
             true,
         );
