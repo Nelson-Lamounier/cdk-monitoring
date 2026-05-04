@@ -79,6 +79,12 @@ export interface AdditionalBehaviorConfig {
     readonly allowedMethods?: cloudfront.AllowedMethods;
     readonly compress?: boolean;
     readonly description?: string;
+    /**
+     * CloudFront Function / Lambda@Edge associations for this behavior.
+     * Use for per-path edge logic (auth gates, redirects, header rewrites).
+     */
+    readonly functionAssociations?: cloudfront.FunctionAssociation[];
+    readonly edgeLambdas?: cloudfront.EdgeLambda[];
 }
 
 /**
@@ -366,6 +372,8 @@ export class CloudFrontConstruct extends Construct {
                 viewerProtocolPolicy: behaviorConfig.viewerProtocolPolicy ?? cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 allowedMethods: behaviorConfig.allowedMethods ?? cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
                 compress: behaviorConfig.compress ?? enableCompression,
+                functionAssociations: behaviorConfig.functionAssociations,
+                edgeLambdas: behaviorConfig.edgeLambdas,
             };
         }
 
