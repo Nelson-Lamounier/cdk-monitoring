@@ -30,9 +30,10 @@ on:
   #     - ".github/workflows/_deploy-kubernetes.yml"
   #     - ".github/workflows/_deploy-stack.yml"
   #     - ".github/actions/**"
-  # Weekly: AMI refresh for OS security patches
-  schedule:
-    - cron: "0 6 * * 1"
+  # AMI refresh is now event-driven only: a Step Functions pipeline
+  # (ami-refresh-construct.ts) reacts to /golden-ami/latest SSM parameter
+  # changes from the Golden AMI builder. Manual replays go through
+  # workflow_dispatch below; no time-based schedule.
   workflow_dispatch:
     inputs:
       skip_verification:
