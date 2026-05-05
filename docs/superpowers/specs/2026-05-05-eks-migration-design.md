@@ -250,6 +250,8 @@ CloudWatch Synthetics canary (one per env) running every 5 min, hitting critical
 
 **Total counts:** 11 active → 10 active EKS-era + 5 deprecated = 15 stack classes. Net active reduction: 1.
 
+**Status (V1, dev — CDK side):** ✅ Synth complete (2026-05-05) — see Plan 2 (`docs/superpowers/plans/2026-05-05-eks-migration-02-cluster-bootstrap.md`). All 6 EKS stacks (`EksCluster`, `EksSystemNg`, `EksPodIdentity`, `EksAddons`, `EksKarpenter`, `EksAccess`) synthesize cleanly alongside the 11 kubeadm-era stacks (17 total). VPC subnet discovery tags applied at the source (`SharedVpcStack`) — V1 dev runs EKS workers on public subnets (no NAT GW per cost guardrail). Live deploy + Karpenter validation pending manual gate.
+
 ### 7.2 Deprecation file convention
 
 Every deprecated stack file follows this header:
