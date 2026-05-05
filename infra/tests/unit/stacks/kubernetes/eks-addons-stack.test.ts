@@ -40,6 +40,8 @@ describe('EksAddonsStack', () => {
             },
         });
         const t = Template.fromStack(stack);
-        t.resourceCountIs('AWS::EKS::Addon', 1);
+        // VPC CNI + Pod Identity Agent
+        t.resourceCountIs('AWS::EKS::Addon', 2);
+        t.hasResourceProperties('AWS::EKS::Addon', { AddonName: 'eks-pod-identity-agent' });
     });
 });

@@ -41,6 +41,19 @@ export class EksAddonsStack extends cdk.Stack {
             resolveConflicts: 'OVERWRITE',
         });
 
+        // EKS Pod Identity Agent — DaemonSet on every node that exchanges
+        // service-account tokens for AWS creds at 169.254.170.23/v1/credentials.
+        // Without it, every pod with a PodIdentityAssociation hangs trying to
+        // fetch AWS creds during init (Karpenter, ALB controller, ESO, etc.
+        // all fail liveness/readiness probes). This is an AWS-managed addon
+        // distinct from CfnPodIdentityAssociation, which only sets up the
+        // role-to-SA mapping at the EKS control-plane level.
+        const podIdentityAgent = new eks.CfnAddon(this, 'PodIdentityAgent', {
+            clusterName: props.cluster.clusterName,
+            addonName: 'eks-pod-identity-agent',
+            resolveConflicts: 'OVERWRITE',
+        });
+
         // V1 addons must run on the system MNG (`dedicated=system:NoSchedule`)
         // because Karpenter has not yet provisioned workload nodes when these
         // charts install. Without this toleration, ALB controller pods are
@@ -76,10 +89,13 @@ export class EksAddonsStack extends cdk.Stack {
             },
         ];
 
-        // ALB controller installs FIRST. Every other chart depends on it so
-        // that even though the webhook is scoped out of infra namespaces,
-        // the controller's IAM/Pod Identity is fully wired before workload
-        // charts (Plan 5) start landing.
+        // ALB controller installs FIRST among Helm charts (after the EKS
+        // managed addons). Every other chart depends on it so that even
+        // though the webhook is scoped out of infra namespaces, the
+        // controller's IAM/Pod Identity is fully wired before workload
+        // charts (Plan 5) start landing. ALB itself depends on the Pod
+        // Identity Agent — without it, the controller cannot fetch AWS
+        // credentials and hangs at startup.
         const albController = new eks.HelmChart(this, 'AlbController', {
             cluster: props.cluster,
             chart: 'aws-load-balancer-controller',
@@ -102,6 +118,7 @@ export class EksAddonsStack extends cdk.Stack {
                 webhookNamespaceSelectors: albWebhookNamespaceSelectors,
             },
         });
+        albController.node.addDependency(podIdentityAgent);
 
         const eso = new eks.HelmChart(this, 'ExternalSecrets', {
             cluster: props.cluster,
