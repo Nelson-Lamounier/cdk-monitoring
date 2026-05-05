@@ -39,6 +39,17 @@ export class EksPodIdentityStack extends cdk.Stack {
                 assumedBy: podIdentityPrincipal,
                 description: `Pod Identity role for ${b.namespace}/${b.serviceAccount}`,
             });
+            // EKS Pod Identity requires `sts:TagSession` on top of the default
+            // `sts:AssumeRole` so the service can attach session tags
+            // (eks-cluster-arn, kubernetes-namespace, etc). Without it, the
+            // PodIdentityAssociation create call rejects the role with
+            // "Trust policy of the role provided is invalid".
+            role.assumeRolePolicy?.addStatements(
+                new iam.PolicyStatement({
+                    actions: ['sts:TagSession'],
+                    principals: [podIdentityPrincipal],
+                }),
+            );
             this.attachPurposePolicies(role, b.purpose, props);
             this.roles[b.purpose] = role;
 
