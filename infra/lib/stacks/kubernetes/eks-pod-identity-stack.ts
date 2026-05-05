@@ -79,21 +79,35 @@ export class EksPodIdentityStack extends cdk.Stack {
                         resources: [props.karpenterInterruptionQueueArn],
                     }),
                 );
+                // EKS control-plane introspection — Karpenter calls
+                // DescribeCluster at startup to resolve the cluster endpoint
+                // and CA cert. Without this, the controller crashes with
+                // 'failed to resolve cluster endpoint'.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        actions: ['eks:DescribeCluster'],
+                        resources: ['*'],
+                    }),
+                );
                 role.addToPolicy(
                     new iam.PolicyStatement({
                         actions: [
                             'ec2:RunInstances',
                             'ec2:CreateTags',
                             'ec2:CreateLaunchTemplate',
+                            'ec2:CreateFleet',
                             'ec2:DescribeInstances',
                             'ec2:DescribeImages',
                             'ec2:DescribeInstanceTypes',
+                            'ec2:DescribeInstanceTypeOfferings',
                             'ec2:DescribeSubnets',
                             'ec2:DescribeSecurityGroups',
                             'ec2:DescribeAvailabilityZones',
                             'ec2:DescribeSpotPriceHistory',
                             'ec2:DescribeLaunchTemplates',
+                            'ec2:DescribeLaunchTemplateVersions',
                             'ec2:TerminateInstances',
+                            'ec2:DeleteLaunchTemplate',
                             'pricing:GetProducts',
                         ],
                         resources: ['*'],
