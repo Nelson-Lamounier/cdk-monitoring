@@ -27,3 +27,4 @@ export { KubernetesOidcStack } from './oidc-stack';
 export type { KubernetesOidcStackProps } from './oidc-stack';
 export * from './eks-cluster-stack';
 export * from './eks-system-node-group-stack';
+export * from './eks-access-stack';
