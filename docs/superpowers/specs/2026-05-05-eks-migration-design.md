@@ -405,6 +405,8 @@ Each `deploy-eks-<env>.yml` is ~30 lines (gate + call to `_deploy-eks.yml` with 
 
 `_destroy-eks.yml` reverses order: Karpenter → Addons → PodIdentity → SystemNodeGroup → Access → Cluster. Pre-destroy hook drains workloads and removes finalizers.
 
+**Status:** ✅ Done (2026-05-05) — see Plan 3 (`docs/superpowers/plans/2026-05-05-eks-migration-03-gh-workflows.md`). 8 workflows: 2 reusables (`_deploy-eks.yml`, `_destroy-eks.yml`) + 3 per-env deploy triggers + 3 per-env destroy triggers. Dev auto-triggers on `Deploy K8s to Development` success; staging + production are `workflow_dispatch` only with GH Environment approval gates. `actionlint` clean. Six EKS stack ids registered in `infra/lib/utilities/naming.ts` and `infra/scripts/shared/stacks.ts` so `cdk-synthesize` emits matching `GITHUB_OUTPUT` keys for downstream `_deploy-stack.yml` calls.
+
 ### 9.3 Per-env spin-up / teardown
 
 Workflow design supports the "not all 3 running simultaneously" constraint:
