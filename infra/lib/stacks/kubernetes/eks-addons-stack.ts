@@ -190,10 +190,20 @@ export class EksAddonsStack extends cdk.Stack {
         // cluster. Managed addon side-steps the entire compatibility
         // matrix and re-uses the same Pod Identity ServiceAccount we
         // declared in EksPodIdentityStack (kube-system/ebs-csi-controller-sa).
+        //
+        // configurationValues injects controller tolerations so the addon's
+        // controller Deployment schedules on the system MNG (default
+        // managed-addon configuration has no toleration; pods stay Pending
+        // and the addon never reaches Healthy on a single-pool cluster).
         new eks.CfnAddon(this, 'EbsCsi', {
             clusterName: props.cluster.clusterName,
             addonName: 'aws-ebs-csi-driver',
             resolveConflicts: 'OVERWRITE',
+            configurationValues: JSON.stringify({
+                controller: {
+                    tolerations: systemToleration,
+                },
+            }),
         });
     }
 }
