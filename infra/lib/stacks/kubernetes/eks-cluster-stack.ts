@@ -12,6 +12,7 @@
  * @see docs/superpowers/specs/2026-05-05-eks-migration-design.md § 3
  */
 import { KubectlV30Layer } from '@aws-cdk/lambda-layer-kubectl-v30';
+import { NagSuppressions } from 'cdk-nag';
 
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as eks from 'aws-cdk-lib/aws-eks';
@@ -70,5 +71,57 @@ export class EksClusterStack extends cdk.Stack {
         });
 
         cdk.Tags.of(this).add('eks-cluster', props.clusterName);
+
+        // EKS API server is public — V1 dev runs without NAT GW (cost
+        // guardrail) and GitHub Actions OIDC runners need API reachability
+        // for `kubectl wait` during deploy. Mitigated by AWS Access Entries
+        // (no aws-auth ConfigMap) and short-lived OIDC creds.
+        NagSuppressions.addResourceSuppressions(this.cluster, [
+            {
+                id: 'AwsSolutions-EKS1',
+                reason: 'Public API endpoint required for OIDC-based CI access without VPC connectivity; V1 dev runs without NAT GW per cost guardrail.',
+            },
+        ], true);
+
+        // CDK-managed EKS cluster resource provider creates nested stacks
+        // (ClusterResourceProvider, KubectlProvider) with framework Lambdas,
+        // waiter state machines, and managed-policy attachments — all managed
+        // by aws-cdk-lib. Suppress on the nested-stack paths via path-based
+        // suppressions (addStackSuppressions does not traverse nested stacks).
+        const stackName = cdk.Stack.of(this).stackName;
+        const providerPaths = [
+            `/${stackName}/@aws-cdk--aws-eks.ClusterResourceProvider`,
+            `/${stackName}/@aws-cdk--aws-eks.KubectlProvider`,
+        ];
+        const providerSuppressions = [
+            {
+                id: 'AwsSolutions-IAM5',
+                reason: 'EKS cluster resource provider auto-generates wildcard policies for framework Lambdas; managed by aws-cdk-lib.',
+            },
+            {
+                id: 'AwsSolutions-IAM4',
+                reason: 'EKS cluster resource provider attaches AWS-managed policies to framework Lambda roles; managed by aws-cdk-lib.',
+            },
+            {
+                id: 'AwsSolutions-L1',
+                reason: 'EKS cluster resource provider Lambda runtimes are pinned by aws-cdk-lib.',
+            },
+            {
+                id: 'AwsSolutions-SF1',
+                reason: 'EKS cluster waiter state machine logging is managed by aws-cdk-lib.',
+            },
+            {
+                id: 'AwsSolutions-SF2',
+                reason: 'EKS cluster waiter state machine X-Ray tracing is managed by aws-cdk-lib.',
+            },
+        ];
+        for (const p of providerPaths) {
+            NagSuppressions.addResourceSuppressionsByPath(
+                cdk.Stack.of(this),
+                p,
+                providerSuppressions,
+                true,
+            );
+        }
     }
 }

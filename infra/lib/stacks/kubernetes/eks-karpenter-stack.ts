@@ -8,6 +8,8 @@
  *
  * @see docs/superpowers/specs/2026-05-05-eks-migration-design.md §§ 3.2, 3.3
  */
+import { NagSuppressions } from 'cdk-nag';
+
 import * as eks from 'aws-cdk-lib/aws-eks';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
@@ -38,6 +40,7 @@ export class EksKarpenterStack extends cdk.Stack {
         this.interruptionQueue = new sqs.Queue(this, 'InterruptionQueue', {
             queueName: `${props.cluster.clusterName}-karpenter`,
             retentionPeriod: cdk.Duration.minutes(5),
+            enforceSSL: true,
         });
         this.interruptionQueue.addToResourcePolicy(
             new iam.PolicyStatement({
@@ -49,6 +52,15 @@ export class EksKarpenterStack extends cdk.Stack {
                 resources: [this.interruptionQueue.queueArn],
             }),
         );
+        // Interruption messages are ephemeral signals consumed by Karpenter;
+        // a DLQ adds operational complexity without recovery value (5-min TTL
+        // means lost messages are stale by the time a DLQ would help).
+        NagSuppressions.addResourceSuppressions(this.interruptionQueue, [
+            {
+                id: 'AwsSolutions-SQS3',
+                reason: 'Karpenter interruption queue: 5-minute retention; DLQ adds no value for ephemeral signals.',
+            },
+        ]);
 
         const ruleSpecs: { id: string; source: string; detailType: string }[] = [
             { id: 'SpotInterruption', source: 'aws.ec2', detailType: 'EC2 Spot Instance Interruption Warning' },
