@@ -26,6 +26,8 @@ describe('EksAddonsStack', () => {
             env: { account: '123456789012', region: 'eu-west-1' },
             targetEnvironment: Environment.DEVELOPMENT,
             cluster,
+            vpcId: 'vpc-aaa',
+            region: 'eu-west-1',
             karpenterInterruptionQueueName: 'k8s-eks-development-karpenter',
             workerNodeRoleArn: 'arn:aws:iam::123456789012:role/Worker',
             hostedZoneDomain: 'nelsonlamounier.com',

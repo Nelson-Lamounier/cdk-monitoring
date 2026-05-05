@@ -51,6 +51,10 @@ export class EksClusterStack extends cdk.Stack {
             vpc: props.vpc,
             vpcSubnets: [{ subnetType: ec2.SubnetType.PUBLIC }],
             defaultCapacity: 0,
+            // Required for EKS Access Entries (EksAccessStack) to work.
+            // CDK defaults to CONFIG_MAP (legacy aws-auth ConfigMap), which
+            // silently no-ops AccessEntry resources.
+            authenticationMode: eks.AuthenticationMode.API_AND_CONFIG_MAP,
             kubectlLayer: new KubectlV34Layer(this, 'KubectlLayer'),
             secretsEncryptionKey: this.secretsKmsKey,
             clusterLogging: [

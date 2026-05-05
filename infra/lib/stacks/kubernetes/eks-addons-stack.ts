@@ -17,6 +17,8 @@ import { Environment } from '../../config/environments';
 export interface EksAddonsStackProps extends cdk.StackProps {
     readonly targetEnvironment: Environment;
     readonly cluster: eks.ICluster;
+    readonly vpcId: string;
+    readonly region: string;
     readonly karpenterInterruptionQueueName: string;
     readonly workerNodeRoleArn: string;
     readonly hostedZoneDomain: string;
@@ -76,6 +78,12 @@ export class EksAddonsStack extends cdk.Stack {
             wait: true,
             values: {
                 clusterName: props.cluster.clusterName,
+                // Pass vpcId + region explicitly. EKS-optimized AL2023 nodes
+                // default IMDSv2 hop-limit=1 → pod containers get 401 from
+                // IMDS; without these values the ALB controller crashes at
+                // boot trying to introspect the VPC.
+                vpcId: props.vpcId,
+                region: props.region,
                 serviceAccount: { name: 'aws-load-balancer-controller', create: true },
                 tolerations: systemToleration,
             },

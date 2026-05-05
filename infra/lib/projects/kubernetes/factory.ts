@@ -794,6 +794,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             {
                 env, targetEnvironment: environment,
                 cluster: eksClusterStack.cluster,
+                vpcId: baseStack.vpc.vpcId,
+                region: env.region!,
                 karpenterInterruptionQueueName: `${eksConfig.clusterName}-karpenter`,
                 workerNodeRoleArn: eksSystemNg.nodeRole.roleArn,
                 hostedZoneDomain,
