@@ -11,7 +11,7 @@
  *
  * @see docs/superpowers/specs/2026-05-05-eks-migration-design.md § 3
  */
-import { KubectlV30Layer } from '@aws-cdk/lambda-layer-kubectl-v30';
+import { KubectlV34Layer } from '@aws-cdk/lambda-layer-kubectl-v34';
 import { NagSuppressions } from 'cdk-nag';
 
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -51,7 +51,7 @@ export class EksClusterStack extends cdk.Stack {
             vpc: props.vpc,
             vpcSubnets: [{ subnetType: ec2.SubnetType.PUBLIC }],
             defaultCapacity: 0,
-            kubectlLayer: new KubectlV30Layer(this, 'KubectlLayer'),
+            kubectlLayer: new KubectlV34Layer(this, 'KubectlLayer'),
             secretsEncryptionKey: this.secretsKmsKey,
             clusterLogging: [
                 eks.ClusterLoggingTypes.API,

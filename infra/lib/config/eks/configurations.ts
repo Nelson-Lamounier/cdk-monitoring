@@ -7,7 +7,7 @@
 import { type DeployableEnvironment, Environment } from '../environments';
 
 /** EKS Kubernetes minor version. Pin once per env; bump as a deliberate task. */
-export const EKS_VERSION = '1.30';
+export const EKS_VERSION = '1.34';
 
 /** Karpenter chart version (matches EKS minor + Karpenter compatibility table). */
 export const KARPENTER_VERSION = '1.0.6';
