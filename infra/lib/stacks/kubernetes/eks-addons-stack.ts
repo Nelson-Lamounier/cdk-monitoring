@@ -48,26 +48,38 @@ export class EksAddonsStack extends cdk.Stack {
         // create (including Karpenter's) fails admission.
         const systemToleration = [{ key: 'dedicated', value: 'system', effect: 'NoSchedule' }];
 
-        const eso = new eks.HelmChart(this, 'ExternalSecrets', {
-            cluster: props.cluster,
-            chart: 'external-secrets',
-            release: 'external-secrets',
-            repository: 'https://charts.external-secrets.io',
-            namespace: 'external-secrets',
-            createNamespace: true,
-            version: props.versions.externalSecrets,
-            wait: true,
-            values: {
-                serviceAccount: { name: 'external-secrets', create: true },
-                tolerations: systemToleration,
-                webhook: { tolerations: systemToleration },
-                certController: { tolerations: systemToleration },
+        // Namespaces hosting infrastructure addons. The ALB controller's
+        // mutating Service webhook is scoped to NOT intercept these — it
+        // only acts on application-namespace Services. This avoids two
+        // failure modes:
+        //   1. Bootstrap chicken-and-egg: ESO/Karpenter/etc. create Services
+        //      during install; ALB webhook (failurePolicy=Fail) blocks them
+        //      until ALB pods are Ready. Without scoping, every infra chart
+        //      install must serialize behind ALB readiness.
+        //   2. Recovery scenarios: any time ALB pods restart (node refresh,
+        //      OOM, eviction), the webhook briefly has no endpoints. Without
+        //      scoping, that window blocks every cluster-wide Service create
+        //      — the cluster brown-outs every time ALB churns.
+        // Application namespaces (admin-api, ingestion, etc. — Plan 5) stay
+        // in scope because that's where ALB-managed Services actually live.
+        const infraNamespacesExcludedFromAlbWebhook = [
+            'kube-system',
+            'external-secrets',
+            'karpenter',
+            'argocd',  // Plan 4 / 5 — pre-allocated.
+        ];
+        const albWebhookNamespaceSelectors = [
+            {
+                key: 'kubernetes.io/metadata.name',
+                operator: 'NotIn',
+                values: infraNamespacesExcludedFromAlbWebhook,
             },
-        });
+        ];
 
-        // ALB controller must be installed AND its pods Ready before any
-        // other chart that creates a Service is applied. Its mutating
-        // webhook intercepts every Service create with failurePolicy: Fail.
+        // ALB controller installs FIRST. Every other chart depends on it so
+        // that even though the webhook is scoped out of infra namespaces,
+        // the controller's IAM/Pod Identity is fully wired before workload
+        // charts (Plan 5) start landing.
         const albController = new eks.HelmChart(this, 'AlbController', {
             cluster: props.cluster,
             chart: 'aws-load-balancer-controller',
@@ -86,8 +98,28 @@ export class EksAddonsStack extends cdk.Stack {
                 region: props.region,
                 serviceAccount: { name: 'aws-load-balancer-controller', create: true },
                 tolerations: systemToleration,
+                // Scope mutating webhooks to application namespaces only.
+                webhookNamespaceSelectors: albWebhookNamespaceSelectors,
             },
         });
+
+        const eso = new eks.HelmChart(this, 'ExternalSecrets', {
+            cluster: props.cluster,
+            chart: 'external-secrets',
+            release: 'external-secrets',
+            repository: 'https://charts.external-secrets.io',
+            namespace: 'external-secrets',
+            createNamespace: true,
+            version: props.versions.externalSecrets,
+            wait: true,
+            values: {
+                serviceAccount: { name: 'external-secrets', create: true },
+                tolerations: systemToleration,
+                webhook: { tolerations: systemToleration },
+                certController: { tolerations: systemToleration },
+            },
+        });
+        eso.node.addDependency(albController);
 
         const externalDns = new eks.HelmChart(this, 'ExternalDns', {
             cluster: props.cluster,
