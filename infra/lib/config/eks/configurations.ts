@@ -10,7 +10,7 @@ import { type DeployableEnvironment, Environment } from '../environments';
 export const EKS_VERSION = '1.34';
 
 /** Karpenter chart version (matches EKS minor + Karpenter compatibility table). */
-export const KARPENTER_VERSION = '1.0.6';
+export const KARPENTER_VERSION = '1.12.0';
 
 /** AWS Load Balancer Controller chart version. */
 export const ALB_CONTROLLER_VERSION = '1.8.4';

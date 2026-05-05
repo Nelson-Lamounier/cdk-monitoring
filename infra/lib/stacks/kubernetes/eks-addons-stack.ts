@@ -83,7 +83,11 @@ export class EksAddonsStack extends cdk.Stack {
             cluster: props.cluster,
             chart: 'karpenter',
             release: 'karpenter',
-            repository: 'oci://public.ecr.aws/karpenter',
+            // OCI Helm repo: full chart path (registry/namespace/chart) — CDK
+            // appends `:version` directly to `repository` for oci:// scheme,
+            // dropping the `chart` field. Without the second `/karpenter`,
+            // helm fetches `public.ecr.aws/karpenter:<version>` and 404s.
+            repository: 'oci://public.ecr.aws/karpenter/karpenter',
             namespace: 'karpenter',
             createNamespace: true,
             version: props.versions.karpenter,
