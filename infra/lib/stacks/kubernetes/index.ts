@@ -26,3 +26,4 @@ export type { PlatformRdsStackProps } from './platform-rds-stack';
 export { KubernetesOidcStack } from './oidc-stack';
 export type { KubernetesOidcStackProps } from './oidc-stack';
 export * from './eks-cluster-stack';
+export * from './eks-system-node-group-stack';
