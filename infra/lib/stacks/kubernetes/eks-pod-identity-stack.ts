@@ -89,6 +89,24 @@ export class EksPodIdentityStack extends cdk.Stack {
                         resources: ['*'],
                     }),
                 );
+                // Karpenter v1 manages EC2 instance profiles for nodes it
+                // launches — creates one per EC2NodeClass, attaches the
+                // worker node role, deletes on NodePool teardown. All these
+                // actions must succeed or Karpenter blocks scheduling.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        actions: [
+                            'iam:CreateInstanceProfile',
+                            'iam:DeleteInstanceProfile',
+                            'iam:GetInstanceProfile',
+                            'iam:ListInstanceProfiles',
+                            'iam:TagInstanceProfile',
+                            'iam:AddRoleToInstanceProfile',
+                            'iam:RemoveRoleFromInstanceProfile',
+                        ],
+                        resources: ['*'],
+                    }),
+                );
                 role.addToPolicy(
                     new iam.PolicyStatement({
                         actions: [
