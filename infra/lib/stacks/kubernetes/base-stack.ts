@@ -44,11 +44,13 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
+import { getEksConfig } from '../../config/eks';
 import { Environment } from '../../config/environments';
 import {
     K8sConfigs,
@@ -134,6 +136,9 @@ export class KubernetesBaseStack extends cdk.Stack {
     /** Monitoring SG — Prometheus, Node Exporter, Loki, Tempo from VPC */
     public readonly monitoringSg: ec2.SecurityGroup;
 
+    /** EKS workers SG — Karpenter-launched node-to-node + ELB ingress */
+    public readonly eksWorkersSg: ec2.SecurityGroup;
+
     /** KMS key for CloudWatch log group encryption */
     public readonly logGroupKmsKey: kms.Key;
 
@@ -173,6 +178,30 @@ export class KubernetesBaseStack extends cdk.Stack {
         // =====================================================================
         const vpcName = props.vpcName ?? `shared-vpc-${targetEnvironment}`;
         this.vpc = ec2.Vpc.fromLookup(this, 'SharedVpc', { vpcName });
+
+        // =====================================================================
+        // EKS Subnet Discovery Tags
+        //
+        // EKS + AWS LB Controller discover subnets via well-known tags:
+        //   - kubernetes.io/role/elb=1            → public subnets (NLB/ALB internet-facing)
+        //   - kubernetes.io/role/internal-elb=1   → private subnets (internal LB)
+        //   - kubernetes.io/cluster/<name>=shared → cluster ownership
+        //
+        // We use 'shared' (NOT 'owned') because this VPC is provisioned outside
+        // any single cluster lifecycle and outlives any specific EKS cluster.
+        // 'owned' would imply the cluster controller can delete the VPC/subnets
+        // on cluster teardown — which is unsafe for our shared VPC topology.
+        // See: docs/superpowers/specs/2026-05-05-eks-migration-design.md § 5.1
+        // =====================================================================
+        const eksClusterName = getEksConfig(targetEnvironment).clusterName;
+        for (const subnet of this.vpc.publicSubnets) {
+            cdk.Tags.of(subnet).add('kubernetes.io/role/elb', '1');
+            cdk.Tags.of(subnet).add(`kubernetes.io/cluster/${eksClusterName}`, 'shared');
+        }
+        for (const subnet of this.vpc.privateSubnets) {
+            cdk.Tags.of(subnet).add('kubernetes.io/role/internal-elb', '1');
+            cdk.Tags.of(subnet).add(`kubernetes.io/cluster/${eksClusterName}`, 'shared');
+        }
 
         // =====================================================================
         // Security Groups (config-driven via SecurityGroupConstruct)
@@ -290,6 +319,26 @@ export class KubernetesBaseStack extends cdk.Stack {
                 );
             }
         }
+
+        // =====================================================================
+        // EKS Workers Security Group (Karpenter-launched nodes)
+        // =====================================================================
+        this.eksWorkersSg = new ec2.SecurityGroup(this, 'EksWorkersSg', {
+            vpc: this.vpc,
+            securityGroupName: `eks-workers-${props.targetEnvironment}`,
+            description: 'EKS Karpenter-launched worker nodes — node-to-node + ELB ingress',
+            allowAllOutbound: true,
+        });
+        this.eksWorkersSg.addIngressRule(
+            this.eksWorkersSg,
+            ec2.Port.allTraffic(),
+            'Node-to-node communication',
+        );
+
+        new ssm.StringParameter(this, 'EksWorkersSgIdParam', {
+            parameterName: `${props.ssmPrefix}/eks/workers-sg-id`,
+            stringValue: this.eksWorkersSg.securityGroupId,
+        });
 
         // =====================================================================
         // KMS Key for CloudWatch Log Group Encryption
