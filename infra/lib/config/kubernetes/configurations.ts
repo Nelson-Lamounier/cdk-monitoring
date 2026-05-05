@@ -364,6 +364,7 @@ export interface K8sEdgeConfig {
  * Complete resource configurations for kubeadm Kubernetes project
  */
 export interface K8sConfigs {
+    readonly eksClusterName: string;
     readonly cluster: KubernetesClusterConfig;
     readonly compute: K8sComputeConfig;
     readonly storage: K8sStorageConfig;
@@ -466,6 +467,7 @@ const DEFAULT_K8S_SECURITY_GROUPS: K8sSecurityGroupConfig = {
  */
 export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
     [Environment.DEVELOPMENT]: {
+        eksClusterName: 'k8s-eks-development',
         cluster: {
             kubernetesVersion: KUBERNETES_VERSION,
             podNetworkCidr: '192.168.0.0/16',
@@ -583,6 +585,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
     },
 
     [Environment.STAGING]: {
+        eksClusterName: 'k8s-eks-staging',
         cluster: {
             kubernetesVersion: KUBERNETES_VERSION,
             podNetworkCidr: '192.168.0.0/16',
@@ -687,6 +690,7 @@ export const K8S_CONFIGS: Record<DeployableEnvironment, K8sConfigs> = {
     },
 
     [Environment.PRODUCTION]: {
+        eksClusterName: 'k8s-eks-production',
         cluster: {
             kubernetesVersion: KUBERNETES_VERSION,
             podNetworkCidr: '192.168.0.0/16',
