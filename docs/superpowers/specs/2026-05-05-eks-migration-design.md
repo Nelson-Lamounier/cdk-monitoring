@@ -381,6 +381,8 @@ Every deprecated YAML gets a top-of-file comment matching the TSDoc pattern (pur
 - **Synth-time invariant:** no construct may read `Stack.of(this).account` synchronously during instantiation. Cross-account ARNs (DNS validation role, OIDC issuer trust, KMS key policies, S3 bucket policies) must use lazy resolution (token references) or be constructed from `process.env` reads at synth time, not from `Stack.account` lookups.
 - **Inventory task in plan:** grep all `Stack.of(this).account` usages and reclassify each as either (a) safe (token, used in resource property), (b) needs refactor (used in conditional logic at synth time).
 
+**Status:** ✅ Done (2026-05-05) — see `docs/superpowers/plans/2026-05-05-eks-migration-01-account-id-consolidation.md`. Inventory finding: all `Stack.of(this).account` reads in existing stacks are token references resolved at deploy time (safe). The only synth-time hardcoding lived in `environments.ts` lines 113–134, removed via lazy getters that read `process.env.AWS_ACCOUNT_ID` (or `ROOT_ACCOUNT` for management). Invariant enforced by `infra/tests/unit/config/environments.test.ts`.
+
 ### 9.2 GitHub Actions — three deploy workflows + three destroy workflows
 
 Pattern A from brainstorm: mirror per-env workflow files, all calling reusable workflow.
