@@ -46,7 +46,7 @@ export class EksAddonsStack extends cdk.Stack {
         // create (including Karpenter's) fails admission.
         const systemToleration = [{ key: 'dedicated', value: 'system', effect: 'NoSchedule' }];
 
-        new eks.HelmChart(this, 'ExternalSecrets', {
+        const eso = new eks.HelmChart(this, 'ExternalSecrets', {
             cluster: props.cluster,
             chart: 'external-secrets',
             release: 'external-secrets',
@@ -54,6 +54,7 @@ export class EksAddonsStack extends cdk.Stack {
             namespace: 'external-secrets',
             createNamespace: true,
             version: props.versions.externalSecrets,
+            wait: true,
             values: {
                 serviceAccount: { name: 'external-secrets', create: true },
                 tolerations: systemToleration,
@@ -62,13 +63,17 @@ export class EksAddonsStack extends cdk.Stack {
             },
         });
 
-        new eks.HelmChart(this, 'AlbController', {
+        // ALB controller must be installed AND its pods Ready before any
+        // other chart that creates a Service is applied. Its mutating
+        // webhook intercepts every Service create with failurePolicy: Fail.
+        const albController = new eks.HelmChart(this, 'AlbController', {
             cluster: props.cluster,
             chart: 'aws-load-balancer-controller',
             release: 'aws-load-balancer-controller',
             repository: 'https://aws.github.io/eks-charts',
             namespace: 'kube-system',
             version: props.versions.albController,
+            wait: true,
             values: {
                 clusterName: props.cluster.clusterName,
                 serviceAccount: { name: 'aws-load-balancer-controller', create: true },
@@ -76,13 +81,14 @@ export class EksAddonsStack extends cdk.Stack {
             },
         });
 
-        new eks.HelmChart(this, 'ExternalDns', {
+        const externalDns = new eks.HelmChart(this, 'ExternalDns', {
             cluster: props.cluster,
             chart: 'external-dns',
             release: 'external-dns',
             repository: 'https://kubernetes-sigs.github.io/external-dns/',
             namespace: 'kube-system',
             version: props.versions.externalDns,
+            wait: true,
             values: {
                 provider: 'aws',
                 domainFilters: [props.hostedZoneDomain],
@@ -92,8 +98,9 @@ export class EksAddonsStack extends cdk.Stack {
                 tolerations: systemToleration,
             },
         });
+        externalDns.node.addDependency(albController);
 
-        new eks.HelmChart(this, 'Karpenter', {
+        const karpenter = new eks.HelmChart(this, 'Karpenter', {
             cluster: props.cluster,
             chart: 'karpenter',
             release: 'karpenter',
@@ -105,6 +112,7 @@ export class EksAddonsStack extends cdk.Stack {
             namespace: 'karpenter',
             createNamespace: true,
             version: props.versions.karpenter,
+            wait: true,
             values: {
                 settings: {
                     clusterName: props.cluster.clusterName,
@@ -114,14 +122,17 @@ export class EksAddonsStack extends cdk.Stack {
                 tolerations: systemToleration,
             },
         });
+        karpenter.node.addDependency(albController);
+        karpenter.node.addDependency(eso);
 
-        new eks.HelmChart(this, 'EbsCsi', {
+        const ebsCsi = new eks.HelmChart(this, 'EbsCsi', {
             cluster: props.cluster,
             chart: 'aws-ebs-csi-driver',
             release: 'aws-ebs-csi-driver',
             repository: 'https://kubernetes-sigs.github.io/aws-ebs-csi-driver',
             namespace: 'kube-system',
             version: props.versions.ebsCsi,
+            wait: true,
             values: {
                 controller: {
                     serviceAccount: { name: 'ebs-csi-controller-sa', create: true },
@@ -129,5 +140,6 @@ export class EksAddonsStack extends cdk.Stack {
                 },
             },
         });
+        ebsCsi.node.addDependency(albController);
     }
 }
