@@ -49,6 +49,8 @@ import {
 import {
     EksAccessStack,
     EksAddonsStack,
+    EksAlbCertsStack,
+    EksPublicWafStack,
     EksClusterStack,
     EksKarpenterStack,
     EksPodIdentityStack,
@@ -57,12 +59,10 @@ import {
     KubernetesBaseStack,
     KubernetesControlPlaneStack,
     KubernetesDataStack,
-    KubernetesEdgeStack,
     KubernetesObservabilityStack,
     KubernetesOidcStack,
     KubernetesWorkerAsgStack,
     PlatformRdsStack,
-    TucakenEdgeStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
 import { stackId, flatName } from '../../utilities/naming';
@@ -513,57 +513,17 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stacks.push(apiStack);
         stackMap.api = apiStack;
 
-        // =================================================================
-        // Stack 6: EDGE STACK (ACM + WAF + CloudFront)
+        // EDGE / TUCAKEN-EDGE STACKS REMOVED (Plan 5b Phase 5)
+        // CloudFront for nelsonlamounier.com, tucaken.io and tucaken.com is
+        // gone — the EKS public ALB (provisioned by the AWS Load Balancer
+        // Controller via workload Ingresses) is now the sole public
+        // endpoint. ACM wildcards for the ALB live in EksAlbCertsStack and
+        // the WAF in EksPublicWafStack.
         //
-        // MUST be deployed in us-east-1 (CloudFront requirement).
-        // Routes traffic: CloudFront → EIP → Traefik → Next.js pod
-        // =================================================================
+        // Run `cdk destroy Edge-<env>` and `cdk destroy TucakenEdge-<env>`
+        // post-merge to deprovision the legacy distributions.
+
         const edgeEnv = cdkEdgeEnvironment(environment);
-
-        // EIP SSM path is written by the compute stack
-        const eipSsmPath = `${ssmPrefix}/elastic-ip`;
-
-        const edgeStack = new KubernetesEdgeStack(
-            scope,
-            stackId(this.namespace, 'Edge', environment),
-            {
-                targetEnvironment: environment,
-                domainName: edgeConfig.domainName ?? '',
-                subjectAlternativeNames: context.subjectAlternativeNames,
-                hostedZoneId: edgeConfig.hostedZoneId ?? '',
-                crossAccountRoleArn: edgeConfig.crossAccountRoleArn ?? '',
-                // SSM lookups read from the primary region
-                eipSsmPath,
-                eipSsmRegion: env.region,
-                assetsBucketSsmPath: ssmPaths.assetsBucketName,
-                assetsBucketSsmRegion: env.region,
-                rateLimitPerIp: 5000,
-                enableIpReputationList: true,
-                enableRateLimiting: true,
-                createDnsRecords: true,
-                namePrefix: nextjsNamePrefix,
-                // Pre-launch IP restriction — IPs come from GitHub Secrets
-                // via typed config (fromEnv pattern in configurations.ts).
-                // To go live: set RESTRICT_ACCESS=false in GitHub Environment.
-                restrictAccess: nextjsConfig.restrictAccess,
-                allowedIps: nextjsConfig.allowedIpv4 ? [nextjsConfig.allowedIpv4] : [],
-                allowedIpv6s: nextjsConfig.allowedIpv6 ? [nextjsConfig.allowedIpv6] : [],
-                // Admin services (Grafana/Prometheus/ArgoCD) DNS
-                opsSubdomain: configs.edge.opsSubdomain,
-                baseDomain: configs.edge.baseDomain,
-                runnersSubdomain: configs.edge.runnersSubdomain,
-                lokiPushSubdomain: configs.edge.lokiPushSubdomain,
-                pushgatewaySubdomain: configs.edge.pushgatewaySubdomain,
-                mttrWebhookSubdomain: configs.edge.mttrWebhookSubdomain,
-                env: edgeEnv,
-            },
-        );
-        edgeStack.addDependency(controlPlaneStack);
-        edgeStack.addDependency(dataStack);
-        edgeStack.addDependency(apiStack);
-        stacks.push(edgeStack);
-        stackMap.edge = edgeStack;
 
         // =================================================================
         // Stack 6c: OIDC STACK (us-east-1)
@@ -603,64 +563,12 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stacks.push(oidcStack);
         stackMap.oidc = oidcStack;
 
-        // =================================================================
-        // Stack 6b: TUCAKEN EDGE STACK (us-east-1)
-        //
-        // Independent CloudFront + WAF + ACM for the tucaken-app SaaS.
-        // Lives in us-east-1 alongside the portfolio edge stack but ships
-        // its own resources end-to-end. Reads the SAME EIP from SSM (shared
-        // Traefik origin) but a SEPARATE origin secret so rotation is
-        // independent from the portfolio.
-        //
-        // Soft-skip: if tucaken hosted zones aren't configured, skip the
-        // stack rather than fail synth — lets non-tucaken environments
-        // continue to deploy unchanged.
-        // =================================================================
-        const tucakenIoDomain = context.tucakenIoDomain
-            ?? process.env.TUCAKEN_IO_DOMAIN
-            ?? 'tucaken.io';
-        const tucakenComDomain = context.tucakenComDomain
-            ?? process.env.TUCAKEN_COM_DOMAIN
-            ?? 'tucaken.com';
+        // tucaken.io and tucaken.com hosted-zone IDs (still consumed by
+        // EksAlbCertsStack for ACM cross-account DNS validation).
         const tucakenIoHostedZoneId = context.tucakenIoHostedZoneId
             ?? process.env.TUCAKEN_IO_HOSTED_ZONE_ID;
         const tucakenComHostedZoneId = context.tucakenComHostedZoneId
             ?? process.env.TUCAKEN_COM_HOSTED_ZONE_ID;
-
-        if (tucakenIoHostedZoneId && tucakenComHostedZoneId && edgeConfig.crossAccountRoleArn) {
-            const tucakenEdgeStack = new TucakenEdgeStack(
-                scope,
-                stackId(this.namespace, 'TucakenEdge', environment),
-                {
-                    targetEnvironment: environment,
-                    ioDomain: tucakenIoDomain,
-                    comDomain: tucakenComDomain,
-                    ioHostedZoneId: tucakenIoHostedZoneId,
-                    comHostedZoneId: tucakenComHostedZoneId,
-                    crossAccountRoleArn: edgeConfig.crossAccountRoleArn,
-                    eipSsmPath,
-                    eipSsmRegion: env.region,
-                    rateLimitPerIp: 5000,
-                    enableIpReputationList: true,
-                    enableRateLimiting: true,
-                    namePrefix: 'tucaken',
-                    // Pre-launch IP gate — re-uses the same allowlist as the
-                    // portfolio. Flip RESTRICT_ACCESS=false to go public.
-                    restrictAccess: nextjsConfig.restrictAccess,
-                    allowedIps: nextjsConfig.allowedIpv4 ? [nextjsConfig.allowedIpv4] : [],
-                    allowedIpv6s: nextjsConfig.allowedIpv6 ? [nextjsConfig.allowedIpv6] : [],
-                    env: edgeEnv,
-                },
-            );
-            tucakenEdgeStack.addDependency(controlPlaneStack);
-            stacks.push(tucakenEdgeStack);
-            stackMap.tucakenEdge = tucakenEdgeStack;
-        } else {
-            cdk.Annotations.of(scope).addInfo(
-                'Tucaken edge stack skipped: TUCAKEN_IO_HOSTED_ZONE_ID, ' +
-                'TUCAKEN_COM_HOSTED_ZONE_ID, or CROSS_ACCOUNT_ROLE_ARN not set.',
-            );
-        }
 
         // =================================================================
         // Stack 7: OBSERVABILITY STACK (CloudWatch Dashboard)
@@ -776,6 +684,11 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
 
         const karpenterQueueArn = `arn:aws:sqs:${env.region}:${env.account}:${eksConfig.clusterName}-karpenter`;
 
+        // Apex domains ExternalDNS reconciles. Sourced statically rather than
+        // from EksConfig so the migration to ALB+ACM (Plan 5b) is reviewable
+        // in one place; future enhancement: surface as a config field per env.
+        const externalDnsApexDomains = ['nelsonlamounier.com', 'tucaken.io', 'tucaken.com'];
+
         const eksPodId = new EksPodIdentityStack(
             scope,
             stackId(this.namespace, 'EksPodIdentity', environment),
@@ -786,13 +699,11 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 karpenterInterruptionQueueArn: karpenterQueueArn,
                 workerNodeRoleArn: eksSystemNg.nodeRole.roleArn,
                 hostedZoneIds: edgeConfig.hostedZoneId ? [edgeConfig.hostedZoneId] : [],
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
             },
         );
         eksPodId.addDependency(eksSystemNg);
         stacks.push(eksPodId); stackMap.eksPodIdentity = eksPodId;
-
-        const hostedZoneDomain = (edgeConfig.domainName ?? 'nelsonlamounier.com')
-            .split('.').slice(-2).join('.');
 
         const eksAddons = new EksAddonsStack(
             scope,
@@ -804,7 +715,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 region: env.region!,
                 karpenterInterruptionQueueName: `${eksConfig.clusterName}-karpenter`,
                 workerNodeRoleArn: eksSystemNg.nodeRole.roleArn,
-                hostedZoneDomain,
+                hostedZoneDomains: externalDnsApexDomains,
+                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
                 versions: eksConfig.versions,
             },
         );
@@ -847,6 +759,66 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         );
         eksAccess.addDependency(eksClusterStack);
         stacks.push(eksAccess); stackMap.eksAccess = eksAccess;
+
+        // ---------- ALB wildcard certificates (eu-west-1) ----------
+        // Soft-skip when tucaken zones or cross-account role aren't
+        // configured — same gate as TucakenEdgeStack so single-domain
+        // environments stay deployable.
+        if (
+            edgeConfig.hostedZoneId
+            && tucakenIoHostedZoneId
+            && tucakenComHostedZoneId
+            && edgeConfig.crossAccountRoleArn
+        ) {
+            const eksAlbCerts = new EksAlbCertsStack(
+                scope,
+                stackId(this.namespace, 'EksAlbCerts', environment),
+                {
+                    env, targetEnvironment: environment,
+                    nelsonlamounierHostedZoneId: edgeConfig.hostedZoneId,
+                    tucakenIoHostedZoneId,
+                    tucakenComHostedZoneId,
+                    crossAccountRoleArn: edgeConfig.crossAccountRoleArn,
+                    ssmPrefix,
+                },
+            );
+            stacks.push(eksAlbCerts); stackMap.eksAlbCerts = eksAlbCerts;
+        } else {
+            cdk.Annotations.of(scope).addInfo(
+                'EKS ALB certs stack skipped: hostedZoneId, tucaken zones, ' +
+                'or CROSS_ACCOUNT_ROLE_ARN not set.',
+            );
+        }
+
+        // ---------- Public WAF (eu-west-1, REGIONAL) ----------
+        // Host-scoped allowlist + managed rules + rate limit. Attached to
+        // the shared ALB via `alb.ingress.kubernetes.io/wafv2-acl-arn` on
+        // a workload Ingress. Plan 5b § 0.4.
+        const eksPublicWaf = new EksPublicWafStack(
+            scope,
+            stackId(this.namespace, 'EksPublicWaf', environment),
+            {
+                env, targetEnvironment: environment,
+                allowlistIpv4SsmPath: `/k8s/${environment}/monitoring/allow-ipv4`,
+                allowlistIpv6SsmPath: `/k8s/${environment}/monitoring/allow-ipv6`,
+                allowlistedHosts: [
+                    'admin.nelsonlamounier.com',
+                    'ops.nelsonlamounier.com',
+                    // Tucaken pre-launch IP gate — application is still
+                    // under development. Drop these four entries when
+                    // going public; the AWS Managed Rule Sets and ACM
+                    // wildcards remain.
+                    'tucaken.io',
+                    'www.tucaken.io',
+                    'tucaken.com',
+                    'www.tucaken.com',
+                ],
+                rateLimitedHosts: ['api.nelsonlamounier.com'],
+                rateLimitPerIp: 2000,
+                ssmPrefix,
+            },
+        );
+        stacks.push(eksPublicWaf); stackMap.eksPublicWaf = eksPublicWaf;
 
         cdk.Annotations.of(scope).addInfo(
             `K8s factory created ${stacks.length} stacks for ${environment}: ` +

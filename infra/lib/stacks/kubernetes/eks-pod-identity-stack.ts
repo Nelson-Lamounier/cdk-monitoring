@@ -7,6 +7,9 @@
  *
  * @see docs/superpowers/specs/2026-05-05-eks-migration-design.md § 4
  */
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
 import * as eks from 'aws-cdk-lib/aws-eks';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cdk from 'aws-cdk-lib/core';
@@ -24,6 +27,15 @@ export interface EksPodIdentityStackProps extends cdk.StackProps {
     readonly karpenterInterruptionQueueArn: string;
     readonly workerNodeRoleArn: string;
     readonly hostedZoneIds: readonly string[];
+    /**
+     * Cross-account role ARN that holds the actual Route53 write permissions
+     * (e.g. arn:aws:iam::<mgmt>:role/Route53DnsValidationRole). When set,
+     * ExternalDNS gets `sts:AssumeRole` on this role and writes records via
+     * the assumed identity (configured in EksAddonsStack via
+     * `--aws-assume-role`). When unset, ExternalDNS falls back to direct
+     * writes against `hostedZoneIds` in this account.
+     */
+    readonly crossAccountDnsRoleArn?: string;
 }
 
 export class EksPodIdentityStack extends cdk.Stack {
@@ -189,26 +201,54 @@ export class EksPodIdentityStack extends cdk.Stack {
                         resources: [props.workerNodeRoleArn],
                     }),
                 );
-                break;
-            case 'alb-controller':
-                // V1: coarse policy. Replace with vendored AWS-published JSON
-                // before V2 ingress migration. Tracked in spec § 10.
+                // Karpenter resolves AMI aliases (e.g. `al2023@latest`) by
+                // reading EKS-published SSM parameters under
+                // /aws/service/eks/optimized-ami/*. Without this, alias
+                // discovery silently returns zero AMIs and EC2NodeClass
+                // stays AMIsReady=Unknown ("DependenciesNotReady"), which
+                // blocks every NodePool from provisioning.
                 role.addToPolicy(
                     new iam.PolicyStatement({
-                        actions: [
-                            'elasticloadbalancing:*',
-                            'ec2:Describe*',
-                            'acm:DescribeCertificate',
-                            'iam:CreateServiceLinkedRole',
-                            'wafv2:GetWebACL',
-                            'wafv2:AssociateWebACL',
+                        actions: ['ssm:GetParameter'],
+                        resources: [
+                            `arn:aws:ssm:${cdk.Stack.of(this).region}::parameter/aws/service/eks/optimized-ami/*`,
+                            `arn:aws:ssm:${cdk.Stack.of(this).region}::parameter/aws/service/bottlerocket/*`,
                         ],
-                        resources: ['*'],
                     }),
                 );
                 break;
+            case 'alb-controller': {
+                // Vendored AWS-published IAM policy for the AWS Load Balancer
+                // Controller. The previous minimal V1 policy was missing
+                // ec2:CreateSecurityGroup et al., which blocked NLB IP-mode
+                // provisioning for any LoadBalancer Service. The vendored
+                // file is updated by re-fetching from
+                // https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/<TAG>/docs/install/iam_policy.json
+                const policyPath = path.join(
+                    __dirname, 'iam-policies', 'aws-load-balancer-controller.json',
+                );
+                const policyDoc = JSON.parse(fs.readFileSync(policyPath, 'utf8')) as {
+                    Statement: Record<string, unknown>[];
+                };
+                for (const statement of policyDoc.Statement) {
+                    role.addToPolicy(iam.PolicyStatement.fromJson(statement));
+                }
+                break;
+            }
             case 'external-dns':
-                if (props.hostedZoneIds.length > 0) {
+                if (props.crossAccountDnsRoleArn) {
+                    // Cross-account zones (e.g. dev cluster writing into mgmt-account
+                    // hosted zones). ExternalDNS calls sts:AssumeRole into this role
+                    // and the role's own policy handles route53:ChangeResourceRecordSets
+                    // on the target zones. Local role keeps no R53 perms.
+                    role.addToPolicy(
+                        new iam.PolicyStatement({
+                            actions: ['sts:AssumeRole'],
+                            resources: [props.crossAccountDnsRoleArn],
+                        }),
+                    );
+                } else if (props.hostedZoneIds.length > 0) {
+                    // Same-account zones — write records directly.
                     role.addToPolicy(
                         new iam.PolicyStatement({
                             actions: ['route53:ChangeResourceRecordSets'],
@@ -217,13 +257,13 @@ export class EksPodIdentityStack extends cdk.Stack {
                             ),
                         }),
                     );
+                    role.addToPolicy(
+                        new iam.PolicyStatement({
+                            actions: ['route53:ListHostedZones', 'route53:ListResourceRecordSets'],
+                            resources: ['*'],
+                        }),
+                    );
                 }
-                role.addToPolicy(
-                    new iam.PolicyStatement({
-                        actions: ['route53:ListHostedZones', 'route53:ListResourceRecordSets'],
-                        resources: ['*'],
-                    }),
-                );
                 break;
             case 'external-secrets':
                 role.addToPolicy(

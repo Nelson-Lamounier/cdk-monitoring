@@ -39,8 +39,6 @@ export const STACK_REGISTRY = {
         monitoringPool: 'MonitoringPool',
         appIam: 'AppIam',
         api: 'Api',
-        edge: 'Edge',
-        tucakenEdge: 'TucakenEdge',
         observability: 'Observability',
         platformRds: 'PlatformRds',
         oidc: 'Oidc',
@@ -51,6 +49,8 @@ export const STACK_REGISTRY = {
         eksAddons: 'EksAddons',
         eksKarpenter: 'EksKarpenter',
         eksAccess: 'EksAccess',
+        eksAlbCerts: 'EksAlbCerts',
+        eksPublicWaf: 'EksPublicWaf',
     },
     org: {
         dnsRole: 'DnsRole',
