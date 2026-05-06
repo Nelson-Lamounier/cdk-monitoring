@@ -820,10 +820,15 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         eksKarp.addDependency(eksAddons);
         stacks.push(eksKarp); stackMap.eksKarpenter = eksKarp;
 
-        // Access entries: optional GH OIDC + admin role from env vars; skip if neither set.
+        // Access entries: config-defined admins + optional GH OIDC / extra admin
+        // from env vars (CI injects GH_OIDC_ROLE_ARN; ADMIN_ROLE_ARN for ad-hoc).
         const ghOidcRoleArn = process.env.GH_OIDC_ROLE_ARN;
         const adminRoleArn = process.env.ADMIN_ROLE_ARN;
-        const accessPrincipals = [ghOidcRoleArn, adminRoleArn].filter((a): a is string => !!a);
+        const accessPrincipals = Array.from(new Set([
+            ...eksConfig.adminPrincipalArns,
+            ghOidcRoleArn,
+            adminRoleArn,
+        ].filter((a): a is string => !!a)));
         const eksAccess = new EksAccessStack(
             scope,
             stackId(this.namespace, 'EksAccess', environment),

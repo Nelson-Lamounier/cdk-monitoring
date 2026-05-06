@@ -35,24 +35,8 @@ export class EksAddonsStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props: EksAddonsStackProps) {
         super(scope, id, props);
 
-        new eks.CfnAddon(this, 'VpcCni', {
-            clusterName: props.cluster.clusterName,
-            addonName: 'vpc-cni',
-            resolveConflicts: 'OVERWRITE',
-        });
-
-        // EKS Pod Identity Agent — DaemonSet on every node that exchanges
-        // service-account tokens for AWS creds at 169.254.170.23/v1/credentials.
-        // Without it, every pod with a PodIdentityAssociation hangs trying to
-        // fetch AWS creds during init (Karpenter, ALB controller, ESO, etc.
-        // all fail liveness/readiness probes). This is an AWS-managed addon
-        // distinct from CfnPodIdentityAssociation, which only sets up the
-        // role-to-SA mapping at the EKS control-plane level.
-        const podIdentityAgent = new eks.CfnAddon(this, 'PodIdentityAgent', {
-            clusterName: props.cluster.clusterName,
-            addonName: 'eks-pod-identity-agent',
-            resolveConflicts: 'OVERWRITE',
-        });
+        // VpcCni + eks-pod-identity-agent moved to EksPodIdentityStack so
+        // they survive a Helm-chart rollback in this stack. See note there.
 
         // V1 addons must run on the system MNG (`dedicated=system:NoSchedule`)
         // because Karpenter has not yet provisioned workload nodes when these
@@ -118,7 +102,8 @@ export class EksAddonsStack extends cdk.Stack {
                 webhookNamespaceSelectors: albWebhookNamespaceSelectors,
             },
         });
-        albController.node.addDependency(podIdentityAgent);
+        // Pod Identity Agent dependency satisfied at stack level:
+        // EksAddonsStack depends on EksPodIdentityStack (factory.ts).
 
         const eso = new eks.HelmChart(this, 'ExternalSecrets', {
             cluster: props.cluster,
