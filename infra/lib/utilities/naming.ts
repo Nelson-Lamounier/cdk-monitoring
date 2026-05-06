@@ -51,6 +51,7 @@ export const STACK_REGISTRY = {
         eksAddons: 'EksAddons',
         eksKarpenter: 'EksKarpenter',
         eksAccess: 'EksAccess',
+        eksAlbCerts: 'EksAlbCerts',
     },
     org: {
         dnsRole: 'DnsRole',

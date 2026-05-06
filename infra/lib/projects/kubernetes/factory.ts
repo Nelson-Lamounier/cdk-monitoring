@@ -49,6 +49,7 @@ import {
 import {
     EksAccessStack,
     EksAddonsStack,
+    EksAlbCertsStack,
     EksClusterStack,
     EksKarpenterStack,
     EksPodIdentityStack,
@@ -851,6 +852,36 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         );
         eksAccess.addDependency(eksClusterStack);
         stacks.push(eksAccess); stackMap.eksAccess = eksAccess;
+
+        // ---------- ALB wildcard certificates (eu-west-1) ----------
+        // Soft-skip when tucaken zones or cross-account role aren't
+        // configured — same gate as TucakenEdgeStack so single-domain
+        // environments stay deployable.
+        if (
+            edgeConfig.hostedZoneId
+            && tucakenIoHostedZoneId
+            && tucakenComHostedZoneId
+            && edgeConfig.crossAccountRoleArn
+        ) {
+            const eksAlbCerts = new EksAlbCertsStack(
+                scope,
+                stackId(this.namespace, 'EksAlbCerts', environment),
+                {
+                    env, targetEnvironment: environment,
+                    nelsonlamounierHostedZoneId: edgeConfig.hostedZoneId,
+                    tucakenIoHostedZoneId,
+                    tucakenComHostedZoneId,
+                    crossAccountRoleArn: edgeConfig.crossAccountRoleArn,
+                    ssmPrefix,
+                },
+            );
+            stacks.push(eksAlbCerts); stackMap.eksAlbCerts = eksAlbCerts;
+        } else {
+            cdk.Annotations.of(scope).addInfo(
+                'EKS ALB certs stack skipped: hostedZoneId, tucaken zones, ' +
+                'or CROSS_ACCOUNT_ROLE_ARN not set.',
+            );
+        }
 
         cdk.Annotations.of(scope).addInfo(
             `K8s factory created ${stacks.length} stacks for ${environment}: ` +
