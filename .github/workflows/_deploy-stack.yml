@@ -115,6 +115,12 @@ on:
       AWS_OIDC_ROLE:
         description: "AWS OIDC role ARN for authentication (resolved from environment if not passed)"
         required: false
+      GH_OIDC_ROLE_ARN:
+        description: "GH OIDC IAM role ARN consumed by EksAccessStack at synth-time to grant cluster-admin Access Entry"
+        required: false
+      ADMIN_ROLE_ARN:
+        description: "Ad-hoc admin IAM role ARN consumed by EksAccessStack at synth-time"
+        required: false
       VERIFICATION_SECRET:
         description: "Verification secret for API stack (scoped — only pass for API stack)"
         required: false
@@ -316,6 +322,12 @@ jobs:
           AWS_REGION: ${{ inputs.aws-region }}
           REQUIRE_APPROVAL: ${{ inputs.require-approval }}
           ADDITIONAL_ARGS: ${{ inputs.additional-args }}
+          # Consumed by factory.ts at deploy-time synth — adds the GH OIDC
+          # role + ad-hoc admin role to EksAccessStack as cluster-admin
+          # Access Entries. Without these, deploy-time synth produces a
+          # stripped-down template missing the entries set up at setup-time.
+          GH_OIDC_ROLE_ARN: ${{ secrets.GH_OIDC_ROLE_ARN }}
+          ADMIN_ROLE_ARN: ${{ secrets.ADMIN_ROLE_ARN }}
           LOG_LEVEL: info
 
       # ── Diagnose failures (only runs on deploy failure) ──
