@@ -893,7 +893,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
             stackId(this.namespace, 'EksPublicWaf', environment),
             {
                 env, targetEnvironment: environment,
-                allowlistCidrsSsmPath: `/shared/${environment}/admin-allowlist-cidrs`,
+                allowlistIpv4SsmPath: `/k8s/${environment}/monitoring/allow-ipv4`,
+                allowlistIpv6SsmPath: `/k8s/${environment}/monitoring/allow-ipv6`,
                 allowlistedHosts: [
                     'admin.nelsonlamounier.com',
                     'ops.nelsonlamounier.com',
