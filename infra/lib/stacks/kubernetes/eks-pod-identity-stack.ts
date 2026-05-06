@@ -7,6 +7,9 @@
  *
  * @see docs/superpowers/specs/2026-05-05-eks-migration-design.md § 4
  */
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
 import * as eks from 'aws-cdk-lib/aws-eks';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cdk from 'aws-cdk-lib/core';
@@ -205,23 +208,24 @@ export class EksPodIdentityStack extends cdk.Stack {
                     }),
                 );
                 break;
-            case 'alb-controller':
-                // V1: coarse policy. Replace with vendored AWS-published JSON
-                // before V2 ingress migration. Tracked in spec § 10.
-                role.addToPolicy(
-                    new iam.PolicyStatement({
-                        actions: [
-                            'elasticloadbalancing:*',
-                            'ec2:Describe*',
-                            'acm:DescribeCertificate',
-                            'iam:CreateServiceLinkedRole',
-                            'wafv2:GetWebACL',
-                            'wafv2:AssociateWebACL',
-                        ],
-                        resources: ['*'],
-                    }),
+            case 'alb-controller': {
+                // Vendored AWS-published IAM policy for the AWS Load Balancer
+                // Controller. The previous minimal V1 policy was missing
+                // ec2:CreateSecurityGroup et al., which blocked NLB IP-mode
+                // provisioning for any LoadBalancer Service. The vendored
+                // file is updated by re-fetching from
+                // https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/<TAG>/docs/install/iam_policy.json
+                const policyPath = path.join(
+                    __dirname, 'iam-policies', 'aws-load-balancer-controller.json',
                 );
+                const policyDoc = JSON.parse(fs.readFileSync(policyPath, 'utf8')) as {
+                    Statement: Record<string, unknown>[];
+                };
+                for (const statement of policyDoc.Statement) {
+                    role.addToPolicy(iam.PolicyStatement.fromJson(statement));
+                }
                 break;
+            }
             case 'external-dns':
                 if (props.hostedZoneIds.length > 0) {
                     role.addToPolicy(
