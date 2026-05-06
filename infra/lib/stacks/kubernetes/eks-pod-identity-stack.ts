@@ -241,9 +241,14 @@ export class EksPodIdentityStack extends cdk.Stack {
                     // hosted zones). ExternalDNS calls sts:AssumeRole into this role
                     // and the role's own policy handles route53:ChangeResourceRecordSets
                     // on the target zones. Local role keeps no R53 perms.
+                    //
+                    // TagSession is required because Pod Identity's session tags
+                    // (eks-cluster-arn, kubernetes-namespace, etc.) are part of every
+                    // STS request — without it the cross-account assume fails:
+                    //   AccessDenied: ... not authorized to perform: sts:TagSession
                     role.addToPolicy(
                         new iam.PolicyStatement({
-                            actions: ['sts:AssumeRole'],
+                            actions: ['sts:AssumeRole', 'sts:TagSession'],
                             resources: [props.crossAccountDnsRoleArn],
                         }),
                     );
