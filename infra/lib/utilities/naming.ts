@@ -52,6 +52,7 @@ export const STACK_REGISTRY = {
         eksKarpenter: 'EksKarpenter',
         eksAccess: 'EksAccess',
         eksAlbCerts: 'EksAlbCerts',
+        eksPublicWaf: 'EksPublicWaf',
     },
     org: {
         dnsRole: 'DnsRole',

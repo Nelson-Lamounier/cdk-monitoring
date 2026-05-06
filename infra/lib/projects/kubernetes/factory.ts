@@ -50,6 +50,7 @@ import {
     EksAccessStack,
     EksAddonsStack,
     EksAlbCertsStack,
+    EksPublicWafStack,
     EksClusterStack,
     EksKarpenterStack,
     EksPodIdentityStack,
@@ -882,6 +883,24 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 'or CROSS_ACCOUNT_ROLE_ARN not set.',
             );
         }
+
+        // ---------- Public WAF (eu-west-1, REGIONAL) ----------
+        // Host-scoped allowlist + managed rules + rate limit. Attached to
+        // the shared ALB via `alb.ingress.kubernetes.io/wafv2-acl-arn` on
+        // a workload Ingress. Plan 5b § 0.4.
+        const eksPublicWaf = new EksPublicWafStack(
+            scope,
+            stackId(this.namespace, 'EksPublicWaf', environment),
+            {
+                env, targetEnvironment: environment,
+                allowlistCidrsSsmPath: `/shared/${environment}/admin-allowlist-cidrs`,
+                allowlistedHosts: ['admin.nelsonlamounier.com', 'ops.nelsonlamounier.com'],
+                rateLimitedHosts: ['api.nelsonlamounier.com'],
+                rateLimitPerIp: 2000,
+                ssmPrefix,
+            },
+        );
+        stacks.push(eksPublicWaf); stackMap.eksPublicWaf = eksPublicWaf;
 
         cdk.Annotations.of(scope).addInfo(
             `K8s factory created ${stacks.length} stacks for ${environment}: ` +

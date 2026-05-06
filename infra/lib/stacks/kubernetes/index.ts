@@ -13,6 +13,8 @@ export { TucakenEdgeStack } from './tucaken-edge-stack';
 export type { TucakenEdgeStackProps } from './tucaken-edge-stack';
 export { EksAlbCertsStack } from './eks-alb-certs-stack';
 export type { EksAlbCertsStackProps } from './eks-alb-certs-stack';
+export { EksPublicWafStack } from './eks-public-waf-stack';
+export type { EksPublicWafStackProps } from './eks-public-waf-stack';
 export { KubernetesDataStack } from './data-stack';
 export type { KubernetesDataStackProps } from './data-stack';
 export { NextJsApiStack } from './api-stack';
