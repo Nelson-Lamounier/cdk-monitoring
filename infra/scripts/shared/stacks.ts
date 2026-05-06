@@ -181,25 +181,6 @@ const k8sStacks: StackConfig[] = [
     optional: true, // Application-layer — deployed separately from infrastructure
   },
   {
-    id: 'edge',
-    name: 'Edge Stack',
-    getStackName: (env) => getStackId(Project.KUBERNETES, 'edge', env),
-    description:
-      'CloudFront distribution with ACM certificate and WAF (us-east-1)',
-    dependsOn: ['controlPlane'],
-    region: 'us-east-1',
-  },
-  {
-    id: 'tucakenEdge',
-    name: 'Tucaken Edge Stack',
-    getStackName: (env) => getStackId(Project.KUBERNETES, 'tucakenEdge', env),
-    description:
-      'Tucaken SaaS edge: CloudFront (.io primary + .com redirect) + WAF + ACM (us-east-1)',
-    dependsOn: ['controlPlane'],
-    region: 'us-east-1',
-    optional: true,
-  },
-  {
     id: 'observability',
     name: 'Observability Stack',
     getStackName: (env) => getStackId(Project.KUBERNETES, 'observability', env),
