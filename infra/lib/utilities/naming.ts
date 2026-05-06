@@ -39,8 +39,6 @@ export const STACK_REGISTRY = {
         monitoringPool: 'MonitoringPool',
         appIam: 'AppIam',
         api: 'Api',
-        edge: 'Edge',
-        tucakenEdge: 'TucakenEdge',
         observability: 'Observability',
         platformRds: 'PlatformRds',
         oidc: 'Oidc',

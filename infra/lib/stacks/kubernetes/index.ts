@@ -7,10 +7,6 @@ export type { KubernetesAppIamStackProps } from './app-iam-stack';
 export { KubernetesControlPlaneStack } from './control-plane-stack';
 export type { KubernetesControlPlaneStackProps } from './control-plane-stack';
 
-export { KubernetesEdgeStack } from './edge-stack';
-export type { KubernetesEdgeStackProps } from './edge-stack';
-export { TucakenEdgeStack } from './tucaken-edge-stack';
-export type { TucakenEdgeStackProps } from './tucaken-edge-stack';
 export { EksAlbCertsStack } from './eks-alb-certs-stack';
 export type { EksAlbCertsStackProps } from './eks-alb-certs-stack';
 export { EksPublicWafStack } from './eks-public-waf-stack';

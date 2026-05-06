@@ -950,7 +950,16 @@ jobs:
   deploy-edge:
     name: Deploy Edge
     needs: [setup, deploy-appiam, deploy-data]
-    if: always() && needs.deploy-appiam.result == 'success' && needs.deploy-data.result == 'success'
+    # Edge stack removed in Plan 5b Phase 5 (CloudFront teardown). The
+    # synth output `edge-stack` is now empty for all environments. Gate
+    # keeps the legacy job descriptor in place without invoking it; once
+    # the legacy `Edge-<env>` CFN stack is destroyed in every account,
+    # this job + verify-edge-stack can be deleted entirely.
+    if: |
+      always()
+      && needs.setup.outputs.edge-stack != ''
+      && needs.deploy-appiam.result == 'success'
+      && needs.deploy-data.result == 'success'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.edge-stack }}
@@ -977,7 +986,11 @@ jobs:
   verify-edge-stack:
     name: Verify Edge Stack
     needs: [setup, deploy-edge]
-    if: always() && needs.deploy-edge.result == 'success'
+    # Skip when edge stack is gone (Plan 5b Phase 5).
+    if: |
+      always()
+      && needs.setup.outputs.edge-stack != ''
+      && needs.deploy-edge.result == 'success'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/nelson-lamounier/cdk-monitoring/ci:latest
