@@ -29,7 +29,8 @@
 
 import * as cdk from 'aws-cdk-lib/core';
 
-import { getEksConfig } from '../../config/eks';
+import { getEksConfig, EKS_ADMIN_PRINCIPAL_ARNS_SSM_PATHS } from '../../config/eks';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import {
     Environment,
     cdkEnvironment,
@@ -737,7 +738,22 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         //
         // Source of truth: docs/superpowers/specs/2026-05-05-eks-migration-design.md § 7.1
         // =================================================================
-        const eksConfig = getEksConfig(environment);
+        // Admin principal ARNs sourced from SSM at synth time. eks.AccessEntry
+        // requires concrete strings (not CFN tokens), so use valueFromLookup
+        // — value gets cached in cdk.context.json after first synth.
+        // Param type StringList → comma-separated string. Missing param =
+        // empty list (skip access entries; bootstrap-only deploy).
+        const adminArnsSsmPath = EKS_ADMIN_PRINCIPAL_ARNS_SSM_PATHS[
+            environment as keyof typeof EKS_ADMIN_PRINCIPAL_ARNS_SSM_PATHS
+        ];
+        const adminArnsRaw = adminArnsSsmPath
+            ? ssm.StringParameter.valueFromLookup(scope, adminArnsSsmPath)
+            : '';
+        const adminPrincipalArns = adminArnsRaw && !adminArnsRaw.startsWith('dummy-value-for-')
+            ? adminArnsRaw.split(',').map((a) => a.trim()).filter(Boolean)
+            : [];
+
+        const eksConfig = getEksConfig(environment, adminPrincipalArns);
 
         const eksClusterStack = new EksClusterStack(
             scope,

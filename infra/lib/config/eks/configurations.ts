@@ -94,14 +94,17 @@ const COMMON_KARPENTER: EksKarpenterNodePoolConfig = {
     cpuMax: 8,
 } as const;
 
-// SSO AdministratorAccess role for the dev account (account 771826808455).
-// Identity Center role ARNs include the region in the path; reserved role
-// names are stable across permission-set redeployments only as long as the
-// permission set is not deleted/recreated.
-const DEV_SSO_ADMIN_ROLE_ARN =
-    'arn:aws:iam::771826808455:role/aws-reserved/sso.amazonaws.com/eu-west-1/AWSReservedSSO_AdministratorAccess_1f8059107593636a';
+// SSM paths holding admin-principal ARNs per environment. Populate manually:
+//   aws ssm put-parameter --name /cdk-monitoring/development/eks/admin-principal-arns \
+//     --type StringList --value "arn:aws:iam::...,arn:aws:iam::..." --profile <profile>
+// Keeps account IDs and SSO role hashes out of source control.
+export const EKS_ADMIN_PRINCIPAL_ARNS_SSM_PATHS: Record<DeployableEnvironment, string> = {
+    [Environment.DEVELOPMENT]: '/cdk-monitoring/development/eks/admin-principal-arns',
+    [Environment.STAGING]: '/cdk-monitoring/staging/eks/admin-principal-arns',
+    [Environment.PRODUCTION]: '/cdk-monitoring/production/eks/admin-principal-arns',
+};
 
-export const EKS_CONFIGS: Record<DeployableEnvironment, EksConfig> = {
+export const EKS_CONFIGS: Record<DeployableEnvironment, Omit<EksConfig, 'adminPrincipalArns'>> = {
     [Environment.DEVELOPMENT]: {
         clusterName: 'k8s-eks-development',
         version: EKS_VERSION,
@@ -109,7 +112,6 @@ export const EKS_CONFIGS: Record<DeployableEnvironment, EksConfig> = {
         podIdentityBindings: COMMON_BINDINGS,
         karpenter: COMMON_KARPENTER,
         versions: COMMON_VERSIONS,
-        adminPrincipalArns: [DEV_SSO_ADMIN_ROLE_ARN],
     },
     [Environment.STAGING]: {
         clusterName: 'k8s-eks-staging',
@@ -118,7 +120,6 @@ export const EKS_CONFIGS: Record<DeployableEnvironment, EksConfig> = {
         podIdentityBindings: COMMON_BINDINGS,
         karpenter: COMMON_KARPENTER,
         versions: COMMON_VERSIONS,
-        adminPrincipalArns: [],
     },
     [Environment.PRODUCTION]: {
         clusterName: 'k8s-eks-production',
@@ -127,13 +128,15 @@ export const EKS_CONFIGS: Record<DeployableEnvironment, EksConfig> = {
         podIdentityBindings: COMMON_BINDINGS,
         karpenter: COMMON_KARPENTER,
         versions: COMMON_VERSIONS,
-        adminPrincipalArns: [],
     },
 };
 
-export function getEksConfig(env: Environment): EksConfig {
+export function getEksConfig(
+    env: Environment,
+    adminPrincipalArns: readonly string[] = [],
+): EksConfig {
     if (env === Environment.MANAGEMENT) {
         throw new Error('EKS not deployed to management env');
     }
-    return EKS_CONFIGS[env as DeployableEnvironment];
+    return { ...EKS_CONFIGS[env as DeployableEnvironment], adminPrincipalArns };
 }
