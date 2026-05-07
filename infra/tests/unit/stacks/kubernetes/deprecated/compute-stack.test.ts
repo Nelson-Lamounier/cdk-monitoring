@@ -29,20 +29,20 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { Environment } from '../../../../lib/config';
-import { getK8sConfigs } from '../../../../lib/config/kubernetes';
-import { KubernetesBaseStack } from '../../../../lib/stacks/kubernetes/base-stack';
+import { Environment } from '../../../../../lib/config';
+import { getK8sConfigs } from '../../../../../lib/config/kubernetes';
+import { KubernetesBaseStack } from '../../../../../lib/stacks/kubernetes/base-stack';
 import {
-    KubernetesControlPlaneStack,
+    Deprecated_KubernetesControlPlaneStack as KubernetesControlPlaneStack,
     KubernetesControlPlaneStackProps,
-} from '../../../../lib/stacks/kubernetes/control-plane-stack';
+} from '../../../../../lib/stacks/kubernetes/deprecated/control-plane-stack';
 import {
     TEST_ENV_EU,
     TEST_VPC_CONTEXT_KEY,
     TEST_VPC_CONTEXT,
     createTestApp,
     enforceNoInlineS3Buckets,
-} from '../../../fixtures';
+} from '../../../../fixtures';
 
 // =============================================================================
 // Test Fixtures
@@ -272,7 +272,7 @@ describe('KubernetesControlPlaneStack', () => {
     // =========================================================================
     describe('S3 Construct Enforcement', () => {
         enforceNoInlineS3Buckets({
-            sourceDir: path.resolve(__dirname, '../../../../lib/stacks/kubernetes'),
+            sourceDir: path.resolve(__dirname, '../../../../../lib/stacks/kubernetes'),
         });
     });
 

@@ -1,4 +1,8 @@
 # @format
+# @deprecated: Replaced by EKS deploy pipelines on 2026-05-07.
+# @reason: kubeadm cluster decommissioned; day-1 kubeadm bootstrap no longer needed.
+# @see: docs/superpowers/specs/2026-05-05-eks-migration-design.md
+# Kept for: destroy reference only. Do not trigger.
 # @description Day-1 Orchestration Pipeline — Release Coordinator
 #
 # Single-trigger workflow that deploys the entire K8s platform from scratch.

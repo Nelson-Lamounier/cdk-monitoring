@@ -21,20 +21,20 @@
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment } from '../../../../lib/config';
-import { getK8sConfigs } from '../../../../lib/config/kubernetes';
+import { Environment } from '../../../../../lib/config';
+import { getK8sConfigs } from '../../../../../lib/config/kubernetes';
+import { KubernetesBaseStack } from '../../../../../lib/stacks/kubernetes/base-stack';
 import {
-    KubernetesAppIamStack,
+    Deprecated_KubernetesAppIamStack as KubernetesAppIamStack,
     KubernetesAppIamStackProps,
-} from '../../../../lib/stacks/kubernetes/app-iam-stack';
-import { KubernetesBaseStack } from '../../../../lib/stacks/kubernetes/base-stack';
+} from '../../../../../lib/stacks/kubernetes/deprecated/app-iam-stack';
 import {
-    KubernetesControlPlaneStack,
-} from '../../../../lib/stacks/kubernetes/control-plane-stack';
+    Deprecated_KubernetesControlPlaneStack as KubernetesControlPlaneStack,
+} from '../../../../../lib/stacks/kubernetes/deprecated/control-plane-stack';
 import {
     TEST_ENV_EU,
     createTestApp,
-} from '../../../fixtures';
+} from '../../../../fixtures';
 
 // =============================================================================
 // Test Fixtures

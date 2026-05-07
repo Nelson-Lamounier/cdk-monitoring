@@ -47,6 +47,24 @@ export class EksSystemNodeGroupStack extends cdk.Stack {
             ],
         });
 
+        // vpc-cni and kube-proxy live HERE — not in EksPodIdentityStack — to
+        // break the timing deadlock: EKS waits for nodes to be Ready before
+        // marking this stack CREATE_COMPLETE, and nodes need the CNI DaemonSet
+        // to reach Ready. Both CfnAddons have no CFN dependency on the MNG so
+        // CloudFormation creates them in parallel; aws-node is running before
+        // the first node finishes bootstrapping.
+        new eks.CfnAddon(this, 'VpcCni', {
+            clusterName: props.cluster.clusterName,
+            addonName: 'vpc-cni',
+            resolveConflicts: 'OVERWRITE',
+        });
+
+        new eks.CfnAddon(this, 'KubeProxy', {
+            clusterName: props.cluster.clusterName,
+            addonName: 'kube-proxy',
+            resolveConflicts: 'OVERWRITE',
+        });
+
         this.nodeGroup = new eks.Nodegroup(this, 'SystemMng', {
             cluster: props.cluster,
             instanceTypes: props.instanceTypes.map((t) => new ec2.InstanceType(t)),

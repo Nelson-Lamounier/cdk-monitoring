@@ -121,9 +121,18 @@ export class CrossAccountDnsRoleStack extends cdk.Stack {
             maxSessionDuration: cdk.Duration.hours(1),
         });
 
+        // sts:TagSession is required alongside sts:AssumeRole so that callers
+        // using session-tagged assume (e.g. ExternalDNS Pod Identity) are
+        // not rejected by STS on the trust-policy side. CDK's AccountPrincipal
+        // only emits sts:AssumeRole — override via CFN escape hatch.
+        const cfnRole = this.role.node.defaultChild as iam.CfnRole;
+        cfnRole.addPropertyOverride(
+            'AssumeRolePolicyDocument.Statement.0.Action',
+            ['sts:AssumeRole', 'sts:TagSession'],
+        );
+
         // Add external ID condition if provided
         if (props.externalId) {
-            const cfnRole = this.role.node.defaultChild as iam.CfnRole;
             cfnRole.addPropertyOverride(
                 'AssumeRolePolicyDocument.Statement.0.Condition',
                 {
