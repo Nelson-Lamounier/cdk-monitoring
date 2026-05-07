@@ -1,4 +1,10 @@
 # @format
+# @deprecated: Replaced by deploy-eks-development.yml on 2026-05-07.
+# @reason: kubeadm cluster decommissioned; EKS is now the sole cluster.
+# @see: docs/superpowers/specs/2026-05-05-eks-migration-design.md
+# Kept for: cdk destroy reference (run manually to tear down kubeadm stacks).
+# Do not trigger automatically.
+#
 # @description Deploy K8s Infrastructure to Development
 #
 # Unified infrastructure pipeline for the K8s cluster.
@@ -23,18 +29,12 @@
 name: Deploy K8s to Development
 
 on:
-  workflow_dispatch: # Manual trigger — always deploys regardless of changed paths
+  workflow_dispatch: # Manual only — disabled from automatic workflow_run trigger on 2026-05-07
     inputs:
       skip_verification:
         description: "Skip post-deployment verification"
         type: boolean
         default: false
-  workflow_run:
-    # Fires after Shared infra completes on main. Shared is the prerequisite
-    # (VPC, ECR, IAM) — k8s stacks assume those resources already exist.
-    workflows: ["Deploy Shared (Dev)"]
-    types: [completed]
-    branches: [main]
 
 permissions:
   id-token: write

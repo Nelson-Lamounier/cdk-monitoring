@@ -44,18 +44,9 @@ export class EksPodIdentityStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props: EksPodIdentityStackProps) {
         super(scope, id, props);
 
-        // Foundational EKS managed addons live HERE — not in EksAddonsStack —
-        // so a Helm-chart failure downstream cannot trigger a CFN rollback
-        // that deletes the agent. Without the agent DaemonSet present on
-        // every node, every PodIdentityAssociation downstream is a no-op:
-        // workloads hit 169.254.170.23 and get `connection refused`,
-        // CrashLoopBackOff, then Helm `wait: true` times out → CREATE_FAILED
-        // → rollback → addon deleted → next deploy hits the same loop.
-        new eks.CfnAddon(this, 'VpcCni', {
-            clusterName: props.cluster.clusterName,
-            addonName: 'vpc-cni',
-            resolveConflicts: 'OVERWRITE',
-        });
+        // vpc-cni + kube-proxy moved to EksSystemNodeGroupStack so they are
+        // installed in parallel with the MNG — nodes need the CNI to reach
+        // Ready, which is a prerequisite for this stack to deploy.
 
         new eks.CfnAddon(this, 'PodIdentityAgent', {
             clusterName: props.cluster.clusterName,
@@ -85,16 +76,6 @@ export class EksPodIdentityStack extends cdk.Stack {
             }),
         });
 
-        // kube-proxy — same scheduling issue as CoreDNS would apply if
-        // EKS shipped it as a Deployment, but it's a DaemonSet that
-        // tolerates everything by default. Still pin via managed addon
-        // so version is in lock-step with the cluster control plane
-        // (kube-proxy/kubelet skew is the #1 EKS upgrade footgun).
-        new eks.CfnAddon(this, 'KubeProxy', {
-            clusterName: props.cluster.clusterName,
-            addonName: 'kube-proxy',
-            resolveConflicts: 'OVERWRITE',
-        });
 
         const podIdentityPrincipal = new iam.ServicePrincipal('pods.eks.amazonaws.com');
 

@@ -153,8 +153,23 @@ export interface KubernetesAppIamStackProps extends cdk.StackProps {
  * Decouples application-specific IAM grants from the compute infrastructure.
  * When you add a new DynamoDB table or S3 bucket, only this stack needs
  * redeployment — the ASG, Launch Template, and AMI remain untouched.
+ *
+ * @deprecated Replaced by EksPodIdentityStack on 2026-05-07.
+ * @see docs/superpowers/specs/2026-05-05-eks-migration-design.md
+ *
+ * Original purpose: Attach DynamoDB/S3/SM/SSM grants to kubeadm EC2 instance roles.
+ * Why deprecated:
+ *   - kubeadm cluster decommissioned; EC2 instance roles no longer exist
+ *   - EKS grants scoped per service account via Pod Identity (EksPodIdentityStack)
+ *
+ * Why kept: Reference implementation. Do not delete.
+ *
+ * @destroyOrder
+ *   1. cdk destroy Kubernetes-AppIam-<env>
+ *
+ * Do not import or instantiate.
  */
-export class KubernetesAppIamStack extends cdk.Stack {
+export class Deprecated_KubernetesAppIamStack extends cdk.Stack {
 
     constructor(scope: Construct, id: string, props: KubernetesAppIamStackProps) {
         super(scope, id, props);

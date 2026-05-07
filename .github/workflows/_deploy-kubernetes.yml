@@ -1,4 +1,9 @@
 # @format
+# @deprecated: Replaced by _deploy-eks.yml on 2026-05-07.
+# @reason: kubeadm cluster decommissioned; EKS is now the sole cluster.
+# @see: docs/superpowers/specs/2026-05-05-eks-migration-design.md
+# Kept for: cdk destroy reference (called by deploy-kubernetes.yml manually).
+# Do not add new callers.
 # @description Reusable Kubernetes Infrastructure Deployment Workflow
 #
 # ─── Purpose ───────────────────────────────────────────────────────

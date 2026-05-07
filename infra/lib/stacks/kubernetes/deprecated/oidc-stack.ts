@@ -124,7 +124,24 @@ export interface KubernetesOidcStackProps extends cdk.StackProps {
 // STACK
 // =============================================================================
 
-export class KubernetesOidcStack extends cdk.Stack {
+/**
+ * @deprecated Replaced by EksPodIdentityStack on 2026-05-07.
+ * @see docs/superpowers/specs/2026-05-05-eks-migration-design.md
+ *
+ * Original purpose: S3 + CloudFront + OIDC provider for IRSA on self-hosted kubeadm cluster.
+ * Why deprecated:
+ *   - EKS uses Pod Identity (EksPodIdentityStack) — no public OIDC endpoint needed
+ *   - IRSA replaced cluster-wide with CfnPodIdentityAssociation per service account
+ *
+ * Why kept: Reference implementation. Do not delete.
+ *
+ * @destroyOrder
+ *   1. Remove all serviceAccountAnnotations referencing this OIDC issuer
+ *   2. cdk destroy Kubernetes-Oidc-<env>
+ *
+ * Do not import or instantiate.
+ */
+export class Deprecated_KubernetesOidcStack extends cdk.Stack {
     public readonly issuerUrl: string;
     public readonly oidcProviderArn: string | undefined;
     public readonly jwksBucket: s3.IBucket;
