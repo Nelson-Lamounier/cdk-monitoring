@@ -184,7 +184,7 @@ export class EksKarpenterStack extends cdk.Stack {
                                 expireAfter: '720h',
                             },
                         },
-                        disruption: { consolidationPolicy: 'WhenEmpty', consolidateAfter: '30s' },
+                        disruption: { consolidationPolicy: 'WhenUnderutilized', consolidateAfter: '1m' },
                         limits: { cpu: 100 },
                     },
                 },
