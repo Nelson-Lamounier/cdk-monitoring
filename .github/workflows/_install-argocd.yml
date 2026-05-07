@@ -123,6 +123,25 @@ jobs:
           kubectl -n argocd wait \
             --for=condition=available deployment --all --timeout=5m
 
+      - name: Set ArgoCD admin password from SSM
+        env:
+          ENV: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          SSM_PATH="/k8s/${ENV}/argocd-admin-password"
+          PLAIN=$(aws ssm get-parameter --name "$SSM_PATH" \
+            --with-decryption --query 'Parameter.Value' --output text)
+          pip install --quiet bcrypt
+          HASH=$(python3 -c "
+          import bcrypt, sys
+          plain = sys.argv[1].encode()
+          print(bcrypt.hashpw(plain, bcrypt.gensalt(rounds=10)).decode())
+          " "$PLAIN")
+          MTIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          kubectl -n argocd patch secret argocd-secret \
+            --type=merge \
+            -p "{\"stringData\":{\"admin.password\":\"${HASH}\",\"admin.passwordMtime\":\"${MTIME}\"}}"
+
       - name: Apply root Application
         env:
           ENV: ${{ inputs.environment }}
