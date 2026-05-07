@@ -206,11 +206,20 @@ def handler(event, context):
         // sync time so the ARN is never hardcoded in git.
         // =================================================================
         if (props.clusterName) {
+            const podIdentityPrincipal = new iam.ServicePrincipal('pods.eks.amazonaws.com');
             const annotatorRole = new iam.Role(this, 'WafAnnotatorRole', {
                 roleName: `${namePrefix}-waf-annotator-${envName}`,
                 description: 'Allows waf-annotator PostSync Job to read WAF ACL ARN from SSM',
-                assumedBy: new iam.ServicePrincipal('pods.eks.amazonaws.com'),
+                assumedBy: podIdentityPrincipal,
             });
+            // EKS Pod Identity requires sts:TagSession in addition to sts:AssumeRole —
+            // without it, CfnPodIdentityAssociation rejects the role as invalid.
+            annotatorRole.assumeRolePolicy?.addStatements(
+                new iam.PolicyStatement({
+                    actions: ['sts:TagSession'],
+                    principals: [podIdentityPrincipal],
+                }),
+            );
 
             annotatorRole.addToPolicy(new iam.PolicyStatement({
                 sid: 'ReadWafAclArn',
