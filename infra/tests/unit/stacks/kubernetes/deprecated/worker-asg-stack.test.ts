@@ -23,18 +23,18 @@
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment } from '../../../../lib/config';
+import { Environment } from '../../../../../lib/config';
 import {
-    KubernetesWorkerAsgStack,
+    Deprecated_KubernetesWorkerAsgStack as KubernetesWorkerAsgStack,
     KubernetesWorkerAsgStackProps,
     WorkerPoolType,
-} from '../../../../lib/stacks/kubernetes/worker-asg-stack';
+} from '../../../../../lib/stacks/kubernetes/deprecated/worker-asg-stack';
 import {
     TEST_ENV_EU,
     TEST_VPC_CONTEXT_KEY,
     TEST_VPC_CONTEXT,
     createTestApp,
-} from '../../../fixtures';
+} from '../../../../fixtures';
 
 // =============================================================================
 // Constants

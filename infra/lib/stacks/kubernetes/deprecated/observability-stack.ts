@@ -32,14 +32,14 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { Environment } from '../../config/environments';
+import { Environment } from '../../../config/environments';
 import {
     InfrastructureDashboard,
     OperationsDashboard,
-} from '../../constructs/observability';
+} from '../../../constructs/observability';
 import type {
     OpsDashboardSelfHealingConfig,
-} from '../../constructs/observability';
+} from '../../../constructs/observability';
 
 // =============================================================================
 // PROPS

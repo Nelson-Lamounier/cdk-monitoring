@@ -64,10 +64,10 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
-import { Environment, shortEnv } from '../../config/environments';
-import { LambdaFunctionConstruct } from '../../constructs/compute';
-import { AcmCertificateDnsValidationConstruct } from '../../constructs/security/acm-certificate';
-import { S3BucketConstruct } from '../../constructs/storage';
+import { Environment, shortEnv } from '../../../config/environments';
+import { LambdaFunctionConstruct } from '../../../constructs/compute';
+import { AcmCertificateDnsValidationConstruct } from '../../../constructs/security/acm-certificate';
+import { S3BucketConstruct } from '../../../constructs/storage';
 
 // =============================================================================
 // PROPS

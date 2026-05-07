@@ -46,14 +46,14 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { Environment } from '../../config/environments';
-import { K8sConfigs, MONITORING_APP_TAG } from '../../config/kubernetes';
+import { Environment } from '../../../config/environments';
+import { K8sConfigs, MONITORING_APP_TAG } from '../../../config/kubernetes';
 import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
     SsmStateManagerConstruct,
     UserDataBuilder,
-} from '../../constructs/index';
+} from '../../../constructs/index';
 
 // =============================================================================
 // PROPS

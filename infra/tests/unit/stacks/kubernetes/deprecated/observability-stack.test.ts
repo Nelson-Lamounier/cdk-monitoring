@@ -13,17 +13,17 @@
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cdk from 'aws-cdk-lib/core';
 
-import { Environment } from '../../../../lib/config';
+import { Environment } from '../../../../../lib/config';
 import {
-    KubernetesObservabilityStack,
-} from '../../../../lib/stacks/kubernetes/observability-stack';
+    Deprecated_KubernetesObservabilityStack as KubernetesObservabilityStack,
+} from '../../../../../lib/stacks/kubernetes/deprecated/observability-stack';
 import type {
     KubernetesObservabilityStackProps,
-} from '../../../../lib/stacks/kubernetes/observability-stack';
+} from '../../../../../lib/stacks/kubernetes/deprecated/observability-stack';
 import {
     TEST_ENV_EU,
     createTestApp,
-} from '../../../fixtures';
+} from '../../../../fixtures';
 
 // =============================================================================
 // Test Constants

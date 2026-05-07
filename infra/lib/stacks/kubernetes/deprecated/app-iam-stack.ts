@@ -20,10 +20,10 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { Environment } from '../../config/environments';
-import { K8sConfigs } from '../../config/kubernetes';
+import { Environment } from '../../../config/environments';
+import { K8sConfigs } from '../../../config/kubernetes';
 
-import { KubernetesControlPlaneStack } from './control-plane-stack';
+import { Deprecated_KubernetesControlPlaneStack as KubernetesControlPlaneStack } from './control-plane-stack';
 
 // =============================================================================
 // PROPS

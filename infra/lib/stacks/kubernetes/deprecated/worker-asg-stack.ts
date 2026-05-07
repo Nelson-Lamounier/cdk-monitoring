@@ -58,13 +58,13 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { Environment, shortEnv } from '../../config/environments';
-import { NodeTerminationHandlerQueue } from '../../constructs/events/node-termination';
+import { Environment, shortEnv } from '../../../config/environments';
+import { NodeTerminationHandlerQueue } from '../../../constructs/events/node-termination';
 import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
-} from '../../constructs/index';
+} from '../../../constructs/index';
 
 // =============================================================================
 // POOL TYPE
