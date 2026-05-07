@@ -343,6 +343,9 @@ dev-shutdown env='development':
     NG=$(aws eks list-nodegroups --cluster-name "$CLUSTER" \
          --region eu-west-1 --profile "$PROFILE" \
          --query 'nodegroups[0]' --output text)
+    # Ensure kubeconfig is current so kubectl commands can reach the API server.
+    aws eks update-kubeconfig --name "$CLUSTER" \
+         --region eu-west-1 --profile "$PROFILE" > /dev/null
     # Step 1: delete NodeClaims so Karpenter drains its own nodes and does not
     # re-provision replacements when pods go Pending during shutdown.
     if kubectl get nodeclaims --no-headers 2>/dev/null | grep -q .; then
