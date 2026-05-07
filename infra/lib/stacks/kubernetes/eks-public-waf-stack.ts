@@ -114,7 +114,7 @@ export class EksPublicWafStack extends cdk.Stack {
         if (waf.ipv4Set || waf.ipv6Set) {
             const syncFn = new lambda.Function(this, 'IpSyncFn', {
                 functionName: `${namePrefix}-ip-sync-${envName}`,
-                runtime: lambda.Runtime.PYTHON_3_12,
+                runtime: lambda.Runtime.PYTHON_3_14,
                 handler: 'index.handler',
                 timeout: cdk.Duration.seconds(30),
                 code: lambda.Code.fromInline(`
