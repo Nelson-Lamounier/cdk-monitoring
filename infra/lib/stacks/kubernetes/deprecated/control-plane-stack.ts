@@ -46,14 +46,14 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { Environment } from '../../config/environments';
-import { K8sConfigs, MONITORING_APP_TAG } from '../../config/kubernetes';
+import { Environment } from '../../../config/environments';
+import { K8sConfigs, MONITORING_APP_TAG } from '../../../config/kubernetes';
 import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
     SsmStateManagerConstruct,
     UserDataBuilder,
-} from '../../constructs/index';
+} from '../../../constructs/index';
 
 // =============================================================================
 // PROPS
@@ -113,8 +113,28 @@ export interface KubernetesControlPlaneStackProps extends cdk.StackProps {
  * Security and resource isolation between tiers is enforced at the
  * Kubernetes layer (Namespaces, NetworkPolicies, ResourceQuotas,
  * PriorityClasses).
+ *
+ * @deprecated Replaced by EksClusterStack + EksSystemNodeGroupStack on 2026-05-07.
+ * @see docs/superpowers/specs/2026-05-05-eks-migration-design.md
+ *
+ * Original purpose: kubeadm control plane EC2 ASG + runtime for self-hosted cluster.
+ * Why deprecated:
+ *   - Cluster migrated to EKS managed node groups (EksClusterStack / EksSystemNodeGroupStack)
+ *   - Karpenter replaces kubeadm worker provisioning
+ *   - Pod Identity (EksPodIdentityStack) replaces EC2 instance-profile IAM grants
+ *
+ * Why kept: Reference implementation. Do not delete.
+ *
+ * @destroyOrder
+ *   1. Drain all kubeadm worker nodes
+ *   2. cdk destroy Kubernetes-GeneralPool-<env>
+ *   3. cdk destroy Kubernetes-MonitoringPool-<env>
+ *   4. cdk destroy Kubernetes-AppIam-<env>
+ *   5. cdk destroy Kubernetes-ControlPlane-<env>
+ *
+ * Do not import or instantiate.
  */
-export class KubernetesControlPlaneStack extends cdk.Stack {
+export class Deprecated_KubernetesControlPlaneStack extends cdk.Stack {
     /** The Auto Scaling Group */
     public readonly autoScalingGroup: autoscaling.AutoScalingGroup;
 

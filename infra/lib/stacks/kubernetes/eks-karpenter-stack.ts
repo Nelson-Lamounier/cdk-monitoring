@@ -91,8 +91,16 @@ export class EksKarpenterStack extends cdk.Stack {
 
         // Apply EC2NodeClass + NodePool as Kubernetes manifests.
         // Role name (not ARN) is required by Karpenter EC2NodeClass.spec.role.
+        // prune: false — CDK must never issue `kubectl delete` on these CRDs.
+        // Karpenter sets a `karpenter.k8s.aws/termination` finalizer that
+        // requires the controller to be running to process. Since EksAddonsStack
+        // (Helm install) is destroyed after this stack, the controller exits
+        // before the finalizer can be cleared, leaving the object stuck
+        // Terminating on the next deploy. With prune:false, CDK only applies
+        // (creates/updates) — Karpenter owns the delete lifecycle.
         new eks.KubernetesManifest(this, 'EC2NodeClass', {
             cluster: props.cluster,
+            prune: false,
             manifest: [
                 {
                     apiVersion: 'karpenter.k8s.aws/v1',
@@ -119,7 +127,11 @@ export class EksKarpenterStack extends cdk.Stack {
                             { id: workerSecurityGroupId },
                             { id: props.cluster.clusterSecurityGroupId },
                         ],
-                        tags: { 'eks-cluster-pool': 'workloads-default' },
+                        tags: {
+                            'eks-cluster-pool': 'workloads-default',
+                            // Human-readable name visible in AWS Console EC2 inventory.
+                            Name: 'k8s-eks-workload',
+                        },
                     },
                 },
             ],
@@ -127,6 +139,7 @@ export class EksKarpenterStack extends cdk.Stack {
 
         new eks.KubernetesManifest(this, 'NodePool', {
             cluster: props.cluster,
+            prune: false,
             manifest: [
                 {
                     apiVersion: 'karpenter.sh/v1',
@@ -134,6 +147,12 @@ export class EksKarpenterStack extends cdk.Stack {
                     metadata: { name: 'workloads-default' },
                     spec: {
                         template: {
+                            metadata: {
+                                // Exposes as label_node_role in kube-state-metrics,
+                                // matching the MNG node labelling convention and
+                                // the Grafana cluster dashboard filter variable.
+                                labels: { 'node-role': 'workload' },
+                            },
                             spec: {
                                 nodeClassRef: {
                                     group: 'karpenter.k8s.aws',
@@ -175,7 +194,14 @@ export class EksKarpenterStack extends cdk.Stack {
                                 expireAfter: '720h',
                             },
                         },
-                        disruption: { consolidationPolicy: 'WhenEmpty', consolidateAfter: '30s' },
+                        disruption: {
+                            // WhenEmptyOrUnderutilized actively bin-packs: evicts pods
+                            // from underutilised nodes so they can be deleted.
+                            // WhenEmpty (previous) only removed fully empty nodes,
+                            // leaving underutilised nodes permanently running.
+                            consolidationPolicy: 'WhenEmptyOrUnderutilized',
+                            consolidateAfter: '1m',
+                        },
                         limits: { cpu: 100 },
                     },
                 },

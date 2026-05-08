@@ -2,7 +2,7 @@
  * @format
  * EKS System Node Group Stack — Karpenter / CoreDNS landing zone.
  *
- * 3× t3.medium nodes spread across 3 AZs hosting cluster-critical pods
+ * 2× t3.medium nodes spread across 2 AZs hosting cluster-critical pods
  * (Karpenter controller, CoreDNS, kube-proxy, addon controllers, monitoring
  * stack). Tainted `dedicated=system:NoSchedule`; workload pods land on
  * Karpenter-managed nodes.
@@ -45,6 +45,24 @@ export class EksSystemNodeGroupStack extends cdk.Stack {
                 iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonEKS_CNI_Policy'),
                 iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
             ],
+        });
+
+        // vpc-cni and kube-proxy live HERE — not in EksPodIdentityStack — to
+        // break the timing deadlock: EKS waits for nodes to be Ready before
+        // marking this stack CREATE_COMPLETE, and nodes need the CNI DaemonSet
+        // to reach Ready. Both CfnAddons have no CFN dependency on the MNG so
+        // CloudFormation creates them in parallel; aws-node is running before
+        // the first node finishes bootstrapping.
+        new eks.CfnAddon(this, 'VpcCni', {
+            clusterName: props.cluster.clusterName,
+            addonName: 'vpc-cni',
+            resolveConflicts: 'OVERWRITE',
+        });
+
+        new eks.CfnAddon(this, 'KubeProxy', {
+            clusterName: props.cluster.clusterName,
+            addonName: 'kube-proxy',
+            resolveConflicts: 'OVERWRITE',
         });
 
         this.nodeGroup = new eks.Nodegroup(this, 'SystemMng', {

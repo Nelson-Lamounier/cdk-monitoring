@@ -32,7 +32,8 @@ export interface PodIdentityBinding {
         | 'alb-controller'
         | 'external-dns'
         | 'external-secrets'
-        | 'ebs-csi';
+        | 'ebs-csi'
+        | 'grafana-alerting';
 }
 
 export interface EksMngConfig {
@@ -67,6 +68,8 @@ export interface EksConfig {
     };
     /** IAM principals granted EKS cluster-admin via Access Entries. */
     readonly adminPrincipalArns: readonly string[];
+    /** SNS topic ARN for Grafana alert delivery. Omit to disable SNS alerting. */
+    readonly grafanaAlertingTopicArn?: string;
 }
 
 const COMMON_BINDINGS: readonly PodIdentityBinding[] = [
@@ -75,6 +78,7 @@ const COMMON_BINDINGS: readonly PodIdentityBinding[] = [
     { namespace: 'kube-system', serviceAccount: 'external-dns', purpose: 'external-dns' },
     { namespace: 'external-secrets', serviceAccount: 'external-secrets', purpose: 'external-secrets' },
     { namespace: 'kube-system', serviceAccount: 'ebs-csi-controller-sa', purpose: 'ebs-csi' },
+    { namespace: 'monitoring', serviceAccount: 'grafana', purpose: 'grafana-alerting' },
 ] as const;
 
 const COMMON_VERSIONS = {
@@ -88,7 +92,7 @@ const COMMON_VERSIONS = {
 const COMMON_KARPENTER: EksKarpenterNodePoolConfig = {
     instanceCategory: ['t'],
     instanceFamily: ['t3'],
-    capacityType: ['on-demand'],
+    capacityType: ['spot', 'on-demand'],
     architectures: ['amd64'],
     cpuMin: 2,
     cpuMax: 8,
@@ -108,10 +112,11 @@ export const EKS_CONFIGS: Record<DeployableEnvironment, Omit<EksConfig, 'adminPr
     [Environment.DEVELOPMENT]: {
         clusterName: 'k8s-eks-development',
         version: EKS_VERSION,
-        mng: { instanceTypes: ['t3.medium'], desiredSize: 3, minSize: 3, maxSize: 4, diskSizeGib: 30 },
+        mng: { instanceTypes: ['t3.medium'], desiredSize: 2, minSize: 2, maxSize: 3, diskSizeGib: 30 },
         podIdentityBindings: COMMON_BINDINGS,
         karpenter: COMMON_KARPENTER,
         versions: COMMON_VERSIONS,
+        grafanaAlertingTopicArn: 'arn:aws:sns:eu-west-1:771826808455:k8s-bootstrap-alarm',
     },
     [Environment.STAGING]: {
         clusterName: 'k8s-eks-staging',
@@ -124,7 +129,7 @@ export const EKS_CONFIGS: Record<DeployableEnvironment, Omit<EksConfig, 'adminPr
     [Environment.PRODUCTION]: {
         clusterName: 'k8s-eks-production',
         version: EKS_VERSION,
-        mng: { instanceTypes: ['t3.medium'], desiredSize: 3, minSize: 3, maxSize: 6, diskSizeGib: 30 },
+        mng: { instanceTypes: ['t3.large'], desiredSize: 3, minSize: 3, maxSize: 6, diskSizeGib: 30 },
         podIdentityBindings: COMMON_BINDINGS,
         karpenter: COMMON_KARPENTER,
         versions: COMMON_VERSIONS,

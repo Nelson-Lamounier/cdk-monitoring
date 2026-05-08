@@ -32,14 +32,14 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { Environment } from '../../config/environments';
+import { Environment } from '../../../config/environments';
 import {
     InfrastructureDashboard,
     OperationsDashboard,
-} from '../../constructs/observability';
+} from '../../../constructs/observability';
 import type {
     OpsDashboardSelfHealingConfig,
-} from '../../constructs/observability';
+} from '../../../constructs/observability';
 
 // =============================================================================
 // PROPS
@@ -91,8 +91,23 @@ export interface KubernetesObservabilityStackProps extends cdk.StackProps {
  *
  * Reads infrastructure references from SSM and creates a CloudWatch
  * dashboard covering EC2, NLB, Step Functions, Lambda, and CloudFront.
+ *
+ * @deprecated No replacement stack on 2026-05-07. Superseded by Prometheus/Grafana on EKS.
+ * @see docs/superpowers/specs/2026-05-05-eks-migration-design.md
+ *
+ * Original purpose: CloudWatch pre-deployment dashboard before Grafana/Prometheus operational.
+ * Why deprecated:
+ *   - kubeadm cluster decommissioned; dashboard covers EC2/NLB resources that no longer exist
+ *   - EKS observability handled by Prometheus + Grafana via ArgoCD wave 4
+ *
+ * Why kept: Reference implementation. Do not delete.
+ *
+ * @destroyOrder
+ *   1. cdk destroy Kubernetes-Observability-<env>
+ *
+ * Do not import or instantiate.
  */
-export class KubernetesObservabilityStack extends cdk.Stack {
+export class Deprecated_KubernetesObservabilityStack extends cdk.Stack {
     /** The infrastructure dashboard construct */
     public readonly dashboard: InfrastructureDashboard;
 

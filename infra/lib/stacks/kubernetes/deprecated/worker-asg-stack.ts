@@ -58,13 +58,13 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { Environment, shortEnv } from '../../config/environments';
-import { NodeTerminationHandlerQueue } from '../../constructs/events/node-termination';
+import { Environment, shortEnv } from '../../../config/environments';
+import { NodeTerminationHandlerQueue } from '../../../constructs/events/node-termination';
 import {
     AutoScalingGroupConstruct,
     LaunchTemplateConstruct,
     UserDataBuilder,
-} from '../../constructs/index';
+} from '../../../constructs/index';
 
 // =============================================================================
 // POOL TYPE
@@ -178,12 +178,30 @@ export interface KubernetesWorkerAsgStackProps extends cdk.StackProps {
  *   - `general`:    t3.small Spot, no taint, CA-discoverable (min=1, max=4).
  *   - `monitoring`: t3.medium Spot, tainted by bootstrap, CA-discoverable (min=1, max=2).
  *
+ * @deprecated Replaced by EksKarpenterStack on 2026-05-07.
+ * @see docs/superpowers/specs/2026-05-05-eks-migration-design.md
+ *
+ * Original purpose: kubeadm worker ASG pools (general + monitoring) for self-hosted cluster.
+ * Why deprecated:
+ *   - Node provisioning migrated to Karpenter on EKS
+ *   - cluster-autoscaler pattern replaced by Karpenter NodePool V1
+ *   - EC2 instance profiles replaced by Pod Identity bindings per service account
+ *
+ * Why kept: Reference implementation. Do not delete.
+ *
+ * @destroyOrder
+ *   1. Drain kubeadm worker nodes
+ *   2. cdk destroy Kubernetes-GeneralPool-<env>
+ *   3. cdk destroy Kubernetes-MonitoringPool-<env>
+ *
+ * Do not import or instantiate.
+ *
  * Both pools include all IAM permissions required by any pod that may be
  * scheduled on them. Monitoring-only permissions (Steampipe ViewOnlyAccess,
  * CloudWatch read for Grafana, SNS alerts topic) are conditionally added for
  * the monitoring pool only.
  */
-export class KubernetesWorkerAsgStack extends cdk.Stack {
+export class Deprecated_KubernetesWorkerAsgStack extends cdk.Stack {
     /** The Auto Scaling Group */
     public readonly autoScalingGroup: autoscaling.AutoScalingGroup;
 

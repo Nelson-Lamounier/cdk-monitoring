@@ -36,6 +36,8 @@ export interface EksPodIdentityStackProps extends cdk.StackProps {
      * writes against `hostedZoneIds` in this account.
      */
     readonly crossAccountDnsRoleArn?: string;
+    /** SNS topic ARN that Grafana publishes alerts to. Required when a grafana-alerting binding is present. */
+    readonly grafanaAlertingTopicArn?: string;
 }
 
 export class EksPodIdentityStack extends cdk.Stack {
@@ -44,18 +46,9 @@ export class EksPodIdentityStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props: EksPodIdentityStackProps) {
         super(scope, id, props);
 
-        // Foundational EKS managed addons live HERE — not in EksAddonsStack —
-        // so a Helm-chart failure downstream cannot trigger a CFN rollback
-        // that deletes the agent. Without the agent DaemonSet present on
-        // every node, every PodIdentityAssociation downstream is a no-op:
-        // workloads hit 169.254.170.23 and get `connection refused`,
-        // CrashLoopBackOff, then Helm `wait: true` times out → CREATE_FAILED
-        // → rollback → addon deleted → next deploy hits the same loop.
-        new eks.CfnAddon(this, 'VpcCni', {
-            clusterName: props.cluster.clusterName,
-            addonName: 'vpc-cni',
-            resolveConflicts: 'OVERWRITE',
-        });
+        // vpc-cni + kube-proxy moved to EksSystemNodeGroupStack so they are
+        // installed in parallel with the MNG — nodes need the CNI to reach
+        // Ready, which is a prerequisite for this stack to deploy.
 
         new eks.CfnAddon(this, 'PodIdentityAgent', {
             clusterName: props.cluster.clusterName,
@@ -85,16 +78,6 @@ export class EksPodIdentityStack extends cdk.Stack {
             }),
         });
 
-        // kube-proxy — same scheduling issue as CoreDNS would apply if
-        // EKS shipped it as a Deployment, but it's a DaemonSet that
-        // tolerates everything by default. Still pin via managed addon
-        // so version is in lock-step with the cluster control plane
-        // (kube-proxy/kubelet skew is the #1 EKS upgrade footgun).
-        new eks.CfnAddon(this, 'KubeProxy', {
-            clusterName: props.cluster.clusterName,
-            addonName: 'kube-proxy',
-            resolveConflicts: 'OVERWRITE',
-        });
 
         const podIdentityPrincipal = new iam.ServicePrincipal('pods.eks.amazonaws.com');
 
@@ -241,9 +224,14 @@ export class EksPodIdentityStack extends cdk.Stack {
                     // hosted zones). ExternalDNS calls sts:AssumeRole into this role
                     // and the role's own policy handles route53:ChangeResourceRecordSets
                     // on the target zones. Local role keeps no R53 perms.
+                    //
+                    // TagSession is required because Pod Identity's session tags
+                    // (eks-cluster-arn, kubernetes-namespace, etc.) are part of every
+                    // STS request — without it the cross-account assume fails:
+                    //   AccessDenied: ... not authorized to perform: sts:TagSession
                     role.addToPolicy(
                         new iam.PolicyStatement({
-                            actions: ['sts:AssumeRole'],
+                            actions: ['sts:AssumeRole', 'sts:TagSession'],
                             resources: [props.crossAccountDnsRoleArn],
                         }),
                     );
@@ -286,6 +274,17 @@ export class EksPodIdentityStack extends cdk.Stack {
                         'service-role/AmazonEBSCSIDriverPolicy',
                     ),
                 );
+                break;
+            case 'grafana-alerting':
+                if (props.grafanaAlertingTopicArn) {
+                    role.addToPolicy(
+                        new iam.PolicyStatement({
+                            sid: 'GrafanaPublishAlerts',
+                            actions: ['sns:Publish'],
+                            resources: [props.grafanaAlertingTopicArn],
+                        }),
+                    );
+                }
                 break;
         }
     }

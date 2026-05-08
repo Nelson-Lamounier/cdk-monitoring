@@ -33,14 +33,12 @@ import { getEksConfig, EKS_ADMIN_PRINCIPAL_ARNS_SSM_PATHS } from '../../config/e
 import {
     Environment,
     cdkEnvironment,
-    cdkEdgeEnvironment,
     getEnvironmentConfig,
 } from '../../config/environments';
 import { getK8sConfigs } from '../../config/kubernetes';
-import { getNextJsConfigs, nextjsResourceNames } from '../../config/nextjs';
+import { getNextJsConfigs } from '../../config/nextjs';
 import { Project, getProjectConfig } from '../../config/projects';
-import { nextjsSsmPaths, k8sSsmPaths } from '../../config/ssm-paths';
-import { AmiRefreshConstruct } from '../../constructs/events/ami-refresh/ami-refresh-construct';
+import { nextjsSsmPaths } from '../../config/ssm-paths';
 import {
     IProjectFactory,
     ProjectFactoryContext,
@@ -55,16 +53,12 @@ import {
     EksKarpenterStack,
     EksPodIdentityStack,
     EksSystemNodeGroupStack,
-    KubernetesAppIamStack,
     KubernetesBaseStack,
-    KubernetesControlPlaneStack,
     KubernetesDataStack,
-    KubernetesObservabilityStack,
-    KubernetesOidcStack,
-    KubernetesWorkerAsgStack,
     PlatformRdsStack,
 } from '../../stacks/kubernetes';
 import { NextJsApiStack } from '../../stacks/kubernetes/api-stack';
+import { EksSchedulerStack } from '../../stacks/kubernetes/eks-scheduler-stack';
 import { stackId, flatName } from '../../utilities/naming';
 
 // =============================================================================
@@ -107,14 +101,6 @@ export interface KubernetesFactoryContext extends ProjectFactoryContext {
     readonly tucakenComDomain?: string;
     readonly tucakenIoHostedZoneId?: string;
     readonly tucakenComHostedZoneId?: string;
-
-    /**
-     * Public domain hosting the OIDC discovery endpoint for IRSA on the
-     * self-hosted kubeadm cluster. Single CloudFront distribution serves
-     * every env via path-based separation (`/k8s-{shortEnv}`).
-     * @default 'oidc.nelsonlamounier.com'
-     */
-    readonly oidcDomain?: string;
 
     // API stack email configuration
     /** Override notification email from config */
@@ -167,11 +153,9 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // =================================================================
         // Resolve Next.js application config
         //
-        // The shared Kubernetes cluster hosts the Next.js application, so we need
-        // the Next.js resource names, SSM paths, and edge configuration.
+        // SSM paths and edge configuration for the API stack.
         // =================================================================
         const nextjsNamePrefix = 'nextjs';
-        const resourceNames = nextjsResourceNames(nextjsNamePrefix, environment);
         const ssmPaths = nextjsSsmPaths(environment, nextjsNamePrefix);
 
         // Bedrock content table SSM path — DynamoDB was consolidated into
@@ -263,200 +247,6 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         stacks.push(baseStack);
         stackMap.base = baseStack;
 
-        // VPC ID from baseStack is a concrete string (resolved at synth-time by Vpc.fromLookup),
-        // so passing it to consumer stacks does NOT create a cross-stack export.
-        // Security Group ID is NOT passed — each consumer stack resolves it from SSM at deploy time
-        // to avoid Fn::ImportValue cross-stack exports.
-        const sharedVpcId = baseStack.vpc.vpcId;
-
-        // =================================================================
-        // Stack 3: CONTROL PLANE STACK (ASG + Launch Template + Runtime)
-        //
-        // kubeadm cluster hosting both monitoring and app workloads.
-        // Consumes base infrastructure from KubernetesBaseStack.
-        // Does NOT contain application-specific IAM — see AppIamStack.
-        // =================================================================
-        const controlPlaneStack = new KubernetesControlPlaneStack(
-            scope,
-            stackId(this.namespace, 'ControlPlane', environment),
-            {
-                vpcId: sharedVpcId,
-                env,
-                description: `Shared kubeadm Kubernetes cluster (monitoring + application) - ${environment}`,
-                targetEnvironment: environment,
-                configs,
-                namePrefix,
-                ssmPrefix,
-                // cert-manager DNS-01 — pass public hosted zone + cross-account role
-                // so CDK writes them to SSM for bootstrap consumption
-                publicHostedZoneId: edgeConfig.hostedZoneId,
-                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
-            },
-        );
-        controlPlaneStack.addDependency(baseStack);
-        stacks.push(controlPlaneStack);
-        stackMap.controlPlane = controlPlaneStack;
-
-        // =================================================================
-        // Stack 3b: GENERAL POOL ASG (Kubernetes-Native Worker — general)
-        //
-        // Hosts: Next.js, tucaken-app, ArgoCD, system components.
-
-        // No taint — accepts all pods without toleration.
-        //
-        // On-Demand ONLY: ArgoCD is on this pool and owns BlueGreen promotion
-        // logic. A Spot interruption that evicts ArgoCD loses the very tool
-        // that would orchestrate the graceful handoff. On-Demand cost delta is
-        // negligible for a single t3.small vs. the operational risk.
-        //
-        // desiredCapacity intentionally absent: start at min=1 and let the
-        // Cluster Autoscaler prove two nodes are needed before provisioning.
-        // Setting it would reset capacity on every `cdk deploy`.
-        // =================================================================
-        const generalPoolStack = new KubernetesWorkerAsgStack(
-
-            scope,
-            stackId(this.namespace, 'GeneralPool', environment),
-            {
-                vpcId: sharedVpcId,
-                env,
-                description: `Kubernetes general-purpose worker pool (Next.js, ArgoCD, system) - ${environment}`,
-                targetEnvironment: environment,
-                poolType: 'general',
-                controlPlaneSsmPrefix: ssmPrefix,
-                clusterName: namePrefix,
-                instanceType: undefined,      // defaults to t3.small
-                minCapacity: 1,
-                maxCapacity: 4,
-                // On-Demand: ArgoCD cannot tolerate Spot interruption.
-                // It is the orchestrator for all BlueGreen promotions — evicting it
-                // removes the tool needed for graceful workload handoff.
-                useSpotInstances: false,
-                rootVolumeSizeGb: 30,
-                useSignals: true,
-                signalsTimeoutMinutes: 40,
-                namePrefix,
-                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
-            },
-        );
-        generalPoolStack.addDependency(controlPlaneStack);
-        stacks.push(generalPoolStack);
-        stackMap.generalPool = generalPoolStack;
-
-        // =================================================================
-        // Stack 3c: MONITORING POOL ASG (Kubernetes-Native Worker — monitoring)
-        //
-        // Hosts: Prometheus, Grafana, Loki, Tempo, Alloy, Steampipe.
-        // Tainted `dedicated=monitoring:NoSchedule` by the bootstrap script.
-        // =================================================================
-        const monitoringPoolStack = new KubernetesWorkerAsgStack(
-            scope,
-            stackId(this.namespace, 'MonitoringPool', environment),
-            {
-                vpcId: sharedVpcId,
-                env,
-                description: `Kubernetes monitoring worker pool (Prometheus, Grafana, Loki, Tempo) - ${environment}`,
-                targetEnvironment: environment,
-                poolType: 'monitoring',
-                controlPlaneSsmPrefix: ssmPrefix,
-                clusterName: namePrefix,
-                instanceType: undefined, // defaults to t3.medium
-                minCapacity: 1,
-                maxCapacity: 2,
-                useSpotInstances: true,
-                rootVolumeSizeGb: 30,
-                useSignals: true,
-                signalsTimeoutMinutes: 40,
-                namePrefix,
-                crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
-                // Wire the notification email so the monitoring SNS topic has an
-                // email subscriber. Without this, Grafana alerts are published to
-                // the topic (via the EC2 instance role) but never delivered to a
-                // human recipient. emailConfig is sourced from NOTIFICATION_EMAIL
-                // env var at CDK synth time — same as all other stacks.
-                notificationEmail: emailConfig.notificationEmail,
-            },
-        );
-        monitoringPoolStack.addDependency(controlPlaneStack);
-        stacks.push(monitoringPoolStack);
-        stackMap.monitoringPool = monitoringPoolStack;
-
-        // =================================================================
-        // Stack 4: APP IAM STACK (Application-Tier Grants)
-        //
-        // Attaches application-specific IAM policies (DynamoDB, S3,
-        // Secrets Manager, SSM) to the compute instance role.
-        // Decoupled from compute — adding a DynamoDB table only redeploys
-        // this stack, not the ASG or Launch Template.
-        // =================================================================
-        const appIamStack = new KubernetesAppIamStack(
-            scope,
-            stackId(this.namespace, 'AppIam', environment),
-            {
-                controlPlaneStack,
-                workerRoleSsmPath: `${ssmPrefix}/general-instance-role-arn`,
-                env,
-                description: `Application-tier IAM grants for Kubernetes cluster - ${environment}`,
-                targetEnvironment: environment,
-                configs,
-                ssmPrefix,
-
-                // Application-tier IAM grants (Next.js + Bedrock content)
-                ssmParameterPath: ssmPaths.wildcard,
-                secretsManagerPathPattern: `${nextjsNamePrefix}/${environment}/*`,
-                s3ReadBucketArns: [
-                    `arn:aws:s3:::${resourceNames.assetsBucketName}`,
-                    // Bedrock content pipeline — published MDX blobs
-                    `arn:aws:s3:::bedrock-${environment}-kb-data`,
-                    // Resume import processor K8s Job — reads uploaded PDF/DOCX
-                    // Bucket name is CDK-generated; wildcard covers the random suffix
-                    `arn:aws:s3:::bedrock-data-${environment}-assets*`,
-                ],
-                dynamoTableArns: [
-                    `arn:aws:dynamodb:${env.region}:${env.account}:table/${resourceNames.dynamoTableName}`,
-                    // Bedrock content pipeline — AI-enhanced article metadata
-                    `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
-                    // Bedrock strategist pipeline — job applications + resume entities
-                    `arn:aws:dynamodb:${env.region}:${env.account}:table/${bedrockNamePrefix}-job-strategist`,
-                ],
-                // Admin write access — article publishing, deletion, and resume CRUD
-                dynamoWriteTableArns: [
-                    `arn:aws:dynamodb:${env.region}:${env.account}:table/bedrock-${environment}-ai-content`,
-                    // Resumes are stored in the strategist table (migrated 2026-03)
-                    `arn:aws:dynamodb:${env.region}:${env.account}:table/${bedrockNamePrefix}-job-strategist`,
-                ],
-                // Admin S3 write — article image/video uploads + resume import presigned PUTs
-                s3WriteBucketArns: [
-                    `arn:aws:s3:::${resourceNames.assetsBucketName}`,
-                    // Resume upload: presigned PUT signed by node role — role must have PutObject
-                    `arn:aws:s3:::bedrock-data-${environment}-assets*`,
-                ],
-                // Bedrock pipeline SSM — resolve infrastructure for admin publish
-                bedrockSsmPath: `/${bedrockNamePrefix}/*`,
-                // Gap S2: BFF proxy — public-api reads the Bedrock chatbot API key
-                // from Secrets Manager using the EC2 instance profile.
-                // The '*' suffix covers the 6-char random suffix in SM ARNs.
-                bedrockSecretsManagerPath: `${bedrockNamePrefix}/bedrock-api-key*`,
-                dynamoKmsKeySsmPath: ssmPaths.dynamodbKmsKeyArn,
-                // admin-api BFF — Lambda invocation for article publish/trigger/strategist
-                // Called via EC2 instance role (IMDS) — no static credentials in K8s.
-                lambdaInvokeArns: [
-                    `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-pipeline-publish`,
-                    `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-pipeline-trigger`,
-                    `arn:aws:lambda:${env.region}:${env.account}:function:${bedrockNamePrefix}-strategist-trigger`,
-                ],
-                // Platform RDS credentials — ESO aws-secretsmanager store reads this
-                // via the EC2 instance profile. The '?' suffix covers Secrets Manager's
-                // 6-char random suffix appended to the ARN.
-                additionalSecretArns: [
-                    `k8s-${environment}/platform-rds/credentials-??????`,
-                ],
-            },
-        );
-        appIamStack.addDependency(controlPlaneStack);
-        stacks.push(appIamStack);
-        stackMap.appIam = appIamStack;
-
         // =================================================================
         // Stack 4b: PLATFORM RDS STACK
         //
@@ -523,119 +313,12 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         // Run `cdk destroy Edge-<env>` and `cdk destroy TucakenEdge-<env>`
         // post-merge to deprovision the legacy distributions.
 
-        const edgeEnv = cdkEdgeEnvironment(environment);
-
-        // =================================================================
-        // Stack 6c: OIDC STACK (us-east-1)
-        //
-        // S3 + CloudFront + IAM OpenIdConnectProvider for IRSA on the
-        // self-hosted kubeadm cluster. The kubernetes-bootstrap repo
-        // populates the bucket with the cluster's JWKS during control-
-        // plane init.
-        //
-        // Lives in us-east-1 alongside the edge stacks because
-        // CloudFront + ACM-for-CloudFront require it. Soft-skips when
-        // hosted-zone / cross-account-role config is missing.
-        // =================================================================
-        const oidcDomain = context.oidcDomain
-            ?? process.env.OIDC_DOMAIN
-            ?? 'oidc.nelsonlamounier.com';
-
-        const oidcStack = new KubernetesOidcStack(
-            scope,
-            stackId(this.namespace, 'Oidc', environment),
-            {
-                targetEnvironment: environment,
-                oidcDomain,
-                hostedZoneId: edgeConfig.hostedZoneId ?? '',
-                crossAccountRoleArn: edgeConfig.crossAccountRoleArn ?? '',
-                // controlPlaneNodeRoleArn omitted intentionally: passing
-                // instanceRole.roleArn across a region boundary (eu-west-1 →
-                // us-east-1) creates a CDK cross-environment Token reference
-                // that changes the ControlPlane CloudFormation export key and
-                // breaks AppIam's import. The bootstrap script grants itself
-                // s3:PutObject via the SSM-stored bucket ARN instead.
-                namePrefix,
-                env: edgeEnv,
-            },
-        );
-        oidcStack.addDependency(controlPlaneStack);
-        stacks.push(oidcStack);
-        stackMap.oidc = oidcStack;
-
         // tucaken.io and tucaken.com hosted-zone IDs (still consumed by
         // EksAlbCertsStack for ACM cross-account DNS validation).
         const tucakenIoHostedZoneId = context.tucakenIoHostedZoneId
             ?? process.env.TUCAKEN_IO_HOSTED_ZONE_ID;
         const tucakenComHostedZoneId = context.tucakenComHostedZoneId
             ?? process.env.TUCAKEN_COM_HOSTED_ZONE_ID;
-
-        // =================================================================
-        // Stack 7: OBSERVABILITY STACK (CloudWatch Dashboard)
-        //
-        // Pre-deployment dashboard providing infrastructure visibility
-        // before Grafana/Prometheus are operational. Reads all references
-        // from SSM — fully decoupled from compute lifecycle.
-        // Cost: $3.00/month.
-        // =================================================================
-        const selfHealingPrefix = flatName('self-healing', '', environment);
-
-        const observabilityStack = new KubernetesObservabilityStack(
-            scope,
-            stackId(this.namespace, 'Observability', environment),
-            {
-                env,
-                targetEnvironment: environment,
-                namePrefix,
-                ssmPrefix,
-                // SSM paths — the stack resolves these internally via
-                // ssm.StringParameter.valueForStringParameter scoped to itself.
-                // MUST NOT resolve here: `scope` is cdk.App, not a Stack.
-                nlbFullNameSsmPath: k8sSsmPaths(environment).nlbFullName,
-                cloudFrontDistributionIdSsmPath: nextjsSsmPaths(environment).cloudfront.distributionId,
-                selfHealingConfig: {
-                    agentFunctionName: `${selfHealingPrefix}-agent`,
-                    toolFunctions: [
-                        { functionName: `${selfHealingPrefix}-tool-diagnose-alarm`, label: 'Diagnose Alarm' },
-                        { functionName: `${selfHealingPrefix}-tool-ebs-detach`, label: 'EBS Detach' },
-                        { functionName: `${selfHealingPrefix}-tool-analyse-cluster-health`, label: 'Analyse Cluster' },
-                    ],
-                },
-            },
-        );
-        observabilityStack.addDependency(baseStack);
-        stacks.push(observabilityStack);
-        stackMap.observability = observabilityStack;
-
-        // =================================================================
-        // AMI REFRESH CONSTRUCT (EventBridge → Step Functions)
-        //
-        // Watches /k8s/${environment}/golden-ami/latest SSM parameter for
-        // updates and automatically rolls worker ASGs (phase 1) then the
-        // control plane ASG (phase 2) — no cdk deploy required after bake.
-        // Scoped to controlPlaneStack so resources are co-located with compute.
-        // =================================================================
-        // AmiRefreshConstruct is scoped to controlPlaneStack but needs Launch Template
-        // identifiers from the worker stacks, which already depend on controlPlaneStack
-        // via addDependency(). Passing CDK tokens (launchTemplateId) across this boundary
-        // would force CloudFormation Fn::ImportValue cross-stack exports and create a cycle.
-        //
-        // Fix: use launchTemplateName (a concrete string at synth time — `${poolId}-lt`)
-        // rather than launchTemplateId (a CloudFormation Ref / CDK token assigned at deploy).
-        new AmiRefreshConstruct(controlPlaneStack, 'AmiRefresh', {
-            ssmPrefix,
-            workerLtNames: [
-                generalPoolStack.launchTemplateName,
-                monitoringPoolStack.launchTemplateName,
-            ],
-            workerAsgNames: [
-                generalPoolStack.concreteAsgName,
-                monitoringPoolStack.concreteAsgName,
-            ],
-            controlPlaneLtName: controlPlaneStack.launchTemplateName,
-            controlPlaneAsgName: controlPlaneStack.concreteAsgName,
-            notificationEmail: emailConfig.notificationEmail,
-        });
 
         // =================================================================
         // EKS Stacks (V1 — parallel deployment alongside kubeadm cluster)
@@ -700,6 +383,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 workerNodeRoleArn: eksSystemNg.nodeRole.roleArn,
                 hostedZoneIds: edgeConfig.hostedZoneId ? [edgeConfig.hostedZoneId] : [],
                 crossAccountDnsRoleArn: edgeConfig.crossAccountRoleArn,
+                grafanaAlertingTopicArn: eksConfig.grafanaAlertingTopicArn,
             },
         );
         eksPodId.addDependency(eksSystemNg);
@@ -737,6 +421,20 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         );
         eksKarp.addDependency(eksAddons);
         stacks.push(eksKarp); stackMap.eksKarpenter = eksKarp;
+
+        if (environment === Environment.DEVELOPMENT) {
+            const eksScheduler = new EksSchedulerStack(
+                scope,
+                stackId(this.namespace, 'EksScheduler', environment),
+                {
+                    env,
+                    cluster: eksClusterStack.cluster,
+                    nodeGroupName: eksSystemNg.nodeGroup.nodegroupName,
+                },
+            );
+            eksScheduler.addDependency(eksSystemNg);
+            stacks.push(eksScheduler); stackMap.eksScheduler = eksScheduler;
+        }
 
         // Access entries: config-defined admins + optional GH OIDC / extra admin
         // from env vars (CI injects GH_OIDC_ROLE_ARN; ADMIN_ROLE_ARN for ad-hoc).
@@ -816,6 +514,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 rateLimitedHosts: ['api.nelsonlamounier.com'],
                 rateLimitPerIp: 2000,
                 ssmPrefix,
+                clusterName: eksConfig.clusterName,
             },
         );
         stacks.push(eksPublicWaf); stackMap.eksPublicWaf = eksPublicWaf;

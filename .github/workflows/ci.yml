@@ -17,7 +17,7 @@
 #   - CDK Synthesis     → just ci-synth-validate
 #
 # Projects validated during CDK synthesis:
-#   1. k8s         — K8s cluster stacks (Base, ControlPlane, Workers, Edge, API)
+#   1. k8s         — K8s cluster stacks (Base, EKS, API, RDS — kubeadm stacks deprecated)
 #   2. shared      — Shared-Infra (VPC, ECR)
 
 name: Continuous Integration
