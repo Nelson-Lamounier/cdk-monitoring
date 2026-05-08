@@ -20,7 +20,22 @@
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const path = require('path');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const fs = require('fs');
 
 // __dirname is infra/tests/ — move up one level to infra/
 const infraRoot = path.resolve(__dirname, '..');
 process.chdir(infraRoot);
+
+// CDK's NodejsFunction calls fs.existsSync() on Lambda entry paths before
+// synthesis. Stub it out for the bedrock-applications tree so tests can
+// synthesize stacks that reference handlers in a sibling repo that is not
+// checked out alongside this one. The esbuild spawnSync intercept in
+// jest.config.js already prevents real bundling.
+const realExistsSync = fs.existsSync;
+fs.existsSync = function stubbedExistsSync(p) {
+    if (typeof p === 'string' && p.includes('bedrock-applications')) {
+        return true;
+    }
+    return realExistsSync(p);
+};
