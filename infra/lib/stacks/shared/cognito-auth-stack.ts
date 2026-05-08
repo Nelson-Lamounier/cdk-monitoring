@@ -14,7 +14,7 @@
  * ```
  *
  * ## Resources Created
- * 1. **UserPool** — Self-sign-up disabled, email verification required
+ * 1. **UserPool** — Self-sign-up enabled, email verification required
  * 2. **UserPoolClient** — OAuth 2.0 Authorization Code flow
  * 3. **UserPoolDomain** — Cognito Hosted UI domain
  * 4. **Admin User** — Pre-created via CfnUserPoolUser
@@ -75,9 +75,9 @@ export interface CognitoAuthStackProps extends cdk.StackProps {
 /**
  * CognitoAuthStack — Managed admin authentication via AWS Cognito.
  *
- * Creates a minimal User Pool with a single pre-seeded admin user.
- * Self-sign-up is disabled to ensure only invited users can authenticate.
- * OAuth 2.0 Authorization Code flow integrates with next-auth's Cognito provider.
+ * Creates a User Pool with self-sign-up enabled and email verification required.
+ * A pre-seeded admin user is created for the initial admin account.
+ * OAuth 2.0 Authorization Code flow and direct USER_PASSWORD_AUTH are both supported.
  */
 export class CognitoAuthStack extends cdk.Stack {
     /** The Cognito User Pool */
@@ -101,11 +101,11 @@ export class CognitoAuthStack extends cdk.Stack {
         const { namePrefix, ssmPrefix } = props;
 
         // =================================================================
-        // User Pool — Admin-only, no self-sign-up
+        // User Pool — self-sign-up enabled, email verification required
         // =================================================================
         this.userPool = new cognito.UserPool(this, 'AdminUserPool', {
             userPoolName: `${namePrefix}-admin-pool`,
-            selfSignUpEnabled: false,
+            selfSignUpEnabled: true,
             signInAliases: { email: true },
             autoVerify: { email: true },
             standardAttributes: {
@@ -169,6 +169,9 @@ export class CognitoAuthStack extends cdk.Stack {
             },
             authFlows: {
                 userSrp: true,
+                // Required for USER_PASSWORD_AUTH (direct email/password sign-in
+                // via InitiateAuthCommand in signInWithPasswordFn).
+                userPassword: true,
             },
             preventUserExistenceErrors: true,
             supportedIdentityProviders: [
