@@ -23,6 +23,8 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import type { Pool } from 'pg';
 
+import { logger } from '../lib/observability/logger.js';
+import { authProvisionTotal } from '../lib/observability/metrics.js';
 import { upsertUser } from '../lib/repositories/users.js';
 import type { AdminApiBindings } from '../lib/types.js';
 
@@ -75,6 +77,7 @@ export function userProvisionMiddleware(pool: Pool): MiddlewareHandler<AdminApiB
     const cached = subToUserId.get(sub as string);
     if (cached) {
       ctx.set('userId', cached);
+      authProvisionTotal.inc({ outcome: 'returning' });
       await next();
       return;
     }
@@ -102,8 +105,22 @@ export function userProvisionMiddleware(pool: Pool): MiddlewareHandler<AdminApiB
       subToUserId.set(sub as string, id);
       ctx.set('userId', id);
       ctx.set('isNewUser', isNew);
+
+      const outcome = isNew ? 'new_user' : 'returning';
+      authProvisionTotal.inc({ outcome });
+
+      if (isNew) {
+        logger.info(
+          { event: 'user_provisioned', userId: id, provider, role, outcome: 'new_user' },
+          'new user provisioned on first sign-in',
+        );
+      }
     } catch (err) {
-      console.error('[user-provision] upsert failed', { sub, err });
+      authProvisionTotal.inc({ outcome: 'error' });
+      logger.error(
+        { event: 'user_provision_failed', sub, err },
+        'upsertUser threw — userId not set; /me will return 503',
+      );
     }
 
     await next();

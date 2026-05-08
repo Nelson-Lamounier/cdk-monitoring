@@ -9,6 +9,7 @@
 import { Hono } from 'hono';
 
 import type { AdminApiConfig } from '../lib/config.js';
+import { logger } from '../lib/observability/logger.js';
 import { getPool } from '../lib/pg.js';
 import { getUserPlanStatus } from '../lib/repositories/users.js';
 import type { AdminApiBindings } from '../lib/types.js';
@@ -29,6 +30,10 @@ export function createMeRouter(config: AdminApiConfig): Hono<AdminApiBindings> {
     const payload   = ctx.get('jwtPayload');
 
     if (!userId) {
+      logger.warn(
+        { event: 'user_provision_missing', route: '/api/admin/me' },
+        'userId absent on context — userProvisionMiddleware failed; returning 503',
+      );
       return ctx.json({ error: 'User not provisioned — retry in a moment' }, 503);
     }
 
