@@ -24,12 +24,15 @@ export interface EksPublicWafProps {
     readonly envName: string;
     readonly namePrefix: string;
     /**
-     * IPv4 CIDRs allowed to reach `allowlistedHosts`. Empty list means the
-     * allowlist rule is omitted (no host gets gated). Supply the operator's
-     * home IP at minimum.
+     * Initial IPv4 CIDRs seeded into the IP set by CloudFormation.
+     * IpSyncFn Lambda immediately overwrites this from SSM at deploy time,
+     * so pass an empty array — CDK no longer needs to know the operator's IP.
      */
     readonly allowlistedIpv4: readonly string[];
-    /** IPv6 CIDRs allowed to reach `allowlistedHosts`. */
+    /**
+     * Initial IPv6 CIDRs seeded into the IP set. Same as above — Lambda owns
+     * runtime content; pass an empty array from the stack.
+     */
     readonly allowlistedIpv6?: readonly string[];
     /**
      * Hosts that require an IP allowlist. Lowercase, exact-match against
@@ -47,9 +50,12 @@ export interface EksPublicWafProps {
 export class EksPublicWafConstruct extends Construct {
     public readonly webAcl: wafv2.CfnWebACL;
     public readonly webAclArn: string;
-    /** undefined when no IPv4 CIDRs were supplied */
+    /**
+     * Always set when `allowlistedHosts` is non-empty. Content is managed by
+     * IpSyncFn Lambda, not CloudFormation — addresses may be empty at synth.
+     */
     public readonly ipv4Set?: wafv2.CfnIPSet;
-    /** undefined when no IPv6 CIDRs were supplied */
+    /** Always set when `allowlistedHosts` is non-empty. Same ownership as ipv4Set. */
     public readonly ipv6Set?: wafv2.CfnIPSet;
 
     constructor(scope: Construct, id: string, props: EksPublicWafProps) {
@@ -58,32 +64,31 @@ export class EksPublicWafConstruct extends Construct {
         const { envName, namePrefix } = props;
         const rateLimitPerIp = props.rateLimitPerIp ?? 2000;
         const allowlistedIpv6 = props.allowlistedIpv6 ?? [];
-        const hasAllowlist =
-            (props.allowlistedIpv4.length > 0 || allowlistedIpv6.length > 0)
-            && props.allowlistedHosts.length > 0;
+        // IP sets are created whenever allowlisted hosts are configured —
+        // independent of whether initial CIDRs are provided. IpSyncFn Lambda
+        // populates content from SSM at deploy time; CloudFormation only owns
+        // the resource, not the addresses.
+        const hasAllowlist = props.allowlistedHosts.length > 0;
         const hasRateLimit = props.rateLimitedHosts.length > 0;
 
-        // ---------- IP sets (only when allowlist is configured) ----------
+        // ---------- IP sets (created whenever hosts are allowlisted) ----------
         const ipSetRefs: wafv2.CfnWebACL.StatementProperty[] = [];
         if (hasAllowlist) {
-            if (props.allowlistedIpv4.length > 0) {
-                this.ipv4Set = new wafv2.CfnIPSet(this, 'AllowIpv4', {
-                    name: `${namePrefix}-allow-ipv4-${envName}`,
-                    scope: 'REGIONAL',
-                    ipAddressVersion: 'IPV4',
-                    addresses: [...props.allowlistedIpv4],
-                });
-                ipSetRefs.push({ ipSetReferenceStatement: { arn: this.ipv4Set.attrArn } });
-            }
-            if (allowlistedIpv6.length > 0) {
-                this.ipv6Set = new wafv2.CfnIPSet(this, 'AllowIpv6', {
-                    name: `${namePrefix}-allow-ipv6-${envName}`,
-                    scope: 'REGIONAL',
-                    ipAddressVersion: 'IPV6',
-                    addresses: [...allowlistedIpv6],
-                });
-                ipSetRefs.push({ ipSetReferenceStatement: { arn: this.ipv6Set.attrArn } });
-            }
+            this.ipv4Set = new wafv2.CfnIPSet(this, 'AllowIpv4', {
+                name: `${namePrefix}-allow-ipv4-${envName}`,
+                scope: 'REGIONAL',
+                ipAddressVersion: 'IPV4',
+                addresses: [...props.allowlistedIpv4],
+            });
+            ipSetRefs.push({ ipSetReferenceStatement: { arn: this.ipv4Set.attrArn } });
+
+            this.ipv6Set = new wafv2.CfnIPSet(this, 'AllowIpv6', {
+                name: `${namePrefix}-allow-ipv6-${envName}`,
+                scope: 'REGIONAL',
+                ipAddressVersion: 'IPV6',
+                addresses: [...allowlistedIpv6],
+            });
+            ipSetRefs.push({ ipSetReferenceStatement: { arn: this.ipv6Set.attrArn } });
         }
 
         const rules: wafv2.CfnWebACL.RuleProperty[] = [];

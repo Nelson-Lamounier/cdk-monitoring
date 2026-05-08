@@ -7,13 +7,11 @@
  * Ingresses set `alb.ingress.kubernetes.io/wafv2-acl-arn: <arn>` to
  * attach the WebACL to the shared ALB. Plan 5b § 0.4.
  *
- * Allowlist CIDRs come from the operator at deploy time (synth-time
- * SSM lookup of two existing String parameters that already store the
- * operator's home IP — `/k8s/${env}/monitoring/allow-ipv4` and
- * `/k8s/${env}/monitoring/allow-ipv6` — historically used by the
- * kubeadm monitoring IngressRoute middleware. Same value, same purpose,
- * different consumer. Adding / removing IPs is a one-line SSM update
- * + redeploy of THIS stack only.
+ * Allowlist CIDRs are managed entirely by the IpSyncFn Lambda. CDK no
+ * longer bakes IPs into the CloudFormation template — IP sets are created
+ * empty and the Lambda populates them from SSM at deploy time (invoked by
+ * the CI pipeline after the stack deploys). Update IPs by changing the SSM
+ * parameters; EventBridge fires the Lambda within seconds, no CDK redeploy.
  *
  * Lives in eu-west-1 because REGIONAL WebACLs must share a region with
  * the ALB they attach to.
@@ -72,26 +70,16 @@ export class EksPublicWafStack extends cdk.Stack {
         const namePrefix = props.namePrefix ?? 'eks-public';
         const envName = props.targetEnvironment;
 
-        // Synth-time SSM lookups. Each parameter holds a comma-separated
-        // CIDR list; an unset parameter (or CDK's first-synth
-        // `dummy-value-for-` placeholder) is treated as empty.
-        const splitCidrs = (raw: string | undefined): string[] =>
-            raw && !raw.startsWith('dummy-value-for-')
-                ? raw.split(',').map((s) => s.trim()).filter(Boolean)
-                : [];
-
-        const allowlistedIpv4 = splitCidrs(
-            ssm.StringParameter.valueFromLookup(this, props.allowlistIpv4SsmPath),
-        );
-        const allowlistedIpv6 = props.allowlistIpv6SsmPath
-            ? splitCidrs(ssm.StringParameter.valueFromLookup(this, props.allowlistIpv6SsmPath))
-            : [];
-
+        // IP set addresses are intentionally empty here. IpSyncFn Lambda
+        // (created below) is invoked at deploy time by the CI pipeline to
+        // populate both sets from the live SSM parameters. This decouples IP
+        // management from CDK synthesis — no more stale cdk.context.json IPs
+        // causing 403s after every EKS deploy.
         const waf = new EksPublicWafConstruct(this, 'PublicWaf', {
             envName,
             namePrefix,
-            allowlistedIpv4,
-            allowlistedIpv6,
+            allowlistedIpv4: [],
+            allowlistedIpv6: [],
             allowlistedHosts: props.allowlistedHosts,
             rateLimitedHosts: props.rateLimitedHosts,
             rateLimitPerIp: props.rateLimitPerIp,

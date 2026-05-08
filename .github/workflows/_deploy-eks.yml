@@ -190,8 +190,8 @@ jobs:
       require-approval: ${{ inputs.require-approval }}
     secrets: inherit
 
-  # EksPublicWaf is also independent — synth-time SSM lookup for the
-  # operator allowlist already happens at template generation.
+  # EksPublicWaf is also independent — no synth-time SSM lookup; IP sets
+  # are created empty and populated by sync-waf-ips immediately after.
   deploy-public-waf:
     name: Deploy EKS Public WAF (REGIONAL WebACL)
     needs: [setup]
@@ -203,6 +203,42 @@ jobs:
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
     secrets: inherit
+
+  # Invoke IpSyncFn Lambda immediately after every WAF deploy to repopulate
+  # IP sets from live SSM parameters. CDK no longer bakes IPs into
+  # CloudFormation — the Lambda is the sole authority over IP set content.
+  # Security: ENVIRONMENT comes from inputs.environment (workflow_call input),
+  # not from user-controlled free text — no injection risk.
+  sync-waf-ips:
+    name: Sync WAF IP sets from SSM
+    needs: [setup, deploy-public-waf]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Configure AWS Credentials
+        uses: ./.github/actions/configure-aws
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Invoke IpSyncFn Lambda
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          FUNCTION="eks-public-ip-sync-${ENVIRONMENT}"
+          echo "Invoking ${FUNCTION} to sync WAF IP sets from SSM..."
+          aws lambda invoke \
+            --function-name "${FUNCTION}" \
+            --invocation-type RequestResponse \
+            /tmp/ip-sync-response.json
+          cat /tmp/ip-sync-response.json
+          if grep -q '"errorMessage"' /tmp/ip-sync-response.json; then
+            echo "FAIL: IpSyncFn returned an error"
+            exit 1
+          fi
+          echo "WAF IP sets synced from SSM"
 
   summary:
     name: EKS Deploy Summary
@@ -216,6 +252,7 @@ jobs:
       - deploy-access
       - deploy-alb-certs
       - deploy-public-waf
+      - sync-waf-ips
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
