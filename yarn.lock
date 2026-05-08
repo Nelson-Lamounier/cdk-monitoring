@@ -530,23 +530,23 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@aws-sdk/client-cloudfront@npm:^3.1001.0":
-  version: 3.1039.0
-  resolution: "@aws-sdk/client-cloudfront@npm:3.1039.0"
+"@aws-sdk/client-cloudfront@npm:^3.1045.0":
+  version: 3.1045.0
+  resolution: "@aws-sdk/client-cloudfront@npm:3.1045.0"
   dependencies:
     "@aws-crypto/sha256-browser": "npm:5.2.0"
     "@aws-crypto/sha256-js": "npm:5.2.0"
-    "@aws-sdk/core": "npm:^3.974.7"
-    "@aws-sdk/credential-provider-node": "npm:^3.972.38"
+    "@aws-sdk/core": "npm:^3.974.8"
+    "@aws-sdk/credential-provider-node": "npm:^3.972.39"
     "@aws-sdk/middleware-host-header": "npm:^3.972.10"
     "@aws-sdk/middleware-logger": "npm:^3.972.10"
     "@aws-sdk/middleware-recursion-detection": "npm:^3.972.11"
-    "@aws-sdk/middleware-user-agent": "npm:^3.972.37"
+    "@aws-sdk/middleware-user-agent": "npm:^3.972.38"
     "@aws-sdk/region-config-resolver": "npm:^3.972.13"
     "@aws-sdk/types": "npm:^3.973.8"
     "@aws-sdk/util-endpoints": "npm:^3.996.8"
     "@aws-sdk/util-user-agent-browser": "npm:^3.972.10"
-    "@aws-sdk/util-user-agent-node": "npm:^3.973.23"
+    "@aws-sdk/util-user-agent-node": "npm:^3.973.24"
     "@smithy/config-resolver": "npm:^4.4.17"
     "@smithy/core": "npm:^3.23.17"
     "@smithy/fetch-http-handler": "npm:^5.3.17"
@@ -575,7 +575,7 @@ __metadata:
     "@smithy/util-utf8": "npm:^4.2.2"
     "@smithy/util-waiter": "npm:^4.3.0"
     tslib: "npm:^2.6.2"
-  checksum: 10c0/5eeff45dca52ad81e4b49224af558f5c62aab2624574be979a033dad67b54213da5e58ae43a15c345fed174ee360a085473c7b391436875e7b723f364155c3a2
+  checksum: 10c0/a19c4adfd5a619fe7407d5d5f520afc37c364d62182b64ac8f706d0adba2a1af7a4a0bb10db86e1235428d0e5d925f765b5e43ef21ef7a9654a599c63f3f664a
   languageName: node
   linkType: hard
 
@@ -8002,7 +8002,7 @@ __metadata:
   dependencies:
     "@aws-sdk/client-auto-scaling": "npm:^3.1021.0"
     "@aws-sdk/client-cloudformation": "npm:^3.1016.0"
-    "@aws-sdk/client-cloudfront": "npm:^3.1001.0"
+    "@aws-sdk/client-cloudfront": "npm:^3.1045.0"
     "@aws-sdk/client-cloudtrail": "npm:^3.1016.0"
     "@aws-sdk/client-cloudwatch": "npm:^3.1021.0"
     "@aws-sdk/client-cloudwatch-logs": "npm:^3.1016.0"
@@ -8043,7 +8043,7 @@ __metadata:
     "@aws-sdk/client-bedrock-agent-runtime": "npm:^3.1001.0"
     "@aws-sdk/client-bedrock-runtime": "npm:^3.1001.0"
     "@aws-sdk/client-cloudformation": "npm:^3.1001.0"
-    "@aws-sdk/client-cloudfront": "npm:^3.1001.0"
+    "@aws-sdk/client-cloudfront": "npm:^3.1045.0"
     "@aws-sdk/client-cloudwatch": "npm:^3.1012.0"
     "@aws-sdk/client-cloudwatch-logs": "npm:^3.1001.0"
     "@aws-sdk/client-cognito-identity-provider": "npm:^3.1013.0"
