@@ -78,6 +78,7 @@ async function getConnection(pool: Pool, userId: string): Promise<OAuthRow | nul
 async function upsertConnection(
     pool: Pool,
     userId: string,
+    accountId: string,
     installationId: string,
     username: string,
     avatarUrl: string,
@@ -88,11 +89,12 @@ async function upsertConnection(
          VALUES ($1::uuid, 'github', $2, $3, '', $4, $5)
          ON CONFLICT (user_id, provider)
          DO UPDATE SET
-           installation_id = EXCLUDED.installation_id,
-           username        = EXCLUDED.username,
-           avatar_url      = EXCLUDED.avatar_url,
-           connected_at    = NOW()`,
-        [userId, installationId, username, installationId, avatarUrl],
+           provider_user_id = EXCLUDED.provider_user_id,
+           installation_id  = EXCLUDED.installation_id,
+           username         = EXCLUDED.username,
+           avatar_url       = EXCLUDED.avatar_url,
+           connected_at     = NOW()`,
+        [userId, accountId, username, installationId, avatarUrl],
     );
 }
 
@@ -342,7 +344,8 @@ async function dispatchIngestionJob(
         metadata: {
             name:      jobName,
             namespace: config.ingestionNamespace,
-            labels: { app: 'ingestion-worker', userId: safeUser, repoSlug },
+            labels:      { app: 'ingestion-worker', userId: safeUser, repoSlug },
+            annotations: { 'argocd.argoproj.io/compare-options': 'IgnoreExtraneous' },
         },
         spec: {
             ttlSecondsAfterFinished: 3600,
@@ -466,7 +469,7 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
         const isReinstall = existing !== null && existing.installation_id !== null;
 
         const info = await getInstallationInfo(appId, key, installationId);
-        await upsertConnection(pool, uid, installationId, info.accountLogin, info.accountAvatarUrl);
+        await upsertConnection(pool, uid, info.accountId, installationId, info.accountLogin, info.accountAvatarUrl);
 
         if (!isReinstall) {
             // Fresh install — return immediately; user picks repos via the UI picker.
