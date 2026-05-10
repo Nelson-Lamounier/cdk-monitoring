@@ -104,7 +104,7 @@
     {
       "Sid": "EventsAndMessaging",
       "Effect": "Allow",
-      "Action": ["events:*", "sns:*", "sqs:*"],
+      "Action": ["events:*", "scheduler:*", "sns:*", "sqs:*"],
       "Resource": "*"
     },
     {
