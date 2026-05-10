@@ -16,7 +16,6 @@
  * Lives in eu-west-1 because REGIONAL WebACLs must share a region with
  * the ALB they attach to.
  */
-import { CfnPodIdentityAssociation } from 'aws-cdk-lib/aws-eks';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -217,18 +216,14 @@ def handler(event, context):
                 ],
             }));
 
-            // Pod Identity association: admin-api/waf-annotator → role.
-            // The Job runs in the admin-api namespace by convention — admin-api
-            // carries the WAF annotation because it holds the most security-sensitive
-            // paths. No IRSA annotation on the ServiceAccount; Pod Identity agent
-            // injects credentials via AWS_CONTAINER_CREDENTIALS_FULL_URI.
-            new CfnPodIdentityAssociation(this, 'WafAnnotatorPodIdentity', {
-                clusterName: props.clusterName,
-                namespace: 'admin-api',
-                serviceAccount: 'waf-annotator',
-                roleArn: annotatorRole.roleArn,
-            });
-
+            // The Pod Identity association for admin-api/waf-annotator is managed
+            // outside CloudFormation to avoid CFN replace-on-property-change
+            // (cluster/namespace/SA are all replace triggers). Create or verify once:
+            //   aws eks create-pod-identity-association \
+            //     --cluster-name <cluster> --namespace admin-api \
+            //     --service-account waf-annotator --role-arn <roleArn>
+            // Store the returned associationArn in SSM at:
+            //   ${ssmPrefix}/eks/waf-annotator-pod-identity-arn
             this.wafAnnotatorRoleArn = annotatorRole.roleArn;
 
             new ssm.StringParameter(this, 'WafAnnotatorRoleArnSsm', {

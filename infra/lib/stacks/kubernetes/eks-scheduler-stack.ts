@@ -45,7 +45,7 @@ export class EksSchedulerStack extends cdk.Stack {
 
         lambdaRole.addToPolicy(
             new iam.PolicyStatement({
-                actions: ['eks:ListNodegroups'],
+                actions: ['eks:ListNodegroups', 'eks:DescribeCluster'],
                 resources: [cluster.clusterArn],
             }),
         );
@@ -110,20 +110,89 @@ export class EksSchedulerStack extends cdk.Stack {
             role: lambdaRole,
             environment: commonEnv,
             code: lambda.Code.fromInline(`
-import boto3, os, logging
+import boto3, base64, json, ssl, tempfile, urllib.request, os, logging
+from botocore.signers import RequestSigner
+
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
+def get_bearer_token(cluster_id, region):
+    """Generate EKS auth token (equivalent to: aws eks get-token --cluster-name X)."""
+    session = boto3.session.Session()
+    client = session.client('sts', region_name=region)
+    signer = RequestSigner(
+        client.meta.service_model.service_id,
+        region, 'sts', 'v4',
+        session.get_credentials(), session.events,
+    )
+    signed_url = signer.generate_presigned_url(
+        {
+            'method': 'GET',
+            'url': f'https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15',
+            'body': {},
+            'headers': {'x-k8s-aws-id': cluster_id},
+            'context': {},
+        },
+        region_name=region, expires_in=60, operation_name='',
+    )
+    return 'k8s-aws-v1.' + base64.urlsafe_b64encode(signed_url.encode()).decode().rstrip('=')
+
 def handler(event, context):
     region = os.environ['AWS_REGION']
-    client = boto3.client('eks', region_name=region)
-    client.update_nodegroup_config(
-        clusterName=os.environ['CLUSTER_NAME'],
-        nodegroupName=os.environ['NODEGROUP_NAME'],
+    cluster_name = os.environ['CLUSTER_NAME']
+    ng_name = os.environ['NODEGROUP_NAME']
+    eks = boto3.client('eks', region_name=region)
+
+    eks.update_nodegroup_config(
+        clusterName=cluster_name,
+        nodegroupName=ng_name,
         scalingConfig={'minSize': 2, 'desiredSize': 2},
     )
     log.info('Scaled MNG to 2')
-    return {'status': 'scaled-up'}
+
+    # Restore Karpenter to 2 replicas. dev-shutdown scales it to 0 after
+    # clearing NodeClaim finalizers; without this patch the controller stays
+    # down and no workload nodes are ever provisioned after cluster start.
+    cluster_info = eks.describe_cluster(name=cluster_name)['cluster']
+    endpoint = cluster_info['endpoint']
+    ca_data = base64.b64decode(cluster_info['certificateAuthority']['data'])
+    token = get_bearer_token(cluster_name, region)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.crt') as f:
+        f.write(ca_data)
+        ca_file = f.name
+
+    ctx = ssl.create_default_context(cafile=ca_file)
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/merge-patch+json',
+    }
+
+    def patch_replicas(namespace, deployment, replicas):
+        url = f'{endpoint}/apis/apps/v1/namespaces/{namespace}/deployments/{deployment}'
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({'spec': {'replicas': replicas}}).encode(),
+            method='PATCH',
+            headers=headers,
+        )
+        with urllib.request.urlopen(req, context=ctx) as resp:
+            log.info('Patched %s/%s to %d replicas: %s', namespace, deployment, replicas, resp.status)
+
+    # Restore Karpenter — dev-shutdown scales it to 0 after clearing NodeClaim
+    # finalizers. Without this, no workload nodes are ever provisioned.
+    patch_replicas('karpenter', 'karpenter', 2)
+
+    # Restore ArgoCD — dev-shutdown scales all argocd Deployments to 0 to
+    # prevent automated sync from re-provisioning workloads during shutdown.
+    argocd_deployments = [
+        'argocd-applicationset-controller', 'argocd-dex-server', 'argocd-image-updater',
+        'argocd-notifications-controller', 'argocd-redis', 'argocd-repo-server', 'argocd-server',
+    ]
+    for deploy in argocd_deployments:
+        patch_replicas('argocd', deploy, 1)
+
+    return {'status': 'scaled-up', 'karpenter-replicas': 2, 'argocd-restored': argocd_deployments}
 `),
         });
 
@@ -172,6 +241,22 @@ def handler(event, context):
                 resources: [scaleUpFn.functionArn, scaleDownFn.functionArn],
             }),
         );
+
+        // Grant the Lambda role permission to PATCH deployments in the two
+        // namespaces that dev-shutdown scales to zero: karpenter (controller
+        // restore) and argocd (server + repo-server restore). Scoped to these
+        // two namespaces only — AmazonEKSEditPolicy is least privilege for
+        // scale-up without granting cluster-wide access.
+        new eks.AccessEntry(this, 'SchedulerLambdaAccessEntry', {
+            cluster,
+            principal: lambdaRole.roleArn,
+            accessPolicies: [
+                eks.AccessPolicy.fromAccessPolicyName('AmazonEKSEditPolicy', {
+                    accessScopeType: eks.AccessScopeType.NAMESPACE,
+                    namespaces: ['karpenter', 'argocd'],
+                }),
+            ],
+        });
 
         new scheduler.CfnSchedule(this, 'ScaleUpSchedule', {
             scheduleExpression: 'cron(0 4 * * ? *)',
