@@ -61,7 +61,9 @@ export async function withUser<T>(
     try {
         await client.query('BEGIN');
         await client.query('SET LOCAL ROLE tucaken_app');
-        await client.query('SET LOCAL app.current_user_id = $1', [userId]);
+        // SET LOCAL does not support parameterized queries ($1 is only valid in
+        // DML statements). userId is a UUID from users.id — safe to interpolate.
+        await client.query(`SET LOCAL app.current_user_id = '${userId}'`);
         const result = await fn(client);
         await client.query('COMMIT');
         return result;
