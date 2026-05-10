@@ -364,10 +364,16 @@ async function dispatchIngestionJob(
                         // GITHUB_TOKEN here overrides any static token in ingestion-secrets,
                         // ensuring each Job uses the per-user installation token.
                         env: [
-                            { name: 'USER_ID',        value: userId },
-                            { name: 'REPO_FULL_NAME', value: repoFullName },
-                            { name: 'FORCE_REINDEX',  value: String(forceReindex) },
-                            { name: 'GITHUB_TOKEN',   value: githubToken },
+                            { name: 'USER_ID',            value: userId },
+                            { name: 'REPO_FULL_NAME',     value: repoFullName },
+                            { name: 'FORCE_REINDEX',      value: String(forceReindex) },
+                            { name: 'GITHUB_TOKEN',       value: githubToken },
+                            // Cross-region inference profile for BedrockChunkEnricher.
+                            // Direct on-demand Claude invocation unsupported in eu-west-1.
+                            {
+                                name:  'ENRICHMENT_MODEL_ID',
+                                value: process.env['ENRICHMENT_MODEL_ID'] ?? 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+                            },
                         ],
                         envFrom: [{ secretRef: { name: 'platform-rds-credentials' } }],
                         resources: {
