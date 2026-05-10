@@ -329,6 +329,34 @@ export class EksPodIdentityStack extends cdk.Stack {
                     }),
                 );
                 break;
+            case 'image-updater':
+                // ArgoCD Image Updater polls ECR for new image tags using
+                // newest-build strategy (compares imagePushedAt timestamps).
+                // GetAuthorizationToken is account-scoped (no resource ARN).
+                // DescribeImages + ListImages cover the polling cycle.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'ImageUpdaterEcrRead',
+                        actions: [
+                            'ecr:GetAuthorizationToken',
+                        ],
+                        resources: ['*'],
+                    }),
+                );
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'ImageUpdaterEcrDescribe',
+                        actions: [
+                            'ecr:DescribeRepositories',
+                            'ecr:DescribeImages',
+                            'ecr:ListImages',
+                        ],
+                        resources: [
+                            `arn:aws:ecr:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:repository/*`,
+                        ],
+                    }),
+                );
+                break;
         }
     }
 }
