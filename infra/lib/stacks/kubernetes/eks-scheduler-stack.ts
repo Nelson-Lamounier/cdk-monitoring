@@ -162,20 +162,37 @@ def handler(event, context):
         f.write(ca_data)
         ca_file = f.name
 
-    patch = json.dumps({'spec': {'replicas': 2}}).encode()
-    url = f'{endpoint}/apis/apps/v1/namespaces/karpenter/deployments/karpenter'
-    req = urllib.request.Request(
-        url, data=patch, method='PATCH',
-        headers={
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/merge-patch+json',
-        },
-    )
     ctx = ssl.create_default_context(cafile=ca_file)
-    with urllib.request.urlopen(req, context=ctx) as resp:
-        log.info('Karpenter patch response: %s', resp.status)
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/merge-patch+json',
+    }
 
-    return {'status': 'scaled-up', 'karpenter-replicas': 2}
+    def patch_replicas(namespace, deployment, replicas):
+        url = f'{endpoint}/apis/apps/v1/namespaces/{namespace}/deployments/{deployment}'
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({'spec': {'replicas': replicas}}).encode(),
+            method='PATCH',
+            headers=headers,
+        )
+        with urllib.request.urlopen(req, context=ctx) as resp:
+            log.info('Patched %s/%s to %d replicas: %s', namespace, deployment, replicas, resp.status)
+
+    # Restore Karpenter — dev-shutdown scales it to 0 after clearing NodeClaim
+    # finalizers. Without this, no workload nodes are ever provisioned.
+    patch_replicas('karpenter', 'karpenter', 2)
+
+    # Restore ArgoCD — dev-shutdown scales all argocd Deployments to 0 to
+    # prevent automated sync from re-provisioning workloads during shutdown.
+    argocd_deployments = [
+        'argocd-applicationset-controller', 'argocd-dex-server', 'argocd-image-updater',
+        'argocd-notifications-controller', 'argocd-redis', 'argocd-repo-server', 'argocd-server',
+    ]
+    for deploy in argocd_deployments:
+        patch_replicas('argocd', deploy, 1)
+
+    return {'status': 'scaled-up', 'karpenter-replicas': 2, 'argocd-restored': argocd_deployments}
 `),
         });
 
@@ -225,17 +242,18 @@ def handler(event, context):
             }),
         );
 
-        // Grant the Lambda role permission to PATCH the Karpenter deployment.
-        // Scoped to the karpenter namespace only — least privilege for a single
-        // scale-up operation. AmazonEKSEditPolicy allows create/update/delete
-        // on most resource types within the namespace scope.
+        // Grant the Lambda role permission to PATCH deployments in the two
+        // namespaces that dev-shutdown scales to zero: karpenter (controller
+        // restore) and argocd (server + repo-server restore). Scoped to these
+        // two namespaces only — AmazonEKSEditPolicy is least privilege for
+        // scale-up without granting cluster-wide access.
         new eks.AccessEntry(this, 'SchedulerLambdaAccessEntry', {
             cluster,
             principal: lambdaRole.roleArn,
             accessPolicies: [
                 eks.AccessPolicy.fromAccessPolicyName('AmazonEKSEditPolicy', {
                     accessScopeType: eks.AccessScopeType.NAMESPACE,
-                    namespaces: ['karpenter'],
+                    namespaces: ['karpenter', 'argocd'],
                 }),
             ],
         });
