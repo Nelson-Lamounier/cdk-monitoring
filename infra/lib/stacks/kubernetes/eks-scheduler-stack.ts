@@ -45,7 +45,7 @@ export class EksSchedulerStack extends cdk.Stack {
 
         lambdaRole.addToPolicy(
             new iam.PolicyStatement({
-                actions: ['eks:ListNodegroups'],
+                actions: ['eks:ListNodegroups', 'eks:DescribeCluster'],
                 resources: [cluster.clusterArn],
             }),
         );
@@ -110,20 +110,72 @@ export class EksSchedulerStack extends cdk.Stack {
             role: lambdaRole,
             environment: commonEnv,
             code: lambda.Code.fromInline(`
-import boto3, os, logging
+import boto3, base64, json, ssl, tempfile, urllib.request, os, logging
+from botocore.signers import RequestSigner
+
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
+def get_bearer_token(cluster_id, region):
+    """Generate EKS auth token (equivalent to: aws eks get-token --cluster-name X)."""
+    session = boto3.session.Session()
+    client = session.client('sts', region_name=region)
+    signer = RequestSigner(
+        client.meta.service_model.service_id,
+        region, 'sts', 'v4',
+        session.get_credentials(), session.events,
+    )
+    signed_url = signer.generate_presigned_url(
+        {
+            'method': 'GET',
+            'url': f'https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15',
+            'body': {},
+            'headers': {'x-k8s-aws-id': cluster_id},
+            'context': {},
+        },
+        region_name=region, expires_in=60, operation_name='',
+    )
+    return 'k8s-aws-v1.' + base64.urlsafe_b64encode(signed_url.encode()).decode().rstrip('=')
+
 def handler(event, context):
     region = os.environ['AWS_REGION']
-    client = boto3.client('eks', region_name=region)
-    client.update_nodegroup_config(
-        clusterName=os.environ['CLUSTER_NAME'],
-        nodegroupName=os.environ['NODEGROUP_NAME'],
+    cluster_name = os.environ['CLUSTER_NAME']
+    ng_name = os.environ['NODEGROUP_NAME']
+    eks = boto3.client('eks', region_name=region)
+
+    eks.update_nodegroup_config(
+        clusterName=cluster_name,
+        nodegroupName=ng_name,
         scalingConfig={'minSize': 2, 'desiredSize': 2},
     )
     log.info('Scaled MNG to 2')
-    return {'status': 'scaled-up'}
+
+    # Restore Karpenter to 2 replicas. dev-shutdown scales it to 0 after
+    # clearing NodeClaim finalizers; without this patch the controller stays
+    # down and no workload nodes are ever provisioned after cluster start.
+    cluster_info = eks.describe_cluster(name=cluster_name)['cluster']
+    endpoint = cluster_info['endpoint']
+    ca_data = base64.b64decode(cluster_info['certificateAuthority']['data'])
+    token = get_bearer_token(cluster_name, region)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.crt') as f:
+        f.write(ca_data)
+        ca_file = f.name
+
+    patch = json.dumps({'spec': {'replicas': 2}}).encode()
+    url = f'{endpoint}/apis/apps/v1/namespaces/karpenter/deployments/karpenter'
+    req = urllib.request.Request(
+        url, data=patch, method='PATCH',
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/merge-patch+json',
+        },
+    )
+    ctx = ssl.create_default_context(cafile=ca_file)
+    with urllib.request.urlopen(req, context=ctx) as resp:
+        log.info('Karpenter patch response: %s', resp.status)
+
+    return {'status': 'scaled-up', 'karpenter-replicas': 2}
 `),
         });
 
@@ -172,6 +224,21 @@ def handler(event, context):
                 resources: [scaleUpFn.functionArn, scaleDownFn.functionArn],
             }),
         );
+
+        // Grant the Lambda role permission to PATCH the Karpenter deployment.
+        // Scoped to the karpenter namespace only — least privilege for a single
+        // scale-up operation. AmazonEKSEditPolicy allows create/update/delete
+        // on most resource types within the namespace scope.
+        new eks.AccessEntry(this, 'SchedulerLambdaAccessEntry', {
+            cluster,
+            principal: lambdaRole.roleArn,
+            accessPolicies: [
+                eks.AccessPolicy.fromAccessPolicyName('AmazonEKSEditPolicy', {
+                    accessScopeType: eks.AccessScopeType.NAMESPACE,
+                    namespaces: ['karpenter'],
+                }),
+            ],
+        });
 
         new scheduler.CfnSchedule(this, 'ScaleUpSchedule', {
             scheduleExpression: 'cron(0 4 * * ? *)',
