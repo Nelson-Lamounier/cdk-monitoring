@@ -62,6 +62,7 @@ jobs:
       eks-alb-certs: ${{ steps.synth.outputs.eksAlbCerts }}
       eks-public-waf: ${{ steps.synth.outputs.eksPublicWaf }}
       eks-scheduler: ${{ steps.synth.outputs.eksScheduler }}
+      platform-rds: ${{ steps.synth.outputs.platformRds }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -95,6 +96,21 @@ jobs:
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: ${{ needs.setup.outputs.eks-cluster }}
+      project: kubernetes
+      environment: ${{ inputs.environment }}
+      aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      require-approval: ${{ inputs.require-approval }}
+    secrets: inherit
+
+
+  # PlatformRds has no deploy-time dependency on EksCluster — Vpc.fromLookup()
+  # resolves at synth time. Runs in parallel with deploy-cluster.
+  deploy-platform-rds:
+    name: Deploy Platform RDS
+    needs: [setup]
+    uses: ./.github/workflows/_deploy-stack.yml
+    with:
+      stack-name: ${{ needs.setup.outputs.platform-rds }}
       project: kubernetes
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
@@ -253,6 +269,7 @@ jobs:
       - deploy-alb-certs
       - deploy-public-waf
       - sync-waf-ips
+      - deploy-platform-rds
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
