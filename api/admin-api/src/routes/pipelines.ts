@@ -12,74 +12,18 @@
  * pipeline execution now runs entirely as Kubernetes Jobs.
  */
 
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
-import type { V1Job } from '@kubernetes/client-node';
 import { Hono } from 'hono';
 
 import type { AdminApiConfig } from '../lib/config.js';
 import { getJobImage, isImageConfigured } from '../lib/config.js';
+import { buildPipelineJob, sanitizeLabel } from '../lib/k8s-job-builder.js';
 import { getBatchApi } from '../lib/k8s.js';
 import { getPool, withUser } from '../lib/pg.js';
 import { upsertApplication } from '../lib/repositories/applications.js';
 import { insertPipelineRun, getPipelineRun } from '../lib/repositories/pipeline-runs.js';
 import type { AdminApiBindings } from '../lib/types.js';
-
-const MAX_NAME_LEN = 63;
-
-function sanitizeLabel(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, MAX_NAME_LEN);
-}
-
-interface BuildJobInput {
-  namespace:           string;
-  image:               string;
-  serviceAccountName:  string;
-  nameStem:            string;
-  timestamp:           number;
-  suffixInput:         string;
-  labels:              Record<string, string>;
-  command:             string[];
-  env:                 { name: string; value: string }[];
-  envFromSecretRefs:   string[];
-}
-
-function buildPipelineJob(input: BuildJobInput): V1Job {
-  const suffix  = createHash('sha1').update(input.suffixInput).digest('hex').slice(0, 8);
-  const stem    = sanitizeLabel(input.nameStem).slice(0, 50);
-  const jobName = `${stem}-${suffix}`.slice(0, MAX_NAME_LEN);
-  const sanitisedLabels = Object.fromEntries(
-    Object.entries(input.labels).map(([k, v]) => [k, sanitizeLabel(v).slice(0, 63) || 'unknown']),
-  );
-  return {
-    apiVersion: 'batch/v1',
-    kind:       'Job',
-    metadata: { name: jobName, namespace: input.namespace, labels: sanitisedLabels },
-    spec: {
-      ttlSecondsAfterFinished: 3600,
-      backoffLimit:            2,
-      activeDeadlineSeconds:   1800,
-      template: {
-        metadata: { labels: sanitisedLabels },
-        spec: {
-          restartPolicy:      'Never',
-          serviceAccountName: input.serviceAccountName,
-          containers: [{
-            name:    'pipeline',
-            image:   input.image,
-            command: input.command,
-            env:     input.env,
-            envFrom: input.envFromSecretRefs.map(name => ({ secretRef: { name } })),
-            resources: {
-              requests: { memory: '768Mi', cpu: '300m' },
-              limits:   { memory: '2Gi',   cpu: '1000m' },
-            },
-          }],
-        },
-      },
-    },
-  };
-}
 
 /**
  * Create the pipelines admin router.
@@ -132,14 +76,13 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
         return ctx.json({ error: 'Failed to record pipeline run' }, 500);
       }
 
-      const timestamp = Date.now();
+      const suffixInput = `${pipelineRunId}:${slug}:${Date.now()}`;
       const job = buildPipelineJob({
         namespace:           config.articlePipelineNamespace,
         image:               articlePipelineImage,
         serviceAccountName:  config.articlePipelineServiceAccount,
         nameStem:            `article-${sanitizeLabel(slug)}`,
-        timestamp,
-        suffixInput:         `${pipelineRunId}:${slug}:${timestamp}`,
+        suffixInput,
         labels:              { app: 'article-pipeline', userId, slug: sanitizeLabel(slug) },
         command:             ['node', 'dist/run-pipeline.js'],
         env: [
@@ -170,7 +113,7 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
     const userId = ctx.get('userId');
     if (!userId) return ctx.json({ error: 'User not provisioned — retry in a moment' }, 503);
 
-    let body: { targetCompany?: string; targetRole?: string; jobDescription?: string; mode?: string };
+    let body: { targetCompany?: string; targetRole?: string; jobDescription?: string; mode?: string; resumeId?: string };
     try { body = await ctx.req.json(); }
     catch { return ctx.json({ error: 'Body must be valid JSON' }, 400); }
 
@@ -182,6 +125,18 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
       if (!v) return ctx.json({ error: `"${k}" is required` }, 400);
     }
     const mode = body.mode?.trim() || 'standard';
+
+    const resumeId = body.resumeId?.trim() || '';
+
+    // Guard against K8s env-var 128KB limit — truncate at 100KB with a warning.
+    const MAX_JD_BYTES = 100_000;
+    const jdBytes = Buffer.byteLength(jobDescription!, 'utf8');
+    const truncatedJd = jdBytes > MAX_JD_BYTES
+      ? (() => {
+          console.warn('[pipelines/strategist-job] job description truncated', { originalBytes: jdBytes });
+          return jobDescription!.substring(0, MAX_JD_BYTES);
+        })()
+      : jobDescription!;
 
     const strategistPipelineImage = getJobImage('job-strategist');
     if (!isImageConfigured(strategistPipelineImage)) {
@@ -224,25 +179,26 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
         return ctx.json({ error: 'Failed to record pipeline run' }, 500);
       }
 
-      const timestamp = Date.now();
+      const suffixInput = `${pipelineRunId}:${applicationId}:${Date.now()}`;
       const job = buildPipelineJob({
         namespace:           config.strategistPipelineNamespace,
         image:               strategistPipelineImage,
         serviceAccountName:  config.strategistPipelineServiceAccount,
         nameStem:            `strategist-${sanitizeLabel(applicationId)}`,
-        timestamp,
-        suffixInput:         `${pipelineRunId}:${applicationId}:${timestamp}`,
+        suffixInput,
         labels:              { app: 'strategist-pipeline', userId, applicationSlug: sanitizeLabel(applicationId) },
         command:             ['node', 'dist/run-pipeline.js'],
         env: [
-          { name: 'PIPELINE_RUN_ID',   value: pipelineRunId },
-          { name: 'APPLICATION_ID',    value: applicationId },
-          { name: 'APPLICATION_SLUG',  value: applicationId },
-          { name: 'USER_ID',           value: userId },
-          { name: 'TARGET_COMPANY',    value: targetCompany! },
-          { name: 'TARGET_ROLE',       value: targetRole! },
-          { name: 'JOB_DESCRIPTION',   value: jobDescription! },
-          { name: 'MODE',              value: mode },
+          { name: 'PIPELINE_RUN_ID',    value: pipelineRunId },
+          { name: 'APPLICATION_ID',     value: applicationId },
+          { name: 'APPLICATION_SLUG',   value: applicationId },
+          { name: 'USER_ID',            value: userId },
+          { name: 'TARGET_COMPANY',     value: targetCompany! },
+          { name: 'TARGET_ROLE',        value: targetRole! },
+          { name: 'JOB_DESCRIPTION',    value: truncatedJd },
+          { name: 'MODE',               value: mode },
+          ...(resumeId ? [{ name: 'RESUME_ID', value: resumeId }] : []),
+          ...(config.knowledgeBaseId ? [{ name: 'KNOWLEDGE_BASE_ID', value: config.knowledgeBaseId }] : []),
         ],
         envFromSecretRefs: ['platform-rds-credentials'],
       });

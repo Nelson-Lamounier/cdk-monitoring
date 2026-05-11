@@ -94,8 +94,10 @@ export function buildPipelineJob(input: BuildJobInput): V1Job {
     // can override OTEL_SERVICE_NAME for nested operations (e.g. coach
     // sub-pipeline) without losing the rest.
     const obsName = sanitizeLabel(input.nameStem.split('-').slice(0, -1).join('-')) || input.nameStem;
+    const traceparentEntry = traceParentEnv();
     const env = [
         ...observabilityEnv(obsName, input.suffixInput),
+        ...(traceparentEntry ? [traceparentEntry] : []),
         ...input.env,
     ];
 
