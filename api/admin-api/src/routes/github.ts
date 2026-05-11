@@ -45,7 +45,7 @@ import {
     listInstallationRepos,
 } from '../lib/github-app.js';
 import { getBatchApi } from '../lib/k8s.js';
-import { traceParentEnv } from '../lib/k8s-job-builder.js';
+import { traceParentEnv, observabilityEnv } from '../lib/k8s-job-builder.js';
 import { getPool } from '../lib/pg.js';
 import { AdminApiBindings, requireUserId } from '../lib/types.js';
 
@@ -365,6 +365,7 @@ async function dispatchIngestionJob(
                         // GITHUB_TOKEN here overrides any static token in ingestion-secrets,
                         // ensuring each Job uses the per-user installation token.
                         env: [
+                            ...observabilityEnv('ingestion-worker', `${userId}:${repoFullName}:${timestamp}`),
                             { name: 'USER_ID',            value: userId },
                             { name: 'REPO_FULL_NAME',     value: repoFullName },
                             { name: 'FORCE_REINDEX',      value: String(forceReindex) },

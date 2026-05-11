@@ -20,7 +20,7 @@ import type { JWTPayload } from 'jose';
 import type { AdminApiConfig } from '../lib/config.js';
 import { getJobImage, isImageConfigured } from '../lib/config.js';
 import { getBatchApi } from '../lib/k8s.js';
-import { traceParentEnv } from '../lib/k8s-job-builder.js';
+import { traceParentEnv, observabilityEnv } from '../lib/k8s-job-builder.js';
 
 type AdminApiBindings = {
     Variables: { jwtPayload: JWTPayload };
@@ -79,6 +79,7 @@ function buildJobSpec(
                         image:   image,
                         command: ['node', 'dist/run-ingestion.js'],
                         env: [
+                            ...observabilityEnv('ingestion-worker', `${userId}:${repoFullName}:${timestamp}`),
                             { name: 'USER_ID',        value: userId },
                             { name: 'REPO_FULL_NAME', value: repoFullName },
                             { name: 'FORCE_REINDEX',  value: String(forceReindex) },
