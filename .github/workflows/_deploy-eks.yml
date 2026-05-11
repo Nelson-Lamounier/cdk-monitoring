@@ -100,7 +100,8 @@ jobs:
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
-    secrets: inherit
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
 
   # PlatformRds has no deploy-time dependency on EksCluster — Vpc.fromLookup()
@@ -115,7 +116,8 @@ jobs:
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
-    secrets: inherit
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   deploy-system-ng:
     name: Deploy EKS System Node Group
@@ -127,7 +129,8 @@ jobs:
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
-    secrets: inherit
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   deploy-pod-identity:
     name: Deploy EKS Pod Identity
@@ -139,7 +142,8 @@ jobs:
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
-    secrets: inherit
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   deploy-addons:
     name: Deploy EKS Addons (Helm)
@@ -151,7 +155,8 @@ jobs:
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
-    secrets: inherit
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   deploy-karpenter:
     name: Deploy EKS Karpenter (SQS + NodePool)
@@ -163,7 +168,8 @@ jobs:
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
-    secrets: inherit
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   deploy-access:
     name: Deploy EKS Access (Access Entries)
@@ -175,7 +181,10 @@ jobs:
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
-    secrets: inherit
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+      GH_OIDC_ROLE_ARN: ${{ secrets.GH_OIDC_ROLE_ARN }}
+      ADMIN_ROLE_ARN: ${{ secrets.ADMIN_ROLE_ARN }}
 
   # EksAlbCerts has no in-cluster dependency; runs in parallel after setup.
   # The shared-DNS validation Lambda contacts mgmt-account R53 directly.
@@ -189,7 +198,8 @@ jobs:
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
-    secrets: inherit
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # EksScheduler is dev-only: gated on environment input + non-empty stack name
   # (synth outputs empty string for staging/production where the factory omits it).
@@ -204,7 +214,8 @@ jobs:
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
-    secrets: inherit
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # EksPublicWaf is also independent — no synth-time SSM lookup; IP sets
   # are created empty and populated by sync-waf-ips immediately after.
@@ -218,7 +229,8 @@ jobs:
       environment: ${{ inputs.environment }}
       aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
       require-approval: ${{ inputs.require-approval }}
-    secrets: inherit
+    secrets:
+      AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
 
   # Invoke IpSyncFn Lambda immediately after every WAF deploy to repopulate
   # IP sets from live SSM parameters. CDK no longer bakes IPs into
