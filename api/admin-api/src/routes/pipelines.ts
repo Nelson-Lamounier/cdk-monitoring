@@ -21,6 +21,7 @@ import type { AdminApiConfig } from '../lib/config.js';
 import { getJobImage, isImageConfigured } from '../lib/config.js';
 import { getBatchApi } from '../lib/k8s.js';
 import { getPool, withUser } from '../lib/pg.js';
+import { upsertApplication } from '../lib/repositories/applications.js';
 import { insertPipelineRun, getPipelineRun } from '../lib/repositories/pipeline-runs.js';
 import type { AdminApiBindings } from '../lib/types.js';
 
@@ -169,17 +170,15 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
     const userId = ctx.get('userId');
     if (!userId) return ctx.json({ error: 'User not provisioned — retry in a moment' }, 503);
 
-    let body: { applicationId?: string; applicationSlug?: string; targetCompany?: string; targetRole?: string; jobDescription?: string; mode?: string };
+    let body: { targetCompany?: string; targetRole?: string; jobDescription?: string; mode?: string };
     try { body = await ctx.req.json(); }
     catch { return ctx.json({ error: 'Body must be valid JSON' }, 400); }
 
-    const applicationId   = body.applicationId?.trim();
-    const applicationSlug = body.applicationSlug?.trim();
-    const targetCompany   = body.targetCompany?.trim();
-    const targetRole      = body.targetRole?.trim();
-    const jobDescription  = body.jobDescription?.trim();
+    const targetCompany  = body.targetCompany?.trim();
+    const targetRole     = body.targetRole?.trim();
+    const jobDescription = body.jobDescription?.trim();
 
-    for (const [k, v] of Object.entries({ applicationId, applicationSlug, targetCompany, targetRole, jobDescription })) {
+    for (const [k, v] of Object.entries({ targetCompany, targetRole, jobDescription })) {
       if (!v) return ctx.json({ error: `"${k}" is required` }, 400);
     }
     const mode = body.mode?.trim() || 'standard';
@@ -190,16 +189,35 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
       return ctx.json({ error: 'Strategist pipeline image not yet configured — wait ~60s for ESO/kubelet sync' }, 502);
     }
 
+    const applicationId = randomUUID();
     const pipelineRunId = randomUUID();
 
     return withUser(getPool(config), userId, async (db) => {
+      // Create the job_applications row before dispatching the K8s Job so the
+      // pipeline can UPDATE kanban_status as it progresses.
+      try {
+        await upsertApplication(db, {
+          id:             applicationId,
+          userId,
+          company:        targetCompany!,
+          role:           targetRole!,
+          jobUrl:         null,
+          jobDescription: jobDescription!,
+          kanbanStatus:   'analysing',
+          appliedAt:      null,
+        });
+      } catch (err: unknown) {
+        console.error('[pipelines/strategist-job] failed to insert job_application', err);
+        return ctx.json({ error: 'Failed to create application record' }, 500);
+      }
+
       try {
         await insertPipelineRun(db, {
           id:           pipelineRunId,
           userId,
           pipelineType: 'strategist',
-          referenceId:  applicationId!,
-          metadata:     { applicationSlug, targetCompany, targetRole, mode },
+          referenceId:  applicationId,
+          metadata:     { applicationSlug: applicationId, targetCompany, targetRole, mode },
         });
       } catch (err: unknown) {
         console.error('[pipelines/strategist-job] failed to insert pipeline_run', err);
@@ -211,15 +229,15 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
         namespace:           config.strategistPipelineNamespace,
         image:               strategistPipelineImage,
         serviceAccountName:  config.strategistPipelineServiceAccount,
-        nameStem:            `strategist-${sanitizeLabel(applicationSlug!)}`,
+        nameStem:            `strategist-${sanitizeLabel(applicationId)}`,
         timestamp,
         suffixInput:         `${pipelineRunId}:${applicationId}:${timestamp}`,
-        labels:              { app: 'strategist-pipeline', userId, applicationSlug: sanitizeLabel(applicationSlug!) },
+        labels:              { app: 'strategist-pipeline', userId, applicationSlug: sanitizeLabel(applicationId) },
         command:             ['node', 'dist/run-pipeline.js'],
         env: [
           { name: 'PIPELINE_RUN_ID',   value: pipelineRunId },
-          { name: 'APPLICATION_ID',    value: applicationId! },
-          { name: 'APPLICATION_SLUG',  value: applicationSlug! },
+          { name: 'APPLICATION_ID',    value: applicationId },
+          { name: 'APPLICATION_SLUG',  value: applicationId },
           { name: 'USER_ID',           value: userId },
           { name: 'TARGET_COMPANY',    value: targetCompany! },
           { name: 'TARGET_ROLE',       value: targetRole! },
@@ -235,7 +253,13 @@ export function createPipelinesRouter(config: AdminApiConfig): Hono<AdminApiBind
         return ctx.json({ error: 'Failed to schedule pipeline Job' }, 502);
       }
 
-      return ctx.json({ status: 'queued', pipelineRunId, jobName: job.metadata!.name!, applicationId }, 202);
+      return ctx.json({
+        status:           'queued',
+        pipelineRunId,
+        jobName:          job.metadata!.name!,
+        applicationId,
+        applicationSlug:  applicationId,
+      }, 202);
     });
   });
 
