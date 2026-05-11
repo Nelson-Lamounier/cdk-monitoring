@@ -45,6 +45,7 @@ import {
     listInstallationRepos,
 } from '../lib/github-app.js';
 import { getBatchApi } from '../lib/k8s.js';
+import { traceParentEnv, observabilityEnv } from '../lib/k8s-job-builder.js';
 import { getPool } from '../lib/pg.js';
 import { AdminApiBindings, requireUserId } from '../lib/types.js';
 
@@ -364,10 +365,18 @@ async function dispatchIngestionJob(
                         // GITHUB_TOKEN here overrides any static token in ingestion-secrets,
                         // ensuring each Job uses the per-user installation token.
                         env: [
-                            { name: 'USER_ID',        value: userId },
-                            { name: 'REPO_FULL_NAME', value: repoFullName },
-                            { name: 'FORCE_REINDEX',  value: String(forceReindex) },
-                            { name: 'GITHUB_TOKEN',   value: githubToken },
+                            ...observabilityEnv('ingestion-worker', `${userId}:${repoFullName}:${timestamp}`),
+                            { name: 'USER_ID',            value: userId },
+                            { name: 'REPO_FULL_NAME',     value: repoFullName },
+                            { name: 'FORCE_REINDEX',      value: String(forceReindex) },
+                            { name: 'GITHUB_TOKEN',       value: githubToken },
+                            // Cross-region inference profile for BedrockChunkEnricher.
+                            // Direct on-demand Claude invocation unsupported in eu-west-1.
+                            {
+                                name:  'ENRICHMENT_MODEL_ID',
+                                value: process.env['ENRICHMENT_MODEL_ID'] ?? 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+                            },
+                            ...(() => { const tp = traceParentEnv(); return tp ? [tp] : []; })(),
                         ],
                         envFrom: [{ secretRef: { name: 'platform-rds-credentials' } }],
                         resources: {

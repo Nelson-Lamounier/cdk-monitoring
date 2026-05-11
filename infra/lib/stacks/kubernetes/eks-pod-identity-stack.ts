@@ -285,6 +285,43 @@ export class EksPodIdentityStack extends cdk.Stack {
                         }),
                     );
                 }
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'GrafanaCloudWatchRead',
+                        actions: [
+                            'cloudwatch:GetMetricData',
+                            'cloudwatch:GetMetricStatistics',
+                            'cloudwatch:ListMetrics',
+                            'cloudwatch:DescribeAlarms',
+                            'cloudwatch:ListTagsForResource',
+                            'logs:StartQuery',
+                            'logs:StopQuery',
+                            'logs:GetQueryResults',
+                            'logs:DescribeLogGroups',
+                            'logs:GetLogEvents',
+                            'logs:FilterLogEvents',
+                        ],
+                        resources: ['*'],
+                    }),
+                );
+                break;
+            case 'ingestion':
+                // Bedrock InvokeModel for chunk enrichment (BedrockChunkEnricher)
+                // and embeddings (TitanEmbeddingProvider). Scoped to all foundation
+                // models and inference profiles — ingestion is model-agnostic.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'IngestionBedrockInvoke',
+                        actions: [
+                            'bedrock:InvokeModel',
+                            'bedrock:InvokeModelWithResponseStream',
+                        ],
+                        resources: [
+                            'arn:aws:bedrock:*::foundation-model/*',
+                            `arn:aws:bedrock:*:${cdk.Stack.of(this).account}:inference-profile/*`,
+                        ],
+                    }),
+                );
                 break;
             case 'admin-api':
                 // S3 access for presigned upload URLs (resume-imports) and
@@ -308,6 +345,34 @@ export class EksPodIdentityStack extends cdk.Stack {
                         sid: 'AdminApiS3ListBucket',
                         actions: ['s3:ListBucket'],
                         resources: ['arn:aws:s3:::*'],
+                    }),
+                );
+                break;
+            case 'image-updater':
+                // ArgoCD Image Updater polls ECR for new image tags using
+                // newest-build strategy (compares imagePushedAt timestamps).
+                // GetAuthorizationToken is account-scoped (no resource ARN).
+                // DescribeImages + ListImages cover the polling cycle.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'ImageUpdaterEcrRead',
+                        actions: [
+                            'ecr:GetAuthorizationToken',
+                        ],
+                        resources: ['*'],
+                    }),
+                );
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'ImageUpdaterEcrDescribe',
+                        actions: [
+                            'ecr:DescribeRepositories',
+                            'ecr:DescribeImages',
+                            'ecr:ListImages',
+                        ],
+                        resources: [
+                            `arn:aws:ecr:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:repository/*`,
+                        ],
                     }),
                 );
                 break;

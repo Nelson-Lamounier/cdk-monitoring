@@ -34,7 +34,9 @@ export interface PodIdentityBinding {
         | 'external-secrets'
         | 'ebs-csi'
         | 'grafana-alerting'
-        | 'admin-api';
+        | 'admin-api'
+        | 'ingestion'
+        | 'image-updater';
 }
 
 export interface EksMngConfig {
@@ -81,6 +83,8 @@ const COMMON_BINDINGS: readonly PodIdentityBinding[] = [
     { namespace: 'kube-system', serviceAccount: 'ebs-csi-controller-sa', purpose: 'ebs-csi' },
     { namespace: 'monitoring', serviceAccount: 'grafana', purpose: 'grafana-alerting' },
     { namespace: 'admin-api', serviceAccount: 'admin-api', purpose: 'admin-api' },
+    { namespace: 'ingestion', serviceAccount: 'ingestion-sa', purpose: 'ingestion' },
+    { namespace: 'argocd', serviceAccount: 'argocd-image-updater', purpose: 'image-updater' },
 ] as const;
 
 const COMMON_VERSIONS = {

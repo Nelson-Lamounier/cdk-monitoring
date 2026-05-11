@@ -100,6 +100,9 @@ export class PlatformRdsStack extends cdk.Stack {
             maxAllocatedStorage: 100,
             backupRetention: cdk.Duration.days(isProduction ? 7 : 1),
             cloudwatchLogsExports: ['postgresql', 'upgrade'],
+            enablePerformanceInsights: true,
+            performanceInsightRetention: rds.PerformanceInsightRetention.DEFAULT,
+            monitoringInterval: cdk.Duration.seconds(60),
             deletionProtection: isProduction,
             removalPolicy,
         });
