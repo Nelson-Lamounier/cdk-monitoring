@@ -38,6 +38,12 @@ on:
       ADMIN_ROLE_ARN:
         description: "Portfolio admin IAM role ARN granted EKS Access Entry cluster-admin"
         required: false
+      TUCAKEN_IO_HOSTED_ZONE_ID:
+        description: "Route53 hosted zone ID for tucaken.io (scoped — only needed for EksAlbCerts)"
+        required: false
+      TUCAKEN_COM_HOSTED_ZONE_ID:
+        description: "Route53 hosted zone ID for tucaken.com (scoped — only needed for EksAlbCerts)"
+        required: false
 
 env:
   NODE_VERSION: "22"
