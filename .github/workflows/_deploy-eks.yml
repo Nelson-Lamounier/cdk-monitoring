@@ -200,6 +200,9 @@ jobs:
       require-approval: ${{ inputs.require-approval }}
     secrets:
       AWS_OIDC_ROLE: ${{ secrets.AWS_OIDC_ROLE }}
+      TUCAKEN_IO_HOSTED_ZONE_ID: ${{ secrets.TUCAKEN_IO_HOSTED_ZONE_ID }}
+      TUCAKEN_COM_HOSTED_ZONE_ID: ${{ secrets.TUCAKEN_COM_HOSTED_ZONE_ID }}
+
 
   # EksScheduler is dev-only: gated on environment input + non-empty stack name
   # (synth outputs empty string for staging/production where the factory omits it).
