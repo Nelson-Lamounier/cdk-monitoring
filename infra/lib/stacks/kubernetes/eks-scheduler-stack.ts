@@ -51,7 +51,7 @@ export class EksSchedulerStack extends cdk.Stack {
 
         lambdaRole.addToPolicy(
             new iam.PolicyStatement({
-                actions: ['eks:ListNodegroups'],
+                actions: ['eks:ListNodegroups', 'eks:DescribeCluster'],
                 resources: [cluster.clusterArn],
             }),
         );
@@ -107,13 +107,27 @@ export class EksSchedulerStack extends cdk.Stack {
                 id: 'AwsSolutions-IAM5',
                 reason: 'ec2:DescribeInstances has no resource-level restriction in IAM. ' +
                         'ec2:TerminateInstances is tag-conditioned to eks-cluster-pool=workloads-default. ' +
-                        'eks nodegroup actions scoped to nodegroup/<cluster>/*/* (uuid not known at synth time).',
+                        'eks nodegroup actions scoped to nodegroup/<cluster>/*/* (uuid not known at synth time). ' +
+                        'eks:ListNodegroups and eks:DescribeCluster are scoped to the cluster ARN.',
                 appliesTo: [
                     'Resource::*',
-                    { regex: '/^Resource::.*:nodegroup\\/.*\\/\\*\\/\\*/' },
+                    { regex: String.raw`/^Resource::.*:nodegroup\/.*\/\*\/\*/` },
                 ],
             },
         ], true);
+
+        // Grant Lambda edit access to external-secrets namespace so ScaleUpFn
+        // can restore ESO deployment replicas via the Kubernetes API.
+        new eks.AccessEntry(this, 'ScaleUpFnEsoAccess', {
+            cluster,
+            principal: lambdaRole.roleArn,
+            accessPolicies: [
+                eks.AccessPolicy.fromAccessPolicyName('AmazonEKSEditPolicy', {
+                    accessScopeType: eks.AccessScopeType.NAMESPACE,
+                    namespaces: ['external-secrets'],
+                }),
+            ],
+        });
 
         const commonEnv: Record<string, string> = {
             CLUSTER_NAME: cluster.clusterName,
@@ -130,24 +144,71 @@ export class EksSchedulerStack extends cdk.Stack {
             role: lambdaRole,
             environment: commonEnv,
             code: lambda.Code.fromInline(`
-import boto3, os, logging
+import boto3, os, logging, ssl, json, base64, tempfile, urllib.request
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
+ESO_DEPLOYMENTS = [
+    'external-secrets',
+    'external-secrets-webhook',
+    'external-secrets-cert-controller',
+]
+
+def _bearer_token(cluster_name, region):
+    session = boto3.session.Session()
+    creds = session.get_credentials().get_frozen_credentials()
+    url = f'https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15'
+    req = AWSRequest(method='GET', url=url, headers={'x-k8s-aws-id': cluster_name})
+    SigV4Auth(creds, 'sts', region).add_auth(req)
+    return 'k8s-aws-v1.' + base64.urlsafe_b64encode(
+        req.url.encode('utf-8')).decode('utf-8').rstrip('=')
+
+def _patch_replicas(endpoint, ca_data, token, namespace, deployment, replicas):
+    ca_bytes = base64.b64decode(ca_data)
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.crt') as f:
+        f.write(ca_bytes)
+        ca_file = f.name
+    try:
+        url = f'{endpoint}/apis/apps/v1/namespaces/{namespace}/deployments/{deployment}/scale'
+        body = json.dumps({'spec': {'replicas': replicas}}).encode()
+        req = urllib.request.Request(url, data=body, method='PATCH')
+        req.add_header('Authorization', f'Bearer {token}')
+        req.add_header('Content-Type', 'application/merge-patch+json')
+        ctx = ssl.create_default_context(cafile=ca_file)
+        with urllib.request.urlopen(req, context=ctx) as resp:
+            log.info('Patched %s/%s → %d replicas (HTTP %s)', namespace, deployment, replicas, resp.status)
+    finally:
+        import os as _os; _os.unlink(ca_file)
+
 def handler(event, context):
     region = os.environ['AWS_REGION']
-    eks = boto3.client('eks', region_name=region)
-    eks.update_nodegroup_config(
-        clusterName=os.environ['CLUSTER_NAME'],
+    cluster_name = os.environ['CLUSTER_NAME']
+
+    eks_client = boto3.client('eks', region_name=region)
+    eks_client.update_nodegroup_config(
+        clusterName=cluster_name,
         nodegroupName=os.environ['NODEGROUP_NAME'],
         scalingConfig={'minSize': 2, 'desiredSize': 2},
     )
     log.info('Scaled MNG to 2')
+
+    cluster_info = eks_client.describe_cluster(name=cluster_name)['cluster']
+    endpoint = cluster_info['endpoint']
+    ca_data = cluster_info['certificateAuthority']['data']
+    token = _bearer_token(cluster_name, region)
+
+    for deploy in ESO_DEPLOYMENTS:
+        _patch_replicas(endpoint, ca_data, token, 'external-secrets', deploy, 1)
+
     waf_fn = os.environ.get('WAF_IP_SYNC_FUNCTION')
     if waf_fn:
         lam = boto3.client('lambda', region_name=region)
         lam.invoke(FunctionName=waf_fn, InvocationType='Event')
         log.info('Triggered WAF IP sync: %s', waf_fn)
+
     return {'status': 'scaled-up'}
 `),
         });
