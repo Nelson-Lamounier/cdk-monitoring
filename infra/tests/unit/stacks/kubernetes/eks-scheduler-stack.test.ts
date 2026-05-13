@@ -88,4 +88,27 @@ describe('EksSchedulerStack', () => {
             },
         });
     });
+
+    it('should grant EKS edit access scoped to karpenter and argocd namespaces only', () => {
+        // Pins the namespace boundary: karpenter+argocd are explicitly scaled.
+        // ESO is NOT patched by Lambda — it recovers via ArgoCD reconciliation.
+        template.hasResourceProperties('AWS::EKS::AccessEntry', {
+            AccessPolicies: Match.arrayWith([
+                Match.objectLike({
+                    AccessScope: {
+                        Type: 'namespace',
+                        Namespaces: Match.arrayWith(['karpenter', 'argocd']),
+                    },
+                }),
+            ]),
+        });
+        // external-secrets must NOT be in scope
+        const entries = template.findResources('AWS::EKS::AccessEntry');
+        const namespaces: string[] = Object.values(entries).flatMap((r: any) =>
+            (r.Properties?.AccessPolicies ?? []).flatMap(
+                (p: any) => p.AccessScope?.Namespaces ?? [],
+            ),
+        );
+        expect(namespaces).not.toContain('external-secrets');
+    });
 });

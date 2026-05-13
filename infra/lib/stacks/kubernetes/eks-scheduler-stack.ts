@@ -4,9 +4,16 @@
  *
  * Provisions two Lambda functions (scale-up, scale-down) invoked by
  * EventBridge Scheduler on Europe/Dublin cron schedules:
- *   - Scale-up:   04:00 daily  → MNG minSize=3, desiredSize=3
- *   - Scale-down: 23:00 daily  → MNG minSize=0, desiredSize=0 + terminate
- *                                 any Karpenter workload EC2 instances
+ *   - Scale-up:   04:00 daily  → MNG minSize=2, desiredSize=2; Karpenter→2;
+ *                                 ArgoCD×7→1; WAF IP sync (async)
+ *   - Scale-down: 23:00 daily  → Karpenter→0; ArgoCD×7→0; terminate Karpenter
+ *                                 EC2s (tag: eks-cluster-pool=workloads-default);
+ *                                 MNG minSize=0, desiredSize=0
+ *
+ * Scale-down pre-zeros Karpenter and ArgoCD via the K8s API before draining
+ * the MNG so no orphaned nodes or reconciliation loops survive shutdown.
+ * Scale-up restores only Karpenter and ArgoCD explicitly; ESO and all other
+ * workloads recover through ArgoCD reconciliation once ArgoCD is back.
  *
  * Only instantiated for Environment.DEVELOPMENT (factory gate).
  *
@@ -116,15 +123,19 @@ export class EksSchedulerStack extends cdk.Stack {
             },
         ], true);
 
-        // Grant Lambda edit access to external-secrets namespace so ScaleUpFn
-        // can restore ESO deployment replicas via the Kubernetes API.
-        new eks.AccessEntry(this, 'ScaleUpFnEsoAccess', {
+        // ScaleUpFn patches karpenter/karpenter and argocd/* via the K8s API.
+        // ScaleDownFn does the same in reverse before draining the MNG.
+        // ESO is NOT patched: its Deployment retains replicas=1 from Helm and
+        // ArgoCD reconciles it automatically once ArgoCD itself is restored.
+        // Construct ID matches the deployed CloudFormation logical ID
+        // (SchedulerLambdaAccessEntry5BC0BF2A) — do not rename.
+        new eks.AccessEntry(this, 'SchedulerLambdaAccessEntry', {
             cluster,
             principal: lambdaRole.roleArn,
             accessPolicies: [
                 eks.AccessPolicy.fromAccessPolicyName('AmazonEKSEditPolicy', {
                     accessScopeType: eks.AccessScopeType.NAMESPACE,
-                    namespaces: ['external-secrets'],
+                    namespaces: ['karpenter', 'argocd'],
                 }),
             ],
         });
@@ -151,10 +162,14 @@ from botocore.awsrequest import AWSRequest
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
-ESO_DEPLOYMENTS = [
-    'external-secrets',
-    'external-secrets-webhook',
-    'external-secrets-cert-controller',
+ARGOCD_DEPLOYMENTS = [
+    'argocd-applicationset-controller',
+    'argocd-dex-server',
+    'argocd-image-updater',
+    'argocd-notifications-controller',
+    'argocd-redis',
+    'argocd-repo-server',
+    'argocd-server',
 ]
 
 def _bearer_token(cluster_name, region):
@@ -179,7 +194,7 @@ def _patch_replicas(endpoint, ca_data, token, namespace, deployment, replicas):
         req.add_header('Content-Type', 'application/merge-patch+json')
         ctx = ssl.create_default_context(cafile=ca_file)
         with urllib.request.urlopen(req, context=ctx) as resp:
-            log.info('Patched %s/%s → %d replicas (HTTP %s)', namespace, deployment, replicas, resp.status)
+            log.info('Patched %s/%s to %d replicas (HTTP %s)', namespace, deployment, replicas, resp.status)
     finally:
         import os as _os; _os.unlink(ca_file)
 
@@ -200,8 +215,10 @@ def handler(event, context):
     ca_data = cluster_info['certificateAuthority']['data']
     token = _bearer_token(cluster_name, region)
 
-    for deploy in ESO_DEPLOYMENTS:
-        _patch_replicas(endpoint, ca_data, token, 'external-secrets', deploy, 1)
+    _patch_replicas(endpoint, ca_data, token, 'karpenter', 'karpenter', 2)
+
+    for deploy in ARGOCD_DEPLOYMENTS:
+        _patch_replicas(endpoint, ca_data, token, 'argocd', deploy, 1)
 
     waf_fn = os.environ.get('WAF_IP_SYNC_FUNCTION')
     if waf_fn:
@@ -220,20 +237,67 @@ def handler(event, context):
             role: lambdaRole,
             environment: commonEnv,
             code: lambda.Code.fromInline(`
-import boto3, os, logging
+import boto3, os, logging, ssl, json, base64, tempfile, urllib.request
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
+ARGOCD_DEPLOYMENTS = [
+    'argocd-applicationset-controller',
+    'argocd-dex-server',
+    'argocd-image-updater',
+    'argocd-notifications-controller',
+    'argocd-redis',
+    'argocd-repo-server',
+    'argocd-server',
+]
+
+def _bearer_token(cluster_name, region):
+    session = boto3.session.Session()
+    creds = session.get_credentials().get_frozen_credentials()
+    url = f'https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15'
+    req = AWSRequest(method='GET', url=url, headers={'x-k8s-aws-id': cluster_name})
+    SigV4Auth(creds, 'sts', region).add_auth(req)
+    return 'k8s-aws-v1.' + base64.urlsafe_b64encode(
+        req.url.encode('utf-8')).decode('utf-8').rstrip('=')
+
+def _patch_replicas(endpoint, ca_data, token, namespace, deployment, replicas):
+    ca_bytes = base64.b64decode(ca_data)
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.crt') as f:
+        f.write(ca_bytes)
+        ca_file = f.name
+    try:
+        url = f'{endpoint}/apis/apps/v1/namespaces/{namespace}/deployments/{deployment}/scale'
+        body = json.dumps({'spec': {'replicas': replicas}}).encode()
+        req = urllib.request.Request(url, data=body, method='PATCH')
+        req.add_header('Authorization', f'Bearer {token}')
+        req.add_header('Content-Type', 'application/merge-patch+json')
+        ctx = ssl.create_default_context(cafile=ca_file)
+        with urllib.request.urlopen(req, context=ctx) as resp:
+            log.info('Patched %s/%s to %d replicas (HTTP %s)', namespace, deployment, replicas, resp.status)
+    finally:
+        import os as _os; _os.unlink(ca_file)
+
 def handler(event, context):
     region = os.environ['AWS_REGION']
-    eks = boto3.client('eks', region_name=region)
+    cluster_name = os.environ['CLUSTER_NAME']
+
+    eks_client = boto3.client('eks', region_name=region)
+    cluster_info = eks_client.describe_cluster(name=cluster_name)['cluster']
+    endpoint = cluster_info['endpoint']
+    ca_data = cluster_info['certificateAuthority']['data']
+    token = _bearer_token(cluster_name, region)
+
+    _patch_replicas(endpoint, ca_data, token, 'karpenter', 'karpenter', 0)
+
+    for deploy in ARGOCD_DEPLOYMENTS:
+        _patch_replicas(endpoint, ca_data, token, 'argocd', deploy, 0)
+
+    log.info('Pre-shutdown K8s scale-down complete')
+
     ec2 = boto3.client('ec2', region_name=region)
-    eks.update_nodegroup_config(
-        clusterName=os.environ['CLUSTER_NAME'],
-        nodegroupName=os.environ['NODEGROUP_NAME'],
-        scalingConfig={'minSize': 0, 'desiredSize': 0},
-    )
-    log.info('Scaled MNG to 0')
     resp = ec2.describe_instances(
         Filters=[
             {'Name': 'tag:eks-cluster-pool', 'Values': ['workloads-default']},
@@ -243,7 +307,16 @@ def handler(event, context):
     ids = [i['InstanceId'] for r in resp['Reservations'] for i in r['Instances']]
     if ids:
         ec2.terminate_instances(InstanceIds=ids)
-        log.info('Terminated: %s', ids)
+        log.info('Terminated Karpenter EC2s: %s', ids)
+    else:
+        log.info('No Karpenter EC2s to terminate')
+
+    eks_client.update_nodegroup_config(
+        clusterName=cluster_name,
+        nodegroupName=os.environ['NODEGROUP_NAME'],
+        scalingConfig={'minSize': 0, 'desiredSize': 0},
+    )
+    log.info('Scaled MNG to 0')
     return {'terminated': ids}
 `),
         });
