@@ -320,6 +320,8 @@ export class EksPodIdentityStack extends cdk.Stack {
                     new iam.PolicyStatement({
                         sid: 'ImageUpdaterEcrDescribe',
                         actions: [
+                            'ecr:BatchGetImage',
+                            'ecr:GetDownloadUrlForLayer',
                             'ecr:DescribeImages',
                             'ecr:DescribeRepositories',
                             'ecr:ListImages',
