@@ -59,12 +59,33 @@ export interface EksKarpenterNodePoolConfig {
     readonly cpuMax: number;
 }
 
+/**
+ * Elastic system-tier pool. Hosts cluster controllers (ESO, cert-manager,
+ * ALB controller, etc.) that need isolation from workload churn but should
+ * not pin a static MNG node when idle. Karpenter starts at the smallest
+ * size in `instanceSizes` and consolidates up under bin-packing pressure.
+ *
+ * Selected via `karpenter.k8s.aws/instance-size` (not cpu range) because
+ * t3 sizes share vCPU count (small/medium/large = 2 vCPU each); only memory
+ * differs, so size is the discriminator that matters.
+ */
+export interface EksKarpenterSystemPoolConfig {
+    readonly instanceFamily: readonly string[];
+    readonly instanceSizes: readonly string[];
+    readonly capacityType: readonly ('on-demand' | 'spot')[];
+    readonly architectures: readonly string[];
+    /** Pool-wide vCPU cap — prevents runaway scale. */
+    readonly cpuLimit: number;
+}
+
 export interface EksConfig {
     readonly clusterName: string;
     readonly version: string;
     readonly mng: EksMngConfig;
     readonly podIdentityBindings: readonly PodIdentityBinding[];
     readonly karpenter: EksKarpenterNodePoolConfig;
+    /** Optional elastic system-tier NodePool. Undefined = MNG-only system tier. */
+    readonly systemPool?: EksKarpenterSystemPoolConfig;
     readonly versions: {
         readonly karpenter: string;
         readonly albController: string;
@@ -113,6 +134,14 @@ const COMMON_KARPENTER: EksKarpenterNodePoolConfig = {
     cpuMax: 8,
 } as const;
 
+const COMMON_KARPENTER_SYSTEM: EksKarpenterSystemPoolConfig = {
+    instanceFamily: ['t3'],
+    instanceSizes: ['small', 'medium', 'large'],
+    capacityType: ['spot', 'on-demand'],
+    architectures: ['amd64'],
+    cpuLimit: 8,
+} as const;
+
 // SSM paths holding admin-principal ARNs per environment. Populate manually:
 //   aws ssm put-parameter --name /cdk-monitoring/development/eks/admin-principal-arns \
 //     --type StringList --value "arn:aws:iam::...,arn:aws:iam::..." --profile <profile>
@@ -127,9 +156,13 @@ export const EKS_CONFIGS: Record<DeployableEnvironment, Omit<EksConfig, 'adminPr
     [Environment.DEVELOPMENT]: {
         clusterName: 'k8s-eks-development',
         version: EKS_VERSION,
-        mng: { instanceTypes: ['t3.medium'], desiredSize: 2, minSize: 2, maxSize: 3, diskSizeGib: 30 },
+        // MNG stays minimal (Karpenter controller + CoreDNS landing zone).
+        // Bumped to t3.large (29 pod cap vs 17 on t3.medium) to absorb the
+        // boot-time spike before the system NodePool spins up the rest.
+        mng: { instanceTypes: ['t3.large'], desiredSize: 2, minSize: 2, maxSize: 3, diskSizeGib: 30 },
         podIdentityBindings: COMMON_BINDINGS,
         karpenter: COMMON_KARPENTER,
+        systemPool: COMMON_KARPENTER_SYSTEM,
         versions: COMMON_VERSIONS,
         grafanaAlertingTopicArn: 'arn:aws:sns:eu-west-1:771826808455:k8s-bootstrap-alarm',
     },
