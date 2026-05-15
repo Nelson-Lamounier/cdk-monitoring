@@ -330,9 +330,33 @@ dev-start env='development':
          --selector eks.amazonaws.com/nodegroup="$NG" \
          --for=condition=Ready \
          --timeout=300s
+    # Restore controllers that dev-shutdown scaled to 0, in dependency order:
+    # Karpenter first (so it can provision workload nodes), then ArgoCD
+    # (reconciles all workloads back), then ESO (secret injection).
+    echo "Restoring Karpenter controller to 2 replicas..."
+    kubectl scale deployment -n karpenter karpenter \
+         --replicas=2 2>/dev/null || echo "  Karpenter deployment not found — skipping"
+    echo "Restoring ArgoCD to 1 replica..."
+    kubectl scale deployment -n argocd \
+         argocd-applicationset-controller \
+         argocd-dex-server \
+         argocd-image-updater \
+         argocd-notifications-controller \
+         argocd-redis \
+         argocd-repo-server \
+         argocd-server \
+         --replicas=1 2>/dev/null || echo "  ArgoCD deployments not found — skipping"
+    echo "Restoring ESO deployments to 1 replica..."
+    kubectl scale deployment -n external-secrets \
+         external-secrets \
+         external-secrets-webhook \
+         external-secrets-cert-controller \
+         --replicas=1 2>/dev/null || echo "  ESO deployments not found — skipping"
     echo "Cluster ready"
 
-# Scale dev EKS cluster down — drains Karpenter nodes first to prevent re-provisioning
+# Scale dev EKS cluster down — stops Secrets Manager polling, drains every
+# Karpenter NodePool while the controller is still alive (so finalizers
+# process), THEN kills Karpenter, MNG, and sweeps all EC2s by pool tag key.
 # Usage: just dev-shutdown [environment]
 [group('eks')]
 dev-shutdown env='development':
@@ -343,46 +367,71 @@ dev-shutdown env='development':
     NG=$(aws eks list-nodegroups --cluster-name "$CLUSTER" \
          --region eu-west-1 --profile "$PROFILE" \
          --query 'nodegroups[0]' --output text)
-    # Ensure kubeconfig is current so kubectl commands can reach the API server.
     echo "Updating kubeconfig..."
     aws eks update-kubeconfig --name "$CLUSTER" \
          --region eu-west-1 --profile "$PROFILE"
-    # Step 1: delete NodeClaims so Karpenter drains its own nodes and does not
-    # re-provision replacements when pods go Pending during shutdown.
-    echo "Checking for Karpenter NodeClaims..."
-    NODECLAIMS=$(kubectl get nodeclaims --no-headers 2>&1)
-    echo "NodeClaims output: $NODECLAIMS"
-    if echo "$NODECLAIMS" | grep -qv "No resources found\|error\|Error"; then
-        echo "Deleting Karpenter NodeClaims..."
-        kubectl delete nodeclaims --all --wait=false
-        echo "Waiting up to 90s for Karpenter nodes to drain..."
-        kubectl wait node \
-             --selector karpenter.sh/nodepool \
-             --for=delete \
-             --timeout=90s 2>/dev/null || true
-    else
-        echo "No active NodeClaims — skipping drain step"
-    fi
-    # Step 2: scale system MNG to zero.
+    # Step 1: scale ESO to 0 — stops Secrets Manager GetSecretValue polling.
+    echo "Scaling ESO to 0 replicas..."
+    kubectl scale deployment -n external-secrets \
+         external-secrets \
+         external-secrets-webhook \
+         external-secrets-cert-controller \
+         --replicas=0 2>/dev/null || echo "  ESO deployments not found — skipping"
+    # Step 2: scale ArgoCD to 0 so it stops re-creating workload pods that
+    # would make Karpenter re-provision while we drain. Mirrors ScaleDownFn.
+    echo "Scaling ArgoCD to 0 replicas..."
+    kubectl scale deployment -n argocd \
+         argocd-applicationset-controller \
+         argocd-dex-server \
+         argocd-image-updater \
+         argocd-notifications-controller \
+         argocd-redis \
+         argocd-repo-server \
+         argocd-server \
+         --replicas=0 2>/dev/null || echo "  ArgoCD deployments not found — skipping"
+    # Step 3: delete ALL NodeClaims while Karpenter is STILL RUNNING. The
+    # karpenter.sh/termination finalizer needs the controller alive to
+    # process — deleting after Karpenter is gone leaves orphans that hang.
+    # Poll until the count reaches 0 (real wait, not blind fixed retries).
+    echo "Draining Karpenter NodeClaims (controller still up)..."
+    kubectl delete nodeclaims --all --wait=false 2>/dev/null || true
+    for i in $(seq 1 24); do
+        COUNT=$(kubectl get nodeclaims --no-headers 2>/dev/null | grep -c . || true)
+        if [ "${COUNT:-0}" -eq 0 ]; then
+            echo "  All NodeClaims drained"
+            break
+        fi
+        echo "  ${COUNT} NodeClaim(s) remain (poll $i/24)..."
+        # Re-issue delete in case new claims appeared before ArgoCD settled.
+        kubectl delete nodeclaims --all --wait=false 2>/dev/null || true
+        sleep 5
+    done
+    # Step 4: NOW scale Karpenter to 0 — NodeClaims are gone, nothing to
+    # re-provision, and the controller can no longer create new ones.
+    echo "Scaling Karpenter controller to 0..."
+    kubectl scale deployment -n karpenter karpenter \
+         --replicas=0 2>/dev/null || echo "  Karpenter deployment not found — skipping"
+    # Step 5: scale system MNG to zero (async — instances drain over minutes).
     echo "Scaling system node group to zero..."
     aws eks update-nodegroup-config --cluster-name "$CLUSTER" \
          --nodegroup-name "$NG" \
          --scaling-config minSize=0,maxSize=4,desiredSize=0 \
          --region eu-west-1 --profile "$PROFILE"
-    # Step 3: force-terminate any workload instances still running (safety net
-    # for nodes that were already being replaced when NodeClaims were deleted).
-    INSTANCES=$(aws ec2 describe-instances \
-         --filters "Name=tag:eks-cluster-pool,Values=workloads-default" \
+    # Step 6: force-terminate ALL Karpenter instances across EVERY NodePool.
+    # Filter on the tag KEY eks-cluster-pool (set by every EC2NodeClass:
+    # workloads-default, system, and any future pool) — NOT a single value.
+    # The old per-value filter missed `system` pool nodes entirely.
+    KARP_INSTANCES=$(aws ec2 describe-instances \
+         --filters "Name=tag-key,Values=eks-cluster-pool" \
                    "Name=instance-state-name,Values=running,pending" \
          --query 'Reservations[].Instances[].InstanceId' \
          --output text --region eu-west-1 --profile "$PROFILE")
-    if [ -n "$INSTANCES" ]; then
-        aws ec2 terminate-instances --instance-ids $INSTANCES \
+    if [ -n "$KARP_INSTANCES" ]; then
+        aws ec2 terminate-instances --instance-ids $KARP_INSTANCES \
              --region eu-west-1 --profile "$PROFILE" > /dev/null
-        echo "Force-terminated workload nodes: $INSTANCES"
+        echo "Force-terminated Karpenter nodes (all pools): $KARP_INSTANCES"
     fi
-    # Step 4: force-terminate system MNG instances that are still running while
-    # the scale-to-zero update propagates (MNG scale is async, this is instant).
+    # Step 7: force-terminate system MNG instances (scale is async; this is instant).
     MNG_INSTANCES=$(aws ec2 describe-instances \
          --filters "Name=tag:eks:nodegroup-name,Values=$NG" \
                    "Name=tag:eks:cluster-name,Values=$CLUSTER" \
@@ -393,6 +442,18 @@ dev-shutdown env='development':
         aws ec2 terminate-instances --instance-ids $MNG_INSTANCES \
              --region eu-west-1 --profile "$PROFILE" > /dev/null
         echo "Force-terminated system MNG nodes: $MNG_INSTANCES"
+    fi
+    # Step 8: final sweep — catch any Karpenter node (any pool) launched
+    # during the drain window. Same tag-key filter as step 6.
+    STRAGGLERS=$(aws ec2 describe-instances \
+         --filters "Name=tag-key,Values=eks-cluster-pool" \
+                   "Name=instance-state-name,Values=running,pending" \
+         --query 'Reservations[].Instances[].InstanceId' \
+         --output text --region eu-west-1 --profile "$PROFILE")
+    if [ -n "$STRAGGLERS" ]; then
+        aws ec2 terminate-instances --instance-ids $STRAGGLERS \
+             --region eu-west-1 --profile "$PROFILE" > /dev/null
+        echo "Final sweep — terminated straggler nodes: $STRAGGLERS"
     fi
     echo "Cluster shutting down"
 
