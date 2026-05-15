@@ -349,6 +349,8 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
         eksClusterStack.addDependency(baseStack);
         stacks.push(eksClusterStack); stackMap.eksCluster = eksClusterStack;
 
+        const systemMngNodegroupNameSsmPath = `${ssmPrefix}/eks/system-mng/nodegroup-name`;
+
         const eksSystemNg = new EksSystemNodeGroupStack(
             scope,
             stackId(this.namespace, 'EksSystemNg', environment),
@@ -360,6 +362,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 minSize: eksConfig.mng.minSize,
                 maxSize: eksConfig.mng.maxSize,
                 diskSizeGib: eksConfig.mng.diskSizeGib,
+                nodegroupNameSsmPath: systemMngNodegroupNameSsmPath,
             },
         );
         eksSystemNg.addDependency(eksClusterStack);
@@ -461,7 +464,7 @@ export class KubernetesProjectFactory implements IProjectFactory<KubernetesFacto
                 {
                     env,
                     cluster: eksClusterStack.cluster,
-                    nodeGroupName: eksSystemNg.nodeGroup.nodegroupName,
+                    nodegroupNameSsmPath: systemMngNodegroupNameSsmPath,
                     // Constructed from EksPublicWafStack naming convention
                     // (namePrefix defaults to 'eks-public') to avoid creating
                     // a CloudFormation cross-stack Export/Import, which would

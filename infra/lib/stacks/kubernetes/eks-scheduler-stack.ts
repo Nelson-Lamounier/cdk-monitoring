@@ -25,14 +25,20 @@ import * as eks from 'aws-cdk-lib/aws-eks';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
 export interface EksSchedulerStackProps extends cdk.StackProps {
     readonly cluster: eks.ICluster;
-    /** CDK token for the system MNG node group name (from EksSystemNodeGroupStack.nodeGroup.nodegroupName). */
-    readonly nodeGroupName: string;
+    /**
+     * SSM parameter path holding the system MNG nodegroup name. Resolved at
+     * deploy time via SSM dynamic reference — avoids CFN cross-stack import
+     * (would lock the MNG against instance-type replacement). EksSystemNg
+     * publishes the value; EksScheduler consumes it.
+     */
+    readonly nodegroupNameSsmPath: string;
     /**
      * Name of the WAF ip-sync Lambda (from EksPublicWafStack.ipSyncFunctionName).
      * When set, ScaleUpFn invokes it after scaling the MNG so the WAF IP
@@ -45,7 +51,11 @@ export class EksSchedulerStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props: EksSchedulerStackProps) {
         super(scope, id, props);
 
-        const { cluster, nodeGroupName } = props;
+        const { cluster } = props;
+        const nodeGroupName = ssm.StringParameter.valueForStringParameter(
+            this,
+            props.nodegroupNameSsmPath,
+        );
 
         const lambdaRole = new iam.Role(this, 'SchedulerLambdaRole', {
             assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
