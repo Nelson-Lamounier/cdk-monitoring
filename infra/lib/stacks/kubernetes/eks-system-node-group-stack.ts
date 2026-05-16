@@ -14,7 +14,6 @@
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as eks from 'aws-cdk-lib/aws-eks';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -29,13 +28,6 @@ export interface EksSystemNodeGroupStackProps extends cdk.StackProps {
     readonly minSize: number;
     readonly maxSize: number;
     readonly diskSizeGib: number;
-    /**
-     * SSM parameter path where the MNG nodegroup name is published. Consumers
-     * (EksSchedulerStack) read via SSM dynamic reference instead of CFN
-     * cross-stack import — avoids the "export in use" lock that blocks MNG
-     * instance-type replacement (repo convention; see CLAUDE.md).
-     */
-    readonly nodegroupNameSsmPath: string;
 }
 
 export class EksSystemNodeGroupStack extends cdk.Stack {
@@ -89,12 +81,6 @@ export class EksSystemNodeGroupStack extends cdk.Stack {
             labels: { 'node-role': 'system' },
             subnets: { subnetType: ec2.SubnetType.PUBLIC },
             tags: { 'eks-cluster-pool': 'system' },
-        });
-
-        new ssm.StringParameter(this, 'NodegroupNameParam', {
-            parameterName: props.nodegroupNameSsmPath,
-            stringValue: this.nodeGroup.nodegroupName,
-            description: 'EKS system MNG nodegroup name. Consumed by EksSchedulerStack.',
         });
     }
 }

@@ -37,7 +37,6 @@ describe('EksSystemNodeGroupStack', () => {
             minSize: 3,
             maxSize: 4,
             diskSizeGib: 30,
-            nodegroupNameSsmPath: '/k8s/development/eks/system-mng/nodegroup-name',
         });
         template = Template.fromStack(stack);
     });

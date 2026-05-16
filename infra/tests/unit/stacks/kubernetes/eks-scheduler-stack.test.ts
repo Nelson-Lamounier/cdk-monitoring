@@ -20,7 +20,6 @@ function buildStack(): Template {
     const schedulerStack = new EksSchedulerStack(app, 'SchedulerStack', {
         env: TEST_ENV_EU,
         cluster,
-        nodegroupNameSsmPath: '/k8s/development/eks/system-mng/nodegroup-name',
     });
 
     return Template.fromStack(schedulerStack);

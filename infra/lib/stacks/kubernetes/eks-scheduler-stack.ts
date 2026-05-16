@@ -25,20 +25,12 @@ import * as eks from 'aws-cdk-lib/aws-eks';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
 export interface EksSchedulerStackProps extends cdk.StackProps {
     readonly cluster: eks.ICluster;
-    /**
-     * SSM parameter path holding the system MNG nodegroup name. Resolved at
-     * deploy time via SSM dynamic reference — avoids CFN cross-stack import
-     * (would lock the MNG against instance-type replacement). EksSystemNg
-     * publishes the value; EksScheduler consumes it.
-     */
-    readonly nodegroupNameSsmPath: string;
     /**
      * Name of the WAF ip-sync Lambda (from EksPublicWafStack.ipSyncFunctionName).
      * When set, ScaleUpFn invokes it after scaling the MNG so the WAF IP
@@ -52,10 +44,6 @@ export class EksSchedulerStack extends cdk.Stack {
         super(scope, id, props);
 
         const { cluster } = props;
-        const nodeGroupName = ssm.StringParameter.valueForStringParameter(
-            this,
-            props.nodegroupNameSsmPath,
-        );
 
         const lambdaRole = new iam.Role(this, 'SchedulerLambdaRole', {
             assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -150,9 +138,13 @@ export class EksSchedulerStack extends cdk.Stack {
             ],
         });
 
+        // NODEGROUP_NAME is intentionally NOT passed: the MNG nodegroup name
+        // changes on every instance-type replacement, and any env/SSM value
+        // is baked at deploy time → goes stale the moment the MNG is
+        // replaced. Both Lambdas discover it at runtime via eks:ListNodegroups
+        // (IAM already scoped to the cluster ARN below).
         const commonEnv: Record<string, string> = {
             CLUSTER_NAME: cluster.clusterName,
-            NODEGROUP_NAME: nodeGroupName,
         };
         if (props.wafIpSyncFunctionName) {
             commonEnv['WAF_IP_SYNC_FUNCTION'] = props.wafIpSyncFunctionName;
@@ -208,6 +200,17 @@ def _patch_replicas(endpoint, ca_data, token, namespace, deployment, replicas):
     finally:
         import os as _os; _os.unlink(ca_file)
 
+def _system_nodegroup(eks_client, cluster_name):
+    # Resolve the system MNG name at runtime. It changes on every
+    # instance-type replacement, so a deploy-time-baked value goes stale.
+    names = eks_client.list_nodegroups(clusterName=cluster_name)['nodegroups']
+    if not names:
+        raise RuntimeError('no nodegroups for cluster ' + cluster_name)
+    for n in names:
+        if n.startswith('SystemMng'):
+            return n
+    return names[0]
+
 def handler(event, context):
     region = os.environ['AWS_REGION']
     cluster_name = os.environ['CLUSTER_NAME']
@@ -215,7 +218,7 @@ def handler(event, context):
     eks_client = boto3.client('eks', region_name=region)
     eks_client.update_nodegroup_config(
         clusterName=cluster_name,
-        nodegroupName=os.environ['NODEGROUP_NAME'],
+        nodegroupName=_system_nodegroup(eks_client, cluster_name),
         scalingConfig={'minSize': 2, 'desiredSize': 2},
     )
     log.info('Scaled MNG to 2')
@@ -290,6 +293,17 @@ def _patch_replicas(endpoint, ca_data, token, namespace, deployment, replicas):
     finally:
         import os as _os; _os.unlink(ca_file)
 
+def _system_nodegroup(eks_client, cluster_name):
+    # Resolve the system MNG name at runtime. It changes on every
+    # instance-type replacement, so a deploy-time-baked value goes stale.
+    names = eks_client.list_nodegroups(clusterName=cluster_name)['nodegroups']
+    if not names:
+        raise RuntimeError('no nodegroups for cluster ' + cluster_name)
+    for n in names:
+        if n.startswith('SystemMng'):
+            return n
+    return names[0]
+
 def handler(event, context):
     region = os.environ['AWS_REGION']
     cluster_name = os.environ['CLUSTER_NAME']
@@ -323,7 +337,7 @@ def handler(event, context):
 
     eks_client.update_nodegroup_config(
         clusterName=cluster_name,
-        nodegroupName=os.environ['NODEGROUP_NAME'],
+        nodegroupName=_system_nodegroup(eks_client, cluster_name),
         scalingConfig={'minSize': 0, 'desiredSize': 0},
     )
     log.info('Scaled MNG to 0')
