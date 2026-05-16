@@ -14,6 +14,16 @@ function hasAction(stmt: Record<string, unknown>, action: string): boolean {
     return a === action || (Array.isArray(a) && (a as string[]).includes(action));
 }
 
+/** All namespaces referenced by any EKS AccessEntry's access policies. */
+function accessEntryNamespaces(template: Template): string[] {
+    const entries = template.findResources('AWS::EKS::AccessEntry');
+    return Object.values(entries).flatMap((r: any) =>
+        (r.Properties?.AccessPolicies ?? []).flatMap(
+            (p: any) => p.AccessScope?.Namespaces ?? [],
+        ),
+    );
+}
+
 function buildStack(): Template {
     const { app, cluster } = createMockEksCluster();
 
@@ -102,12 +112,6 @@ describe('EksSchedulerStack', () => {
             ]),
         });
         // external-secrets must NOT be in scope
-        const entries = template.findResources('AWS::EKS::AccessEntry');
-        const namespaces: string[] = Object.values(entries).flatMap((r: any) =>
-            (r.Properties?.AccessPolicies ?? []).flatMap(
-                (p: any) => p.AccessScope?.Namespaces ?? [],
-            ),
-        );
-        expect(namespaces).not.toContain('external-secrets');
+        expect(accessEntryNamespaces(template)).not.toContain('external-secrets');
     });
 });
