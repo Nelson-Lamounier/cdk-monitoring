@@ -7,8 +7,9 @@
  *   - Scale-up:   04:00 daily  → MNG minSize=1, desiredSize=1 (landing
  *                                 zone only); Karpenter→1; ArgoCD×7→1;
  *                                 WAF IP sync (async)
- *   - Scale-down: 23:00 daily  → Karpenter→0; ArgoCD×7→0; terminate Karpenter
- *                                 EC2s (tag: eks-cluster-pool=workloads-default);
+ *   - Scale-down: 23:00 daily  → ESO×3→0; Karpenter→0; ArgoCD×7→0;
+ *                                 terminate ALL Karpenter EC2s (tag-key
+ *                                 eks-cluster-pool, every pool);
  *                                 MNG minSize=0, desiredSize=0
  *
  * Scale-down pre-zeros Karpenter and ArgoCD via the K8s API before draining
@@ -326,6 +327,10 @@ def handler(event, context):
     ca_data = cluster_info['certificateAuthority']['data']
     token = _bearer_token(cluster_name, region)
 
+    # ESO first: stops Secrets Manager GetSecretValue polling immediately.
+    for d in ('external-secrets', 'external-secrets-webhook', 'external-secrets-cert-controller'):
+        _patch_replicas(endpoint, ca_data, token, 'external-secrets', d, 0)
+
     _patch_replicas(endpoint, ca_data, token, 'karpenter', 'karpenter', 0)
 
     for deploy in ARGOCD_DEPLOYMENTS:
@@ -333,17 +338,22 @@ def handler(event, context):
 
     log.info('Pre-shutdown K8s scale-down complete')
 
+    # Terminate Karpenter EC2s across EVERY pool. Filter on the tag KEY
+    # eks-cluster-pool (set by every EC2NodeClass: workloads-default,
+    # system, any future pool) — a per-value filter misses the system
+    # spot node and leaks cost. Karpenter is already at 0 replicas so it
+    # cannot re-provision; orphaned NodeClaims are GC'd on next start.
     ec2 = boto3.client('ec2', region_name=region)
     resp = ec2.describe_instances(
         Filters=[
-            {'Name': 'tag:eks-cluster-pool', 'Values': ['workloads-default']},
-            {'Name': 'instance-state-name', 'Values': ['running']},
+            {'Name': 'tag-key', 'Values': ['eks-cluster-pool']},
+            {'Name': 'instance-state-name', 'Values': ['running', 'pending']},
         ]
     )
     ids = [i['InstanceId'] for r in resp['Reservations'] for i in r['Instances']]
     if ids:
         ec2.terminate_instances(InstanceIds=ids)
-        log.info('Terminated Karpenter EC2s: %s', ids)
+        log.info('Terminated Karpenter EC2s (all pools): %s', ids)
     else:
         log.info('No Karpenter EC2s to terminate')
 
