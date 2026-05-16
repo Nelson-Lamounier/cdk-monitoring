@@ -158,7 +158,7 @@ export class EksSchedulerStack extends cdk.Stack {
             environment: commonEnv,
             code: lambda.Code.fromInline(`
 import boto3, os, logging, ssl, json, base64, tempfile, urllib.request
-from botocore.auth import SigV4Auth
+from botocore.auth import SigV4QueryAuth
 from botocore.awsrequest import AWSRequest
 
 log = logging.getLogger()
@@ -175,11 +175,15 @@ ARGOCD_DEPLOYMENTS = [
 ]
 
 def _bearer_token(cluster_name, region):
+    # EKS expects a *presigned* STS GetCallerIdentity URL — the signature
+    # must be in the query string (SigV4QueryAuth), NOT an Authorization
+    # header (SigV4Auth). With header signing req.url has no signature, so
+    # the API server's STS verification returns HTTP 401.
     session = boto3.session.Session()
     creds = session.get_credentials().get_frozen_credentials()
     url = f'https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15'
     req = AWSRequest(method='GET', url=url, headers={'x-k8s-aws-id': cluster_name})
-    SigV4Auth(creds, 'sts', region).add_auth(req)
+    SigV4QueryAuth(creds, 'sts', region, expires=60).add_auth(req)
     return 'k8s-aws-v1.' + base64.urlsafe_b64encode(
         req.url.encode('utf-8')).decode('utf-8').rstrip('=')
 
@@ -251,7 +255,7 @@ def handler(event, context):
             environment: commonEnv,
             code: lambda.Code.fromInline(`
 import boto3, os, logging, ssl, json, base64, tempfile, urllib.request
-from botocore.auth import SigV4Auth
+from botocore.auth import SigV4QueryAuth
 from botocore.awsrequest import AWSRequest
 
 log = logging.getLogger()
@@ -268,11 +272,15 @@ ARGOCD_DEPLOYMENTS = [
 ]
 
 def _bearer_token(cluster_name, region):
+    # EKS expects a *presigned* STS GetCallerIdentity URL — the signature
+    # must be in the query string (SigV4QueryAuth), NOT an Authorization
+    # header (SigV4Auth). With header signing req.url has no signature, so
+    # the API server's STS verification returns HTTP 401.
     session = boto3.session.Session()
     creds = session.get_credentials().get_frozen_credentials()
     url = f'https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15'
     req = AWSRequest(method='GET', url=url, headers={'x-k8s-aws-id': cluster_name})
-    SigV4Auth(creds, 'sts', region).add_auth(req)
+    SigV4QueryAuth(creds, 'sts', region, expires=60).add_auth(req)
     return 'k8s-aws-v1.' + base64.urlsafe_b64encode(
         req.url.encode('utf-8')).decode('utf-8').rstrip('=')
 
