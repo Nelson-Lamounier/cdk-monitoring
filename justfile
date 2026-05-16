@@ -306,7 +306,11 @@ dora-metrics:
 etcd-restore-rto:
     ./scripts/local/etcd-restore-rto-test.sh
 
-# Scale dev EKS cluster up and update kubeconfig
+# Scale dev EKS cluster up by invoking the ScaleUpFn Lambda — the SAME
+# code path the 04:00 EventBridge schedule uses. dev-start does NOT
+# reimplement scaling: that drift is exactly what caused MNG/instance
+# mismatches. The Lambda owns MNG sizing, Karpenter, ArgoCD, WAF sync;
+# ESO recovers via ArgoCD reconciliation.
 # Usage: just dev-start [environment]
 [group('eks')]
 dev-start env='development':
@@ -314,45 +318,43 @@ dev-start env='development':
     set -euo pipefail
     CLUSTER="k8s-eks-{{env}}"
     PROFILE=$(just _profile {{env}})
-    NG=$(aws eks list-nodegroups --cluster-name "$CLUSTER" \
+    FN=$(aws lambda list-functions \
          --region eu-west-1 --profile "$PROFILE" \
-         --query 'nodegroups[0]' --output text)
-    echo "Scaling system node group up..."
-    aws eks update-nodegroup-config --cluster-name "$CLUSTER" \
-         --nodegroup-name "$NG" \
-         --scaling-config minSize=3,maxSize=4,desiredSize=3 \
-         --region eu-west-1 --profile "$PROFILE"
+         --query "Functions[?starts_with(FunctionName, 'EksScheduler-{{env}}-ScaleUpFn')].FunctionName | [0]" \
+         --output text)
+    if [ -z "$FN" ] || [ "$FN" = "None" ]; then
+        echo "ScaleUpFn not found — is EksScheduler-{{env}} deployed?" >&2
+        exit 1
+    fi
+    echo "Invoking $FN (same path as the 04:00 schedule)..."
+    aws lambda invoke --function-name "$FN" \
+         --region eu-west-1 --profile "$PROFILE" \
+         --payload '{}' --cli-binary-format raw-in-base64-out \
+         /tmp/dev-start-scaleup.json >/dev/null
+    RESP=$(cat /tmp/dev-start-scaleup.json)
+    echo "ScaleUpFn response: $RESP"
+    if echo "$RESP" | grep -q errorMessage; then
+        echo "ScaleUpFn failed — see response above and CloudWatch logs" >&2
+        exit 1
+    fi
     echo "Updating kubeconfig..."
     aws eks update-kubeconfig --name "$CLUSTER" \
          --region eu-west-1 --profile "$PROFILE"
-    echo "Waiting for system nodes to be Ready (timeout 5 min)..."
-    kubectl wait node \
-         --selector eks.amazonaws.com/nodegroup="$NG" \
-         --for=condition=Ready \
-         --timeout=300s
-    # Restore controllers that dev-shutdown scaled to 0, in dependency order:
-    # Karpenter first (so it can provision workload nodes), then ArgoCD
-    # (reconciles all workloads back), then ESO (secret injection).
-    echo "Restoring Karpenter controller to 2 replicas..."
-    kubectl scale deployment -n karpenter karpenter \
-         --replicas=2 2>/dev/null || echo "  Karpenter deployment not found — skipping"
-    echo "Restoring ArgoCD to 1 replica..."
-    kubectl scale deployment -n argocd \
-         argocd-applicationset-controller \
-         argocd-dex-server \
-         argocd-image-updater \
-         argocd-notifications-controller \
-         argocd-redis \
-         argocd-repo-server \
-         argocd-server \
-         --replicas=1 2>/dev/null || echo "  ArgoCD deployments not found — skipping"
-    echo "Restoring ESO deployments to 1 replica..."
-    kubectl scale deployment -n external-secrets \
-         external-secrets \
-         external-secrets-webhook \
-         external-secrets-cert-controller \
-         --replicas=1 2>/dev/null || echo "  ESO deployments not found — skipping"
-    echo "Cluster ready"
+    # Poll until a system node registers Ready. kubectl wait is NOT used:
+    # MNG provisioning is async, so `kubectl wait` errors immediately with
+    # "no matching resources found" when zero nodes exist at call time.
+    echo "Waiting for a system node to be Ready (timeout ~5 min)..."
+    for i in $(seq 1 60); do
+        READY=$(kubectl get nodes -l node-role=system --no-headers 2>/dev/null \
+                | grep -cw Ready || true)
+        if [ "${READY:-0}" -ge 1 ]; then
+            echo "System node Ready"
+            break
+        fi
+        [ "$i" -eq 60 ] && { echo "Timed out waiting for system node" >&2; exit 1; }
+        sleep 5
+    done
+    echo "Cluster ready (ArgoCD will reconcile workloads + ESO)"
 
 # Scale dev EKS cluster down — stops Secrets Manager polling, drains every
 # Karpenter NodePool while the controller is still alive (so finalizers
