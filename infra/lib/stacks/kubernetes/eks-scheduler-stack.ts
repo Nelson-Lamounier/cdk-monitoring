@@ -5,7 +5,7 @@
  * Provisions two Lambda functions (scale-up, scale-down) invoked by
  * EventBridge Scheduler on Europe/Dublin cron schedules:
  *   - Scale-up:   04:00 daily  → MNG minSize=1, desiredSize=1 (landing
- *                                 zone only); Karpenter→2; ArgoCD×7→1;
+ *                                 zone only); Karpenter→1; ArgoCD×7→1;
  *                                 WAF IP sync (async)
  *   - Scale-down: 23:00 daily  → Karpenter→0; ArgoCD×7→0; terminate Karpenter
  *                                 EC2s (tag: eks-cluster-pool=workloads-default);
@@ -233,7 +233,10 @@ def handler(event, context):
     ca_data = cluster_info['certificateAuthority']['data']
     token = _bearer_token(cluster_name, region)
 
-    _patch_replicas(endpoint, ca_data, token, 'karpenter', 'karpenter', 2)
+    # 1 replica: dev cluster is down ~17h/day and the t3.medium landing
+    # zone has no room for a 2nd anti-affinity replica. Karpenter's 2nd pod
+    # is only a leader-election standby — single replica is fully functional.
+    _patch_replicas(endpoint, ca_data, token, 'karpenter', 'karpenter', 1)
 
     for deploy in ARGOCD_DEPLOYMENTS:
         _patch_replicas(endpoint, ca_data, token, 'argocd', deploy, 1)
