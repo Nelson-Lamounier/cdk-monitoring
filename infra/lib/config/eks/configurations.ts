@@ -111,7 +111,7 @@ const COMMON_BINDINGS: readonly PodIdentityBinding[] = [
     { namespace: 'admin-api',          serviceAccount: 'admin-api',                   purpose: 'admin-api' },
     { namespace: 'argocd',             serviceAccount: 'argocd-image-updater',        purpose: 'image-updater' },
     { namespace: 'headlamp',           serviceAccount: 'token-pusher',                purpose: 'headlamp-token-pusher' },
-    // ── AI pipeline workloads ──────────────────────────────────────────────────
+    // ── AI pipeline workloads ─────────────────────────────────────────────────
     { namespace: 'ingestion',          serviceAccount: 'ingestion-sa',                purpose: 'ingestion' },
     { namespace: 'job-strategist',     serviceAccount: 'job-strategist-sa',           purpose: 'job-strategist' },
     { namespace: 'article-pipeline',   serviceAccount: 'article-pipeline-sa',         purpose: 'article-pipeline' },

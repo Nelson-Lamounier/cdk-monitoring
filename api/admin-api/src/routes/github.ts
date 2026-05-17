@@ -45,6 +45,7 @@ import {
     listInstallationRepos,
 } from '../lib/github-app.js';
 import { getBatchApi } from '../lib/k8s.js';
+import { traceParentEnv, observabilityEnv } from '../lib/k8s-job-builder.js';
 import { getPool } from '../lib/pg.js';
 import { AdminApiBindings, requireUserId } from '../lib/types.js';
 
@@ -78,6 +79,7 @@ async function getConnection(pool: Pool, userId: string): Promise<OAuthRow | nul
 async function upsertConnection(
     pool: Pool,
     userId: string,
+    accountId: string,
     installationId: string,
     username: string,
     avatarUrl: string,
@@ -88,11 +90,12 @@ async function upsertConnection(
          VALUES ($1::uuid, 'github', $2, $3, '', $4, $5)
          ON CONFLICT (user_id, provider)
          DO UPDATE SET
-           installation_id = EXCLUDED.installation_id,
-           username        = EXCLUDED.username,
-           avatar_url      = EXCLUDED.avatar_url,
-           connected_at    = NOW()`,
-        [userId, installationId, username, installationId, avatarUrl],
+           provider_user_id = EXCLUDED.provider_user_id,
+           installation_id  = EXCLUDED.installation_id,
+           username         = EXCLUDED.username,
+           avatar_url       = EXCLUDED.avatar_url,
+           connected_at     = NOW()`,
+        [userId, accountId, username, installationId, avatarUrl],
     );
 }
 
@@ -342,7 +345,8 @@ async function dispatchIngestionJob(
         metadata: {
             name:      jobName,
             namespace: config.ingestionNamespace,
-            labels: { app: 'ingestion-worker', userId: safeUser, repoSlug },
+            labels:      { app: 'ingestion-worker', userId: safeUser, repoSlug },
+            annotations: { 'argocd.argoproj.io/compare-options': 'IgnoreExtraneous' },
         },
         spec: {
             ttlSecondsAfterFinished: 3600,
@@ -361,10 +365,18 @@ async function dispatchIngestionJob(
                         // GITHUB_TOKEN here overrides any static token in ingestion-secrets,
                         // ensuring each Job uses the per-user installation token.
                         env: [
-                            { name: 'USER_ID',        value: userId },
-                            { name: 'REPO_FULL_NAME', value: repoFullName },
-                            { name: 'FORCE_REINDEX',  value: String(forceReindex) },
-                            { name: 'GITHUB_TOKEN',   value: githubToken },
+                            ...observabilityEnv('ingestion-worker', `${userId}:${repoFullName}:${timestamp}`),
+                            { name: 'USER_ID',            value: userId },
+                            { name: 'REPO_FULL_NAME',     value: repoFullName },
+                            { name: 'FORCE_REINDEX',      value: String(forceReindex) },
+                            { name: 'GITHUB_TOKEN',       value: githubToken },
+                            // Cross-region inference profile for BedrockChunkEnricher.
+                            // Direct on-demand Claude invocation unsupported in eu-west-1.
+                            {
+                                name:  'ENRICHMENT_MODEL_ID',
+                                value: process.env['ENRICHMENT_MODEL_ID'] ?? 'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
+                            },
+                            ...(() => { const tp = traceParentEnv(); return tp ? [tp] : []; })(),
                         ],
                         envFrom: [{ secretRef: { name: 'platform-rds-credentials' } }],
                         resources: {
@@ -466,7 +478,7 @@ export function createGitHubRouter(config: AdminApiConfig): Hono<AdminApiBinding
         const isReinstall = existing !== null && existing.installation_id !== null;
 
         const info = await getInstallationInfo(appId, key, installationId);
-        await upsertConnection(pool, uid, installationId, info.accountLogin, info.accountAvatarUrl);
+        await upsertConnection(pool, uid, info.accountId, installationId, info.accountLogin, info.accountAvatarUrl);
 
         if (!isReinstall) {
             // Fresh install — return immediately; user picks repos via the UI picker.

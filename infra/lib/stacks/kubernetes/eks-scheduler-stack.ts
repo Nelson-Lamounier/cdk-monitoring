@@ -234,7 +234,7 @@ def handler(event, context):
         nodegroupName=_system_nodegroup(eks_client, cluster_name),
         scalingConfig={'minSize': 1, 'desiredSize': 1},
     )
-    log.info('Scaled MNG to 2')
+    log.info('Scaled MNG to 1')
 
     cluster_info = eks_client.describe_cluster(name=cluster_name)['cluster']
     endpoint = cluster_info['endpoint']
@@ -245,6 +245,51 @@ def handler(event, context):
     # zone has no room for a 2nd anti-affinity replica. Karpenter's 2nd pod
     # is only a leader-election standby — single replica is fully functional.
     _patch_replicas(endpoint, ca_data, token, 'karpenter', 'karpenter', 1)
+
+    def _ensure_argocd_secret():
+        # argocd-secret is Helm-managed with helm.sh/resource-policy:keep.
+        # helm upgrade (not fresh install) skips recreating deleted
+        # keep-annotated resources — argocd-server and argocd-dex-server
+        # CrashLoopBackOff on restore without it.
+        ca_bytes = base64.b64decode(ca_data)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.crt') as f:
+            f.write(ca_bytes)
+            ca_file = f.name
+        try:
+            ctx = ssl.create_default_context(cafile=ca_file)
+            url = f'{endpoint}/api/v1/namespaces/argocd/secrets/argocd-secret'
+            try:
+                with urllib.request.urlopen(
+                    urllib.request.Request(url, headers={'Authorization': f'Bearer {token}'}),
+                    context=ctx,
+                ):
+                    log.info('argocd-secret present')
+                    return
+            except urllib.error.HTTPError as e:
+                if e.code != 404:
+                    raise
+            log.info('argocd-secret missing — creating with random secretkey')
+            body = json.dumps({
+                'apiVersion': 'v1', 'kind': 'Secret',
+                'metadata': {'name': 'argocd-secret', 'namespace': 'argocd'},
+                'type': 'Opaque',
+                'data': {'server.secretkey': base64.b64encode(os.urandom(32)).decode()},
+            }).encode()
+            with urllib.request.urlopen(
+                urllib.request.Request(
+                    f'{endpoint}/api/v1/namespaces/argocd/secrets',
+                    data=body, method='POST',
+                    headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+                ),
+                context=ctx,
+            ) as r:
+                log.info('Created argocd-secret: %s', r.status)
+        finally:
+            import os as _os; _os.unlink(ca_file)
+
+    # helm upgrade skips keep-annotated resources when the release already
+    # exists, leaving argocd-server/dex in CrashLoopBackOff on restore.
+    _ensure_argocd_secret()
 
     for deploy in ARGOCD_DEPLOYMENTS:
         _patch_replicas(endpoint, ca_data, token, 'argocd', deploy, 1)

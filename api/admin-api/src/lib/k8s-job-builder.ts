@@ -12,6 +12,7 @@
 import { createHash } from 'node:crypto';
 
 import type { V1Job } from '@kubernetes/client-node';
+import { context as otelContext, propagation } from '@opentelemetry/api';
 
 export const MAX_NAME_LEN = 63;
 
@@ -21,6 +22,18 @@ export function sanitizeLabel(value: string): string {
         .replace(/[^a-z0-9-]/g, '-')
         .replace(/^-+|-+$/g, '')
         .slice(0, MAX_NAME_LEN);
+}
+
+/**
+ * Serialise the current OTel active span into a W3C TRACEPARENT env var
+ * for injection into K8s Job specs. Workers read this to continue the trace.
+ * Returns null when no active span exists (e.g. local dev, tests).
+ */
+export function traceParentEnv(): { name: string; value: string } | null {
+    const carrier: Record<string, string> = {};
+    propagation.inject(otelContext.active(), carrier);
+    const traceparent = carrier['traceparent'];
+    return traceparent ? { name: 'TRACEPARENT', value: traceparent } : null;
 }
 
 export interface BuildJobInput {
@@ -81,8 +94,10 @@ export function buildPipelineJob(input: BuildJobInput): V1Job {
     // can override OTEL_SERVICE_NAME for nested operations (e.g. coach
     // sub-pipeline) without losing the rest.
     const obsName = sanitizeLabel(input.nameStem.split('-').slice(0, -1).join('-')) || input.nameStem;
+    const traceparentEntry = traceParentEnv();
     const env = [
         ...observabilityEnv(obsName, input.suffixInput),
+        ...(traceparentEntry ? [traceparentEntry] : []),
         ...input.env,
     ];
 

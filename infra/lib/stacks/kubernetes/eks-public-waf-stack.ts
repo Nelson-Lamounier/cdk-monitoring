@@ -7,25 +7,21 @@
  * Ingresses set `alb.ingress.kubernetes.io/wafv2-acl-arn: <arn>` to
  * attach the WebACL to the shared ALB. Plan 5b § 0.4.
  *
- * Allowlist CIDRs come from the operator at deploy time (synth-time
- * SSM lookup of two existing String parameters that already store the
- * operator's home IP — `/k8s/${env}/monitoring/allow-ipv4` and
- * `/k8s/${env}/monitoring/allow-ipv6` — historically used by the
- * kubeadm monitoring IngressRoute middleware. Same value, same purpose,
- * different consumer. Adding / removing IPs is a one-line SSM update
- * + redeploy of THIS stack only.
+ * Allowlist CIDRs are managed entirely by the IpSyncFn Lambda. CDK no
+ * longer bakes IPs into the CloudFormation template — IP sets are created
+ * empty and the Lambda populates them from SSM at deploy time (invoked by
+ * the CI pipeline after the stack deploys). Update IPs by changing the SSM
+ * parameters; EventBridge fires the Lambda within seconds, no CDK redeploy.
  *
  * Lives in eu-west-1 because REGIONAL WebACLs must share a region with
  * the ALB they attach to.
  */
-import { CfnPodIdentityAssociation } from 'aws-cdk-lib/aws-eks';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
-import * as cr from 'aws-cdk-lib/custom-resources';
 
 import { Construct } from 'constructs';
 
@@ -55,7 +51,7 @@ export interface EksPublicWafStackProps extends cdk.StackProps {
     /**
      * EKS cluster name. When provided, creates an IAM role + Pod Identity
      * association for the `waf-annotator` Service Account in the
-     * `tucaken-app` namespace. The PostSync Job uses this role to read the
+     * `admin-api` namespace. The PostSync Job uses this role to read the
      * WAF ACL ARN from SSM and annotate the Ingress — keeping the
      * wafv2-acl-arn annotation current without hardcoding the ARN in git.
      */
@@ -66,8 +62,6 @@ export class EksPublicWafStack extends cdk.Stack {
     public readonly webAclArn: string;
     /** IAM role ARN for the waf-annotator PostSync Job (set when clusterName is provided) */
     public readonly wafAnnotatorRoleArn?: string;
-    /** Function name of the ip-sync Lambda — pass to EksSchedulerStack so ScaleUpFn triggers it. */
-    public ipSyncFunctionName?: string;
 
     constructor(scope: Construct, id: string, props: EksPublicWafStackProps) {
         super(scope, id, props);
@@ -75,15 +69,16 @@ export class EksPublicWafStack extends cdk.Stack {
         const namePrefix = props.namePrefix ?? 'eks-public';
         const envName = props.targetEnvironment;
 
-        // IP sets are created empty and owned entirely by the ip-sync Lambda
-        // at runtime. CloudFormation never writes CIDRs to them, so Lambda-
-        // managed values persist across redeployments without caching issues.
+        // IP set addresses are intentionally empty here. IpSyncFn Lambda
+        // (created below) is invoked at deploy time by the CI pipeline to
+        // populate both sets from the live SSM parameters. This decouples IP
+        // management from CDK synthesis — no more stale cdk.context.json IPs
+        // causing 403s after every EKS deploy.
         const waf = new EksPublicWafConstruct(this, 'PublicWaf', {
             envName,
             namePrefix,
             allowlistedIpv4: [],
             allowlistedIpv6: [],
-            ipSetsExternallyManaged: true,
             allowlistedHosts: props.allowlistedHosts,
             rateLimitedHosts: props.rateLimitedHosts,
             rateLimitPerIp: props.rateLimitPerIp,
@@ -189,40 +184,6 @@ def handler(event, context):
                 },
                 targets: [new targets.LambdaFunction(syncFn)],
             });
-
-            // Invoke the sync Lambda once on every CDK deploy so the IP sets
-            // are immediately populated after CloudFormation creates them empty.
-            // Without this, sets stay empty until the next SSM change event.
-            const deploySync = new cr.AwsCustomResource(this, 'IpSyncOnDeploy', {
-                onCreate: {
-                    service: 'Lambda',
-                    action: 'invoke',
-                    parameters: {
-                        FunctionName: syncFn.functionName,
-                        InvocationType: 'RequestResponse',
-                    },
-                    physicalResourceId: cr.PhysicalResourceId.of('waf-ip-sync-on-deploy'),
-                },
-                onUpdate: {
-                    service: 'Lambda',
-                    action: 'invoke',
-                    parameters: {
-                        FunctionName: syncFn.functionName,
-                        InvocationType: 'RequestResponse',
-                    },
-                    physicalResourceId: cr.PhysicalResourceId.of('waf-ip-sync-on-deploy'),
-                },
-                policy: cr.AwsCustomResourcePolicy.fromStatements([
-                    new iam.PolicyStatement({
-                        actions: ['lambda:InvokeFunction'],
-                        resources: [syncFn.functionArn],
-                    }),
-                ]),
-                resourceType: 'Custom::WafIpSync',
-            });
-            deploySync.node.addDependency(syncFn);
-
-            this.ipSyncFunctionName = syncFn.functionName;
         }
 
         // =================================================================
@@ -255,20 +216,20 @@ def handler(event, context):
                 ],
             }));
 
-            // Pod Identity association: tucaken-app/waf-annotator → role
-            new CfnPodIdentityAssociation(this, 'WafAnnotatorPodIdentity', {
-                clusterName: props.clusterName,
-                namespace: 'tucaken-app',
-                serviceAccount: 'waf-annotator',
-                roleArn: annotatorRole.roleArn,
-            });
-
+            // The Pod Identity association for admin-api/waf-annotator is managed
+            // outside CloudFormation to avoid CFN replace-on-property-change
+            // (cluster/namespace/SA are all replace triggers). Create or verify once:
+            //   aws eks create-pod-identity-association \
+            //     --cluster-name <cluster> --namespace admin-api \
+            //     --service-account waf-annotator --role-arn <roleArn>
+            // Store the returned associationArn in SSM at:
+            //   ${ssmPrefix}/eks/waf-annotator-pod-identity-arn
             this.wafAnnotatorRoleArn = annotatorRole.roleArn;
 
             new ssm.StringParameter(this, 'WafAnnotatorRoleArnSsm', {
                 parameterName: `${props.ssmPrefix}/eks/waf-annotator-role-arn`,
                 stringValue: annotatorRole.roleArn,
-                description: 'IAM role ARN for the tucaken-app waf-annotator PostSync Job',
+                description: 'IAM role ARN for the admin-api waf-annotator PostSync Job',
             });
         }
     }

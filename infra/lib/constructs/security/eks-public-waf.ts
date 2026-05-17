@@ -24,19 +24,16 @@ export interface EksPublicWafProps {
     readonly envName: string;
     readonly namePrefix: string;
     /**
-     * IPv4 CIDRs allowed to reach `allowlistedHosts`. Ignored when
-     * `ipSetsExternallyManaged` is true — pass `[]` in that case.
+     * Initial IPv4 CIDRs seeded into the IP set by CloudFormation.
+     * IpSyncFn Lambda immediately overwrites this from SSM at deploy time,
+     * so pass an empty array — CDK no longer needs to know the operator's IP.
      */
     readonly allowlistedIpv4: readonly string[];
-    /** IPv6 CIDRs. Ignored when `ipSetsExternallyManaged` is true. */
-    readonly allowlistedIpv6?: readonly string[];
     /**
-     * When true, both IP sets are created with `addresses: []` and
-     * populated entirely at runtime by the ip-sync Lambda (reads SSM).
-     * CloudFormation never writes CIDRs to the sets, so Lambda-managed
-     * values persist across CDK redeployments.
+     * Initial IPv6 CIDRs seeded into the IP set. Same as above — Lambda owns
+     * runtime content; pass an empty array from the stack.
      */
-    readonly ipSetsExternallyManaged?: boolean;
+    readonly allowlistedIpv6?: readonly string[];
     /**
      * Hosts that require an IP allowlist. Lowercase, exact-match against
      * the `Host` header (no port, no scheme).
@@ -53,9 +50,12 @@ export interface EksPublicWafProps {
 export class EksPublicWafConstruct extends Construct {
     public readonly webAcl: wafv2.CfnWebACL;
     public readonly webAclArn: string;
-    /** undefined when no IPv4 CIDRs were supplied */
+    /**
+     * Always set when `allowlistedHosts` is non-empty. Content is managed by
+     * IpSyncFn Lambda, not CloudFormation — addresses may be empty at synth.
+     */
     public readonly ipv4Set?: wafv2.CfnIPSet;
-    /** undefined when no IPv6 CIDRs were supplied */
+    /** Always set when `allowlistedHosts` is non-empty. Same ownership as ipv4Set. */
     public readonly ipv6Set?: wafv2.CfnIPSet;
 
     constructor(scope: Construct, id: string, props: EksPublicWafProps) {
@@ -64,38 +64,31 @@ export class EksPublicWafConstruct extends Construct {
         const { envName, namePrefix } = props;
         const rateLimitPerIp = props.rateLimitPerIp ?? 2000;
         const allowlistedIpv6 = props.allowlistedIpv6 ?? [];
-        const externallyManaged = props.ipSetsExternallyManaged === true;
-        // hasAllowlist is true when hosts are configured AND either: addresses
-        // were provided, or the sets are externally managed (Lambda populates them).
-        const hasAllowlist =
-            props.allowlistedHosts.length > 0
-            && (externallyManaged || props.allowlistedIpv4.length > 0 || allowlistedIpv6.length > 0);
+        // IP sets are created whenever allowlisted hosts are configured —
+        // independent of whether initial CIDRs are provided. IpSyncFn Lambda
+        // populates content from SSM at deploy time; CloudFormation only owns
+        // the resource, not the addresses.
+        const hasAllowlist = props.allowlistedHosts.length > 0;
         const hasRateLimit = props.rateLimitedHosts.length > 0;
 
-        // ---------- IP sets (only when allowlist is configured) ----------
+        // ---------- IP sets (created whenever hosts are allowlisted) ----------
         const ipSetRefs: wafv2.CfnWebACL.StatementProperty[] = [];
         if (hasAllowlist) {
-            // When externallyManaged, always create both sets with empty
-            // addresses — the ip-sync Lambda fills them at runtime, and
-            // CloudFormation never overwrites them (the template stays []).
-            if (externallyManaged || props.allowlistedIpv4.length > 0) {
-                this.ipv4Set = new wafv2.CfnIPSet(this, 'AllowIpv4', {
-                    name: `${namePrefix}-allow-ipv4-${envName}`,
-                    scope: 'REGIONAL',
-                    ipAddressVersion: 'IPV4',
-                    addresses: externallyManaged ? [] : [...props.allowlistedIpv4],
-                });
-                ipSetRefs.push({ ipSetReferenceStatement: { arn: this.ipv4Set.attrArn } });
-            }
-            if (externallyManaged || allowlistedIpv6.length > 0) {
-                this.ipv6Set = new wafv2.CfnIPSet(this, 'AllowIpv6', {
-                    name: `${namePrefix}-allow-ipv6-${envName}`,
-                    scope: 'REGIONAL',
-                    ipAddressVersion: 'IPV6',
-                    addresses: externallyManaged ? [] : [...allowlistedIpv6],
-                });
-                ipSetRefs.push({ ipSetReferenceStatement: { arn: this.ipv6Set.attrArn } });
-            }
+            this.ipv4Set = new wafv2.CfnIPSet(this, 'AllowIpv4', {
+                name: `${namePrefix}-allow-ipv4-${envName}`,
+                scope: 'REGIONAL',
+                ipAddressVersion: 'IPV4',
+                addresses: [...props.allowlistedIpv4],
+            });
+            ipSetRefs.push({ ipSetReferenceStatement: { arn: this.ipv4Set.attrArn } });
+
+            this.ipv6Set = new wafv2.CfnIPSet(this, 'AllowIpv6', {
+                name: `${namePrefix}-allow-ipv6-${envName}`,
+                scope: 'REGIONAL',
+                ipAddressVersion: 'IPV6',
+                addresses: [...allowlistedIpv6],
+            });
+            ipSetRefs.push({ ipSetReferenceStatement: { arn: this.ipv6Set.attrArn } });
         }
 
         const rules: wafv2.CfnWebACL.RuleProperty[] = [];

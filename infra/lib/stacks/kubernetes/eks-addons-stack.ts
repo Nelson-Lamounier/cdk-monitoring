@@ -178,6 +178,10 @@ export class EksAddonsStack extends cdk.Stack {
                     clusterName: props.cluster.clusterName,
                     interruptionQueue: props.karpenterInterruptionQueueName,
                 },
+                // Explicitly set so CDK owns spec.replicas via SSA field manager.
+                // Without this, a manual kubectl scale takes field ownership and
+                // a Helm upgrade (CDK redeploy) will NOT restore the replica count.
+                replicas: 2,
                 serviceAccount: { name: 'karpenter', create: true },
                 tolerations: systemToleration,
                 // Soften the chart default (DoNotSchedule) so that if both system

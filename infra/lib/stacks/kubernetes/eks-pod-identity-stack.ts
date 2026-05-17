@@ -285,6 +285,141 @@ export class EksPodIdentityStack extends cdk.Stack {
                         }),
                     );
                 }
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'GrafanaCloudWatchRead',
+                        actions: [
+                            'cloudwatch:GetMetricData',
+                            'cloudwatch:GetMetricStatistics',
+                            'cloudwatch:ListMetrics',
+                            'cloudwatch:DescribeAlarms',
+                            'cloudwatch:ListTagsForResource',
+                            'logs:StartQuery',
+                            'logs:StopQuery',
+                            'logs:GetQueryResults',
+                            'logs:DescribeLogGroups',
+                            'logs:GetLogEvents',
+                            'logs:FilterLogEvents',
+                        ],
+                        resources: ['*'],
+                    }),
+                );
+                break;
+            case 'ingestion':
+                // Bedrock InvokeModel for chunk enrichment (BedrockChunkEnricher)
+                // and embeddings (TitanEmbeddingProvider). Scoped to all foundation
+                // models and inference profiles — ingestion is model-agnostic.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'IngestionBedrockInvoke',
+                        actions: [
+                            'bedrock:InvokeModel',
+                            'bedrock:InvokeModelWithResponseStream',
+                        ],
+                        resources: [
+                            'arn:aws:bedrock:*::foundation-model/*',
+                            `arn:aws:bedrock:*:${cdk.Stack.of(this).account}:inference-profile/*`,
+                        ],
+                    }),
+                );
+                break;
+            case 'job-strategist':
+            case 'article-pipeline':
+                // Bedrock InvokeModel for Claude research + strategist agents.
+                // bedrock:Rerank for semantic reranking of retrieved passages
+                // (RdsVectorStore.rerank — falls back to cosine top-K when absent,
+                // but reranking improves retrieval quality significantly).
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'PipelineBedrockInvoke',
+                        actions: [
+                            'bedrock:InvokeModel',
+                            'bedrock:InvokeModelWithResponseStream',
+                        ],
+                        resources: [
+                            'arn:aws:bedrock:*::foundation-model/*',
+                            `arn:aws:bedrock:*:${cdk.Stack.of(this).account}:inference-profile/*`,
+                        ],
+                    }),
+                );
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'PipelineBedrockRerank',
+                        actions: ['bedrock:Rerank'],
+                        resources: [
+                            'arn:aws:bedrock:*::foundation-model/*',
+                            `arn:aws:bedrock:*:${cdk.Stack.of(this).account}:inference-profile/*`,
+                        ],
+                    }),
+                );
+                break;
+            case 'admin-api':
+                // S3 access for presigned upload URLs (resume-imports) and
+                // direct asset operations (articles). Bucket name is published
+                // by ai-applications/infra bedrock/ai-content-stack at runtime
+                // via SSM → ESO; scoped to * for dev since the ARN is not
+                // available at CDK synthesis time.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'AdminApiS3Assets',
+                        actions: [
+                            's3:PutObject',
+                            's3:GetObject',
+                            's3:DeleteObject',
+                        ],
+                        resources: ['arn:aws:s3:::*/*'],
+                    }),
+                );
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'AdminApiS3ListBucket',
+                        actions: ['s3:ListBucket'],
+                        resources: ['arn:aws:s3:::*'],
+                    }),
+                );
+                break;
+            case 'image-updater':
+                // ArgoCD Image Updater polls ECR for new image tags using
+                // newest-build strategy (compares imagePushedAt timestamps).
+                // GetAuthorizationToken is account-scoped (no resource ARN).
+                // DescribeImages + ListImages cover the polling cycle.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'ImageUpdaterEcrRead',
+                        actions: [
+                            'ecr:GetAuthorizationToken',
+                        ],
+                        resources: ['*'],
+                    }),
+                );
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'ImageUpdaterEcrDescribe',
+                        actions: [
+                            'ecr:DescribeRepositories',
+                            'ecr:DescribeImages',
+                            'ecr:ListImages',
+                        ],
+                        resources: [
+                            `arn:aws:ecr:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:repository/*`,
+                        ],
+                    }),
+                );
+                break;
+            case 'headlamp-token-pusher':
+                // PostSync Job (charts/headlamp-config) reads the non-expiring
+                // headlamp-viewer-token K8s Secret and pushes its value to SSM
+                // so ops can retrieve the dashboard token without kubectl access.
+                // Scoped to the single parameter — no wildcard.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'HeadlampPushViewerToken',
+                        actions: ['ssm:PutParameter'],
+                        resources: [
+                            `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/k8s/${props.targetEnvironment}/headlamp-viewer-token`,
+                        ],
+                    }),
+                );
                 break;
 
             case 'admin-api':

@@ -26,7 +26,7 @@ import { SignJWT, importPKCS8 } from 'jose';
 
 interface GitHubInstallationResponse {
     id:          number;
-    account:     { login: string; avatar_url: string };
+    account:     { id: number; login: string; avatar_url: string };
     app_slug:    string;
     target_type: string;
 }
@@ -109,7 +109,7 @@ export async function getInstallationInfo(
     appId: string,
     privateKeyPem: string,
     installationId: string,
-): Promise<{ accountLogin: string; accountAvatarUrl: string }> {
+): Promise<{ accountId: string; accountLogin: string; accountAvatarUrl: string }> {
     const jwt  = await generateAppJwt(appId, privateKeyPem);
     const data = await githubRequest<GitHubInstallationResponse>(
         'GET',
@@ -117,6 +117,7 @@ export async function getInstallationInfo(
         jwt,
     );
     return {
+        accountId:         String(data.account.id),
         accountLogin:      data.account.login,
         accountAvatarUrl:  data.account.avatar_url,
     };

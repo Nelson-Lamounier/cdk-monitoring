@@ -78,10 +78,10 @@ describe('CognitoAuthStack', () => {
             });
         });
 
-        it('should disable self-sign-up', () => {
+        it('should enable self-sign-up with email verification', () => {
             template.hasResourceProperties('AWS::Cognito::UserPool', {
                 AdminCreateUserConfig: Match.objectLike({
-                    AllowAdminCreateUserOnly: true,
+                    AllowAdminCreateUserOnly: false,
                 }),
             });
         });

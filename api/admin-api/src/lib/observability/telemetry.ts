@@ -69,10 +69,7 @@ sdk.start();
 // Pushes CPU + heap pprof samples to the Pyroscope server every 10s. ~1-2%
 // overhead. Disabled when PYROSCOPE_SERVER_ADDRESS is unset (local dev).
 if (process.env['PYROSCOPE_SERVER_ADDRESS']) {
-  // Dynamic import to avoid pulling node-gyp bindings into environments that
-  // don't profile (tests, build-time module resolution).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const Pyroscope = require('@pyroscope/nodejs');
+  const { default: Pyroscope } = await import('@pyroscope/nodejs');
   Pyroscope.init({
     serverAddress: process.env['PYROSCOPE_SERVER_ADDRESS'],
     appName:       process.env['OTEL_SERVICE_NAME'] ?? 'admin-api',

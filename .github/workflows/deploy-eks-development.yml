@@ -1,22 +1,47 @@
 # @format
 # Deploy EKS to Development.
-# Trigger: workflow_dispatch | workflow_run [Deploy K8s to Development success].
+#
+# Trigger: push to main touching any EKS-relevant path, or workflow_dispatch.
+# Branching model: feature/* → PR → develop → PR → main → this workflow.
 # Spec: docs/superpowers/specs/2026-05-05-eks-migration-design.md § 9.2
 #
-# Security: this workflow only consumes `inputs.*`, `vars.*`, `secrets.*`,
-# `github.event_name`, and `github.event.workflow_run.conclusion` — none of
-# which are attacker-controlled free-text fields. No issue/PR title or commit
-# message is interpolated into shell. The conclusion check below uses an env
-# var, not direct expression interpolation.
+# Path strategy — any change under these trees causes a deploy:
+#   infra/lib/stacks/kubernetes/**  — CDK EKS stack definitions
+#   infra/lib/config/eks/**         — EKS-specific config (cluster, nodegroup, addons)
+#   infra/lib/projects/kubernetes/** — kubernetes project factory (instantiates stacks)
+#   infra/lib/constructs/**          — shared CDK constructs imported by EKS stacks
+#   infra/lib/factories/**           — shared project-registry / factory base
+#   infra/lib/utilities/**           — shared utilities imported by EKS stacks
+#   infra/lib/shared/**              — shared VPC / base constructs
+#   infra/bin/app.ts                 — CDK entry point (stack assembly root)
+#   .github/workflows/deploy-eks-development.yml  — this file
+#   .github/workflows/_deploy-eks.yml             — reusable deploy workflow
+#   .github/actions/**               — shared composite actions used by all pipelines
+#
+# Security: this workflow only consumes inputs.*, vars.*, secrets.*,
+# and github.event_name — no attacker-controlled free-text is interpolated
+# into shell.
 
 name: Deploy EKS to Development
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/lib/stacks/kubernetes/**"
+      - "infra/lib/config/eks/**"
+      - "infra/lib/projects/kubernetes/**"
+      - "infra/lib/constructs/**"
+      - "infra/lib/factories/**"
+      - "infra/lib/utilities/**"
+      - "infra/lib/shared/**"
+      - "infra/bin/app.ts"
+      - ".github/workflows/deploy-eks-development.yml"
+      - ".github/workflows/_deploy-eks.yml"
+      - ".github/actions/**"
+
   workflow_dispatch:
-  workflow_run:
-    workflows: ["Deploy K8s to Development"]
-    types: [completed]
-    branches: [main]
 
 permissions:
   id-token: write
@@ -27,32 +52,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  gate:
-    name: Check upstream
-    runs-on: ubuntu-latest
-    outputs:
-      ok: ${{ steps.check.outputs.ok }}
-    steps:
-      - id: check
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          UPSTREAM_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-        run: |
-          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
-            if [[ "$UPSTREAM_CONCLUSION" != "success" ]]; then
-              echo "ok=false" >> "$GITHUB_OUTPUT"
-              echo "Upstream concluded: $UPSTREAM_CONCLUSION — skipping EKS deploy."
-            else
-              echo "ok=true" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          fi
-
   deploy:
     name: Deploy
-    needs: [gate]
-    if: needs.gate.outputs.ok == 'true'
     uses: ./.github/workflows/_deploy-eks.yml
     with:
       environment: development

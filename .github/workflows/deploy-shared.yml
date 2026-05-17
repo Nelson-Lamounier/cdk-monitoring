@@ -1,30 +1,55 @@
 # @format
-# @description Deploy Shared Infrastructure to Development
+# Deploy Shared Infrastructure to Development.
 #
 # Deploys all shared stacks that other projects depend on:
 #   1. VPC + ECR (foundation for all projects)
-#   2. Security Baseline (GuardDuty, Security Hub, Access Analyzer, CloudTrail, EventBridge)
+#   2. Security Baseline (GuardDuty, Security Hub, Access Analyzer, CloudTrail)
 #   3. FinOps (AWS Budgets + SNS alerting)
 #   4. Crossplane (IAM user + Secrets Manager for K8s infra abstraction)
+#   5. Cognito Auth (Admin User Pool + Hosted UI)
 #
-# All four stacks are independent and deploy in parallel.
+# All five stacks are independent and deploy in parallel.
 # Must be deployed BEFORE kubernetes/bedrock stacks.
 #
-# Trigger chain:
-#   push → main → CI ("Continuous Integration") completes
-#                 ↓  workflow_run [completed, conclusion=success, branch=main]
-#               Deploy Shared (this workflow)
-#                 ↓  gate job — only proceeds if shared-infra paths changed
-#               Deploy K8s (deploy-kubernetes.yml, triggered by this workflow's completion)
+# Trigger: push to main touching any shared-infra-relevant path, or workflow_dispatch.
+# Branching model: feature/* → PR → develop → PR → main → this workflow.
+#
+# Path strategy — any change under these trees causes a deploy:
+#   infra/lib/stacks/shared/**   — shared CDK stack definitions
+#   infra/lib/projects/shared/** — shared project factory (instantiates stacks)
+#   infra/lib/shared/**          — SharedVpcStack (VPC + ECR base construct)
+#   infra/lib/constructs/**      — shared CDK constructs (iam, finops, security, observability)
+#   infra/lib/factories/**       — shared project-registry / factory base
+#   infra/lib/utilities/**       — shared utilities (naming etc.)
+#   infra/lib/config/**          — environments, projects, ssm-paths (imported by all stacks)
+#   infra/bin/app.ts             — CDK entry point (stack assembly root)
+#   .github/workflows/deploy-shared.yml  — this file
+#   .github/workflows/_deploy-stack.yml  — reusable stack deploy workflow
+#   .github/actions/**           — shared composite actions used by all pipelines
+#
+# Note on CI gate: branch protection requires CI to pass before merging to main,
+# so code on main has already been validated. No workflow_run[CI] gate needed.
 
 name: Deploy Shared (Dev)
 
 on:
-  workflow_dispatch: # Manual trigger — always deploys regardless of changed paths
-  workflow_run:
-    workflows: ["Continuous Integration"]
-    types: [completed]
-    branches: [main]
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/lib/stacks/shared/**"
+      - "infra/lib/projects/shared/**"
+      - "infra/lib/shared/**"
+      - "infra/lib/constructs/**"
+      - "infra/lib/factories/**"
+      - "infra/lib/utilities/**"
+      - "infra/lib/config/**"
+      - "infra/bin/app.ts"
+      - ".github/workflows/deploy-shared.yml"
+      - ".github/workflows/_deploy-stack.yml"
+      - ".github/actions/**"
+
+  workflow_dispatch:
 
 permissions:
   id-token: write
@@ -36,77 +61,10 @@ concurrency:
 
 jobs:
   # ===========================================================================
-  # Gate — CI must have succeeded + relevant paths must have changed.
-  # Skips all deploy jobs on pushes that didn't touch shared-infra files.
-  # workflow_dispatch bypasses the paths check and always deploys.
-  # ===========================================================================
-  gate:
-    name: Check CI result + changed paths
-    runs-on: ubuntu-latest
-    outputs:
-      deploy: ${{ steps.decide.outputs.deploy }}
-    steps:
-      - name: Check upstream conclusion
-        id: upstream
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
-            CONCLUSION="${{ github.event.workflow_run.conclusion }}"
-            echo "conclusion=$CONCLUSION" >> "$GITHUB_OUTPUT"
-            if [[ "$CONCLUSION" != "success" ]]; then
-              echo "ok=false" >> "$GITHUB_OUTPUT"
-              echo "CI concluded: $CONCLUSION — will skip deploy."
-            else
-              echo "ok=true" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        if: steps.upstream.outputs.ok == 'true'
-        with:
-          # Check out the commit that triggered CI, not the workflow file HEAD.
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-          fetch-depth: 2  # HEAD + HEAD~1 required for the diff below
-
-      - name: Detect changed paths
-        id: paths
-        if: steps.upstream.outputs.ok == 'true' && github.event_name == 'workflow_run'
-        run: |
-          changed=$(git diff --name-only HEAD~1 HEAD)
-          echo "Changed files:"
-          echo "$changed"
-          if echo "$changed" | grep -qE \
-            '^(infra/lib/shared/|infra/lib/stacks/shared/|infra/lib/common/(finops|security|iam|cognito)/|infra/bin/app\.ts$|scripts/deployment/stacks\.ts$|\.github/workflows/deploy-shared\.yml$|\.github/workflows/_deploy-stack\.yml$|\.github/actions/)'; then
-            echo "relevant=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "relevant=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Decide whether to deploy
-        id: decide
-        run: |
-          if [[ "${{ steps.upstream.outputs.ok }}" != "true" ]]; then
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "Upstream did not succeed — skipping."
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-            echo "Manual trigger — deploying."
-          elif [[ "${{ steps.paths.outputs.relevant }}" == "true" ]]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-            echo "Shared-infra paths changed — deploying."
-          else
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "No shared-infra paths changed — skipping deploy."
-          fi
-
-  # ===========================================================================
   # Stack 1: VPC + ECR — Foundation for all projects
   # ===========================================================================
   deploy-infra:
     name: Deploy VPC + ECR
-    needs: [gate]
-    if: needs.gate.outputs.deploy == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-Infra-development
@@ -120,12 +78,9 @@ jobs:
 
   # ===========================================================================
   # Stack 2: Security Baseline — GuardDuty + Security Hub + Access Analyzer
-  # Independent of VPC — runs in parallel.
   # ===========================================================================
   deploy-security:
     name: Deploy Security Baseline
-    needs: [gate]
-    if: needs.gate.outputs.deploy == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-SecurityBaseline-development
@@ -140,13 +95,10 @@ jobs:
 
   # ===========================================================================
   # Stack 3: FinOps — AWS Budgets + SNS Alerting
-  # Independent of VPC — runs in parallel.
   # Cost: Free (first 2 budgets per account).
   # ===========================================================================
   deploy-finops:
     name: Deploy FinOps
-    needs: [gate]
-    if: needs.gate.outputs.deploy == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-FinOps-development
@@ -161,13 +113,10 @@ jobs:
 
   # ===========================================================================
   # Stack 4: Crossplane — IAM User + Secrets Manager for K8s Infra Abstraction
-  # Independent of VPC — runs in parallel.
   # Cost: $0.40/month (Secrets Manager secret storage).
   # ===========================================================================
   deploy-crossplane:
     name: Deploy Crossplane IAM
-    needs: [gate]
-    if: needs.gate.outputs.deploy == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-Crossplane-development
@@ -181,13 +130,10 @@ jobs:
 
   # ===========================================================================
   # Stack 5: Cognito Auth — Admin Authentication (User Pool + Hosted UI)
-  # Independent of VPC — runs in parallel.
   # Cost: Free (first 50,000 MAUs).
   # ===========================================================================
   deploy-cognito:
     name: Deploy Cognito Auth
-    needs: [gate]
-    if: needs.gate.outputs.deploy == 'true'
     uses: ./.github/workflows/_deploy-stack.yml
     with:
       stack-name: Shared-CognitoAuth-development
@@ -201,14 +147,14 @@ jobs:
 
   deploy-marker:
     name: Loki deploy marker
-    needs: [gate, deploy-infra, deploy-security, deploy-finops, deploy-crossplane, deploy-cognito]
-    if: always() && needs.gate.outputs.deploy == 'true'
+    needs: [deploy-infra, deploy-security, deploy-finops, deploy-crossplane, deploy-cognito]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Compute aggregate status
         id: agg
         env:
