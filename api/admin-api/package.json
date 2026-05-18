@@ -39,7 +39,7 @@
     "@aws-sdk/client-cognito-identity-provider": "^3.1039.0",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.20.0",
-    "tsx": "^4.21.0",
+    "tsx": "^4.22.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.5"
   }
