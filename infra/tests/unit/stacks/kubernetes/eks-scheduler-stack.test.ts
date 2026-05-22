@@ -14,13 +14,22 @@ function hasAction(stmt: Record<string, unknown>, action: string): boolean {
     return a === action || (Array.isArray(a) && (a as string[]).includes(action));
 }
 
+/** All namespaces referenced by any EKS AccessEntry's access policies. */
+function accessEntryNamespaces(template: Template): string[] {
+    const entries = template.findResources('AWS::EKS::AccessEntry');
+    return Object.values(entries).flatMap((r: any) =>
+        (r.Properties?.AccessPolicies ?? []).flatMap(
+            (p: any) => p.AccessScope?.Namespaces ?? [],
+        ),
+    );
+}
+
 function buildStack(): Template {
     const { app, cluster } = createMockEksCluster();
 
     const schedulerStack = new EksSchedulerStack(app, 'SchedulerStack', {
         env: TEST_ENV_EU,
         cluster,
-        nodeGroupName: 'system-ng',
     });
 
     return Template.fromStack(schedulerStack);
@@ -72,20 +81,37 @@ describe('EksSchedulerStack', () => {
         expect(hasAction(updateStmt!, 'eks:ListNodegroups')).toBe(false);
     });
 
-    it('should scope ec2:TerminateInstances to workload tag on Lambda execution role', () => {
+    it('should scope ec2:TerminateInstances to any Karpenter pool tag on Lambda execution role', () => {
         template.hasResourceProperties('AWS::IAM::Policy', {
             PolicyDocument: {
                 Statement: Match.arrayWith([
                     Match.objectLike({
                         Action: 'ec2:TerminateInstances',
                         Condition: {
-                            StringEquals: {
-                                'ec2:ResourceTag/eks-cluster-pool': 'workloads-default',
+                            StringLike: {
+                                'ec2:ResourceTag/eks-cluster-pool': '*',
                             },
                         },
                     }),
                 ]),
             },
         });
+    });
+
+    it('should grant EKS edit access scoped to karpenter and argocd namespaces only', () => {
+        // Pins the namespace boundary: karpenter+argocd are explicitly scaled.
+        // ESO is NOT patched by Lambda — it recovers via ArgoCD reconciliation.
+        template.hasResourceProperties('AWS::EKS::AccessEntry', {
+            AccessPolicies: Match.arrayWith([
+                Match.objectLike({
+                    AccessScope: {
+                        Type: 'namespace',
+                        Namespaces: Match.arrayWith(['karpenter', 'argocd']),
+                    },
+                }),
+            ]),
+        });
+        // external-secrets must NOT be in scope
+        expect(accessEntryNamespaces(template)).not.toContain('external-secrets');
     });
 });

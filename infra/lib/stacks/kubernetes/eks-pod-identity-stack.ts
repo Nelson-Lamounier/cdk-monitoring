@@ -377,6 +377,34 @@ export class EksPodIdentityStack extends cdk.Stack {
                         resources: ['arn:aws:s3:::*'],
                     }),
                 );
+                // Cognito admin operations for the account-termination flow:
+                //   AdminDisableUser — called from POST /api/admin/me/delete
+                //                      to block login during the soft-delete
+                //                      grace window.
+                //   AdminEnableUser  — called from POST /api/admin/users/:id/restore
+                //                      (support tool) to undo the disable.
+                //   AdminDeleteUser  — called by the daily account-sweep
+                //                      CronJob after the 30-day grace expires.
+                //                      Frees the email for re-registration.
+                // Scoped to all user pools in this account/region — the
+                // specific pool ARN is not available at CDK synthesis time
+                // (pool is created in a sibling stack with cross-stack ARN
+                // imports adding deploy ordering complexity). Wildcard is
+                // acceptable because the only resource type covered is
+                // userpool and the account boundary already isolates dev/prod.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'AdminApiCognitoAccountTermination',
+                        actions: [
+                            'cognito-idp:AdminDisableUser',
+                            'cognito-idp:AdminEnableUser',
+                            'cognito-idp:AdminDeleteUser',
+                        ],
+                        resources: [
+                            `arn:aws:cognito-idp:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:userpool/*`,
+                        ],
+                    }),
+                );
                 break;
             case 'image-updater':
                 // ArgoCD Image Updater polls ECR for new image tags using
@@ -418,6 +446,123 @@ export class EksPodIdentityStack extends cdk.Stack {
                         resources: [
                             `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/k8s/${props.targetEnvironment}/headlamp-viewer-token`,
                         ],
+                    }),
+                );
+                break;
+
+            case 'admin-api':
+                // S3 access for article assets (images, uploads). Bucket name is
+                // environment-specific and resolved at runtime from env vars — kept
+                // as a prefix wildcard to avoid a circular dependency on DataStack.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'AdminApiS3Assets',
+                        actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+                        resources: ['arn:aws:s3:::*/*'],
+                    }),
+                );
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'AdminApiS3ListBucket',
+                        actions: ['s3:ListBucket'],
+                        resources: ['arn:aws:s3:::*'],
+                    }),
+                );
+                break;
+
+            case 'image-updater':
+                // ArgoCD Image Updater reads ECR to discover new image tags.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'ImageUpdaterEcrRead',
+                        actions: ['ecr:GetAuthorizationToken'],
+                        resources: ['*'],
+                    }),
+                );
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'ImageUpdaterEcrDescribe',
+                        actions: [
+                            'ecr:BatchGetImage',
+                            'ecr:GetDownloadUrlForLayer',
+                            'ecr:DescribeImages',
+                            'ecr:DescribeRepositories',
+                            'ecr:ListImages',
+                        ],
+                        resources: [
+                            `arn:aws:ecr:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:repository/*`,
+                        ],
+                    }),
+                );
+                break;
+
+            case 'headlamp-token-pusher':
+                // PostSync Job writes both SA tokens to SSM so operators can
+                // retrieve them without kubectl. Scoped to the two token paths
+                // for this environment only.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'HeadlampPushTokens',
+                        actions: ['ssm:PutParameter'],
+                        resources: [
+                            `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/k8s/${props.targetEnvironment}/headlamp-viewer-token`,
+                            `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/k8s/${props.targetEnvironment}/headlamp-admin-token`,
+                        ],
+                    }),
+                );
+                break;
+
+            case 'ingestion':
+                // Ingestion Jobs call Bedrock for chunk enrichment (skill/tech
+                // extraction). Cross-region inference profiles route across eu-*
+                // regions — both the profile ARN and the underlying foundation
+                // model ARNs must be allowed for the request to succeed.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'IngestionBedrockInvoke',
+                        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+                        resources: [
+                            `arn:aws:bedrock:*:${cdk.Stack.of(this).account}:inference-profile/*`,
+                            'arn:aws:bedrock:*::foundation-model/*',
+                        ],
+                    }),
+                );
+                break;
+
+            case 'job-strategist':
+                // Job-strategist K8s Jobs invoke Bedrock for multi-agent research
+                // (JD analysis, gap identification, resume tailoring). Uses the
+                // same eu.* cross-region inference profile as ingestion.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'JobStrategistBedrockInvoke',
+                        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+                        resources: [
+                            `arn:aws:bedrock:*:${cdk.Stack.of(this).account}:inference-profile/*`,
+                            'arn:aws:bedrock:*::foundation-model/*',
+                        ],
+                    }),
+                );
+                break;
+
+            case 'article-pipeline':
+                // Article-pipeline K8s Jobs invoke Bedrock for content generation
+                // and read draft markdown files from the shared S3 assets bucket.
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'ArticlePipelineBedrockInvoke',
+                        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+                        resources: [
+                            `arn:aws:bedrock:*:${cdk.Stack.of(this).account}:inference-profile/*`,
+                            'arn:aws:bedrock:*::foundation-model/*',
+                        ],
+                    }),
+                );
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'ArticlePipelineS3DraftRead',
+                        actions: ['s3:GetObject'],
+                        resources: ['arn:aws:s3:::*/*'],
                     }),
                 );
                 break;

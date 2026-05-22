@@ -19,7 +19,7 @@ import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
 
-import { EksKarpenterNodePoolConfig } from '../../config/eks';
+import { EksKarpenterNodePoolConfig, EksKarpenterSystemPoolConfig } from '../../config/eks';
 import { Environment } from '../../config/environments';
 
 export interface EksKarpenterStackProps extends cdk.StackProps {
@@ -28,6 +28,13 @@ export interface EksKarpenterStackProps extends cdk.StackProps {
     readonly workerNodeRole: iam.IRole;
     readonly subnetTagKey: string;
     readonly karpenter: EksKarpenterNodePoolConfig;
+    /**
+     * Optional elastic system-tier NodePool. When defined, renders a second
+     * EC2NodeClass + NodePool tainted `dedicated=system:NoSchedule` and
+     * labelled `node-role=system`, weight 10 so the scheduler prefers it
+     * over the workload pool for tolerating pods.
+     */
+    readonly systemPool?: EksKarpenterSystemPoolConfig;
 }
 
 export class EksKarpenterStack extends cdk.Stack {
@@ -128,6 +135,114 @@ export class EksKarpenterStack extends cdk.Stack {
                 },
             ],
         });
+
+        if (props.systemPool) {
+            const sys = props.systemPool;
+            new eks.KubernetesManifest(this, 'SystemEC2NodeClass', {
+                cluster: props.cluster,
+                prune: false,
+                manifest: [
+                    {
+                        apiVersion: 'karpenter.k8s.aws/v1',
+                        kind: 'EC2NodeClass',
+                        metadata: { name: 'system-class' },
+                        spec: {
+                            amiFamily: 'AL2023',
+                            amiSelectorTerms: [{ alias: 'al2023@latest' }],
+                            role: cdk.Fn.select(1, cdk.Fn.split('/', props.workerNodeRole.roleArn)),
+                            subnetSelectorTerms: [{ tags: { [props.subnetTagKey]: 'shared' } }],
+                            // Same tag-based SG discovery as the workload
+                            // EC2NodeClass — selects the EKS-managed cluster
+                            // SG (auto-tagged kubernetes.io/cluster/<name>:
+                            // owned), which carries node-to-node + control-
+                            // plane↔kubelet rules. No pre-provisioned CDK SG.
+                            securityGroupSelectorTerms: [
+                                { tags: { [`kubernetes.io/cluster/${props.cluster.clusterName}`]: 'owned' } },
+                            ],
+                            // IMDSv2 hop limit 2 — pods run behind a veth
+                            // bridge (one extra hop); default limit 1 drops
+                            // pod IMDS requests. Parity with workload class.
+                            metadataOptions: {
+                                httpEndpoint: 'enabled',
+                                httpProtocolIPv6: 'disabled',
+                                httpPutResponseHopLimit: 2,
+                                httpTokens: 'required',
+                            },
+                            tags: {
+                                'eks-cluster-pool': 'system',
+                                Name: 'k8s-eks-system',
+                            },
+                        },
+                    },
+                ],
+            });
+
+            // System pool. Weight 10 (workload default 0) so the scheduler
+            // prefers it for pods that tolerate the `dedicated=system` taint —
+            // matters when a pod has no nodeSelector but does tolerate.
+            // Pods select via `node-role=system` label, identical to MNG, so
+            // ESO / cert-manager / etc. land on either MNG or this pool.
+            new eks.KubernetesManifest(this, 'SystemNodePool', {
+                cluster: props.cluster,
+                prune: false,
+                manifest: [
+                    {
+                        apiVersion: 'karpenter.sh/v1',
+                        kind: 'NodePool',
+                        metadata: { name: 'system' },
+                        spec: {
+                            weight: 10,
+                            template: {
+                                metadata: {
+                                    labels: { 'node-role': 'system' },
+                                },
+                                spec: {
+                                    taints: [
+                                        { key: 'dedicated', value: 'system', effect: 'NoSchedule' },
+                                    ],
+                                    nodeClassRef: {
+                                        group: 'karpenter.k8s.aws',
+                                        kind: 'EC2NodeClass',
+                                        name: 'system-class',
+                                    },
+                                    requirements: [
+                                        {
+                                            key: 'karpenter.k8s.aws/instance-family',
+                                            operator: 'In',
+                                            values: [...sys.instanceFamily],
+                                        },
+                                        {
+                                            // t3 sizes share vCPU; size is the
+                                            // memory discriminator. Karpenter picks
+                                            // smallest fitting then consolidates up.
+                                            key: 'karpenter.k8s.aws/instance-size',
+                                            operator: 'In',
+                                            values: [...sys.instanceSizes],
+                                        },
+                                        {
+                                            key: 'karpenter.sh/capacity-type',
+                                            operator: 'In',
+                                            values: [...sys.capacityType],
+                                        },
+                                        {
+                                            key: 'kubernetes.io/arch',
+                                            operator: 'In',
+                                            values: [...sys.architectures],
+                                        },
+                                    ],
+                                    expireAfter: '720h',
+                                },
+                            },
+                            disruption: {
+                                consolidationPolicy: 'WhenEmptyOrUnderutilized',
+                                consolidateAfter: '1m',
+                            },
+                            limits: { cpu: sys.cpuLimit },
+                        },
+                    },
+                ],
+            });
+        }
 
         new eks.KubernetesManifest(this, 'NodePool', {
             cluster: props.cluster,

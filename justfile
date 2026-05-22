@@ -306,7 +306,11 @@ dora-metrics:
 etcd-restore-rto:
     ./scripts/local/etcd-restore-rto-test.sh
 
-# Scale dev EKS cluster up and update kubeconfig
+# Scale dev EKS cluster up by invoking the ScaleUpFn Lambda — the SAME
+# code path the 04:00 EventBridge schedule uses. dev-start does NOT
+# reimplement scaling: that drift is exactly what caused MNG/instance
+# mismatches. The Lambda owns MNG sizing, Karpenter, ArgoCD, WAF sync;
+# ESO recovers via ArgoCD reconciliation.
 # Usage: just dev-start [environment]
 [group('eks')]
 dev-start env='development':
@@ -314,147 +318,75 @@ dev-start env='development':
     set -euo pipefail
     CLUSTER="k8s-eks-{{env}}"
     PROFILE=$(just _profile {{env}})
-    NG=$(aws eks list-nodegroups --cluster-name "$CLUSTER" \
+    FN=$(aws lambda list-functions \
          --region eu-west-1 --profile "$PROFILE" \
-         --query 'nodegroups[0]' --output text)
-    echo "Scaling system node group up..."
-    aws eks update-nodegroup-config --cluster-name "$CLUSTER" \
-         --nodegroup-name "$NG" \
-         --scaling-config minSize=3,maxSize=4,desiredSize=3 \
-         --region eu-west-1 --profile "$PROFILE"
+         --query "Functions[?starts_with(FunctionName, 'EksScheduler-{{env}}-ScaleUpFn')].FunctionName | [0]" \
+         --output text)
+    if [ -z "$FN" ] || [ "$FN" = "None" ]; then
+        echo "ScaleUpFn not found — is EksScheduler-{{env}} deployed?" >&2
+        exit 1
+    fi
+    echo "Invoking $FN (same path as the 04:00 schedule)..."
+    aws lambda invoke --function-name "$FN" \
+         --region eu-west-1 --profile "$PROFILE" \
+         --payload '{}' --cli-binary-format raw-in-base64-out \
+         /tmp/dev-start-scaleup.json >/dev/null
+    RESP=$(cat /tmp/dev-start-scaleup.json)
+    echo "ScaleUpFn response: $RESP"
+    if echo "$RESP" | grep -q errorMessage; then
+        echo "ScaleUpFn failed — see response above and CloudWatch logs" >&2
+        exit 1
+    fi
     echo "Updating kubeconfig..."
     aws eks update-kubeconfig --name "$CLUSTER" \
          --region eu-west-1 --profile "$PROFILE"
-    echo "Waiting for system nodes to be Ready (timeout 5 min)..."
-    kubectl wait node \
-         --selector eks.amazonaws.com/nodegroup="$NG" \
-         --for=condition=Ready \
-         --timeout=300s
-    # Restore Karpenter controller. dev-shutdown scales it to zero after clearing
-    # NodeClaim finalizers; it must be brought back before workloads need nodes.
-    echo "Restoring Karpenter controller (2 replicas)..."
-    kubectl scale deployment karpenter -n karpenter --replicas=2
-    kubectl rollout status deployment karpenter -n karpenter --timeout=120s
-    # Restore ArgoCD. dev-shutdown scales all argocd deployments to zero to
-    # prevent automated sync from pushing workloads back to their git replica
-    # count while the cluster is shutting down. Restore before WAF sync so
-    # ArgoCD can reconcile apps as Karpenter provisions workload nodes.
-    echo "Restoring ArgoCD components..."
-    kubectl scale deployment \
-        argocd-applicationset-controller argocd-dex-server argocd-image-updater \
-        argocd-notifications-controller argocd-redis argocd-repo-server argocd-server \
-        -n argocd --replicas=1
-    kubectl rollout status deployment argocd-server -n argocd --timeout=120s
-    # Sync WAF IP sets from SSM after cluster start. EventBridge only fires on
-    # SSM parameter changes, so it never triggers during a cluster start — the
-    # IP sets would remain empty and every allowlisted host returns 403.
-    bash scripts/local/waf-ip-sync.sh {{env}}
-    echo "Cluster ready"
+    # Poll until a system node registers Ready. kubectl wait is NOT used:
+    # MNG provisioning is async, so `kubectl wait` errors immediately with
+    # "no matching resources found" when zero nodes exist at call time.
+    echo "Waiting for a system node to be Ready (timeout ~5 min)..."
+    for i in $(seq 1 60); do
+        READY=$(kubectl get nodes -l node-role=system --no-headers 2>/dev/null \
+                | grep -cw Ready || true)
+        if [ "${READY:-0}" -ge 1 ]; then
+            echo "System node Ready"
+            break
+        fi
+        [ "$i" -eq 60 ] && { echo "Timed out waiting for system node" >&2; exit 1; }
+        sleep 5
+    done
+    echo "Cluster ready (ArgoCD will reconcile workloads + ESO)"
 
-# Sync WAF IP allowlist from SSM — use after cluster start or when allowlisted
-# hosts (ops.*, tucaken.io) return 403. EventBridge fires on SSM change only.
-# Usage: just waf-ip-sync [environment]
-[group('eks')]
-waf-ip-sync env='development':
-    bash scripts/local/waf-ip-sync.sh {{env}}
-
-# Scale dev EKS cluster down — drains Karpenter nodes first to prevent re-provisioning
+# Scale dev EKS cluster down by invoking the ScaleDownFn Lambda — the
+# SAME code path the 23:00 EventBridge schedule uses. Symmetric with
+# dev-start: a single source of truth, no reimplemented logic to drift.
+# ScaleDownFn scales ESO/Karpenter/ArgoCD to 0, terminates ALL Karpenter
+# EC2s (every pool, by tag key), and sets the MNG to 0.
 # Usage: just dev-shutdown [environment]
 [group('eks')]
 dev-shutdown env='development':
     #!/usr/bin/env bash
     set -euo pipefail
-    CLUSTER="k8s-eks-{{env}}"
     PROFILE=$(just _profile {{env}})
-    NG=$(aws eks list-nodegroups --cluster-name "$CLUSTER" \
+    FN=$(aws lambda list-functions \
          --region eu-west-1 --profile "$PROFILE" \
-         --query 'nodegroups[0]' --output text)
-    # Ensure kubeconfig is current so kubectl commands can reach the API server.
-    echo "Updating kubeconfig..."
-    aws eks update-kubeconfig --name "$CLUSTER" \
-         --region eu-west-1 --profile "$PROFILE"
-    # Step 0: suppress workload demand so Karpenter has nothing to provision for.
-    # Cordon first — scheduler rejects new pods immediately. Then zero non-system
-    # deployments so any pending pods disappear. Without pending pods, deleting
-    # NodeClaims is terminal; Karpenter will not re-provision replacements.
-    echo "Cordoning Karpenter nodes..."
-    kubectl cordon -l karpenter.sh/nodepool 2>/dev/null || true
-    echo "Scaling non-system deployments to zero..."
-    # Exclude karpenter namespace: Karpenter must stay running to clear
-    # karpenter.sh/termination finalizers on NodeClaims. Scaling it here causes
-    # NodeClaims to get stuck Terminating in etcd permanently (zombie nodes).
-    for ns in $(kubectl get ns --no-headers -o custom-columns=':metadata.name' \
-                | grep -Ev '^(kube-system|karpenter)$'); do
-        kubectl scale deployment --all --replicas=0 -n "$ns" 2>/dev/null || true
-    done
-    # Brief pause for the scheduler to clear pending pods before Karpenter reconciles.
-    sleep 15
-    # Step 1: delete NodeClaims so Karpenter terminates its nodes.
-    # Karpenter must be running at this point to process the karpenter.sh/termination
-    # finalizer on each NodeClaim. Do NOT scale Karpenter before this wait completes.
-    echo "Checking for Karpenter NodeClaims..."
-    NODECLAIMS=$(kubectl get nodeclaims --no-headers 2>/dev/null || true)
-    if [ -n "$NODECLAIMS" ] && ! echo "$NODECLAIMS" | grep -q "No resources found"; then
-        echo "Deleting Karpenter NodeClaims..."
-        kubectl delete nodeclaims --all --wait=false
-        echo "Waiting up to 120s for Karpenter nodes to drain..."
-        kubectl wait node \
-             --selector karpenter.sh/nodepool \
-             --for=delete \
-             --timeout=120s 2>/dev/null || true
-    else
-        echo "No active NodeClaims — skipping drain step"
+         --query "Functions[?starts_with(FunctionName, 'EksScheduler-{{env}}-ScaleDownFn')].FunctionName | [0]" \
+         --output text)
+    if [ -z "$FN" ] || [ "$FN" = "None" ]; then
+        echo "ScaleDownFn not found — is EksScheduler-{{env}} deployed?" >&2
+        exit 1
     fi
-    # Step 1b: scale Karpenter to zero only after NodeClaims are cleared.
-    # At this point there are no NodeClaims with pending finalizers, so it is
-    # safe to stop the controller.
-    echo "Scaling Karpenter controller to zero..."
-    kubectl scale deployment karpenter -n karpenter --replicas=0 2>/dev/null || true
-    # Step 2: scale system MNG to zero.
-    echo "Scaling system node group to zero..."
-    aws eks update-nodegroup-config --cluster-name "$CLUSTER" \
-         --nodegroup-name "$NG" \
-         --scaling-config minSize=0,maxSize=4,desiredSize=0 \
-         --region eu-west-1 --profile "$PROFILE"
-    # Step 3: force-terminate any workload instances still running (safety net
-    # for nodes that were already being replaced when NodeClaims were deleted).
-    INSTANCES=$(aws ec2 describe-instances \
-         --filters "Name=tag:eks-cluster-pool,Values=workloads-default" \
-                   "Name=instance-state-name,Values=running,pending" \
-         --query 'Reservations[].Instances[].InstanceId' \
-         --output text --region eu-west-1 --profile "$PROFILE")
-    if [ -n "$INSTANCES" ]; then
-        aws ec2 terminate-instances --instance-ids $INSTANCES \
-             --region eu-west-1 --profile "$PROFILE" > /dev/null
-        echo "Force-terminated workload nodes: $INSTANCES"
+    echo "Invoking $FN (same path as the 23:00 schedule)..."
+    aws lambda invoke --function-name "$FN" \
+         --region eu-west-1 --profile "$PROFILE" \
+         --payload '{}' --cli-binary-format raw-in-base64-out \
+         /tmp/dev-shutdown-scaledown.json >/dev/null
+    RESP=$(cat /tmp/dev-shutdown-scaledown.json)
+    echo "ScaleDownFn response: $RESP"
+    if echo "$RESP" | grep -q errorMessage; then
+        echo "ScaleDownFn failed — see response above and CloudWatch logs" >&2
+        exit 1
     fi
-    # Re-check after a brief pause — catches any instance Karpenter provisioned
-    # between NodeClaim deletion and the filter above (the race this patch fixes).
-    sleep 10
-    LATE_INSTANCES=$(aws ec2 describe-instances \
-         --filters "Name=tag:karpenter.sh/nodepool,Values=workloads-default" \
-                   "Name=instance-state-name,Values=running,pending" \
-         --query 'Reservations[].Instances[].InstanceId' \
-         --output text --region eu-west-1 --profile "$PROFILE")
-    if [ -n "$LATE_INSTANCES" ]; then
-        aws ec2 terminate-instances --instance-ids $LATE_INSTANCES \
-             --region eu-west-1 --profile "$PROFILE" > /dev/null
-        echo "Force-terminated late-provisioned Karpenter nodes: $LATE_INSTANCES"
-    fi
-    # Step 4: force-terminate system MNG instances that are still running while
-    # the scale-to-zero update propagates (MNG scale is async, this is instant).
-    MNG_INSTANCES=$(aws ec2 describe-instances \
-         --filters "Name=tag:eks:nodegroup-name,Values=$NG" \
-                   "Name=tag:eks:cluster-name,Values=$CLUSTER" \
-                   "Name=instance-state-name,Values=running,pending" \
-         --query 'Reservations[].Instances[].InstanceId' \
-         --output text --region eu-west-1 --profile "$PROFILE")
-    if [ -n "$MNG_INSTANCES" ]; then
-        aws ec2 terminate-instances --instance-ids $MNG_INSTANCES \
-             --region eu-west-1 --profile "$PROFILE" > /dev/null
-        echo "Force-terminated system MNG nodes: $MNG_INSTANCES"
-    fi
-    echo "Cluster shutting down"
+    echo "Cluster shutting down (MNG drains async over ~1-2 min)"
 
 
 # =============================================================================
