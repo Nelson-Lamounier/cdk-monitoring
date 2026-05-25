@@ -75,6 +75,10 @@ export interface SharedVpcStackProps extends cdk.StackProps {
     readonly ingestionEcrRepositoryName?: string;
     /** Enable ingestion ECR repository creation @default true */
     readonly createIngestionEcrRepository?: boolean;
+    /** tech-extractor K8s Job ECR repository name @default 'tech-extractor' */
+    readonly techExtractorEcrRepositoryName?: string;
+    /** Enable tech-extractor ECR repository creation @default true */
+    readonly createTechExtractorEcrRepository?: boolean;
     /** article-pipeline K8s Job ECR repository name @default 'article-pipeline' */
     readonly articlePipelineEcrRepositoryName?: string;
     /** Enable article-pipeline ECR repository creation @default true */
@@ -133,6 +137,8 @@ export class SharedVpcStack extends cdk.Stack {
     public readonly wikiMcpEcrRepository?: ecr.Repository;
     /** ECR Repository for the ingestion K8s Job (Phase 3) */
     public readonly ingestionEcrRepository?: ecr.Repository;
+    /** ECR Repository for the tech-extractor K8s Job (Layer 1) */
+    public readonly techExtractorEcrRepository?: ecr.Repository;
     /** ECR Repository for the article-pipeline K8s Job (Phase 4) */
     public readonly articlePipelineEcrRepository?: ecr.Repository;
     /** ECR Repository for the job-strategist K8s Job (Phase 4) */
@@ -526,6 +532,66 @@ export class SharedVpcStack extends cdk.Stack {
             new cdk.CfnOutput(this, 'IngestionEcrRepositoryUri', {
                 value: this.ingestionEcrRepository.repositoryUri,
                 description: 'ingestion K8s Job ECR Repository URI for docker push/pull',
+            });
+        }
+
+        // =====================================================================
+        // ECR Repository (tech-extractor) — Layer 1 deterministic tech extraction
+        // One-shot pod created on demand by admin-api, alongside ingestion.
+        // SSM params stored under /shared/ecr-tech-extractor/{env}/ for CI discovery.
+        // =====================================================================
+        if (props.createTechExtractorEcrRepository !== false) {
+            const techExtractorRepoName = props.techExtractorEcrRepositoryName ?? 'tech-extractor';
+            const isProduction = props.targetEnvironment === Environment.PRODUCTION;
+
+            this.techExtractorEcrRepository = new ecr.Repository(this, 'TechExtractorEcrRepository', {
+                repositoryName: techExtractorRepoName,
+                imageScanOnPush: true,
+                imageTagMutability: ecr.TagMutability.MUTABLE,
+                encryption: ecr.RepositoryEncryption.AES_256,
+                removalPolicy: isProduction ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+                lifecycleRules: [
+                    {
+                        rulePriority: 1,
+                        description: 'Remove untagged images after 30 days',
+                        tagStatus: ecr.TagStatus.UNTAGGED,
+                        maxImageAge: cdk.Duration.days(30),
+                    },
+                    {
+                        rulePriority: 2,
+                        description: 'Keep only 50 most recent tagged images',
+                        tagStatus: ecr.TagStatus.ANY,
+                        maxImageCount: 50,
+                    },
+                ],
+            });
+
+            const techExtractorEcrSsmPrefix = `/shared/ecr-tech-extractor/${props.targetEnvironment}`;
+
+            new ssm.StringParameter(this, 'SsmTechExtractorEcrRepositoryUri', {
+                parameterName: `${techExtractorEcrSsmPrefix}/repository-uri`,
+                stringValue: this.techExtractorEcrRepository.repositoryUri,
+                description: `tech-extractor ECR repository URI for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmTechExtractorEcrRepositoryArn', {
+                parameterName: `${techExtractorEcrSsmPrefix}/repository-arn`,
+                stringValue: this.techExtractorEcrRepository.repositoryArn,
+                description: `tech-extractor ECR repository ARN for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new ssm.StringParameter(this, 'SsmTechExtractorEcrRepositoryName', {
+                parameterName: `${techExtractorEcrSsmPrefix}/repository-name`,
+                stringValue: this.techExtractorEcrRepository.repositoryName,
+                description: `tech-extractor ECR repository name for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
+            });
+
+            new cdk.CfnOutput(this, 'TechExtractorEcrRepositoryUri', {
+                value: this.techExtractorEcrRepository.repositoryUri,
+                description: 'tech-extractor K8s Job ECR Repository URI for docker push/pull',
             });
         }
 

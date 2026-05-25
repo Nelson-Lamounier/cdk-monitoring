@@ -165,6 +165,41 @@ describe('SharedVpcStack', () => {
         });
     });
 
+    describe('tech-extractor ECR Repository', () => {
+        it('should create tech-extractor ECR repository by default', () => {
+            const { stack, template } = createSharedVpcStack({
+                targetEnvironment: Environment.DEVELOPMENT,
+            });
+            expect(stack.techExtractorEcrRepository).toBeDefined();
+            template.hasResourceProperties('AWS::ECR::Repository', {
+                RepositoryName: 'tech-extractor',
+                ImageScanningConfiguration: { ScanOnPush: true },
+            });
+        });
+
+        it('should NOT create tech-extractor ECR repository when disabled', () => {
+            const { stack } = createSharedVpcStack({
+                createTechExtractorEcrRepository: false,
+            });
+            expect(stack.techExtractorEcrRepository).toBeUndefined();
+        });
+
+        it('should publish SSM parameters for tech-extractor ECR discovery', () => {
+            const { template } = createSharedVpcStack({
+                targetEnvironment: Environment.DEVELOPMENT,
+            });
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/shared/ecr-tech-extractor/development/repository-uri',
+            });
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/shared/ecr-tech-extractor/development/repository-arn',
+            });
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/shared/ecr-tech-extractor/development/repository-name',
+            });
+        });
+    });
+
     describe('wiki-mcp ECR Repository', () => {
         it('should NOT create wiki-mcp ECR repository by default (opt-in)', () => {
             const { stack } = createSharedVpcStack();
