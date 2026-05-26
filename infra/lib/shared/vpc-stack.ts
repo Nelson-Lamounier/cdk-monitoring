@@ -14,6 +14,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
+import { NagSuppressions } from 'cdk-nag';
 
 import { Construct } from 'constructs';
 
@@ -688,6 +689,16 @@ export class SharedVpcStack extends cdk.Stack {
                     { id: 'expire-batch-io', expiration: cdk.Duration.days(14) },
                 ],
             });
+            NagSuppressions.addResourceSuppressions(this.ontologyImporterBatchBucket, [
+                {
+                    id: 'AwsSolutions-S1',
+                    reason:
+                        'Transient Bedrock batch I/O bucket (14-day lifecycle expiry, BLOCK_ALL public, enforceSSL, ' +
+                        'S3-managed encryption). Server access logs would require a second always-on bucket purely ' +
+                        'for ephemeral JSONL records that are gone within two weeks — no audit value. CloudTrail data ' +
+                        'events on the bucket provide the API-level audit trail if needed.',
+                },
+            ]);
             new ssm.StringParameter(this, 'SsmOntologyImporterBatchBucket', {
                 parameterName: `/shared/ontology-importer/${props.targetEnvironment}/batch-bucket`,
                 stringValue: this.ontologyImporterBatchBucket.bucketName,
