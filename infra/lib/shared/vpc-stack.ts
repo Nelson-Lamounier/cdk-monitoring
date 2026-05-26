@@ -6,6 +6,8 @@
  * Stack name: {Namespace}-VpcStack-{environment} (e.g., Monitoring-VpcStack-dev)
  */
 
+import { NagSuppressions } from 'cdk-nag';
+
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -14,7 +16,6 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
-import { NagSuppressions } from 'cdk-nag';
 
 import { Construct } from 'constructs';
 
