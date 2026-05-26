@@ -11,6 +11,7 @@ import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
@@ -83,6 +84,8 @@ export interface SharedVpcStackProps extends cdk.StackProps {
     readonly ontologyImporterEcrRepositoryName?: string;
     /** Enable ontology-importer ECR repository creation @default true */
     readonly createOntologyImporterEcrRepository?: boolean;
+    /** Enable ontology-importer Bedrock batch I/O S3 bucket creation @default true */
+    readonly createOntologyImporterBatchBucket?: boolean;
     /** article-pipeline K8s Job ECR repository name @default 'article-pipeline' */
     readonly articlePipelineEcrRepositoryName?: string;
     /** Enable article-pipeline ECR repository creation @default true */
@@ -145,6 +148,8 @@ export class SharedVpcStack extends cdk.Stack {
     public readonly techExtractorEcrRepository?: ecr.Repository;
     /** ECR Repository for the ontology-importer CronJob (Tier 2 ontology auto-import) */
     public readonly ontologyImporterEcrRepository?: ecr.Repository;
+    /** S3 bucket holding Bedrock batch input/output JSONL for the ontology-importer */
+    public readonly ontologyImporterBatchBucket?: s3.Bucket;
     /** ECR Repository for the article-pipeline K8s Job (Phase 4) */
     public readonly articlePipelineEcrRepository?: ecr.Repository;
     /** ECR Repository for the job-strategist K8s Job (Phase 4) */
@@ -658,6 +663,36 @@ export class SharedVpcStack extends cdk.Stack {
             new cdk.CfnOutput(this, 'OntologyImporterEcrRepositoryUri', {
                 value: this.ontologyImporterEcrRepository.repositoryUri,
                 description: 'ontology-importer CronJob ECR Repository URI for docker push/pull',
+            });
+        }
+
+        // =====================================================================
+        // S3 Bucket (ontology-importer Bedrock batch I/O)
+        // Holds pooled input JSONL written by run-import and the output JSONL
+        // written by Bedrock CreateModelInvocationJob. 14-day lifecycle keeps
+        // storage costs flat — followup CronJob reads results within minutes,
+        // so longer retention is unnecessary. SSM param under
+        //   /shared/ontology-importer/{env}/batch-bucket
+        // for chart discovery.
+        // =====================================================================
+        if (props.createOntologyImporterBatchBucket !== false) {
+            const isProduction = props.targetEnvironment === Environment.PRODUCTION;
+            this.ontologyImporterBatchBucket = new s3.Bucket(this, 'OntologyImporterBatchBucket', {
+                bucketName: `ontology-importer-batch-${props.targetEnvironment}`,
+                encryption: s3.BucketEncryption.S3_MANAGED,
+                blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+                enforceSSL: true,
+                removalPolicy: isProduction ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+                autoDeleteObjects: !isProduction,
+                lifecycleRules: [
+                    { id: 'expire-batch-io', expiration: cdk.Duration.days(14) },
+                ],
+            });
+            new ssm.StringParameter(this, 'SsmOntologyImporterBatchBucket', {
+                parameterName: `/shared/ontology-importer/${props.targetEnvironment}/batch-bucket`,
+                stringValue: this.ontologyImporterBatchBucket.bucketName,
+                description: `ontology-importer Bedrock batch bucket for ${props.targetEnvironment}`,
+                tier: ssm.ParameterTier.STANDARD,
             });
         }
 
