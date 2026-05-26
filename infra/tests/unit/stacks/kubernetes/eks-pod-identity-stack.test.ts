@@ -1,7 +1,7 @@
 /** @format */
 process.env.AWS_ACCOUNT_ID = '123456789012';
 
-import { Template } from 'aws-cdk-lib/assertions';
+import { Match, Template } from 'aws-cdk-lib/assertions';
 
 import { type PodIdentityBinding } from '../../../../lib/config/eks';
 import { Environment } from '../../../../lib/config/environments';
@@ -48,5 +48,59 @@ describe('EksPodIdentityStack', () => {
             { namespace: 'karpenter', serviceAccount: 'karpenter', purpose: 'karpenter' },
         ]);
         expect(stack.roles.karpenter).toBeDefined();
+    });
+
+    describe('ontology-importer purpose', () => {
+        const bindings: PodIdentityBinding[] = [
+            { namespace: 'ontology-importer', serviceAccount: 'ontology-importer-sa', purpose: 'ontology-importer' },
+        ];
+
+        it('should create a Bedrock-trusted batch service role', () => {
+            const t = Template.fromStack(newStack(bindings));
+            t.hasResourceProperties('AWS::IAM::Role', {
+                AssumeRolePolicyDocument: {
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Action: 'sts:AssumeRole',
+                            Principal: { Service: 'bedrock.amazonaws.com' },
+                        }),
+                    ]),
+                },
+            });
+        });
+
+        it('should grant the pod role bedrock:CreateModelInvocationJob', () => {
+            const t = Template.fromStack(newStack(bindings));
+            t.hasResourceProperties('AWS::IAM::Policy', {
+                PolicyDocument: {
+                    Statement: Match.arrayWith([
+                        Match.objectLike({
+                            Sid: 'OntologyImporterBedrockBatch',
+                            Action: Match.arrayWith([
+                                'bedrock:CreateModelInvocationJob',
+                                'bedrock:GetModelInvocationJob',
+                                'bedrock:StopModelInvocationJob',
+                                'bedrock:InvokeModel',
+                            ]),
+                        }),
+                    ]),
+                },
+            });
+        });
+
+        it('should publish the batch role ARN to SSM', () => {
+            const t = Template.fromStack(newStack(bindings));
+            t.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/shared/ontology-importer/development/batch-role-arn',
+            });
+        });
+
+        it('should create a PodIdentityAssociation for ontology-importer-sa', () => {
+            const t = Template.fromStack(newStack(bindings));
+            t.hasResourceProperties('AWS::EKS::PodIdentityAssociation', {
+                Namespace: 'ontology-importer',
+                ServiceAccount: 'ontology-importer-sa',
+            });
+        });
     });
 });

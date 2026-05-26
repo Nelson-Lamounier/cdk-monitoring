@@ -39,7 +39,8 @@ export interface PodIdentityBinding {
         | 'headlamp-token-pusher'
         | 'ingestion'
         | 'job-strategist'
-        | 'article-pipeline';
+        | 'article-pipeline'
+        | 'ontology-importer';
 }
 
 export interface EksMngConfig {
@@ -115,6 +116,7 @@ const COMMON_BINDINGS: readonly PodIdentityBinding[] = [
     { namespace: 'ingestion',          serviceAccount: 'ingestion-sa',                purpose: 'ingestion' },
     { namespace: 'job-strategist',     serviceAccount: 'job-strategist-sa',           purpose: 'job-strategist' },
     { namespace: 'article-pipeline',   serviceAccount: 'article-pipeline-sa',         purpose: 'article-pipeline' },
+    { namespace: 'ontology-importer',  serviceAccount: 'ontology-importer-sa',        purpose: 'ontology-importer' },
 ] as const;
 
 const COMMON_VERSIONS = {

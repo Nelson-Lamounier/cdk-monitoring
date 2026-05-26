@@ -235,6 +235,43 @@ describe('SharedVpcStack', () => {
         });
     });
 
+    describe('ontology-importer Bedrock batch bucket', () => {
+        it('should create the batch bucket by default with the expected name + lifecycle', () => {
+            const { stack, template } = createSharedVpcStack({
+                targetEnvironment: Environment.DEVELOPMENT,
+            });
+            expect(stack.ontologyImporterBatchBucket).toBeDefined();
+            template.hasResourceProperties('AWS::S3::Bucket', {
+                BucketName: 'ontology-importer-batch-development',
+                LifecycleConfiguration: {
+                    Rules: Match.arrayWith([
+                        Match.objectLike({
+                            Id: 'expire-batch-io',
+                            ExpirationInDays: 14,
+                            Status: 'Enabled',
+                        }),
+                    ]),
+                },
+            });
+        });
+
+        it('should publish SSM parameter for batch bucket discovery', () => {
+            const { template } = createSharedVpcStack({
+                targetEnvironment: Environment.DEVELOPMENT,
+            });
+            template.hasResourceProperties('AWS::SSM::Parameter', {
+                Name: '/shared/ontology-importer/development/batch-bucket',
+            });
+        });
+
+        it('should NOT create the batch bucket when disabled', () => {
+            const { stack } = createSharedVpcStack({
+                createOntologyImporterBatchBucket: false,
+            });
+            expect(stack.ontologyImporterBatchBucket).toBeUndefined();
+        });
+    });
+
     describe('wiki-mcp ECR Repository', () => {
         it('should NOT create wiki-mcp ECR repository by default (opt-in)', () => {
             const { stack } = createSharedVpcStack();

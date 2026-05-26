@@ -12,6 +12,7 @@ import * as path from 'node:path';
 
 import * as eks from 'aws-cdk-lib/aws-eks';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cdk from 'aws-cdk-lib/core';
 
 import { Construct } from 'constructs';
@@ -353,6 +354,69 @@ export class EksPodIdentityStack extends cdk.Stack {
                     }),
                 );
                 break;
+            case 'ontology-importer': {
+                // Bedrock Batch Inference for ontology categorization.
+                // Pool role: submit/poll/cancel batch jobs + S3 I/O on the
+                // batch bucket + PassRole the Bedrock service role.
+                // Bedrock-assumed service role: read input / write output in
+                // the batch bucket — handed to Bedrock via PassRole at
+                // CreateModelInvocationJob time.
+                const env = props.targetEnvironment;
+                const batchBucketArn = `arn:aws:s3:::ontology-importer-batch-${env}`;
+                const batchServiceRole = new iam.Role(this, 'OntologyImporterBedrockBatchRole', {
+                    assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com'),
+                    description: 'Role assumed by Bedrock batch inference for ontology-importer S3 I/O',
+                });
+                batchServiceRole.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'BatchS3IO',
+                        actions: ['s3:GetObject', 's3:PutObject', 's3:ListBucket'],
+                        resources: [batchBucketArn, `${batchBucketArn}/*`],
+                    }),
+                );
+                new ssm.StringParameter(this, 'SsmOntologyImporterBatchRoleArn', {
+                    parameterName: `/shared/ontology-importer/${env}/batch-role-arn`,
+                    stringValue: batchServiceRole.roleArn,
+                    description: `ontology-importer Bedrock batch service role ARN for ${env}`,
+                    tier: ssm.ParameterTier.STANDARD,
+                });
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'OntologyImporterBedrockBatch',
+                        actions: [
+                            'bedrock:CreateModelInvocationJob',
+                            'bedrock:GetModelInvocationJob',
+                            'bedrock:StopModelInvocationJob',
+                            'bedrock:InvokeModel',
+                        ],
+                        resources: [
+                            'arn:aws:bedrock:*::foundation-model/*',
+                            `arn:aws:bedrock:*:${cdk.Stack.of(this).account}:inference-profile/*`,
+                            `arn:aws:bedrock:*:${cdk.Stack.of(this).account}:model-invocation-job/*`,
+                        ],
+                    }),
+                );
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'OntologyImporterBatchS3',
+                        actions: [
+                            's3:GetObject',
+                            's3:PutObject',
+                            's3:DeleteObject',
+                            's3:ListBucket',
+                        ],
+                        resources: [batchBucketArn, `${batchBucketArn}/*`],
+                    }),
+                );
+                role.addToPolicy(
+                    new iam.PolicyStatement({
+                        sid: 'OntologyImporterPassBatchRole',
+                        actions: ['iam:PassRole'],
+                        resources: [batchServiceRole.roleArn],
+                    }),
+                );
+                break;
+            }
             case 'admin-api':
                 // S3 access for presigned upload URLs (resume-imports) and
                 // direct asset operations (articles). Bucket name is published
