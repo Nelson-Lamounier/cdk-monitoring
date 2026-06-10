@@ -347,10 +347,13 @@ export class EksPodIdentityStack extends cdk.Stack {
                     new iam.PolicyStatement({
                         sid: 'PipelineBedrockRerank',
                         actions: ['bedrock:Rerank'],
-                        resources: [
-                            'arn:aws:bedrock:*::foundation-model/*',
-                            `arn:aws:bedrock:*:${cdk.Stack.of(this).account}:inference-profile/*`,
-                        ],
+                        // bedrock:Rerank does NOT support resource-level permissions
+                        // (the IAM service-authorization reference lists no resource
+                        // type for it), so it MUST be granted on "*". Scoping it to
+                        // foundation-model/inference-profile ARNs made the statement a
+                        // silent no-op → "no identity-based policy allows bedrock:Rerank"
+                        // at call time (confirmed via simulate-principal-policy).
+                        resources: ['*'],
                     }),
                 );
                 break;
